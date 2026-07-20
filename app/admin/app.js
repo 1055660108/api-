@@ -164,6 +164,10 @@ const els = {
   proxyApiUrl: document.getElementById("proxyApiUrl"),
   saveProxyConfig: document.getElementById("saveProxyConfig"),
   configState: document.getElementById("configState"),
+  repositoryUpdatePanel: document.getElementById("repositoryUpdatePanel"),
+  repositoryUpdateState: document.getElementById("repositoryUpdateState"),
+  repositoryRevision: document.getElementById("repositoryRevision"),
+  updateRepository: document.getElementById("updateRepository"),
   emailConfigPanel: document.getElementById("emailConfigPanel"),
   emailConfigState: document.getElementById("emailConfigState"),
   emailConfigDisplay: document.getElementById("emailConfigDisplay"),
@@ -460,6 +464,30 @@ async function requestJson(path, token, options = {}) {
 
 async function apiFetch(path, options = {}) {
   return requestJson(path, state.apiToken, options);
+}
+
+async function loadRepositoryStatus() {
+  if (portal === "client" || !els.repositoryRevision) return;
+  const data = await apiFetch("/admin/repository-update");
+  els.repositoryRevision.textContent = `${data.branch || "main"} · ${data.revision || "未知"}`;
+  els.repositoryUpdateState.textContent = data.updating ? "正在更新" : "可更新";
+}
+
+async function updateRepository() {
+  if (!window.confirm("确定从远程仓库拉取最新代码吗？未提交的服务器改动会阻止更新。")) return;
+  setBusy(els.updateRepository, true, "正在更新");
+  els.repositoryUpdateState.textContent = "正在拉取";
+  try {
+    const data = await apiFetch("/admin/repository-update", { method: "POST" });
+    els.repositoryRevision.textContent = `${data.branch || "main"} · ${data.revision || "未知"}`;
+    els.repositoryUpdateState.textContent = data.updated ? "更新完成" : "已是最新";
+    toast(data.updated ? "代码已更新，请重启后端服务使更新生效" : "当前已是最新版本");
+  } catch (error) {
+    els.repositoryUpdateState.textContent = "更新失败";
+    toast(`更新失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.updateRepository, false);
+  }
 }
 
 function toast(message, type = "info") {
@@ -892,7 +920,7 @@ function switchView(name) {
   if (name === "users") loadUsers();
   if (name === "feedback" && portal === "admin") loadFeedback();
   if (name === "points") loadPointPackages();
-  if (name === "settings" && portal === "admin") Promise.allSettled([loadProxyConfig(), loadEmailConfig(), loadPlatforms(), loadAdminPointPackages()]);
+  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadPlatforms(), loadAdminPointPackages()]);
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
 
@@ -2486,6 +2514,7 @@ function bindEvents() {
     els.changeAdminUsername.value = state.adminUsername || els.adminUsername?.value || "";
     openSettingsModal(els.passwordModal, els.currentAdminPassword);
   });
+  els.updateRepository?.addEventListener("click", updateRepository);
   els.openClientPasswordModal?.addEventListener("click", () => openSettingsModal(els.clientPasswordModal, els.currentClientPassword));
   els.openClientEmailModal?.addEventListener("click", async () => {
     await loadEmailDomains();

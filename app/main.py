@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hmac
 import hashlib
 import smtplib
+import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
@@ -38,6 +40,7 @@ from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
 from .resilience import PlatformGuard, adaptive_worker_limit, queue_admission
+from .repository_update import repository_status, update_repository
 from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
 from .package_catalog import create_package, disable_package, list_packages, update_package
@@ -837,6 +840,24 @@ async def proxy_api_config():
         "proxy_subscription_scheme": settings.proxy_subscription_scheme,
         "proxy_subscription_refresh_seconds": settings.proxy_subscription_refresh_seconds,
     }
+
+
+@app.get("/admin/repository-update", dependencies=[Depends(require_admin)])
+async def repository_update_status():
+    try:
+        return await asyncio.to_thread(repository_status, ADMIN_DIR.parent.parent)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/admin/repository-update", dependencies=[Depends(require_admin)])
+async def repository_update_action():
+    try:
+        return await asyncio.to_thread(update_repository, ADMIN_DIR.parent.parent)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="repository update timed out")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.get("/config/registration-email", dependencies=[Depends(require_admin)])

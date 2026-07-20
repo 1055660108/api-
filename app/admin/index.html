@@ -204,6 +204,10 @@
                 <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>管理员账号</h2><p>当前账号只读，密码可在安全弹窗中修改。</p></div><span class="settings-state" id="adminPasswordState">安全登录</span></div>
                 <div class="settings-card-value"><div><span>管理员账号</span><strong id="adminAccountDisplay">-</strong></div><button class="primary-button" id="openPasswordModal" type="button">修改密码</button></div>
               </section>
+              <section class="panel config-panel" id="repositoryUpdatePanel">
+                <div class="settings-card-header"><div><span class="settings-icon">↻</span><h2>后端自动更新</h2><p>从已配置的 GitHub 仓库拉取 main 分支最新代码，仅支持快进更新。</p></div><span class="settings-state" id="repositoryUpdateState">等待读取</span></div>
+                <div class="settings-card-value"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
+              </section>
               <section class="panel config-panel" id="proxyConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">↗</span><h2>网络代理</h2><p>配置任务启动时使用的代理提取地址，留空则使用直连。</p></div><span class="settings-state" id="configState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>代理提取 API</span><strong id="proxyApiDisplay">等待读取</strong></div><button class="primary-button" id="openProxyModal" type="button">编辑代理</button></div>

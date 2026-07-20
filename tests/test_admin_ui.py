@@ -20,6 +20,13 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("data-model-cost", self.javascript)
         self.assertIn("积分/次", self.javascript)
 
+    def test_repository_update_control_is_present(self) -> None:
+        for element_id in ("repositoryUpdatePanel", "repositoryUpdateState", "repositoryRevision", "updateRepository"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('/admin/repository-update', self.javascript)
+        self.assertIn('els.updateRepository?.addEventListener("click", updateRepository)', self.javascript)
+        self.assertIn('Promise.allSettled([loadRepositoryStatus(), loadProxyConfig()', self.javascript)
+
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):
             self.assertIn(f'id="{element_id}"', self.html)

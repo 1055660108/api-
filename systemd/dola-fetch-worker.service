@@ -1,0 +1,19 @@
+[Unit]
+Description=Dola fetch task worker
+After=network.target redis-server.service dola-fetch-service.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dola-fetch-service
+Environment=DOLA_DATA_DIR=/var/lib/dola-fetch-service
+Environment=DOLA_CONFIG_PATH=/var/lib/dola-fetch-service/config.json
+Environment=DOLA_QUEUE_BACKEND=redis
+Environment=DOLA_REDIS_URL=redis://127.0.0.1:6379/0
+ExecStart=/opt/dola-fetch-service/.venv/bin/python /opt/dola-fetch-service/worker.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

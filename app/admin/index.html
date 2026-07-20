@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>管理面板</title>
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=20260720-feedback-49" />
+  </head>
+  <body>
+    <script>
+      document.body.dataset.portal = location.pathname.replace(/\/+$/, "") === "/client" ? "client" : "admin";
+    </script>
+    <section class="login-screen" id="loginView">
+      <div class="login-light-field" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <form class="login-panel" id="loginForm">
+        <div class="login-brand">
+          <div class="brand-mark brand-monogram" aria-label="HS">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <text class="monogram-letter monogram-h" x="5" y="53">H</text>
+              <text class="monogram-letter monogram-s" x="27" y="53">S</text>
+            </svg>
+          </div>
+        </div>
+
+        <div class="login-heading">
+          <div class="eyebrow login-portal-label">管理面板</div>
+          <h1>登录</h1>
+        </div>
+
+        <div class="client-auth-tabs">
+          <button class="active" id="clientLoginTab" type="button">登录</button><button id="clientRegisterTab" type="button">注册</button>
+        </div>
+        <label class="field client-credential-field">
+          <span>账号或邮箱</span><input id="clientUsername" autocomplete="username" placeholder="用户名或绑定邮箱" />
+        </label>
+        <label class="field client-credential-field">
+          <span>密码</span><input id="clientPassword" type="password" autocomplete="current-password" />
+        </label>
+        <label class="field client-credential-field client-register-only hidden">
+          <span>确认密码</span><input id="clientConfirmPassword" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field client-credential-field client-register-only hidden">
+          <span>邮箱</span><div class="email-address-row"><input id="clientEmailLocal" autocomplete="email" placeholder="邮箱账号" /><select id="clientEmailDomain" aria-label="邮箱后缀"></select></div>
+        </label>
+        <div class="client-register-only hidden registration-code-row">
+          <input id="clientEmailCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6位邮箱验证码" />
+          <button class="secondary-button" id="sendEmailCode" type="button">发送验证码</button>
+        </div>
+        <label class="field admin-credential-field">
+          <span>管理员账号</span><input id="adminUsername" autocomplete="username" />
+        </label>
+        <label class="field admin-credential-field">
+          <span>管理员密码</span><input id="adminPassword" type="password" autocomplete="current-password" />
+        </label>
+        <label class="field admin-token-field">
+          <span>API Token</span>
+          <input id="loginToken" type="password" autocomplete="off" spellcheck="false" />
+        </label>
+
+        <div class="login-token-hint">
+          <span>API Token唯一获取方式：登入服务器使用命令行获取</span>
+          <div class="login-command-row">
+            <input id="tokenCommand" type="text" value="/opt/dola-fetch-service/scripts/show-token.sh" readonly aria-label="获取 API Token 的命令行" />
+            <button class="copy-command-button" id="copyTokenCommand" type="button" aria-label="复制命令行" title="复制命令行">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 7.5A2.5 2.5 0 0 1 10.5 5H18a2 2 0 0 1 2 2v7.5a2.5 2.5 0 0 1-2.5 2.5" />
+                <path d="M6 9h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="login-actions">
+          <button class="primary-button" id="loginButton" type="submit">进入</button>
+          <span class="muted" id="loginState">等待输入</span>
+        </div>
+        <button class="text-button client-login-only" id="forgotPasswordButton" type="button">忘记密码？</button>
+      </form>
+    </section>
+
+    <div class="app-shell hidden" id="appShell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark brand-monogram" aria-label="HS">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <text class="monogram-letter monogram-h" x="5" y="53">H</text>
+              <text class="monogram-letter monogram-s" x="27" y="53">S</text>
+            </svg>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="主导航" id="mainNav">
+          <button class="nav-item active" type="button" data-view="dashboard">
+            <span>总览</span>
+          </button>
+          <button class="nav-item" type="button" data-view="submit">
+            <span>提交任务</span>
+          </button>
+          <button class="nav-item" type="button" data-view="tasks">
+            <span>任务管理</span>
+          </button>
+          <button class="nav-item" type="button" data-view="quota" id="quotaNavItem">
+            <span>额度控制</span>
+          </button>
+          <button class="nav-item" type="button" data-view="accounts" id="accountsNavItem">
+            <span>账号列表</span>
+          </button>
+          <button class="nav-item" type="button" data-view="docs">
+            <span>接口说明</span>
+          </button>
+          <button class="nav-item" type="button" data-view="videos" id="videosNavItem">
+            <span>视频库</span>
+          </button>
+          <button class="nav-item" type="button" data-view="prompts">
+            <span>提示词管理</span>
+          </button>
+          <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>积分购买</span></button>
+          <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>会员</span></button>
+          <button class="nav-item" type="button" data-view="users" id="usersNavItem"><span>用户管理</span></button>
+          <button class="nav-item" type="button" data-view="feedback" id="feedbackNavItem"><span>用户反馈</span></button>
+          <button class="nav-item" type="button" data-view="settings" id="settingsNavItem"><span>设置</span></button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="sidebar-status">
+            <span class="status-dot" id="sidebarStatusDot"></span>
+            <span id="sidebarStatusText">未连接</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="page-header">
+          <div><h1 id="viewTitle">总览</h1></div>
+          <div class="page-header-meta"><span class="status-dot ok"></span><span>管理员会话</span></div>
+        </header>
+
+        <section class="view active" id="dashboardView" data-title="总览">
+          <div class="dashboard-hero"><div><span class="eyebrow">实时运行概览</span><h2>一处掌控所有生成任务</h2><p>监控服务、并发与任务队列，快速定位每一次生成结果。</p></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></div>
+          <section class="panel client-token-card"><div><span class="eyebrow">账号</span><h2 id="clientAccountName">当前用户</h2><p>可用于第三方软件调用，消耗同一积分余额，请妥善保管。</p></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新 Token</button></div></section>
+          <div class="dashboard-actions"><button class="secondary-button dashboard-logout" id="dashboardLogoutButton" type="button">退出登录</button></div>
+          <div class="metric-grid">
+            <div class="metric-card">
+              <span class="metric-label">服务</span>
+              <strong id="metricService">未知</strong>
+              <span class="metric-note" id="metricServiceNote">等待连接</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">并发</span>
+              <strong id="metricWorkers">-</strong>
+              <div class="metric-note-row">
+                <span class="metric-note">服务配置</span>
+                <button class="text-button metric-edit-button" id="editWorkers" type="button">修改</button>
+              </div>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">任务</span>
+              <strong id="metricTaskTotal">-</strong>
+              <span class="metric-note">当前列表</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">待执行</span>
+              <strong id="metricPending">-</strong>
+              <span class="metric-note">队列等待</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">生成中</span>
+              <strong id="metricRunning">-</strong>
+              <span class="metric-note">正在处理</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">任务结束</span>
+              <strong id="metricFinished">-</strong>
+              <span class="metric-note">已完成</span>
+            </div>
+          </div>
+
+        </section>
+
+        <section class="view" id="pointsView" data-title="积分购买"><section class="panel purchase-panel"><span class="eyebrow">积分</span><h2>购买积分</h2><div class="purchase-balance"><strong id="pointsBalance">0</strong><span>可用积分</span></div><p>积分精确到 0.1，视频额度可用于全部模型。购买 30 积分及以上可获得额外视频额度。</p><div class="purchase-options" id="purchaseOptions"></div><div class="points-bonus-notice"><strong>赠送规则</strong><span>赠送的是视频额度，不计入积分余额；任务优先使用视频额度。</span></div></section></section>
+
+        <section class="view" id="membershipView" data-title="会员"></section>
+
+        <section class="view" id="usersView" data-title="用户管理"><section class="panel users-panel"><div class="panel-header"><div><h2>注册用户</h2><p>数据由后端分页返回；每 15 秒刷新账号、积分和在线状态</p></div><div class="task-stat-pill success"><span>当前在线</span><strong id="onlineUserCount">0</strong></div></div><div class="table-wrap users-table-wrap"><table class="users-table"><colgroup><col class="user-col"><col class="token-col"><col class="time-col"><col class="time-col"><col class="status-col"><col class="balance-col"><col class="actions-col"></colgroup><thead><tr><th>用户</th><th>实时账号</th><th>注册时间</th><th>最后活跃</th><th>状态</th><th>视频额度/积分</th><th>操作</th></tr></thead><tbody id="userTableBody"></tbody></table></div><div class="list-footer"><div class="pager"><button class="page-button" id="prevUserPage" type="button">上一页</button><span id="userPageState">第 1 / 1 页</span><button class="page-button" id="nextUserPage" type="button">下一页</button><select id="userPageSize" aria-label="用户每页数量"><option value="10">每页 10 条</option><option value="20" selected>每页 20 条</option><option value="50">每页 50 条</option></select></div><span id="userTotalState">共 0 位用户</span></div></section></section>
+
+        <section class="view" id="settingsView" data-title="设置">
+          <div class="settings-layout" id="settingsContent">
+            <div class="settings-stack">
+              <section class="panel config-panel client-password-panel">
+                <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>账号安全</h2><p>修改密码后自动轮换 API Token，旧 Token 立即失效。</p></div><span class="settings-state" id="clientPasswordState">安全登录</span></div>
+                <div class="settings-card-value"><div><span>当前账号</span><strong id="clientSettingsAccount">当前用户</strong></div><button class="primary-button" id="openClientPasswordModal" type="button">修改密码</button></div>
+              </section>
+              <section class="panel config-panel client-email-panel">
+                <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>绑定邮箱</h2><p>修改邮箱需要验证新邮箱，验证成功后立即更新绑定。</p></div><span class="settings-state" id="clientEmailState">已验证</span></div>
+                <div class="settings-card-value"><div><span>当前邮箱</span><strong id="clientEmailDisplay">等待读取</strong></div><button class="primary-button" id="openClientEmailModal" type="button">修改邮箱</button></div>
+              </section>
+              <section class="panel config-panel client-feedback-panel">
+                <div class="settings-card-header"><div><span class="settings-icon">✦</span><h2>体验反馈</h2><p>告诉管理员你的使用体验、建议或遇到的问题。</p></div><span class="settings-state">用户反馈</span></div>
+                <div class="settings-card-value"><div><span>反馈入口</span><strong>你的意见会直接发送给管理员</strong></div><button class="primary-button" id="openFeedbackModal" type="button">提交反馈</button></div>
+              </section>
+              <section class="panel config-panel admin-password-panel">
+                <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>管理员账号</h2><p>当前账号只读，密码可在安全弹窗中修改。</p></div><span class="settings-state" id="adminPasswordState">安全登录</span></div>
+                <div class="settings-card-value"><div><span>管理员账号</span><strong id="adminAccountDisplay">-</strong></div><button class="primary-button" id="openPasswordModal" type="button">修改密码</button></div>
+              </section>
+              <section class="panel config-panel" id="proxyConfigPanel">
+                <div class="settings-card-header"><div><span class="settings-icon">↗</span><h2>网络代理</h2><p>配置任务启动时使用的代理提取地址，留空则使用直连。</p></div><span class="settings-state" id="configState">等待读取</span></div>
+                <div class="settings-card-value"><div><span>代理提取 API</span><strong id="proxyApiDisplay">等待读取</strong></div><button class="primary-button" id="openProxyModal" type="button">编辑代理</button></div>
+              </section>
+              <section class="panel config-panel" id="emailConfigPanel">
+                <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>注册邮箱验证</h2><p>设置允许注册的邮箱后缀，并使用 QQ 邮箱 SMTP 发送验证码。</p></div><span class="settings-state" id="emailConfigState">等待读取</span></div>
+                <div class="settings-card-value"><div><span>允许邮箱</span><strong id="emailConfigDisplay">等待读取</strong></div><button class="primary-button" id="openEmailModal" type="button">编辑邮箱验证</button></div>
+              </section>
+              <section class="panel config-panel" id="modelConfigPanel">
+                <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>生成模型</h2><p>控制各平台可选模型及默认模型列表。</p></div><span class="settings-state" id="modelConfigState">自动同步</span></div>
+                <div class="settings-card-value"><div><span>已启用模型</span><strong id="modelConfigDisplay">等待读取</strong></div><button class="primary-button" id="openModelModal" type="button">编辑模型</button></div>
+              </section>
+              <section class="panel config-panel" id="packageConfigPanel">
+                <div class="settings-card-header"><div><span class="settings-icon">◫</span><h2>积分套餐</h2><p>新增、调整、上架或停用客户端展示的积分套餐。</p></div><span class="settings-state" id="packageConfigState">等待读取</span></div>
+                <div class="settings-card-value"><div><span>套餐目录</span><strong id="packageConfigDisplay">等待读取</strong></div><button class="primary-button" id="openPackageModal" type="button">管理套餐</button></div>
+              </section>
+            </div>
+          </div>
+        </section>
+        <section class="view" id="feedbackView" data-title="用户反馈"><section class="panel users-panel"><div class="panel-header"><div><h2>用户反馈</h2><p>查看并处理客户端提交的体验反馈。</p></div><button class="secondary-button" id="refreshFeedback" type="button">刷新</button></div><div class="table-wrap users-table-wrap"><table class="users-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div></section></section>
+
+        <section class="view" id="submitView" data-title="提交任务">
+          <form class="submit-layout" id="taskForm">
+            <section class="submit-balance" id="submitBalance" aria-label="生成额度"><div class="balance-item free"><span>视频额度</span><strong><b id="submitFreeRemaining">0</b> 次</strong></div><div class="balance-divider"></div><div class="balance-item"><span>可用积分</span><strong id="submitPointsBalance">0</strong></div><div class="balance-cost" id="submitCostText">本次使用视频额度</div></section>
+            <section class="submit-composer" aria-label="提交任务">
+              <div class="composer-heading">
+                <div><span class="eyebrow">视频任务</span><h2>新建生成任务</h2></div>
+                <span class="composer-hint">完善描述并选择生成参数</span>
+              </div>
+              <div class="composer-main">
+                <div class="image-list" id="imageList"></div>
+                <textarea id="promptInput" rows="5" placeholder="描述画面、主体、动作、镜头与光影，让创意更准确地呈现……"></textarea>
+              </div>
+
+              <div class="composer-footer">
+                <div class="composer-controls">
+                  <button class="reference-button prompt-save-button" id="saveCurrentPrompt" type="button"><span class="plus-icon">+</span> 保存提示词</button>
+                  <select id="platformSelect" class="sr-only" aria-label="生成平台">
+                    <option value="dola">Dola</option>
+                    <option value="doubao" disabled>豆包（待接入）</option>
+                    <option value="qianwen" disabled>千问（待接入）</option>
+                  </select>
+                  <label class="composer-select"><span>模型</span><select id="modelSelect" aria-label="生成模型"><option value="Seedance 2.0">Seedance 2.0</option></select></label>
+                  <input id="imageInput" class="sr-only" type="file" accept="image/*" multiple />
+                  <label class="reference-button" for="imageInput"><span class="plus-icon" aria-hidden="true">+</span> 参考图</label>
+
+                  <div class="ratio-picker" id="ratioGroup">
+                    <button class="ratio-trigger" type="button" aria-haspopup="true">
+                      <span class="ratio-label">比例</span><span id="ratioValue">9:16</span>
+                    </button>
+                    <div class="ratio-options">
+                      <button class="active" type="button" data-ratio="9:16">9:16</button>
+                      <button type="button" data-ratio="16:9">16:9</button>
+                      <button type="button" data-ratio="1:1">1:1</button>
+                      <button type="button" data-ratio="3:4">3:4</button>
+                      <button type="button" data-ratio="4:3">4:3</button>
+                      <button type="button" data-ratio="21:9">21:9</button>
+                    </div>
+                  </div>
+
+                  <span class="sr-only composer-state" id="submitState">待提交</span>
+                </div>
+
+                <button class="submit-arrow-button" id="submitTask" type="submit" aria-label="提交任务" title="提交任务">
+                  <svg aria-hidden="true" viewBox="0 0 24 24">
+                    <path d="M12 19V5M6.5 10.5 12 5l5.5 5.5" />
+                  </svg>
+                </button>
+              </div>
+            </section>
+          </form>
+        </section>
+
+        <section class="view" id="promptsView" data-title="提示词管理">
+          <section class="panel prompt-manager-panel">
+            <div class="panel-header prompt-manager-header">
+              <div><span class="eyebrow">Prompt Library</span><h2>常用提示词</h2><p>保存创作灵感，拖动排序，点击即可带入任务。</p></div>
+              <button class="primary-button" id="addPromptButton" type="button">添加提示词</button>
+            </div>
+            <form class="prompt-editor hidden" id="promptEditor">
+              <label class="field"><span>名称</span><input id="promptTitleInput" maxlength="40" placeholder="例如：电影感运镜" /></label>
+              <label class="field prompt-content-field"><span>提示词</span><textarea id="promptContentInput" rows="4" maxlength="4000" placeholder="输入常用提示词内容"></textarea></label>
+              <div class="prompt-editor-actions"><button class="secondary-button" id="cancelPromptEdit" type="button">取消</button><button class="primary-button" type="submit">保存</button></div>
+            </form>
+            <div class="prompt-grid" id="promptGrid"></div>
+            <div class="prompt-pager"><button class="page-button" id="promptPrevPage" type="button">上一页</button><span id="promptPageState">第 1 / 1 页</span><button class="page-button" id="promptNextPage" type="button">下一页</button></div>
+          </section>
+        </section>
+
+        <section class="view" id="tasksView" data-title="任务管理">
+          <section class="panel">
+            <div class="table-tools">
+              <div class="task-stats-strip">
+                <div class="task-stat-pill">
+                  <span>同时生成</span>
+                  <strong id="taskRunningCount">0</strong>
+                </div>
+                <div class="task-stat-pill success">
+                  <span>今日完成</span>
+                  <strong id="taskTodayDoneCount">0</strong>
+                </div>
+              </div>
+              <label class="field search-field">
+                <span>搜索</span>
+                <input id="taskSearch" type="search" placeholder="任务 ID、状态、文本" />
+              </label>
+              <div class="task-table-actions">
+                <div class="pager">
+                  <span class="current-page-count">本页 <strong id="currentPageTaskCount">0</strong> 条</span>
+                  <div class="pager-buttons">
+                    <button class="page-button" id="prevPage" type="button">上一页</button>
+                    <button class="page-button" id="nextPage" type="button">下一页</button>
+                  </div>
+                  <select id="taskPageSize" aria-label="任务每页数量">
+                    <option value="10">每页 10 条</option>
+                    <option value="50" selected>每页 50 条</option>
+                    <option value="100">每页 100 条</option>
+                  </select>
+                  <span id="pageState">第 1 / 1 页</span>
+                </div>
+                <div class="toolbar-actions">
+                  <button class="secondary-button" id="refreshTasks" type="button">刷新列表</button>
+                  <button class="secondary-button" id="queryVisibleTasks" type="button">查询本页</button>
+                  <button class="danger-button" id="deleteFailedTasks" type="button">删除失败/取消任务</button>
+                  <button class="danger-button" id="clearTasks" type="button">清空任务</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="task-table">
+                <colgroup>
+                  <col class="task-col" />
+                  <col class="owner-col" />
+                  <col class="status-col" />
+                  <col class="result-col" />
+                  <col class="video-col" />
+                  <col class="action-col" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>任务</th>
+                    <th>用户</th>
+                    <th>状态</th>
+                    <th>返回文本</th>
+                    <th>视频</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="taskTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="videosView" data-title="视频库">
+          <section class="panel">
+            <div class="panel-header"><div><h2>我的视频</h2><p>选择视频后可批量删除对应任务记录</p></div><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
+            <div class="video-library" id="videoLibrary"></div>
+          </section>
+        </section>
+
+        <section class="view" id="quotaView" data-title="额度控制">
+          <section class="panel quota-panel">
+            <div class="panel-header">
+              <div>
+                <h2>临时 Token</h2>
+                <p class="quota-entry-note">客户入口：生成临时 Token 后，将 Token 发给客户，客户只能从客户入口登录并查看自己的任务。</p>
+              </div>
+              <div class="client-entry-box">
+                <span>客户入口</span>
+                <input id="clientEntryUrl" type="text" readonly aria-label="客户入口地址" />
+                <button class="secondary-button" id="copyClientEntryUrl" type="button">复制入口</button>
+              </div>
+              <div class="toolbar-actions">
+                <button class="secondary-button" id="refreshTempTokens" type="button">刷新</button>
+                <button class="primary-button" id="openCreateTokenModal" type="button">生成临时密钥</button>
+              </div>
+            </div>
+
+            <div class="table-wrap quota-table-wrap">
+              <table class="quota-table">
+                <colgroup>
+                  <col class="remark-col" />
+                  <col class="token-col" />
+                  <col class="concurrency-col" />
+                  <col class="concurrency-col" />
+                  <col class="remain-col" />
+                  <col class="time-col" />
+                  <col class="quota-action-col" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>用户名称</th>
+                    <th>Token</th>
+                    <th>并发</th>
+                    <th>清理天数</th>
+                    <th>剩余</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="tempTokenTableBody"></tbody>
+              </table>
+            </div>
+            <div class="pager table-bottom-pager">
+              <button class="icon-button" id="prevQuotaPage" type="button">‹</button>
+              <span id="quotaPageState">&lt;50&gt;</span>
+              <button class="icon-button" id="nextQuotaPage" type="button">›</button>
+              <select id="quotaPageSize" aria-label="额度每页数量">
+                <option value="10">10</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="accountsView" data-title="账号列表">
+          <section class="panel accounts-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Cookie 账号</h2>
+                <p class="account-panel-description">统一管理三平台账号、运行状态与每日可用额度。</p>
+              </div>
+              <div class="account-quota-summary" id="accountQuotaSummary">
+                <span>总额度 --</span>
+                <span>已用 --</span>
+                <span>剩余 --</span>
+              </div>
+              <div class="toolbar-actions account-toolbar-actions">
+                <div class="account-platform-filter">
+                  <span class="account-filter-label">平台</span>
+                  <select id="accountPlatformFilter" aria-label="账号平台筛选">
+                    <option value="all">全部</option>
+                    <option value="dola">Dola</option>
+                    <option value="doubao">豆包</option>
+                    <option value="qianwen">千问</option>
+                  </select>
+                  <span class="account-platform-count" id="accountPlatformCount" aria-live="polite">全部平台 0 个</span>
+                </div>
+                <div class="account-status-counts" aria-label="账号状态统计">
+                  <span class="normal">正常 <strong id="accountNormalCount">0</strong></span>
+                  <span class="abnormal">异常 <strong id="accountAbnormalCount">0</strong></span>
+                </div>
+                <input class="account-task-search" id="accountTaskSearch" type="search" placeholder="搜索正在执行任务 ID" />
+                <span class="quota-reset-countdown" id="accountResetCountdown">清零倒计时 --:--:--</span>
+                <button class="secondary-button" id="refreshAccounts" type="button">刷新</button>
+              </div>
+            </div>
+
+            <form class="account-import-form" id="accountForm">
+              <div class="account-import-top">
+                <label class="field account-name-field">
+                  <span>账号名称</span>
+                  <input id="accountName" type="text" placeholder="批量导入时可留空" />
+                </label>
+                <label class="field account-quota-field">
+                  <span>额度上限</span>
+                  <input id="accountQuotaLimit" type="number" min="0" step="1" value="1" placeholder="Dola 默认 1" />
+                </label>
+                <label class="field account-quota-field">
+                  <span>号池平台</span>
+                  <select id="accountPlatform">
+                    <option value="dola">Dola</option>
+                    <option value="doubao">豆包</option>
+                    <option value="qianwen">千问</option>
+                  </select>
+                </label>
+              </div>
+              <div class="account-import-main">
+                <label class="field account-cookie-field">
+                  <span>Cookie 数据</span>
+                  <textarea id="accountCookieData" rows="6" spellcheck="false" placeholder="单个：name=value; name2=value2&#10;批量：每行一个账号，可用 账号名|额度|cookie 或 账号名----cookie"></textarea>
+                </label>
+                <div class="account-import-actions">
+                  <span class="account-detected-count" id="accountDetectedCount">已识别 0 个账号</span>
+                  <span class="muted" id="accountImportState">等待导入</span>
+                  <button class="primary-button" id="importAccount" type="submit">导入账号</button>
+                </div>
+              </div>
+            </form>
+
+            <div class="table-wrap account-table-wrap">
+              <table class="account-table">
+                <colgroup>
+                  <col class="account-name-col" />
+                  <col class="account-status-col" />
+                  <col class="account-quota-col" />
+                  <col class="account-task-col" />
+                  <col class="account-time-col" />
+                  <col class="account-action-col" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>账号</th>
+                    <th>状态</th>
+                    <th>额度</th>
+                    <th>正在执行</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="accountTableBody"></tbody>
+              </table>
+            </div>
+            <div class="pager table-bottom-pager account-bottom-pager"><span id="accountPageTotal">本页 0 条</span><button class="icon-button" id="prevAccountPage" type="button">上一页</button><button class="icon-button" id="nextAccountPage" type="button">下一页</button><select id="accountPageSize" aria-label="账号每页数量"><option value="10">每页 10 条</option><option value="20" selected>每页 20 条</option><option value="50">每页 50 条</option><option value="100">每页 100 条</option></select></div>
+          </section>
+        </section>
+
+        <section class="view" id="docsView" data-title="接口说明">
+          <div class="docs-layout">
+            <section class="panel docs-panel">
+              <div class="docs-header">
+                <h2>API 接口说明</h2>
+                <span class="docs-chip">Header: X-API-Token</span>
+              </div>
+
+              <div class="api-list">
+                <article class="api-item">
+                  <div>
+                    <span class="method get">GET</span>
+                    <code>/health</code>
+                  </div>
+                  <p>检查服务状态，返回服务是否可用、并发配置和正在执行的任务 ID。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/health</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"ok":true,"browser_workers":4,"active":[]}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method get">GET</span>
+                    <code>/config/proxy-api</code>
+                  </div>
+                  <p>读取当前代理提取 API 配置。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/config/proxy-api</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"proxy_api_url":"https://example.com/get","proxy_api_scheme":"http","proxy_api_timeout_seconds":20}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method get">GET</span>
+                    <code>/config/workers</code>
+                  </div>
+                  <p>读取当前并发配置。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/config/workers</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"browser_workers":4}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method post">POST</span>
+                    <code>/config/workers</code>
+                  </div>
+                  <p>修改全局 worker 并发数量。JSON 示例：<code>{"browser_workers":4}</code>，范围 1 - 100；单条 Token 并发在额度控制表内单独设置。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":4}' http://SERVER_IP:8088/config/workers</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"ok":true,"browser_workers":4}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method post">POST</span>
+                    <code>/config/proxy-api</code>
+                  </div>
+                  <p>修改代理提取 API。JSON 示例：<code>{"proxy_api_url":"https://example.com/get","proxy_api_scheme":"http"}</code></p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"proxy_api_url":"https://example.com/get","proxy_api_scheme":"http"}' http://SERVER_IP:8088/config/proxy-api</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"ok":true,"proxy_api_url":"https://example.com/get","proxy_api_scheme":"http","proxy_api_timeout_seconds":20}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method post">POST</span>
+                    <code>/tasks</code>
+                  </div>
+                  <p>提交任务，使用 multipart/form-data，字段：<code>prompt</code>、<code>ratio</code>、<code>images</code>。图片最多按后端配置接收。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -F "prompt=一个人在奔跑健身" -F "ratio=9:16" http://SERVER_IP:8088/tasks</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"id":"0123456789abcdef0123456789abcdef"}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method get">GET</span>
+                    <code>/tasks</code>
+                  </div>
+                  <p>获取当前任务列表。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/tasks</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"tasks":[{"id":"0123456789abcdef0123456789abcdef","prompt_preview":"一个人在奔跑健身","status":"success","image_count":0,"error":""}]}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method delete">DELETE</span>
+                    <code>/tasks</code>
+                  </div>
+                  <p>批量清空未在生成中的任务，生成中的任务会自动保留。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -X DELETE -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/tasks</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"ok":true,"deleted":10,"skipped":[]}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method get">GET</span>
+                    <code>/tasks/{task_id}</code>
+                  </div>
+                  <p>查询单个任务状态和结果。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/tasks/0123456789abcdef0123456789abcdef</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"code":"2","text":"","url":"https://example.com/video.mp4"}</code>
+                  </div>
+                </article>
+                <article class="api-item">
+                  <div>
+                    <span class="method delete">DELETE</span>
+                    <code>/tasks/{task_id}</code>
+                  </div>
+                  <p>删除未在生成中的任务；生成中任务会返回不可取消。</p>
+                  <div class="api-example">
+                    <span>请求示例</span>
+                    <code>curl -X DELETE -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/tasks/0123456789abcdef0123456789abcdef</code>
+                  </div>
+                  <div class="api-example">
+                    <span>响应示例</span>
+                    <code>{"ok":true}</code>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section class="panel docs-panel">
+              <div class="docs-header">
+                <h2>服务器各项命令</h2>
+                <span class="docs-chip">服务名: dola-fetch-service</span>
+              </div>
+
+              <div class="command-list">
+                <article class="command-item">
+                  <span>查看服务状态</span>
+                  <code>systemctl --no-pager --full status dola-fetch-service</code>
+                </article>
+                <article class="command-item">
+                  <span>重启服务</span>
+                  <code>systemctl restart dola-fetch-service</code>
+                </article>
+                <article class="command-item">
+                  <span>停止服务</span>
+                  <code>systemctl stop dola-fetch-service</code>
+                </article>
+                <article class="command-item">
+                  <span>启动服务</span>
+                  <code>systemctl start dola-fetch-service</code>
+                </article>
+                <article class="command-item">
+                  <span>查看实时日志</span>
+                  <code>journalctl -u dola-fetch-service -f --no-pager</code>
+                </article>
+                <article class="command-item">
+                  <span>查看最近日志</span>
+                  <code>journalctl -u dola-fetch-service -n 200 --no-pager</code>
+                </article>
+                <article class="command-item">
+                  <span>查看配置文件</span>
+                  <code>cat /var/lib/dola-fetch-service/config.json</code>
+                </article>
+                <article class="command-item">
+                  <span>查看 Token</span>
+                  <code>/opt/dola-fetch-service/scripts/show-token.sh</code>
+                </article>
+                <article class="command-item">
+                  <span>重置 Token</span>
+                  <code>/opt/dola-fetch-service/scripts/reset-token.sh</code>
+                </article>
+                <article class="command-item">
+                  <span>清空任务数据</span>
+                  <code>find /var/lib/dola-fetch-service/tasks -mindepth 1 -maxdepth 1 -exec rm -rf {} +</code>
+                </article>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+    <div class="modal-backdrop hidden" id="workersModal" aria-hidden="true">
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="workersModalTitle">
+        <div class="modal-header">
+          <h2 id="workersModalTitle">修改并发</h2>
+          <button class="modal-close" id="closeWorkersModal" type="button" aria-label="关闭">×</button>
+        </div>
+        <label class="field">
+          <span>并发数量</span>
+          <input id="workersInput" type="number" min="1" max="100" step="1" />
+        </label>
+        <div class="modal-actions">
+          <span class="sr-only" id="workersModalState"></span>
+          <button class="primary-button" id="saveWorkers" type="button">保存</button>
+          <button class="secondary-button" id="cancelWorkersModal" type="button">取消</button>
+        </div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="passwordModal" aria-hidden="true">
+      <form class="modal-panel" id="adminPasswordForm" role="dialog" aria-modal="true" aria-labelledby="passwordModalTitle">
+        <div class="modal-header"><h2 id="passwordModalTitle">修改管理员密码</h2><button class="modal-close" id="closePasswordModal" type="button" aria-label="关闭">×</button></div>
+        <label class="field"><span>管理员账号</span><input id="changeAdminUsername" readonly autocomplete="username" /></label>
+        <label class="field"><span>当前密码</span><input id="currentAdminPassword" type="password" autocomplete="current-password" /></label>
+        <label class="field"><span>新密码</span><input id="newAdminPassword" type="password" autocomplete="new-password" /></label>
+        <label class="field"><span>确认新密码</span><input id="confirmAdminPassword" type="password" autocomplete="new-password" /></label>
+        <div class="modal-actions"><button class="secondary-button" id="cancelPasswordModal" type="button">取消</button><button class="primary-button" id="changeAdminPasswordButton" type="submit">修改密码</button></div>
+      </form>
+    </div>
+    <div class="modal-backdrop hidden" id="clientPasswordModal" aria-hidden="true">
+      <form class="modal-panel security-modal" id="clientPasswordForm" role="dialog" aria-modal="true" aria-labelledby="clientPasswordModalTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">账号安全</span><h2 id="clientPasswordModalTitle">修改登录密码</h2></div><button class="modal-close" id="closeClientPasswordModal" type="button" aria-label="关闭">×</button></div>
+        <div class="security-notice">保存后系统将签发新 Token，并迁移当前账号的历史任务归属。</div>
+        <label class="field"><span>当前密码</span><input id="currentClientPassword" type="password" autocomplete="current-password" required /></label>
+        <label class="field"><span>新密码</span><input id="newClientPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
+        <label class="field"><span>确认新密码</span><input id="confirmClientPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
+        <div class="modal-actions"><button class="secondary-button" id="cancelClientPasswordModal" type="button">取消</button><button class="primary-button" id="changeClientPasswordButton" type="submit">修改并轮换 Token</button></div>
+      </form>
+    </div>
+    <div class="modal-backdrop hidden" id="clientEmailModal" aria-hidden="true">
+      <form class="modal-panel security-modal" id="clientEmailForm" role="dialog" aria-modal="true" aria-labelledby="clientEmailModalTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">账号安全</span><h2 id="clientEmailModalTitle">修改绑定邮箱</h2></div><button class="modal-close" id="closeClientEmailModal" type="button" aria-label="关闭">×</button></div>
+        <label class="field"><span>新邮箱</span><div class="email-address-row"><input id="changeEmailLocal" required placeholder="邮箱账号" /><select id="changeEmailDomain" aria-label="邮箱后缀"></select></div></label>
+        <div class="registration-code-row"><input id="changeEmailCode" required inputmode="numeric" maxlength="6" placeholder="6位邮箱验证码" /><button class="secondary-button" id="sendChangeEmailCode" type="button">发送验证码</button></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelClientEmailModal" type="button">取消</button><button class="primary-button" id="changeClientEmailButton" type="submit">确认修改</button></div>
+      </form>
+    </div>
+    <div class="modal-backdrop hidden" id="forgotPasswordModal" aria-hidden="true">
+      <form class="modal-panel security-modal" id="forgotPasswordForm" role="dialog" aria-modal="true" aria-labelledby="forgotPasswordModalTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">账号安全</span><h2 id="forgotPasswordModalTitle">找回密码</h2></div><button class="modal-close" id="closeForgotPasswordModal" type="button" aria-label="关闭">×</button></div>
+        <div class="security-notice">验证码只发送到已绑定并验证的邮箱。</div>
+        <label class="field"><span>绑定邮箱</span><input id="forgotPasswordEmail" type="email" autocomplete="email" required /></label>
+        <div class="registration-code-row"><input id="forgotPasswordCode" required inputmode="numeric" maxlength="6" placeholder="6位邮箱验证码" /><button class="secondary-button" id="sendForgotPasswordCode" type="button">发送验证码</button></div>
+        <label class="field"><span>新密码</span><input id="forgotPasswordNew" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
+        <label class="field"><span>确认新密码</span><input id="forgotPasswordConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
+        <div class="modal-actions"><button class="secondary-button" id="cancelForgotPasswordModal" type="button">取消</button><button class="primary-button" id="resetPasswordButton" type="submit">重置密码</button></div>
+      </form>
+    </div>
+    <div class="modal-backdrop hidden" id="feedbackModal" aria-hidden="true">
+      <form class="modal-panel security-modal" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">用户反馈</span><h2 id="feedbackModalTitle">体验反馈</h2></div><button class="modal-close" id="closeFeedbackModal" type="button" aria-label="关闭">×</button></div>
+        <label class="field"><span>反馈类型</span><select id="feedbackCategory"><option>体验建议</option><option>问题反馈</option><option>其他</option></select></label>
+        <label class="field"><span>反馈内容</span><textarea id="feedbackContent" minlength="2" maxlength="5000" required placeholder="请描述你的使用体验或遇到的问题"></textarea></label>
+        <label class="field"><span>联系方式（可选）</span><input id="feedbackContact" maxlength="254" placeholder="邮箱或其他联系方式" /></label>
+        <div class="modal-actions"><button class="secondary-button" id="cancelFeedbackModal" type="button">取消</button><button class="primary-button" id="submitFeedbackButton" type="submit">提交反馈</button></div>
+      </form>
+    </div>
+    <div class="modal-backdrop hidden" id="proxyModal" aria-hidden="true">
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="proxyModalTitle">
+        <div class="modal-header"><h2 id="proxyModalTitle">编辑网络代理</h2><button class="modal-close" id="closeProxyModal" type="button" aria-label="关闭">×</button></div>
+        <label class="field"><span>代理提取 API</span><input id="proxyApiUrl" type="url" placeholder="https://example.com/get-proxy" /></label>
+        <div class="modal-actions"><button class="secondary-button" id="loadProxyConfig" type="button">重新读取</button><button class="secondary-button" id="cancelProxyModal" type="button">取消</button><button class="primary-button" id="saveProxyConfig" type="button">保存</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="emailModal" aria-hidden="true">
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="emailModalTitle">
+        <div class="modal-header"><h2 id="emailModalTitle">注册邮箱验证</h2><button class="modal-close" id="closeEmailModal" type="button" aria-label="关闭">×</button></div>
+        <label class="field"><span>启用邮箱验证</span><select id="registrationEmailEnabled"><option value="true">启用</option><option value="false">停用</option></select></label>
+        <div class="field"><span>允许邮箱后缀</span><div class="email-domain-editor" id="registrationEmailDomains"></div><button class="secondary-button email-domain-add" id="addRegistrationEmailDomain" type="button">添加邮箱后缀</button></div>
+        <label class="field"><span>QQ 邮箱账号</span><input id="registrationSmtpUsername" type="email" placeholder="example@qq.com" autocomplete="off" /></label>
+        <label class="field"><span>QQ 邮箱 SMTP 授权码</span><input id="registrationSmtpAuthorizationCode" type="password" placeholder="留空保留原授权码" autocomplete="new-password" /></label>
+        <label class="field"><span>发件名称</span><input id="registrationEmailSenderName" maxlength="80" /></label>
+        <label class="field"><span>验证码有效期（分钟）</span><input id="registrationEmailCodeTtl" type="number" min="3" max="30" value="10" /></label>
+        <div class="modal-actions"><button class="secondary-button" id="cancelEmailModal" type="button">取消</button><button class="primary-button" id="saveEmailConfig" type="button">保存</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="modelModal" aria-hidden="true">
+      <section class="modal-panel settings-model-modal" role="dialog" aria-modal="true" aria-labelledby="modelModalTitle">
+        <div class="modal-header model-modal-header"><div><span class="modal-eyebrow">模型中心</span><h2 id="modelModalTitle">编辑生成模型</h2><p>按平台维护可用模型和单次消耗积分，关闭模型后客户端将无法选择。</p></div><button class="modal-close" id="closeModelModal" type="button" aria-label="关闭">×</button></div>
+        <div class="model-config-list" id="modelConfigList"></div>
+        <div class="modal-actions model-modal-actions"><button class="secondary-button" id="syncQianwenModels" type="button">同步三平台</button><span>更改仅在保存后生效</span><button class="secondary-button" id="cancelModelModal" type="button">取消</button><button class="primary-button" id="saveModelConfig" type="button">保存模型配置</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="packageModal" aria-hidden="true">
+      <section class="modal-panel package-modal" role="dialog" aria-modal="true" aria-labelledby="packageModalTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">套餐目录</span><h2 id="packageModalTitle">管理积分套餐</h2><p>启用的套餐按排序值展示在客户端。</p></div><button class="modal-close" id="closePackageModal" type="button" aria-label="关闭">×</button></div>
+        <form class="package-create-form" id="packageForm"><label class="field"><span>套餐名称</span><input id="packageName" maxlength="80" required placeholder="例如：进阶套餐" /></label><label class="field"><span>积分</span><input id="packagePoints" type="number" min="0.1" step="0.1" required /></label><label class="field"><span>赠送次数</span><input id="packageBonus" type="number" min="0" step="1" value="0" required /></label><label class="field"><span>排序</span><input id="packageSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createPackageButton" type="submit">新增套餐</button></form>
+        <div class="package-list" id="packageList"></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelPackageModal" type="button">关闭</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="createTokenModal" aria-hidden="true">
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="createTokenModalTitle">
+        <div class="modal-header">
+          <h2 id="createTokenModalTitle">生成临时密钥</h2>
+          <button class="modal-close" id="closeCreateTokenModal" type="button" aria-label="关闭">×</button>
+        </div>
+        <label class="field">
+          <span>生成条数</span>
+          <input id="createTokenCount" type="number" min="1" max="200" step="1" value="1" />
+        </label>
+        <label class="field">
+          <span>每个额度</span>
+          <input id="createTokenLimit" type="number" min="1" max="100000" step="1" value="100" />
+        </label>
+        <label class="field">
+          <span>单条并发</span>
+          <input id="createTokenConcurrency" type="number" min="1" max="100" step="1" value="1" />
+        </label>
+        <label class="field">
+          <span>任务清理时间（天）</span>
+          <input id="createTokenRetentionDays" type="number" min="1" max="15" step="1" value="7" />
+        </label>
+        <label class="field">
+          <span>备注</span>
+          <input id="createTokenRemark" type="text" maxlength="100" placeholder="例如：客户姓名 / 用户名" />
+        </label>
+        <div class="modal-actions">
+          <span class="sr-only" id="createTokenState"></span>
+          <button class="primary-button" id="confirmCreateTokens" type="button">生成</button>
+          <button class="secondary-button" id="cancelCreateTokenModal" type="button">取消</button>
+        </div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="textModal" aria-hidden="true">
+      <section class="modal-panel text-modal-panel" role="dialog" aria-modal="true" aria-labelledby="textModalTitle">
+        <div class="modal-header">
+          <h2 id="textModalTitle">完整文本</h2>
+          <button class="modal-close" id="closeTextModal" type="button" aria-label="关闭">×</button>
+        </div>
+        <pre class="full-text-content" id="textModalContent"></pre>
+        <div class="modal-actions">
+          <button class="secondary-button" id="copyTextModal" type="button">复制文本</button>
+          <button class="primary-button" id="confirmTextModal" type="button">关闭</button>
+        </div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="videoModal" aria-hidden="true">
+      <section class="modal-panel video-modal-panel" role="dialog" aria-modal="true" aria-labelledby="videoModalTitle">
+        <div class="modal-header">
+          <div class="video-title-row">
+            <h2 id="videoModalTitle">视频预览</h2>
+            <a class="decoder-help-link" href="https://www.bilibili.com/video/BV1YB4y1y7Ua/?share_source=copy_web&amp;vd_source=994a654dd463ff952d977e0d78aba48c" target="_blank" rel="noopener noreferrer">
+              没有画面，点击下载解码器
+            </a>
+          </div>
+          <button class="modal-close" id="closeVideoModal" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="video-frame">
+          <div class="video-loading" id="videoLoading">正在加载视频链接...</div>
+          <video class="video-player hidden" id="videoPlayer" controls playsinline preload="metadata"></video>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-button" id="copyVideoUrl" type="button">复制链接</button>
+          <button class="primary-button" id="confirmVideoModal" type="button">关闭</button>
+        </div>
+      </section>
+    </div>
+    <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
+    <script src="/admin/assets/app.js?v=20260720-email-toggle-51"></script>
+  </body>
+</html>

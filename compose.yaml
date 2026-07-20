@@ -1,0 +1,101 @@
+name: dola-fetch
+
+x-app-environment: &app-environment
+  DOLA_DATA_DIR: /var/lib/dola-fetch-service
+  DOLA_CONFIG_PATH: /var/lib/dola-fetch-service/config.json
+  DOLA_DATABASE_URL: postgresql://${POSTGRES_USER:-dola}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-dola}
+  DOLA_QUEUE_BACKEND: redis
+  DOLA_REDIS_URL: redis://redis:6379/0
+  DOLA_QUEUE_NAMESPACE: ${DOLA_QUEUE_NAMESPACE:-dola:tasks}
+  DOLA_QUEUE_VISIBILITY_TIMEOUT: ${DOLA_QUEUE_VISIBILITY_TIMEOUT:-180}
+  DOLA_ADMIN_USERNAME: ${DOLA_ADMIN_USERNAME:-admin}
+  DOLA_ADMIN_PASSWORD: ${DOLA_ADMIN_PASSWORD:-change-me-now}
+  DOLA_DEFAULT_PROXY_API_URL: ${DOLA_DEFAULT_PROXY_API_URL:-}
+  DOLA_PLATFORM_RATE_PER_MINUTE: ${DOLA_PLATFORM_RATE_PER_MINUTE:-30}
+  DOLA_PLATFORM_BURST: ${DOLA_PLATFORM_BURST:-5}
+  DOLA_CIRCUIT_FAILURE_THRESHOLD: ${DOLA_CIRCUIT_FAILURE_THRESHOLD:-5}
+  DOLA_CIRCUIT_RECOVERY_SECONDS: ${DOLA_CIRCUIT_RECOVERY_SECONDS:-60}
+  DOLA_QUEUE_HIGH_WATERMARK: ${DOLA_QUEUE_HIGH_WATERMARK:-1000}
+  DOLA_MEMORY_HIGH_RATIO: ${DOLA_MEMORY_HIGH_RATIO:-0.80}
+  DOLA_MEMORY_CRITICAL_RATIO: ${DOLA_MEMORY_CRITICAL_RATIO:-0.92}
+  DOLA_MINIMUM_WORKERS: ${DOLA_MINIMUM_WORKERS:-1}
+
+x-app-base: &app-base
+  build:
+    context: .
+  image: dola-fetch-service:local
+  init: true
+  restart: unless-stopped
+  environment: *app-environment
+  volumes:
+    - app-data:/var/lib/dola-fetch-service
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *app-base
+    command: ["python", "run.py"]
+    ports:
+      - "${DOLA_PORT:-8088}:8088"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8088/health/live', timeout=2); assert r.status == 200 and json.load(r).get('ok') is True"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${DOLA_API_MEMORY_LIMIT:-1G}
+
+  worker:
+    <<: *app-base
+    command: ["python", "worker.py"]
+    shm_size: ${DOLA_WORKER_SHM_SIZE:-1gb}
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,time; p='/var/lib/dola-fetch-service/.worker-health.json'; d=json.load(open(p, encoding='utf-8')); assert d.get('ok') is True and time.time()-float(d['updated_at']) < 30"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${DOLA_WORKER_MEMORY_LIMIT:-4G}
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dola}
+      POSTGRES_USER: ${POSTGRES_USER:-dola}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dola} -d ${POSTGRES_DB:-dola}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  app-data:
+  redis-data:
+  postgres-data:

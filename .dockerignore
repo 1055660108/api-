@@ -1,0 +1,9 @@
+.git
+.venv
+.pw-browsers
+__pycache__
+*.pyc
+data
+tests
+*.zip
+.env

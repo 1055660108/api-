@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+class AdminUITests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        admin_directory = Path(__file__).resolve().parents[1] / "app" / "admin"
+        cls.html = (admin_directory / "index.html").read_text(encoding="utf-8")
+        cls.javascript = (admin_directory / "app.js").read_text(encoding="utf-8")
+
+    def test_settings_use_modals_and_read_only_account(self) -> None:
+        self.assertIn('id="passwordModal"', self.html)
+        self.assertIn('id="proxyModal"', self.html)
+        self.assertIn('id="modelModal"', self.html)
+        self.assertIn('id="changeAdminUsername" readonly', self.html)
+        self.assertIn("单次消耗积分", self.html)
+        self.assertIn("data-model-cost", self.javascript)
+        self.assertIn("积分/次", self.javascript)
+
+    def test_client_security_pagination_and_package_management_are_present(self) -> None:
+        for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('/auth/password', self.javascript)
+        self.assertIn('/video-visibility', self.javascript)
+        self.assertIn('/admin/points/packages', self.javascript)
+
+    def test_registration_email_verification_controls_are_present(self) -> None:
+        for element_id in ("clientEmailLocal", "clientEmailDomain", "clientEmailCode", "sendEmailCode", "emailConfigPanel", "emailModal"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('/auth/register/email-code', self.javascript)
+        self.assertIn('/auth/register/email-domains', self.javascript)
+        self.assertIn('/auth/email', self.javascript)
+        self.assertIn('/config/registration-email', self.javascript)
+
+    def test_email_domains_are_independently_editable_and_free_copy_is_renamed(self) -> None:
+        self.assertIn('id="addRegistrationEmailDomain"', self.html)
+        self.assertIn('data-email-domain', self.javascript)
+        self.assertIn('data-remove-email-domain', self.javascript)
+        self.assertNotIn("免费试用", self.html)
+        self.assertNotIn("免费试用", self.javascript)
+        self.assertIn("视频额度", self.html)
+        self.assertIn("视频额度", self.javascript)
+
+    def test_dynamic_purchase_copy_is_removed(self) -> None:
+        for text in ("固定套餐", "支付渠道准备中", "当前仅展示固定套餐"):
+            self.assertNotIn(text, self.html)
+            self.assertNotIn(text, self.javascript)
+
+    def test_account_platform_count_is_present_and_dynamic(self) -> None:
+        self.assertIn('id="accountPlatformCount"', self.html)
+        self.assertIn('id="accountNormalCount"', self.html)
+        self.assertIn('id="accountAbnormalCount"', self.html)
+        self.assertIn('全部平台 0 个', self.html)
+        self.assertIn('`${platformLabel} ${Number(stats.total ?? state.accountTotal)} 个`', self.javascript)
+
+    def test_purchase_bonus_emphasizes_the_free_use_count(self) -> None:
+        self.assertIn('class="purchase-bonus"', self.javascript)
+        self.assertIn('<b>${escapeHtml(item.bonus_free_uses)}</b>', self.javascript)
+
+    def test_task_refresh_uses_stable_order_and_latest_response(self) -> None:
+        self.assertIn("const requestId = ++state.taskRefreshRequestId", self.javascript)
+        self.assertIn("requestId !== state.taskRefreshRequestId", self.javascript)
+        self.assertIn("state.tasks = tasks", self.javascript)
+        self.assertNotIn("function compareTasks", self.javascript)
+
+    def test_task_and_account_tables_use_server_pagination(self) -> None:
+        self.assertIn('const data = await apiFetch(`/tasks?${params}`)', self.javascript)
+        self.assertIn('const data = await apiFetch(`/accounts?${params}`)', self.javascript)
+        self.assertIn('page_size: String(state.pageSize)', self.javascript)
+        self.assertIn('page_size: String(state.accountPageSize)', self.javascript)
+        self.assertIn('state.taskSearchTimer = window.setTimeout', self.javascript)
+        self.assertIn('state.accountSearchTimer = window.setTimeout', self.javascript)
+        self.assertIn('const requestId = ++state.accountRefreshRequestId', self.javascript)
+        self.assertNotIn('const filteredAccounts = state.accounts.filter', self.javascript)
+
+    def test_task_status_contract_uses_authoritative_terminal_state(self) -> None:
+        success_index = self.javascript.index('if (rawStatus === "success") return')
+        running_index = self.javascript.index('if (rawStatus === "running" || rawStatus === "submitted")')
+        query_success_index = self.javascript.index('if (resultCode === "2" || resultUrl) return')
+        self.assertLess(query_success_index, success_index)
+        self.assertLess(query_success_index, running_index)
+        self.assertIn('if (rawStatus === "failed") return { state: "failed"', self.javascript)
+        self.assertIn('if (rawStatus === "canceled") return { state: "failed"', self.javascript)
+        self.assertNotIn("activeIds.has(task.id)", self.javascript)
+        self.assertIn('label: "待执行"', self.javascript)
+        self.assertNotIn("重试 ${retryCount}", self.javascript)
+        self.assertIn("生成异常请重试！", self.javascript)
+
+    def test_task_batch_query_contract_batches_repaints_and_storage(self) -> None:
+        self.assertIn("if (!options.deferRender) renderTaskTable()", self.javascript)
+        self.assertIn("await queryTask(id, { quiet: true, deferRender: true })", self.javascript)
+        self.assertIn("renderTaskTable({ skipUnchanged: true })", self.javascript)
+        self.assertIn('taskRenderSignature: ""', self.javascript)
+
+    def test_hs_brand_and_dola_default_quota_are_present(self) -> None:
+        self.assertEqual(self.html.count('class="brand-mark brand-monogram"'), 2)
+        self.assertEqual(self.html.count('aria-label="HS"'), 2)
+        self.assertNotIn('<div class="brand-mark">DF</div>', self.html)
+        self.assertIn('value="1" placeholder="Dola 默认 1"', self.html)
+        self.assertIn('platform === "dola" ? 1', self.javascript)
+
+    def test_user_action_buttons_use_aligned_grid(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".users-table .user-point-actions", styles)
+        self.assertIn("grid-template-columns: repeat(2, minmax(64px, 1fr))", styles)
+
+    def test_admin_cookie_auth_is_not_overridden_by_legacy_token(self) -> None:
+        self.assertIn(
+            'const savedToken = portal === "client" ? tokenFromUrl || localStorage.getItem(portalStorageKey(TOKEN_KEY)) || "" : "";',
+            self.javascript,
+        )
+        self.assertIn('localStorage.removeItem("dola_fetch_api_token");', self.javascript)
+
+    def test_dola_submit_interval_is_conservative(self) -> None:
+        worker = (Path(__file__).resolve().parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
+        self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS = 5.0", worker)
+        self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS -", worker)
+
+
+if __name__ == "__main__":
+    unittest.main()

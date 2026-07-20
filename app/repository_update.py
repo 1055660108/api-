@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpx
+
 
 REPOSITORY_URL = os.environ.get("DOLA_UPDATE_REPOSITORY_URL", "https://github.com/1055660108/api-.git").strip()
 REPOSITORY_BRANCH = os.environ.get("DOLA_UPDATE_BRANCH", "main").strip() or "main"
+CONTROLLER_SOCKET = Path(os.environ.get("DOLA_UPDATE_CONTROLLER_SOCKET", "/run/dola-update/controller.sock"))
 _UPDATE_LOCK = threading.Lock()
 
 
@@ -39,9 +43,24 @@ def _normalized_repository(value: str) -> str:
     return f"https://github.com/{parsed.path.strip('/')}"
 
 
+def _controller_request(method: str, path: str) -> dict[str, str | bool]:
+    transport = httpx.HTTPTransport(uds=str(CONTROLLER_SOCKET))
+    with httpx.Client(transport=transport, timeout=15) as client:
+        response = client.request(method, f"http://controller{path}")
+    try:
+        payload = response.json()
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("update controller returned an invalid response") from exc
+    if response.status_code < 200 or response.status_code >= 300:
+        raise RuntimeError(str(payload.get("detail") or "update controller request failed"))
+    return payload
+
+
 def repository_status(root: Path) -> dict[str, str | bool]:
+    if CONTROLLER_SOCKET.is_socket():
+        return _controller_request("GET", "/status")
     if not (root / ".git").exists():
-        raise RuntimeError("application directory is not a Git repository")
+        raise RuntimeError("deployment controller is not installed")
     origin = _run_git(root, "remote", "get-url", "origin", timeout=15)
     if _normalized_repository(origin) != _normalized_repository(REPOSITORY_URL):
         raise RuntimeError("repository origin does not match the configured update source")
@@ -50,6 +69,8 @@ def repository_status(root: Path) -> dict[str, str | bool]:
 
 
 def update_repository(root: Path) -> dict[str, str | bool]:
+    if CONTROLLER_SOCKET.is_socket():
+        return _controller_request("POST", "/update")
     if not _UPDATE_LOCK.acquire(blocking=False):
         raise RuntimeError("repository update is already running")
     try:

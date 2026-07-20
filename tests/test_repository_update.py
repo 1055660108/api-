@@ -18,7 +18,7 @@ class RepositoryUpdateTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def test_status_rejects_unexpected_origin(self) -> None:
-        with patch.object(repository_update, "_run_git", side_effect=["https://github.com/other/project.git"]):
+        with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=["https://github.com/other/project.git"]):
             with self.assertRaisesRegex(RuntimeError, "does not match"):
                 repository_update.repository_status(self.root)
 
@@ -32,7 +32,7 @@ class RepositoryUpdateTests(unittest.TestCase):
             "updated",
             "def5678",
         ]
-        with patch.object(repository_update, "_run_git", side_effect=outputs) as run_git:
+        with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=outputs) as run_git:
             result = repository_update.update_repository(self.root)
 
         self.assertTrue(result["updated"])
@@ -42,9 +42,20 @@ class RepositoryUpdateTests(unittest.TestCase):
 
     def test_update_rejects_uncommitted_changes(self) -> None:
         outputs = ["https://github.com/1055660108/api-.git", "abc1234", "fetched", "app/main.py", " M app/main.py"]
-        with patch.object(repository_update, "_run_git", side_effect=outputs):
+        with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=outputs):
             with self.assertRaisesRegex(RuntimeError, "local changes conflict"):
                 repository_update.update_repository(self.root)
+
+    def test_container_mode_uses_deployment_controller(self) -> None:
+        with patch("pathlib.Path.is_socket", return_value=True), patch.object(
+            repository_update,
+            "_controller_request",
+            return_value={"revision": "abc1234", "updating": False},
+        ) as request:
+            result = repository_update.repository_status(Path("/app"))
+
+        self.assertEqual(result["revision"], "abc1234")
+        request.assert_called_once_with("GET", "/status")
 
 
 if __name__ == "__main__":

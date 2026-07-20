@@ -19,6 +19,7 @@ x-app-environment: &app-environment
   DOLA_MEMORY_HIGH_RATIO: ${DOLA_MEMORY_HIGH_RATIO:-0.80}
   DOLA_MEMORY_CRITICAL_RATIO: ${DOLA_MEMORY_CRITICAL_RATIO:-0.92}
   DOLA_MINIMUM_WORKERS: ${DOLA_MINIMUM_WORKERS:-1}
+  DOLA_UPDATE_CONTROLLER_SOCKET: /run/dola-update/controller.sock
 
 x-app-base: &app-base
   build:
@@ -39,8 +40,11 @@ services:
   api:
     <<: *app-base
     command: ["python", "run.py"]
+    volumes:
+      - app-data:/var/lib/dola-fetch-service
+      - /run/dola-update:/run/dola-update
     ports:
-      - "${DOLA_PORT:-8088}:8088"
+      - "127.0.0.1:${DOLA_PORT:-8088}:8088"
     healthcheck:
       test: ["CMD", "python", "-c", "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8088/health/live', timeout=2); assert r.status == 200 and json.load(r).get('ok') is True"]
       interval: 15s

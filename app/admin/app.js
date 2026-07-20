@@ -475,18 +475,18 @@ async function loadRepositoryStatus() {
   if (portal === "client" || !els.repositoryRevision) return;
   const data = await apiFetch("/admin/repository-update");
   els.repositoryRevision.textContent = `${data.branch || "main"} · ${data.revision || "未知"}`;
-  els.repositoryUpdateState.textContent = data.updating ? "正在更新" : "可更新";
+  els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? "更新失败" : "可更新";
+  if (els.updateRepository) els.updateRepository.disabled = Boolean(data.updating);
 }
 
 async function updateRepository() {
-  if (!window.confirm("确定从远程仓库拉取最新代码吗？未提交的服务器改动会阻止更新。")) return;
+  if (!window.confirm("确定部署 GitHub main 最新版本吗？系统将自动构建镜像、重启 API 与 Worker，并执行健康检查。")) return;
   setBusy(els.updateRepository, true, "正在更新");
   els.repositoryUpdateState.textContent = "正在拉取";
   try {
     const data = await apiFetch("/admin/repository-update", { method: "POST" });
-    els.repositoryRevision.textContent = `${data.branch || "main"} · ${data.revision || "未知"}`;
-    els.repositoryUpdateState.textContent = data.updated ? "更新完成" : "已是最新";
-    toast(data.updated ? "代码已更新，请重启后端服务使更新生效" : "当前已是最新版本");
+    els.repositoryUpdateState.textContent = data.updating ? "已开始部署" : data.updated ? "更新完成" : "已是最新";
+    toast(data.updating ? "更新已开始，服务会短暂重启，请稍后刷新页面查看结果" : data.updated ? "更新部署完成" : "当前已是最新版本");
   } catch (error) {
     els.repositoryUpdateState.textContent = "更新失败";
     toast(`更新失败：${error.message}`, "error");

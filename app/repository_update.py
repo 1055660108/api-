@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 
-REPOSITORY_URL = os.environ.get("DOLA_UPDATE_REPOSITORY_URL", "https://github.com/1055660108/api-.git").strip()
+REPOSITORY_URL = os.environ.get("DOLA_UPDATE_REPOSITORY_URL", "https://github.com/DaFangYue/dola_fetch_service.git").strip()
 REPOSITORY_BRANCH = os.environ.get("DOLA_UPDATE_BRANCH", "main").strip() or "main"
 CONTROLLER_SOCKET = Path(os.environ.get("DOLA_UPDATE_CONTROLLER_SOCKET", "/run/dola-update/controller.sock"))
 _UPDATE_LOCK = threading.Lock()
@@ -44,9 +44,12 @@ def _normalized_repository(value: str) -> str:
 
 
 def _controller_request(method: str, path: str) -> dict[str, str | bool]:
-    transport = httpx.HTTPTransport(uds=str(CONTROLLER_SOCKET))
-    with httpx.Client(transport=transport, timeout=15) as client:
-        response = client.request(method, f"http://controller{path}")
+    try:
+        transport = httpx.HTTPTransport(uds=str(CONTROLLER_SOCKET))
+        with httpx.Client(transport=transport, timeout=15) as client:
+            response = client.request(method, f"http://controller{path}")
+    except (httpx.HTTPError, OSError) as exc:
+        raise RuntimeError(f"deployment controller unavailable: {exc}") from exc
     try:
         payload = response.json()
     except json.JSONDecodeError as exc:
@@ -60,7 +63,7 @@ def repository_status(root: Path) -> dict[str, str | bool]:
     if CONTROLLER_SOCKET.is_socket():
         return _controller_request("GET", "/status")
     if not (root / ".git").exists():
-        raise RuntimeError("deployment controller is not installed")
+        raise RuntimeError("deployment controller is not installed; run scripts/install_update_controller.sh on a Docker deployment")
     origin = _run_git(root, "remote", "get-url", "origin", timeout=15)
     if _normalized_repository(origin) != _normalized_repository(REPOSITORY_URL):
         raise RuntimeError("repository origin does not match the configured update source")

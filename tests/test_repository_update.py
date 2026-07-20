@@ -24,7 +24,7 @@ class RepositoryUpdateTests(unittest.TestCase):
 
     def test_update_uses_fetch_and_fast_forward_merge(self) -> None:
         outputs = [
-            "git@github.com:1055660108/api-.git",
+            "git@github.com:DaFangYue/dola_fetch_service.git",
             "abc1234",
             "fetched",
             "app/main.py",
@@ -41,7 +41,7 @@ class RepositoryUpdateTests(unittest.TestCase):
         self.assertEqual(run_git.call_args_list[5].args[1:], ("merge", "--ff-only", "origin/main"))
 
     def test_update_rejects_uncommitted_changes(self) -> None:
-        outputs = ["https://github.com/1055660108/api-.git", "abc1234", "fetched", "app/main.py", " M app/main.py"]
+        outputs = ["https://github.com/DaFangYue/dola_fetch_service.git", "abc1234", "fetched", "app/main.py", " M app/main.py"]
         with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=outputs):
             with self.assertRaisesRegex(RuntimeError, "local changes conflict"):
                 repository_update.update_repository(self.root)
@@ -56,6 +56,15 @@ class RepositoryUpdateTests(unittest.TestCase):
 
         self.assertEqual(result["revision"], "abc1234")
         request.assert_called_once_with("GET", "/status")
+
+    def test_controller_connection_error_is_reported_as_runtime_error(self) -> None:
+        with patch("pathlib.Path.is_socket", return_value=True), patch.object(
+            repository_update.httpx,
+            "Client",
+            side_effect=repository_update.httpx.ConnectError("connection refused"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "controller unavailable"):
+                repository_update.repository_status(Path("/app"))
 
 
 if __name__ == "__main__":

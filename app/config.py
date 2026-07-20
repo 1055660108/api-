@@ -89,6 +89,9 @@ def default_config() -> dict[str, Any]:
         "proxy_subscription_url": "",
         "proxy_subscription_scheme": "http",
         "proxy_subscription_refresh_seconds": 900,
+        "proxy_enabled": True,
+        "proxy_auto_select": True,
+        "proxy_selected_node": "",
         "registration_email_verification_enabled": True,
         "registration_email_domains": ["qq.com", "163.com"],
         "registration_smtp_host": "smtp.qq.com",
@@ -242,6 +245,9 @@ class Settings:
     proxy_subscription_url: str
     proxy_subscription_scheme: str
     proxy_subscription_refresh_seconds: int
+    proxy_enabled: bool
+    proxy_auto_select: bool
+    proxy_selected_node: str
     registration_email_verification_enabled: bool
     registration_email_domains: list[str]
     registration_smtp_host: str
@@ -328,6 +334,9 @@ def load_settings() -> Settings:
         proxy_subscription_url=str(data.get("proxy_subscription_url") or "").strip(),
         proxy_subscription_scheme=proxy_api_scheme if str(data.get("proxy_subscription_scheme") or "").strip().lower() not in VALID_PROXY_SERVER_SCHEMES else str(data.get("proxy_subscription_scheme")).strip().lower(),
         proxy_subscription_refresh_seconds=max(60, min(86400, int(data.get("proxy_subscription_refresh_seconds") or 900))),
+        proxy_enabled=_as_bool(data.get("proxy_enabled"), True),
+        proxy_auto_select=_as_bool(data.get("proxy_auto_select"), True),
+        proxy_selected_node=str(data.get("proxy_selected_node") or "").strip()[:200],
         registration_email_verification_enabled=_as_bool(data.get("registration_email_verification_enabled"), True),
         registration_email_domains=[str(item).strip().lower().lstrip("@") for item in data.get("registration_email_domains", []) if str(item or "").strip()],
         registration_smtp_host=str(data.get("registration_smtp_host") or "smtp.qq.com").strip(),

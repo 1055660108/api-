@@ -751,12 +751,17 @@ class DolaFetchAutomation:
 
     async def _browser_proxy_config(self) -> dict[str, str] | None:
         self.settings = load_settings()
+        if not self.settings.proxy_enabled:
+            self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
+            return None
         if self.settings.proxy_subscription_url:
             proxy = await fetch_proxy_from_subscription(
                 self.settings.proxy_subscription_url,
                 timeout_seconds=self.settings.proxy_api_timeout_seconds,
                 scheme=self.settings.proxy_subscription_scheme,
                 refresh_seconds=self.settings.proxy_subscription_refresh_seconds,
+                auto_select=self.settings.proxy_auto_select,
+                selected_node=self.settings.proxy_selected_node,
             )
             self._save_result(
                 extra={

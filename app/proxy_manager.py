@@ -4,6 +4,7 @@ import json
 import os
 import re
 import base64
+import asyncio
 import random
 import socket
 import subprocess
@@ -27,6 +28,7 @@ _MIHOMO_PROCESS: subprocess.Popen | None = None
 _MIHOMO_PORT = 0
 _MIHOMO_REFRESHED_AT = 0.0
 _MIHOMO_SUBSCRIPTION_URL = ""
+_MIHOMO_LOCK: asyncio.Lock | None = None
 
 
 @dataclass(frozen=True)
@@ -172,32 +174,42 @@ async def _fetch_mihomo_config(subscription_url: str, timeout_seconds: int, port
     text = response.content.decode("utf-8-sig", errors="replace")
     if "proxies:" not in text:
         raise RuntimeError("proxy subscription did not return mihomo configuration")
-    text = re.sub(r"(?m)^mixed-port:\s*\d+\s*$", f"mixed-port: {port}", text, count=1)
-    text = re.sub(r"(?m)^allow-lan:\s*.*$", "allow-lan: false", text, count=1)
-    text = re.sub(r"(?m)^bind-address:\s*.*$", "bind-address: 127.0.0.1", text, count=1)
-    text = re.sub(r"(?m)^external-controller:\s*.*$", "external-controller: ''", text, count=1)
+    directives = {
+        "mixed-port": str(port),
+        "allow-lan": "false",
+        "bind-address": "127.0.0.1",
+        "external-controller": "''",
+    }
+    for name, value in directives.items():
+        pattern = rf"(?m)^{re.escape(name)}:\s*.*$"
+        if re.search(pattern, text):
+            text = re.sub(pattern, f"{name}: {value}", text, count=1)
+        else:
+            text = f"{name}: {value}\n{text}"
     text = re.sub(r"(?m)^\s*fallback-filter:\s*\{[^\n]*\}\s*$", "", text, count=1)
     return text.encode("utf-8")
 
 
 async def _proxy_from_mihomo(subscription_url: str, timeout_seconds: int, refresh_seconds: int) -> dict[str, str]:
-    global _MIHOMO_REFRESHED_AT, _MIHOMO_SUBSCRIPTION_URL
-    if (
-        _MIHOMO_PROCESS
-        and _MIHOMO_PROCESS.poll() is None
-        and _port_is_open(_MIHOMO_PORT)
-        and _MIHOMO_SUBSCRIPTION_URL == subscription_url
-        and time.monotonic() - _MIHOMO_REFRESHED_AT < refresh_seconds
-    ):
-        return {"server": f"http://127.0.0.1:{_MIHOMO_PORT}", "node_count": "managed"}
-    MIHOMO_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    port = _available_port()
-    config_path = MIHOMO_RUNTIME_DIR / "config.yaml"
-    config_path.write_bytes(await _fetch_mihomo_config(subscription_url, timeout_seconds, port))
-    _start_mihomo(config_path, port)
-    _MIHOMO_SUBSCRIPTION_URL = subscription_url
-    _MIHOMO_REFRESHED_AT = time.monotonic()
-    return {"server": f"http://127.0.0.1:{port}", "node_count": "managed"}
+    global _MIHOMO_LOCK, _MIHOMO_REFRESHED_AT, _MIHOMO_SUBSCRIPTION_URL
+    if _MIHOMO_LOCK is None:
+        _MIHOMO_LOCK = asyncio.Lock()
+    async with _MIHOMO_LOCK:
+        if (
+            _MIHOMO_PROCESS
+            and _MIHOMO_PROCESS.poll() is None
+            and _port_is_open(_MIHOMO_PORT)
+            and _MIHOMO_SUBSCRIPTION_URL == subscription_url
+        ):
+            return {"server": f"http://127.0.0.1:{_MIHOMO_PORT}", "node_count": "managed"}
+        MIHOMO_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        port = _available_port()
+        config_path = MIHOMO_RUNTIME_DIR / "config.yaml"
+        config_path.write_bytes(await _fetch_mihomo_config(subscription_url, timeout_seconds, port))
+        _start_mihomo(config_path, port)
+        _MIHOMO_SUBSCRIPTION_URL = subscription_url
+        _MIHOMO_REFRESHED_AT = time.monotonic()
+        return {"server": f"http://127.0.0.1:{port}", "node_count": "managed"}
 
 
 async def fetch_proxy_from_api(api_url: str, *, timeout_seconds: int = 20, scheme: str = "http") -> dict[str, str]:

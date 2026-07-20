@@ -49,6 +49,26 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["server"], "http://127.0.0.1:4567")
         managed.assert_awaited_once_with("https://subscription.example/token", 20, 300)
 
+    async def test_mihomo_config_adds_missing_local_listener_settings(self) -> None:
+        response = type(
+            "Response",
+            (),
+            {"status_code": 200, "content": b"proxies:\n  - name: node\n    type: ss\n"},
+        )()
+        client = AsyncMock()
+        client.get.return_value = response
+        context = AsyncMock()
+        context.__aenter__.return_value = client
+
+        with patch.object(proxy_manager.httpx, "AsyncClient", return_value=context):
+            config = await proxy_manager._fetch_mihomo_config("https://subscription.example/token", 20, 4567)
+
+        text = config.decode()
+        self.assertIn("mixed-port: 4567", text)
+        self.assertIn("allow-lan: false", text)
+        self.assertIn("bind-address: 127.0.0.1", text)
+        self.assertIn("external-controller: ''", text)
+
 
 if __name__ == "__main__":
     unittest.main()

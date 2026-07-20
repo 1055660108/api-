@@ -209,8 +209,8 @@
                 <div class="settings-card-value"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
               </section>
               <section class="panel config-panel" id="proxyConfigPanel">
-                <div class="settings-card-header"><div><span class="settings-icon">↗</span><h2>网络代理</h2><p>配置任务启动时使用的代理提取地址，留空则使用直连。</p></div><span class="settings-state" id="configState">等待读取</span></div>
-                <div class="settings-card-value"><div><span>代理提取 API</span><strong id="proxyApiDisplay">等待读取</strong></div><button class="primary-button" id="openProxyModal" type="button">编辑代理</button></div>
+                <div class="settings-card-header"><div><span class="settings-icon">↗</span><h2>网络代理</h2><p>支持代理提取 API 或节点订阅，Dola 任务启动时自动使用。</p></div><span class="settings-state" id="configState">等待读取</span></div>
+                <div class="settings-card-value"><div><span>代理来源</span><strong id="proxyApiDisplay">等待读取</strong></div><button class="primary-button" id="openProxyModal" type="button">编辑代理</button></div>
               </section>
               <section class="panel config-panel" id="emailConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>注册邮箱验证</h2><p>设置允许注册的邮箱后缀，并使用 QQ 邮箱 SMTP 发送验证码。</p></div><span class="settings-state" id="emailConfigState">等待读取</span></div>
@@ -803,7 +803,9 @@
     <div class="modal-backdrop hidden" id="proxyModal" aria-hidden="true">
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="proxyModalTitle">
         <div class="modal-header"><h2 id="proxyModalTitle">编辑网络代理</h2><button class="modal-close" id="closeProxyModal" type="button" aria-label="关闭">×</button></div>
-        <label class="field"><span>代理提取 API</span><input id="proxyApiUrl" type="url" placeholder="https://example.com/get-proxy" /></label>
+        <label class="field"><span>代理来源</span><select id="proxySource"><option value="subscription">节点订阅</option><option value="api">代理提取 API</option><option value="direct">直连</option></select></label>
+        <label class="field" id="proxySubscriptionField"><span>节点订阅链接</span><input id="proxySubscriptionUrl" type="url" placeholder="https://example.com/subscribe?token=..." /><small id="proxySubscriptionHint">支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅</small></label>
+        <label class="field" id="proxyApiField"><span>代理提取 API</span><input id="proxyApiUrl" type="url" placeholder="https://example.com/get-proxy" /><small>接口必须返回可用的 ip:port</small></label>
         <div class="modal-actions"><button class="secondary-button" id="loadProxyConfig" type="button">重新读取</button><button class="secondary-button" id="cancelProxyModal" type="button">取消</button><button class="primary-button" id="saveProxyConfig" type="button">保存</button></div>
       </section>
     </div>

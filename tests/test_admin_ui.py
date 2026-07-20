@@ -27,6 +27,14 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('els.updateRepository?.addEventListener("click", updateRepository)', self.javascript)
         self.assertIn('Promise.allSettled([loadRepositoryStatus(), loadProxyConfig()', self.javascript)
 
+    def test_proxy_settings_support_node_subscriptions(self) -> None:
+        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyApiUrl"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('proxy_subscription_url', self.javascript)
+        self.assertIn('proxy_subscription_refresh_seconds: 900', self.javascript)
+        self.assertIn('toast("请输入节点订阅链接", "error")', self.javascript)
+        self.assertIn('els.proxySource?.addEventListener("change", updateProxySourceFields)', self.javascript)
+
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):
             self.assertIn(f'id="{element_id}"', self.html)

@@ -161,6 +161,11 @@ const els = {
   closeProxyModal: document.getElementById("closeProxyModal"),
   cancelProxyModal: document.getElementById("cancelProxyModal"),
   loadProxyConfig: document.getElementById("loadProxyConfig"),
+  proxySource: document.getElementById("proxySource"),
+  proxySubscriptionField: document.getElementById("proxySubscriptionField"),
+  proxySubscriptionUrl: document.getElementById("proxySubscriptionUrl"),
+  proxySubscriptionHint: document.getElementById("proxySubscriptionHint"),
+  proxyApiField: document.getElementById("proxyApiField"),
   proxyApiUrl: document.getElementById("proxyApiUrl"),
   saveProxyConfig: document.getElementById("saveProxyConfig"),
   configState: document.getElementById("configState"),
@@ -1135,26 +1140,49 @@ async function loadProxyConfig() {
   if (portal === "client" || !els.proxyApiUrl) return null;
   const data = await apiFetch("/config/proxy-api");
   els.proxyApiUrl.value = data.proxy_api_url || "";
-  if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = data.proxy_api_url || "直连";
+  if (els.proxySubscriptionUrl) els.proxySubscriptionUrl.value = "";
+  if (els.proxySource) els.proxySource.value = data.proxy_subscription_configured ? "subscription" : data.proxy_api_url ? "api" : "direct";
+  if (els.proxySubscriptionHint) els.proxySubscriptionHint.textContent = data.proxy_subscription_configured ? "订阅已安全保存，留空保持不变；输入新链接可替换" : "支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅";
+  updateProxySourceFields();
+  if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = data.proxy_subscription_configured ? "节点订阅" : data.proxy_api_url ? "代理提取 API" : "直连";
   if (els.configState) els.configState.textContent = "已读取";
   return data;
 }
 
+function updateProxySourceFields() {
+  const source = els.proxySource?.value || "direct";
+  els.proxySubscriptionField?.classList.toggle("hidden", source !== "subscription");
+  els.proxyApiField?.classList.toggle("hidden", source !== "api");
+}
+
 async function saveProxyConfig() {
   if (portal === "client") return;
-  const url = els.proxyApiUrl?.value.trim() || "";
+  const source = els.proxySource?.value || "direct";
+  const apiUrl = els.proxyApiUrl?.value.trim() || "";
+  const subscriptionUrl = els.proxySubscriptionUrl?.value.trim() || "";
+  if (source === "api" && !apiUrl) {
+    toast("请输入代理提取 API", "error");
+    return;
+  }
+  if (source === "subscription" && !subscriptionUrl && els.proxySubscriptionHint?.textContent.startsWith("支持")) {
+    toast("请输入节点订阅链接", "error");
+    return;
+  }
   setBusy(els.saveProxyConfig, true, "保存中");
   try {
+    const body = source === "subscription"
+      ? { proxy_api_url: "", proxy_subscription_scheme: "http", proxy_subscription_refresh_seconds: 900 }
+      : source === "api"
+        ? { proxy_api_url: apiUrl, proxy_subscription_url: "", proxy_api_scheme: "http" }
+        : { proxy_api_url: "", proxy_subscription_url: "" };
+    if (source === "subscription" && subscriptionUrl) body.proxy_subscription_url = subscriptionUrl;
     await apiFetch("/config/proxy-api", {
       method: "POST",
-      body: {
-        proxy_api_url: url,
-        proxy_api_scheme: "http",
-      },
+      body,
     });
     if (els.configState) els.configState.textContent = "已保存";
-    if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = url || "直连";
-    toast(url ? "代理配置已更新" : "已切换为直连运行");
+    if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = source === "subscription" ? "节点订阅" : source === "api" ? "代理提取 API" : "直连";
+    toast(source === "direct" ? "已切换为直连运行" : "代理配置已更新");
     closeSettingsModal(els.proxyModal);
   } catch (error) {
     toast(`保存失败：${error.message}`, "error");
@@ -2654,6 +2682,7 @@ function bindEvents() {
     }
   });
   els.saveProxyConfig?.addEventListener("click", saveProxyConfig);
+  els.proxySource?.addEventListener("change", updateProxySourceFields);
   els.saveModelConfig?.addEventListener("click", saveModelConfig);
   els.syncQianwenModels?.addEventListener("click", syncQianwenModels);
   els.modelConfigList?.addEventListener("click", (event) => {

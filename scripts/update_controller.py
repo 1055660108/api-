@@ -15,7 +15,8 @@ from pathlib import Path
 APP_DIR = Path(os.environ.get("DOLA_UPDATE_APP_DIR", "/opt/dola-fetch-service")).resolve()
 SOCKET_PATH = Path(os.environ.get("DOLA_UPDATE_SOCKET", "/run/dola-update/controller.sock"))
 BRANCH = os.environ.get("DOLA_UPDATE_BRANCH", "main").strip() or "main"
-EXPECTED_ORIGIN = os.environ.get("DOLA_UPDATE_REPOSITORY_URL", "https://github.com/1055660108/api-.git").strip()
+EXPECTED_ORIGIN = os.environ.get("DOLA_UPDATE_REPOSITORY_URL", "https://github.com/DaFangYue/dola_fetch_service.git").strip()
+VERSION_PATH = APP_DIR / "VERSION"
 STATE_LOCK = threading.Lock()
 STATE: dict[str, str | bool] = {"updating": False, "phase": "空闲", "error": ""}
 
@@ -30,6 +31,13 @@ def run(*arguments: str, timeout: int = 900) -> str:
 
 def git(*arguments: str, timeout: int = 120) -> str:
     return run("git", *arguments, timeout=timeout)
+
+
+def image_name() -> str:
+    version = VERSION_PATH.read_text(encoding="utf-8").strip()
+    if not version:
+        raise RuntimeError(f"version file is empty: {VERSION_PATH}")
+    return f"dola-fetch-service:{version}"
 
 
 def set_state(**values: str | bool) -> None:
@@ -65,6 +73,7 @@ def wait_for_health() -> None:
 
 def deploy() -> None:
     before = ""
+    current_image = image_name()
     try:
         set_state(phase="检查仓库", error="")
         if git("remote", "get-url", "origin", timeout=15).rstrip("/") != EXPECTED_ORIGIN.rstrip("/"):
@@ -72,8 +81,8 @@ def deploy() -> None:
         if git("status", "--porcelain", "--untracked-files=all", timeout=15):
             raise RuntimeError("application repository has uncommitted changes")
         before = git("rev-parse", "HEAD", timeout=15)
-        run("docker", "image", "inspect", "dola-fetch-service:local", timeout=30)
-        run("docker", "tag", "dola-fetch-service:local", "dola-fetch-service:rollback", timeout=30)
+        run("docker", "image", "inspect", current_image, timeout=30)
+        run("docker", "tag", current_image, "dola-fetch-service:rollback", timeout=30)
         set_state(phase="拉取代码")
         git("fetch", "--prune", "origin", BRANCH)
         target = git("rev-parse", f"origin/{BRANCH}", timeout=15)
@@ -95,7 +104,7 @@ def deploy() -> None:
             try:
                 set_state(phase="正在回滚")
                 git("reset", "--hard", before)
-                run("docker", "tag", "dola-fetch-service:rollback", "dola-fetch-service:local", timeout=30)
+                run("docker", "tag", "dola-fetch-service:rollback", image_name(), timeout=30)
                 run("docker", "compose", "up", "-d", "--force-recreate", "api", "worker")
                 wait_for_health()
             except Exception as rollback_exc:

@@ -103,7 +103,7 @@ class ResilienceCompatibilityTests(unittest.TestCase):
         response = self.client.get("/health", headers={"X-API-Token": self.token})
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        for key in ("ok", "status", "role", "browser_workers", "active", "components"):
+        for key in ("ok", "version", "status", "role", "browser_workers", "active", "components"):
             self.assertIn(key, payload)
         self.assertIn("resources", payload["components"])
         self.assertEqual(set(payload["components"]["platforms"]), {"dola", "doubao", "qianwen"})

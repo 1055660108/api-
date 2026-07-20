@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from app import accounts, admin_auth, config, main, package_catalog, store, temp_access, users
+from app import __version__, accounts, admin_auth, config, main, package_catalog, proxy_manager, store, temp_access, users
 
 
 class WebAPIContractTests(unittest.TestCase):
@@ -105,7 +105,8 @@ class WebAPIContractTests(unittest.TestCase):
         with patch("app.task_queue.get_task_queue", return_value=queue), patch("app.main.resolve_browser_executable", return_value="browser.exe"):
             admin = self.client.get("/health", headers={"X-API-Token": self.admin_token}).json()
             client = self.client.get("/auth/client", headers={"X-API-Token": registered["token"]}).json()
-        self.assertTrue({"ok", "status", "role", "browser_workers", "active", "components", "admin_username"} <= set(admin))
+        self.assertTrue({"ok", "version", "status", "role", "browser_workers", "active", "components", "admin_username"} <= set(admin))
+        self.assertEqual(admin["version"], __version__)
         self.assertEqual(admin["role"], "admin")
         self.assertEqual(admin["components"]["queue"]["error"], "internal queue detail")
         self.assertTrue({"quota", "token_concurrency", "task_retention_days", "user_name"} <= set(client))
@@ -146,7 +147,12 @@ class WebAPIContractTests(unittest.TestCase):
     def test_liveness_probe_requires_no_credentials(self) -> None:
         response = self.client.get("/health/live")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True})
+        self.assertEqual(response.json(), {"ok": True, "version": __version__})
+
+    def test_openapi_metadata_uses_release_version(self) -> None:
+        response = self.client.get("/openapi.json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["info"]["version"], __version__)
 
     def test_task_contract_preserves_fields_and_hides_client_internals(self) -> None:
         registered = self.register()
@@ -272,7 +278,7 @@ class WebAPIContractTests(unittest.TestCase):
         proxy = self.client.get("/config/proxy-api").json()
         platforms = self.client.get("/config/platforms").json()
         self.assertEqual(set(workers), {"browser_workers"})
-        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds"})
+        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_enabled", "proxy_auto_select", "proxy_selected_node"})
         self.assertNotIn("proxy_subscription_url", proxy)
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
         self.assertEqual({item["id"] for item in platforms["platforms"]}, {"dola", "doubao", "qianwen"})
@@ -280,6 +286,40 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(set(platform), {"id", "label", "models", "model_costs", "all_models", "enabled"})
             for model in platform["all_models"]:
                 self.assertEqual(set(model), {"name", "enabled", "cost"})
+
+    def test_proxy_node_apis_list_measure_select_and_switch(self) -> None:
+        self.client.post(
+            "/config/proxy-api",
+            headers={"X-API-Token": self.admin_token},
+            json={"proxy_subscription_url": "https://subscription.example/token", "proxy_enabled": True},
+        )
+        nodes = proxy_manager.subscription_node_list("vless://user@hk.example.com:443#Hong%20Kong\ntrojan://secret@jp.example.com:443#Japan")
+        with patch("app.main.fetch_subscription_node_list", new=AsyncMock(return_value=nodes)), patch(
+            "app.main.measure_node_delays", new=AsyncMock(return_value={node.id: 20 for node in nodes})
+        ):
+            listed = self.client.get("/config/proxy-nodes", headers={"X-API-Token": self.admin_token})
+            measured = self.client.post("/config/proxy-nodes/latency", headers={"X-API-Token": self.admin_token})
+            selected = self.client.post(
+                "/config/proxy-nodes/select",
+                headers={"X-API-Token": self.admin_token},
+                json={"node_id": nodes[1].id},
+            )
+
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual([item["country"] for item in listed.json()["nodes"]], ["香港", "日本"])
+        self.assertEqual(measured.status_code, 200)
+        self.assertEqual(selected.status_code, 200)
+        settings = config.load_settings()
+        self.assertFalse(settings.proxy_auto_select)
+        self.assertEqual(settings.proxy_selected_node, nodes[1].id)
+        switched = self.client.post(
+            "/config/proxy-api",
+            headers={"X-API-Token": self.admin_token},
+            json={"proxy_enabled": False, "proxy_auto_select": True},
+        )
+        self.assertEqual(switched.status_code, 200)
+        self.assertFalse(switched.json()["proxy_enabled"])
+        self.assertTrue(switched.json()["proxy_auto_select"])
 
     def test_admin_can_update_model_costs(self) -> None:
         response = self.client.post(

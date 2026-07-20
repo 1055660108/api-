@@ -108,6 +108,7 @@ const els = {
   sendChangeEmailCode: document.getElementById("sendChangeEmailCode"),
   changeClientEmailButton: document.getElementById("changeClientEmailButton"),
   viewTitle: document.getElementById("viewTitle"),
+  sidebarVersion: document.getElementById("sidebarVersion"),
   sidebarStatusDot: document.getElementById("sidebarStatusDot"),
   sidebarStatusText: document.getElementById("sidebarStatusText"),
   metricService: document.getElementById("metricService"),
@@ -155,6 +156,14 @@ const els = {
   taskPageSize: document.getElementById("taskPageSize"),
   taskTableBody: document.getElementById("taskTableBody"),
   proxyConfigPanel: document.getElementById("proxyConfigPanel"),
+  proxyNodesNavItem: document.getElementById("proxyNodesNavItem"),
+  proxyNodesView: document.getElementById("proxy-nodesView"),
+  proxyNodeGrid: document.getElementById("proxyNodeGrid"),
+  proxyEnabledSelect: document.getElementById("proxyEnabledSelect"),
+  proxyAutoSelect: document.getElementById("proxyAutoSelect"),
+  proxyNodesState: document.getElementById("proxyNodesState"),
+  refreshProxyNodes: document.getElementById("refreshProxyNodes"),
+  openProxyModalFromNodes: document.getElementById("openProxyModalFromNodes"),
   proxyApiDisplay: document.getElementById("proxyApiDisplay"),
   openProxyModal: document.getElementById("openProxyModal"),
   proxyModal: document.getElementById("proxyModal"),
@@ -317,6 +326,10 @@ const state = {
   refreshTimer: 0,
   countdownTimer: 0,
   nextQuotaResetAt: "",
+  proxyNodes: [],
+  proxyEnabled: true,
+  proxyAutoSelect: true,
+  proxySelectedNode: "",
   taskRetentionDays: 7,
   userName: "",
   prompts: [],
@@ -473,10 +486,17 @@ async function apiFetch(path, options = {}) {
 
 async function loadRepositoryStatus() {
   if (portal === "client" || !els.repositoryRevision) return;
-  const data = await apiFetch("/admin/repository-update");
-  els.repositoryRevision.textContent = `${data.branch || "main"} · ${data.revision || "未知"}`;
-  els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? "更新失败" : "可更新";
-  if (els.updateRepository) els.updateRepository.disabled = Boolean(data.updating);
+  try {
+    const data = await apiFetch("/admin/repository-update");
+    els.repositoryRevision.textContent = `${data.branch || "main"} · ${data.revision || "未知"}`;
+    els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? `更新失败：${data.error}` : "可更新";
+    if (els.updateRepository) els.updateRepository.disabled = Boolean(data.updating);
+    return data;
+  } catch (error) {
+    els.repositoryUpdateState.textContent = `更新不可用：${error.message}`;
+    if (els.updateRepository) els.updateRepository.disabled = false;
+    return null;
+  }
 }
 
 async function updateRepository() {
@@ -487,6 +507,16 @@ async function updateRepository() {
     const data = await apiFetch("/admin/repository-update", { method: "POST" });
     els.repositoryUpdateState.textContent = data.updating ? "已开始部署" : data.updated ? "更新完成" : "已是最新";
     toast(data.updating ? "更新已开始，服务会短暂重启，请稍后刷新页面查看结果" : data.updated ? "更新部署完成" : "当前已是最新版本");
+    if (data.updating) {
+      const startedAt = Date.now();
+      const poll = async () => {
+        if (Date.now() - startedAt > 10 * 60 * 1000) return;
+        const status = await loadRepositoryStatus();
+        if (status?.updating) window.setTimeout(poll, 3000);
+        else if (status?.error) toast(`更新失败：${status.error}`, "error");
+      };
+      window.setTimeout(poll, 3000);
+    }
   } catch (error) {
     els.repositoryUpdateState.textContent = "更新失败";
     toast(`更新失败：${error.message}`, "error");
@@ -750,6 +780,7 @@ function applyAccessScope(data = {}) {
   state.taskRetentionDays = Number(data.task_retention_days || 7);
   state.userName = String(data.user_name || "当前用户");
   if (data.admin_username) state.adminUsername = String(data.admin_username);
+  if (els.sidebarVersion && data.version) els.sidebarVersion.textContent = `v${data.version}`;
   if (els.adminAccountDisplay) els.adminAccountDisplay.textContent = state.adminUsername || els.adminUsername?.value || "-";
   if (els.changeAdminUsername) els.changeAdminUsername.value = state.adminUsername || els.adminUsername?.value || "";
   if (els.clientAccountName) els.clientAccountName.textContent = state.userName;
@@ -772,6 +803,8 @@ function applyAccessScope(data = {}) {
   els.dashboardLogoutButton?.classList.toggle("hidden", !isClient);
   if (els.editWorkers) els.editWorkers.classList.toggle("hidden", isClient);
   if (els.proxyConfigPanel) els.proxyConfigPanel.classList.toggle("hidden", isClient);
+  if (els.proxyNodesNavItem) els.proxyNodesNavItem.classList.toggle("hidden", isClient);
+  if (els.proxyNodesView) els.proxyNodesView.classList.toggle("hidden", isClient);
   if (els.feedbackNavItem) els.feedbackNavItem.classList.toggle("hidden", isClient);
   if (els.feedbackView) els.feedbackView.classList.toggle("hidden", isClient);
   if (els.quotaNavItem) {
@@ -803,7 +836,7 @@ function applyAccessScope(data = {}) {
     docsView.classList.toggle("hidden", isClient);
     docsView.setAttribute("aria-hidden", isClient ? "true" : "false");
   }
-  if (isClient && ["quotaView", "accountsView", "docsView"].includes(document.querySelector(".view.active")?.id || "")) {
+  if (isClient && ["quotaView", "accountsView", "docsView", "proxy-nodesView"].includes(document.querySelector(".view.active")?.id || "")) {
     switchView("dashboard");
   }
 }
@@ -902,7 +935,7 @@ async function logout() {
 }
 
 function switchView(name) {
-  if (portal === "client" && ["quota", "accounts", "docs"].includes(name)) {
+  if (portal === "client" && ["quota", "accounts", "docs", "proxy-nodes"].includes(name)) {
     name = "dashboard";
   }
   const targetView = document.getElementById(`${name}View`);
@@ -926,6 +959,7 @@ function switchView(name) {
   if (name === "feedback" && portal === "admin") loadFeedback();
   if (name === "points") loadPointPackages();
   if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadPlatforms(), loadAdminPointPackages()]);
+  if (name === "proxy-nodes" && portal === "admin") loadProxyNodes();
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
 
@@ -1145,8 +1179,76 @@ async function loadProxyConfig() {
   if (els.proxySubscriptionHint) els.proxySubscriptionHint.textContent = data.proxy_subscription_configured ? "订阅已安全保存，留空保持不变；输入新链接可替换" : "支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅";
   updateProxySourceFields();
   if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = data.proxy_subscription_configured ? "节点订阅" : data.proxy_api_url ? "代理提取 API" : "直连";
+  state.proxyEnabled = data.proxy_enabled !== false;
+  state.proxyAutoSelect = data.proxy_auto_select !== false;
+  state.proxySelectedNode = data.proxy_selected_node || "";
+  if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
+  if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
   if (els.configState) els.configState.textContent = "已读取";
   return data;
+}
+
+function renderProxyNodes() {
+  if (!els.proxyNodeGrid) return;
+  if (!state.proxyNodes.length) {
+    els.proxyNodeGrid.innerHTML = '<div class="empty-state">暂无可用节点，请配置订阅后刷新</div>';
+    return;
+  }
+  els.proxyNodeGrid.innerHTML = state.proxyNodes.map((node) => {
+    const latency = node.latency_ms ? `${node.latency_ms} ms` : node.latency_measured ? "超时" : "未检测";
+    const selected = node.selected || node.id === state.proxySelectedNode;
+    return `<button class="proxy-node-card${selected ? " selected" : ""}" type="button" data-proxy-node-id="${escapeHtml(node.id)}"><span class="proxy-node-name">${escapeHtml(node.name)}</span><span class="proxy-node-country">${escapeHtml(node.country)} · ${escapeHtml(node.protocol.toUpperCase())}</span><strong class="proxy-node-latency${node.latency_ms ? " good" : ""}">${escapeHtml(latency)}</strong></button>`;
+  }).join("");
+}
+
+async function loadProxyNodes(refresh = false) {
+  if (portal !== "admin") return;
+  setBusy(els.refreshProxyNodes, true, "刷新中");
+  try {
+    let data = await apiFetch(`/config/proxy-nodes${refresh ? "?refresh=true" : ""}`);
+    if (refresh && Array.isArray(data.nodes) && data.nodes.length) {
+      data = { ...data, ...(await apiFetch("/config/proxy-nodes/latency", { method: "POST" })) };
+    }
+    state.proxyNodes = Array.isArray(data.nodes) ? data.nodes : [];
+    state.proxyEnabled = Boolean(data.enabled);
+    state.proxyAutoSelect = Boolean(data.auto_select);
+    state.proxySelectedNode = data.selected_node || "";
+    if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
+    if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
+    renderProxyNodes();
+    if (els.proxyNodesState) els.proxyNodesState.textContent = refresh ? "延迟已更新" : "已读取";
+  } catch (error) {
+    if (els.proxyNodesState) els.proxyNodesState.textContent = "读取失败";
+    if (refresh || error.message !== "proxy subscription is not configured") toast(`节点读取失败：${error.message}`, "error");
+    renderProxyNodes();
+  } finally {
+    setBusy(els.refreshProxyNodes, false);
+  }
+}
+
+async function saveProxyMode() {
+  try {
+    const data = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_auto_select: els.proxyAutoSelect.value === "true" } });
+    state.proxyEnabled = Boolean(data.proxy_enabled);
+    state.proxyAutoSelect = Boolean(data.proxy_auto_select);
+    toast(state.proxyEnabled ? (state.proxyAutoSelect ? "已开启自动节点代理" : "已开启手动节点代理") : "已关闭节点代理");
+  } catch (error) {
+    toast(`代理模式保存失败：${error.message}`, "error");
+    await loadProxyNodes();
+  }
+}
+
+async function selectProxyNode(nodeId) {
+  try {
+    const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { node_id: nodeId } });
+    state.proxySelectedNode = data.selected_node || nodeId;
+    state.proxyAutoSelect = false;
+    if (els.proxyAutoSelect) els.proxyAutoSelect.value = "false";
+    renderProxyNodes();
+    toast(`已选择节点：${data.node?.name || "节点"}`);
+  } catch (error) {
+    toast(`节点选择失败：${error.message}`, "error");
+  }
 }
 
 function updateProxySourceFields() {
@@ -2557,6 +2659,14 @@ function bindEvents() {
       toast(`读取失败：${error.message}`, "error");
     }
   });
+  els.openProxyModalFromNodes?.addEventListener("click", async () => {
+    try {
+      await loadProxyConfig();
+      openSettingsModal(els.proxyModal, els.proxySubscriptionUrl);
+    } catch (error) {
+      toast(`读取失败：${error.message}`, "error");
+    }
+  });
   els.openEmailModal?.addEventListener("click", async () => {
     try {
       await loadEmailConfig();
@@ -2683,6 +2793,13 @@ function bindEvents() {
   });
   els.saveProxyConfig?.addEventListener("click", saveProxyConfig);
   els.proxySource?.addEventListener("change", updateProxySourceFields);
+  els.refreshProxyNodes?.addEventListener("click", () => loadProxyNodes(true));
+  els.proxyEnabledSelect?.addEventListener("change", saveProxyMode);
+  els.proxyAutoSelect?.addEventListener("change", saveProxyMode);
+  els.proxyNodeGrid?.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-proxy-node-id]");
+    if (card) selectProxyNode(card.dataset.proxyNodeId);
+  });
   els.saveModelConfig?.addEventListener("click", saveModelConfig);
   els.syncQianwenModels?.addEventListener("click", syncQianwenModels);
   els.modelConfigList?.addEventListener("click", (event) => {

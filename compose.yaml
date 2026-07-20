@@ -24,7 +24,7 @@ x-app-environment: &app-environment
 x-app-base: &app-base
   build:
     context: .
-  image: dola-fetch-service:local
+  image: dola-fetch-service:${DOLA_IMAGE_TAG:-1.0.0}
   init: true
   restart: unless-stopped
   environment: *app-environment

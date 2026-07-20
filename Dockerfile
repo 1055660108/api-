@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install --with-deps chromium
 
 COPY app ./app
+COPY VERSION ./VERSION
 COPY schema ./schema
 COPY scripts/storage_migrate.py ./scripts/storage_migrate.py
 COPY run.py worker.py config.example.json ./

@@ -27,6 +27,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('els.updateRepository?.addEventListener("click", updateRepository)', self.javascript)
         self.assertIn('Promise.allSettled([loadRepositoryStatus(), loadProxyConfig()', self.javascript)
 
+    def test_release_version_is_displayed_from_status_api(self) -> None:
+        self.assertIn('id="sidebarVersion"', self.html)
+        self.assertIn('els.sidebarVersion.textContent = `v${data.version}`', self.javascript)
+
     def test_proxy_settings_support_node_subscriptions(self) -> None:
         for element_id in ("proxySource", "proxySubscriptionUrl", "proxyApiUrl"):
             self.assertIn(f'id="{element_id}"', self.html)

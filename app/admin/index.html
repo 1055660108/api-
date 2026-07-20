@@ -101,6 +101,9 @@
           <button class="nav-item" type="button" data-view="tasks">
             <span>任务管理</span>
           </button>
+          <button class="nav-item" type="button" data-view="proxy-nodes" id="proxyNodesNavItem">
+            <span>节点选择</span>
+          </button>
           <button class="nav-item" type="button" data-view="quota" id="quotaNavItem">
             <span>额度控制</span>
           </button>
@@ -124,6 +127,7 @@
         </nav>
 
         <div class="sidebar-footer">
+          <div class="sidebar-version">版本 <span id="sidebarVersion">-</span></div>
           <div class="sidebar-status">
             <span class="status-dot" id="sidebarStatusDot"></span>
             <span id="sidebarStatusText">未连接</span>
@@ -208,7 +212,7 @@
                 <div class="settings-card-header"><div><span class="settings-icon">↻</span><h2>后端自动更新</h2><p>通过部署控制器拉取 main、构建镜像、更新 API 与 Worker，并在失败时自动回滚。</p></div><span class="settings-state" id="repositoryUpdateState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
               </section>
-              <section class="panel config-panel" id="proxyConfigPanel">
+              <section class="panel config-panel hidden" id="proxyConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">↗</span><h2>网络代理</h2><p>支持代理提取 API 或节点订阅，Dola 任务启动时自动使用。</p></div><span class="settings-state" id="configState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>代理来源</span><strong id="proxyApiDisplay">等待读取</strong></div><button class="primary-button" id="openProxyModal" type="button">编辑代理</button></div>
               </section>
@@ -226,6 +230,20 @@
               </section>
             </div>
           </div>
+        </section>
+        <section class="view" id="proxy-nodesView" data-title="节点选择">
+          <section class="panel node-selection-panel">
+            <div class="panel-header">
+              <div><span class="eyebrow">Dola 网络出口</span><h2>节点选择</h2><p>通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。</p></div>
+              <div class="node-toolbar"><button class="secondary-button" id="openProxyModalFromNodes" type="button">配置订阅</button><button class="secondary-button" id="refreshProxyNodes" type="button">刷新延迟</button></div>
+            </div>
+            <div class="node-controls">
+              <label class="field"><span>代理状态</span><select id="proxyEnabledSelect"><option value="true">自动开启</option><option value="false">关闭代理</option></select></label>
+              <label class="field"><span>节点模式</span><select id="proxyAutoSelect"><option value="true">自动选择最低延迟</option><option value="false">手动选择节点</option></select></label>
+              <span class="settings-state" id="proxyNodesState">等待读取</span>
+            </div>
+            <div class="node-grid" id="proxyNodeGrid"><div class="empty-state">请先配置节点订阅</div></div>
+          </section>
         </section>
         <section class="view" id="feedbackView" data-title="用户反馈"><section class="panel users-panel"><div class="panel-header"><div><h2>用户反馈</h2><p>查看并处理客户端提交的体验反馈。</p></div><button class="secondary-button" id="refreshFeedback" type="button">刷新</button></div><div class="table-wrap users-table-wrap"><table class="users-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div></section></section>
 

@@ -39,6 +39,7 @@ from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, norma
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
+from .proxy_manager import fetch_subscription_node_list, measure_node_delays, node_payload
 from .resilience import PlatformGuard, adaptive_worker_limit, queue_admission
 from .repository_update import repository_status, update_repository
 from .postgres import ensure_schema as ensure_postgres_schema
@@ -114,6 +115,7 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="invalid image content")
 from .textfix import repair_text
+from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
 from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_enabled, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
@@ -214,7 +216,7 @@ async def lifespan(app: FastAPI):
                 await task_cache_cleanup_task
 
 
-app = FastAPI(title="Fetch Task Service", lifespan=lifespan)
+app = FastAPI(title="Fetch Task Service", version=__version__, lifespan=lifespan)
 ADMIN_DIR = Path(__file__).resolve().parent / "admin"
 
 if ADMIN_DIR.exists():
@@ -223,7 +225,7 @@ if ADMIN_DIR.exists():
 
 @app.get("/health/live")
 async def health_live():
-    return {"ok": True}
+    return {"ok": True, "version": __version__}
 
 
 async def require_token(
@@ -328,6 +330,7 @@ def _health_payload(access: AccessContext) -> dict:
     browser_ok = bool(browser_path)
     data = {
         "ok": True,
+        "version": __version__,
         "status": "healthy" if queue_health["ok"] and browser_ok else "degraded",
         "role": "admin" if access.is_admin else "client",
         "browser_workers": settings.browser_workers,
@@ -839,15 +842,79 @@ async def proxy_api_config():
         "proxy_subscription_configured": bool(settings.proxy_subscription_url),
         "proxy_subscription_scheme": settings.proxy_subscription_scheme,
         "proxy_subscription_refresh_seconds": settings.proxy_subscription_refresh_seconds,
+        "proxy_enabled": settings.proxy_enabled,
+        "proxy_auto_select": settings.proxy_auto_select,
+        "proxy_selected_node": settings.proxy_selected_node,
     }
+
+
+@app.get("/config/proxy-nodes", dependencies=[Depends(require_admin)])
+async def proxy_nodes(refresh: bool = False):
+    settings = load_settings()
+    if not settings.proxy_subscription_url:
+        return {"nodes": [], "enabled": settings.proxy_enabled, "auto_select": settings.proxy_auto_select, "selected_node": ""}
+    try:
+        nodes = await fetch_subscription_node_list(
+            settings.proxy_subscription_url,
+            timeout_seconds=settings.proxy_api_timeout_seconds,
+            refresh_seconds=settings.proxy_subscription_refresh_seconds,
+            force=refresh,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {
+        "nodes": [node_payload(node, settings.proxy_selected_node) for node in nodes],
+        "enabled": settings.proxy_enabled,
+        "auto_select": settings.proxy_auto_select,
+        "selected_node": settings.proxy_selected_node,
+    }
+
+
+@app.post("/config/proxy-nodes/latency", dependencies=[Depends(require_admin)])
+async def proxy_node_latency():
+    settings = load_settings()
+    if not settings.proxy_subscription_url:
+        raise HTTPException(status_code=409, detail="proxy subscription is not configured")
+    try:
+        nodes = await fetch_subscription_node_list(
+            settings.proxy_subscription_url,
+            timeout_seconds=settings.proxy_api_timeout_seconds,
+            refresh_seconds=settings.proxy_subscription_refresh_seconds,
+        )
+        await measure_node_delays(nodes, settings.proxy_subscription_url, settings.proxy_api_timeout_seconds)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"nodes": [node_payload(node, settings.proxy_selected_node) for node in nodes]}
+
+
+@app.post("/config/proxy-nodes/select", dependencies=[Depends(require_admin)])
+async def select_proxy_node(request: Request):
+    payload = await _request_payload(request)
+    node_id = str(payload.get("node_id") or "").strip()
+    settings = load_settings()
+    if not settings.proxy_subscription_url:
+        raise HTTPException(status_code=409, detail="proxy subscription is not configured")
+    try:
+        nodes = await fetch_subscription_node_list(
+            settings.proxy_subscription_url,
+            timeout_seconds=settings.proxy_api_timeout_seconds,
+            refresh_seconds=settings.proxy_subscription_refresh_seconds,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    selected = next((node for node in nodes if node.id == node_id), None)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="proxy node not found")
+    update_config({"proxy_selected_node": selected.id, "proxy_auto_select": False})
+    return {"ok": True, "selected_node": selected.id, "node": node_payload(selected, selected.id)}
 
 
 @app.get("/admin/repository-update", dependencies=[Depends(require_admin)])
 async def repository_update_status():
     try:
         return await asyncio.to_thread(repository_status, ADMIN_DIR.parent.parent)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.post("/admin/repository-update", dependencies=[Depends(require_admin)])
@@ -856,8 +923,8 @@ async def repository_update_action():
         return await asyncio.to_thread(update_repository, ADMIN_DIR.parent.parent)
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="repository update timed out")
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.get("/config/registration-email", dependencies=[Depends(require_admin)])
@@ -1297,6 +1364,12 @@ async def update_proxy_api_config(
             if refresh_seconds < 60 or refresh_seconds > 86400:
                 raise ValueError("proxy_subscription_refresh_seconds must be between 60 and 86400")
             updates["proxy_subscription_refresh_seconds"] = refresh_seconds
+        if "proxy_enabled" in payload:
+            updates["proxy_enabled"] = str(payload.get("proxy_enabled")).strip().lower() in {"1", "true", "yes", "on"}
+        if "proxy_auto_select" in payload:
+            updates["proxy_auto_select"] = str(payload.get("proxy_auto_select")).strip().lower() in {"1", "true", "yes", "on"}
+        if "proxy_selected_node" in payload:
+            updates["proxy_selected_node"] = str(payload.get("proxy_selected_node") or "").strip()[:200]
         if not updates:
             raise ValueError("proxy configuration is required")
         update_config(updates)
@@ -1312,6 +1385,9 @@ async def update_proxy_api_config(
         "proxy_subscription_configured": bool(settings.proxy_subscription_url),
         "proxy_subscription_scheme": settings.proxy_subscription_scheme,
         "proxy_subscription_refresh_seconds": settings.proxy_subscription_refresh_seconds,
+        "proxy_enabled": settings.proxy_enabled,
+        "proxy_auto_select": settings.proxy_auto_select,
+        "proxy_selected_node": settings.proxy_selected_node,
     }
 
 

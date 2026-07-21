@@ -39,7 +39,7 @@ from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, norma
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
-from .proxy_manager import fetch_subscription_node_list, measure_node_delays, node_payload
+from .proxy_manager import activate_mihomo_node, fetch_subscription_node_list, measure_node_delays, node_payload, rebuild_mihomo_from_snapshot
 from .resilience import PlatformGuard, adaptive_worker_limit, queue_admission
 from .repository_update import repository_status, update_repository
 from .postgres import ensure_schema as ensure_postgres_schema
@@ -860,6 +860,13 @@ async def proxy_nodes(refresh: bool = False):
             refresh_seconds=settings.proxy_subscription_refresh_seconds,
             force=refresh,
         )
+        if refresh:
+            await rebuild_mihomo_from_snapshot(
+                settings.proxy_subscription_url,
+                nodes,
+                settings.proxy_api_timeout_seconds,
+                settings.proxy_subscription_refresh_seconds,
+            )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {
@@ -905,6 +912,15 @@ async def select_proxy_node(request: Request):
     selected = next((node for node in nodes if node.id == node_id), None)
     if selected is None:
         raise HTTPException(status_code=404, detail="proxy node not found")
+    try:
+        await activate_mihomo_node(
+            selected,
+            settings.proxy_subscription_url,
+            settings.proxy_api_timeout_seconds,
+            settings.proxy_subscription_refresh_seconds,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     update_config({"proxy_selected_node": selected.id, "proxy_auto_select": False})
     return {"ok": True, "selected_node": selected.id, "node": node_payload(selected, selected.id)}
 

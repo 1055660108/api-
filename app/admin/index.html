@@ -127,7 +127,6 @@
         </nav>
 
         <div class="sidebar-footer">
-          <div class="sidebar-version">版本 <span id="sidebarVersion">-</span></div>
           <div class="sidebar-status">
             <span class="status-dot" id="sidebarStatusDot"></span>
             <span id="sidebarStatusText">未连接</span>
@@ -142,7 +141,7 @@
         </header>
 
         <section class="view active" id="dashboardView" data-title="总览">
-          <div class="dashboard-hero"><div><span class="eyebrow">实时运行概览</span><h2>一处掌控所有生成任务</h2><p>监控服务、并发与任务队列，快速定位每一次生成结果。</p></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></div>
+          <div class="dashboard-hero"><div><h2>一处掌控所有生成任务</h2></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></div>
           <section class="panel client-token-card"><div><span class="eyebrow">账号</span><h2 id="clientAccountName">当前用户</h2><p>可用于第三方软件调用，消耗同一积分余额，请妥善保管。</p></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新 Token</button></div></section>
           <div class="dashboard-actions"><button class="secondary-button dashboard-logout" id="dashboardLogoutButton" type="button">退出登录</button></div>
           <div class="metric-grid">

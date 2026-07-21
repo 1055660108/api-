@@ -108,7 +108,6 @@ const els = {
   sendChangeEmailCode: document.getElementById("sendChangeEmailCode"),
   changeClientEmailButton: document.getElementById("changeClientEmailButton"),
   viewTitle: document.getElementById("viewTitle"),
-  sidebarVersion: document.getElementById("sidebarVersion"),
   sidebarStatusDot: document.getElementById("sidebarStatusDot"),
   sidebarStatusText: document.getElementById("sidebarStatusText"),
   metricService: document.getElementById("metricService"),
@@ -491,9 +490,7 @@ async function loadRepositoryStatus() {
   if (portal === "client" || !els.repositoryRevision) return;
   try {
     const data = await apiFetch("/admin/repository-update");
-    const version = data.version ? `v${data.version}` : "版本未知";
-    const commit = data.commit_message ? ` · ${data.commit_message}` : "";
-    els.repositoryRevision.textContent = `${version} · ${data.revision || "未知"}${commit}`;
+    els.repositoryRevision.textContent = data.version ? `v${data.version}` : "版本未知";
     els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? `更新失败：${data.error}` : data.update_available ? "有可用更新" : "已是最新";
     if (els.updateRepository) setBusy(els.updateRepository, Boolean(data.updating), data.phase || "正在更新");
     return data;
@@ -800,7 +797,6 @@ function applyAccessScope(data = {}) {
   state.taskRetentionDays = Number(data.task_retention_days || 7);
   state.userName = String(data.user_name || "当前用户");
   if (data.admin_username) state.adminUsername = String(data.admin_username);
-  if (els.sidebarVersion && data.version) els.sidebarVersion.textContent = `v${data.version}`;
   if (els.adminAccountDisplay) els.adminAccountDisplay.textContent = state.adminUsername || els.adminUsername?.value || "-";
   if (els.changeAdminUsername) els.changeAdminUsername.value = state.adminUsername || els.adminUsername?.value || "";
   if (els.clientAccountName) els.clientAccountName.textContent = state.userName;
@@ -1228,7 +1224,7 @@ function renderProxyNodes() {
     return;
   }
   els.proxyNodeGrid.innerHTML = visibleNodes.map((node) => {
-    const latency = node.latency_ms ? `${node.latency_ms} ms` : node.latency_measured ? "超时" : "未检测";
+    const latency = node.latency_status === "available" ? `${node.latency_ms} ms` : node.latency_status === "unavailable" ? "不可用" : node.latency_status === "expired" ? "已过期" : "未检测";
     const selected = node.selected || node.id === state.proxySelectedNode;
     return `<button class="proxy-node-card${selected ? " selected" : ""}" type="button" data-proxy-node-id="${escapeHtml(node.id)}"><span class="proxy-node-name">${escapeHtml(node.name)}</span><span class="proxy-node-country">${escapeHtml(node.country)} · ${escapeHtml(node.protocol.toUpperCase())}</span><strong class="proxy-node-latency${node.latency_ms ? " good" : ""}">${escapeHtml(latency)}</strong></button>`;
   }).join("");

@@ -296,6 +296,8 @@ class WebAPIContractTests(unittest.TestCase):
         nodes = proxy_manager.subscription_node_list("vless://user@hk.example.com:443#Hong%20Kong\ntrojan://secret@jp.example.com:443#Japan")
         with patch("app.main.fetch_subscription_node_list", new=AsyncMock(return_value=nodes)), patch(
             "app.main.measure_node_delays", new=AsyncMock(return_value={node.id: 20 for node in nodes})
+        ), patch(
+            "app.main.activate_mihomo_node", new=AsyncMock()
         ):
             listed = self.client.get("/config/proxy-nodes", headers={"X-API-Token": self.admin_token})
             measured = self.client.post("/config/proxy-nodes/latency", headers={"X-API-Token": self.admin_token})

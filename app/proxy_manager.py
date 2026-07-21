@@ -9,6 +9,7 @@ import socket
 import subprocess
 import time
 import hashlib
+import tempfile
 from urllib.parse import quote, unquote, urlsplit
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,9 +33,12 @@ _MIHOMO_REFRESHED_AT = 0.0
 _MIHOMO_SUBSCRIPTION_URL = ""
 _MIHOMO_LOCK: asyncio.Lock | None = None
 _MIHOMO_CONTROLLER_PORT = 0
-_SUBSCRIPTION_CACHE: dict[str, Any] = {"url": "", "nodes": (), "refreshed_at": 0.0}
+_MIHOMO_SNAPSHOT_DIGEST = ""
+_MIHOMO_CONFIG_PATH: Path | None = None
+_SUBSCRIPTION_CACHE: dict[str, Any] = {"url": "", "nodes": (), "snapshot": b"", "provider": b"", "refreshed_at": 0.0}
 _SUBSCRIPTION_CACHE_LOCK: asyncio.Lock | None = None
 _NODE_DELAYS: dict[str, tuple[int | None, float]] = {}
+NODE_DELAY_TTL_SECONDS = 300
 COUNTRY_MARKERS = {
     "香港": ("香港", "hong kong", "hongkong", " hk", "🇭🇰"),
     "台湾": ("台湾", "taiwan", " taipei", " tw", "🇹🇼"),
@@ -158,6 +162,55 @@ def subscription_node_list(text: str) -> tuple[ProxyNode, ...]:
     return tuple(collected)
 
 
+def _provider_snapshot(snapshot: bytes) -> bytes:
+    text = snapshot.decode("utf-8-sig", errors="replace")
+    for source in _subscription_sources(text):
+        try:
+            document = yaml.safe_load(source)
+        except yaml.YAMLError:
+            continue
+        if isinstance(document, dict) and isinstance(document.get("proxies"), list):
+            return yaml.safe_dump({"proxies": document["proxies"]}, allow_unicode=True, sort_keys=False).encode("utf-8")
+    return text.encode("utf-8")
+
+
+def _mihomo_config(provider: bytes, port: int, controller_port: int) -> bytes:
+    try:
+        document = yaml.safe_load(provider.decode("utf-8-sig", errors="replace"))
+    except yaml.YAMLError as exc:
+        raise RuntimeError("proxy subscription is not a valid Clash configuration") from exc
+    proxies = document.get("proxies") if isinstance(document, dict) else None
+    if not isinstance(proxies, list) or not proxies:
+        raise RuntimeError("proxy subscription cannot generate a local Mihomo configuration")
+    config = {
+        "mixed-port": port,
+        "allow-lan": False,
+        "bind-address": "127.0.0.1",
+        "external-controller": f"127.0.0.1:{controller_port}",
+        "mode": "rule",
+        "log-level": "warning",
+        "proxies": proxies,
+        "proxy-groups": [{"name": "DOLA", "type": "select", "proxies": [str(item.get("name")) for item in proxies if isinstance(item, dict) and item.get("name")]}],
+        "rules": ["MATCH,DOLA"],
+    }
+    return yaml.safe_dump(config, allow_unicode=True, sort_keys=False).encode("utf-8")
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def _proxy_candidates(value: Any) -> Iterable[str]:
     if isinstance(value, str):
         yield value
@@ -243,17 +296,21 @@ def _port_is_open(port: int) -> bool:
         return client.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _start_mihomo(config_path: Path, port: int) -> None:
-    global _MIHOMO_PROCESS, _MIHOMO_PORT
+def _stop_mihomo() -> None:
+    global _MIHOMO_PROCESS
+    if not _MIHOMO_PROCESS or _MIHOMO_PROCESS.poll() is not None:
+        return
+    _MIHOMO_PROCESS.terminate()
+    try:
+        _MIHOMO_PROCESS.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _MIHOMO_PROCESS.kill()
+        _MIHOMO_PROCESS.wait(timeout=5)
+
+
+def _launch_mihomo(config_path: Path, port: int, controller_port: int) -> subprocess.Popen:
     if not MIHOMO_EXECUTABLE.exists():
         raise RuntimeError(f"mihomo executable not found: {MIHOMO_EXECUTABLE}")
-    if _MIHOMO_PROCESS and _MIHOMO_PROCESS.poll() is None:
-        _MIHOMO_PROCESS.terminate()
-        try:
-            _MIHOMO_PROCESS.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _MIHOMO_PROCESS.kill()
-            _MIHOMO_PROCESS.wait(timeout=5)
     process = subprocess.Popen(
         [str(MIHOMO_EXECUTABLE), "-d", str(MIHOMO_RUNTIME_DIR), "-f", str(config_path)],
         stdin=subprocess.DEVNULL,
@@ -265,67 +322,83 @@ def _start_mihomo(config_path: Path, port: int) -> None:
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(f"mihomo exited with code {process.returncode}")
-        if _port_is_open(port):
-            _MIHOMO_PROCESS = process
-            _MIHOMO_PORT = port
-            return
+        if _port_is_open(port) and _port_is_open(controller_port):
+            return process
         time.sleep(0.2)
     process.terminate()
     raise RuntimeError("mihomo proxy startup timed out")
 
 
+def _replace_mihomo(process: subprocess.Popen, port: int) -> None:
+    global _MIHOMO_PROCESS, _MIHOMO_PORT
+    previous = _MIHOMO_PROCESS
+    _MIHOMO_PROCESS = process
+    _MIHOMO_PORT = port
+    if previous and previous.poll() is None:
+        previous.terminate()
+        try:
+            previous.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            previous.kill()
+            previous.wait(timeout=5)
+
+
 async def _fetch_mihomo_config(subscription_url: str, timeout_seconds: int, port: int, controller_port: int | None = None) -> bytes:
     controller = controller_port or _available_port()
-    safe_url = subscription_url.replace("\\", "\\\\").replace("'", "''")
-    text = f"""mixed-port: {port}
-allow-lan: false
-bind-address: 127.0.0.1
-external-controller: 127.0.0.1:{controller}
-mode: rule
-log-level: warning
-proxy-providers:
-  dola-subscription:
-    type: http
-    url: '{safe_url}'
-    path: ./providers/dola.yaml
-    interval: 900
-    health-check:
-      enable: true
-      url: https://www.gstatic.com/generate_204
-      interval: 300
-proxy-groups:
-  - name: DOLA
-    type: select
-    use:
-      - dola-subscription
-rules:
-  - MATCH,DOLA
-"""
-    return text.encode("utf-8")
+    provider = bytes(_SUBSCRIPTION_CACHE.get("provider") or b"")
+    return _mihomo_config(provider, port, controller)
 
 
-async def _proxy_from_mihomo(subscription_url: str, timeout_seconds: int, refresh_seconds: int) -> dict[str, str]:
-    global _MIHOMO_LOCK, _MIHOMO_REFRESHED_AT, _MIHOMO_SUBSCRIPTION_URL, _MIHOMO_CONTROLLER_PORT
+async def _mihomo_group_ready(controller_port: int, timeout_seconds: float = 2.0) -> bool:
+    if not _port_is_open(controller_port):
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds, trust_env=False) as client:
+            response = await client.get(f"http://127.0.0.1:{controller_port}/proxies/{quote('DOLA', safe='')}")
+        return response.status_code == 200 and str(response.json().get("name") or "") == "DOLA"
+    except (httpx.HTTPError, ValueError, TypeError):
+        return False
+
+
+async def _mihomo_ready(process: subprocess.Popen | None, port: int, controller_port: int) -> bool:
+    return bool(process and process.poll() is None and _port_is_open(port) and _port_is_open(controller_port) and await _mihomo_group_ready(controller_port))
+
+
+async def _proxy_from_mihomo(subscription_url: str, timeout_seconds: int, refresh_seconds: int, force_rebuild: bool = False) -> dict[str, str]:
+    global _MIHOMO_LOCK, _MIHOMO_REFRESHED_AT, _MIHOMO_SUBSCRIPTION_URL, _MIHOMO_CONTROLLER_PORT, _MIHOMO_SNAPSHOT_DIGEST, _MIHOMO_CONFIG_PATH
     if _MIHOMO_LOCK is None:
         _MIHOMO_LOCK = asyncio.Lock()
     async with _MIHOMO_LOCK:
+        provider = bytes(_SUBSCRIPTION_CACHE.get("provider") or b"")
+        if _SUBSCRIPTION_CACHE.get("url") != subscription_url or not provider:
+            await fetch_subscription_node_list(subscription_url, timeout_seconds=timeout_seconds, refresh_seconds=refresh_seconds)
+            provider = bytes(_SUBSCRIPTION_CACHE.get("provider") or b"")
+        digest = hashlib.sha256(provider).hexdigest()
         if (
-            _MIHOMO_PROCESS
-            and _MIHOMO_PROCESS.poll() is None
-            and _port_is_open(_MIHOMO_PORT)
+            not force_rebuild
+            and await _mihomo_ready(_MIHOMO_PROCESS, _MIHOMO_PORT, _MIHOMO_CONTROLLER_PORT)
             and _MIHOMO_SUBSCRIPTION_URL == subscription_url
-            and time.monotonic() - _MIHOMO_REFRESHED_AT < refresh_seconds
+            and _MIHOMO_SNAPSHOT_DIGEST == digest
         ):
             return {"server": f"http://127.0.0.1:{_MIHOMO_PORT}", "node_count": "managed"}
         MIHOMO_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         port = _available_port()
         controller_port = _available_port()
-        config_path = MIHOMO_RUNTIME_DIR / "config.yaml"
-        config_path.write_bytes(await _fetch_mihomo_config(subscription_url, timeout_seconds, port, controller_port))
-        _start_mihomo(config_path, port)
+        config_path = MIHOMO_RUNTIME_DIR / f"config-{digest[:12]}-{port}.yaml"
+        _atomic_write(config_path, _mihomo_config(provider, port, controller_port))
+        process = _launch_mihomo(config_path, port, controller_port)
+        if not await _mihomo_ready(process, port, controller_port):
+            process.terminate()
+            raise RuntimeError("mihomo DOLA proxy group is unavailable")
+        previous_config = _MIHOMO_CONFIG_PATH
+        _replace_mihomo(process, port)
         _MIHOMO_SUBSCRIPTION_URL = subscription_url
         _MIHOMO_REFRESHED_AT = time.monotonic()
         _MIHOMO_CONTROLLER_PORT = controller_port
+        _MIHOMO_SNAPSHOT_DIGEST = digest
+        _MIHOMO_CONFIG_PATH = config_path
+        if previous_config and previous_config != config_path and previous_config.exists():
+            previous_config.unlink()
         return {"server": f"http://127.0.0.1:{port}", "node_count": "managed"}
 
 
@@ -359,10 +432,12 @@ async def fetch_subscription_node_list(
             raise RuntimeError(f"proxy subscription failed with HTTP {response.status_code}")
         if len(response.content) > 5 * 1024 * 1024:
             raise RuntimeError("proxy subscription response is too large")
-        nodes = subscription_node_list(response.content.decode("utf-8-sig", errors="replace"))
+        snapshot = bytes(response.content)
+        nodes = subscription_node_list(snapshot.decode("utf-8-sig", errors="replace"))
         if not nodes:
             raise RuntimeError("proxy subscription returned no usable nodes")
-        _SUBSCRIPTION_CACHE.update(url=subscription_url, nodes=nodes, refreshed_at=time.monotonic())
+        provider = _provider_snapshot(snapshot)
+        _SUBSCRIPTION_CACHE.update(url=subscription_url, nodes=nodes, snapshot=snapshot, provider=provider, refreshed_at=time.monotonic())
         return nodes
 
 
@@ -395,7 +470,7 @@ async def _mihomo_node_delay(node: ProxyNode, timeout_seconds: float = 8.0) -> i
 
 
 async def measure_node_delays(nodes: tuple[ProxyNode, ...], subscription_url: str, timeout_seconds: int = 20) -> dict[str, int | None]:
-    if any(node.protocol not in {"http", "https", "socks5", "socks5h"} for node in nodes) and not _MIHOMO_CONTROLLER_PORT:
+    if any(node.protocol not in {"http", "https", "socks5", "socks5h"} for node in nodes) and not await _mihomo_ready(_MIHOMO_PROCESS, _MIHOMO_PORT, _MIHOMO_CONTROLLER_PORT):
         await _proxy_from_mihomo(subscription_url, timeout_seconds, 900)
     semaphore = asyncio.Semaphore(20)
 
@@ -412,17 +487,35 @@ async def measure_node_delays(nodes: tuple[ProxyNode, ...], subscription_url: st
 
 
 async def _select_mihomo_node(node: ProxyNode) -> None:
-    if not _MIHOMO_CONTROLLER_PORT:
+    if not await _mihomo_ready(_MIHOMO_PROCESS, _MIHOMO_PORT, _MIHOMO_CONTROLLER_PORT):
         raise RuntimeError("mihomo controller is not available")
     endpoint = f"http://127.0.0.1:{_MIHOMO_CONTROLLER_PORT}/proxies/DOLA"
     async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
         response = await client.put(endpoint, json={"name": node.name})
     if response.status_code not in {200, 204}:
         raise RuntimeError(f"mihomo node selection failed with HTTP {response.status_code}")
+    async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+        current = await client.get(endpoint)
+    if current.status_code != 200 or str(current.json().get("now") or "") != node.name:
+        raise RuntimeError("mihomo node selection did not take effect")
+
+
+async def activate_mihomo_node(node: ProxyNode, subscription_url: str, timeout_seconds: int = 20, refresh_seconds: int = 900) -> None:
+    if node.protocol in {"http", "https", "socks5", "socks5h"}:
+        return
+    await _proxy_from_mihomo(subscription_url, timeout_seconds, refresh_seconds)
+    await _select_mihomo_node(node)
+
+
+async def rebuild_mihomo_from_snapshot(subscription_url: str, nodes: tuple[ProxyNode, ...], timeout_seconds: int = 20, refresh_seconds: int = 900) -> None:
+    _NODE_DELAYS.clear()
+    if any(node.protocol not in {"http", "https", "socks5", "socks5h"} for node in nodes):
+        await _proxy_from_mihomo(subscription_url, timeout_seconds, refresh_seconds, force_rebuild=True)
 
 
 def node_payload(node: ProxyNode, selected_node: str = "") -> dict[str, Any]:
     delay, measured_at = _NODE_DELAYS.get(node.id, (None, 0.0))
+    fresh = measured_at > 0 and time.monotonic() - measured_at < NODE_DELAY_TTL_SECONDS
     return {
         "id": node.id,
         "name": node.name,
@@ -430,8 +523,9 @@ def node_payload(node: ProxyNode, selected_node: str = "") -> dict[str, Any]:
         "protocol": node.protocol,
         "server": node.server,
         "port": node.port,
-        "latency_ms": delay,
-        "latency_measured": measured_at > 0,
+        "latency_ms": delay if fresh else None,
+        "latency_measured": fresh,
+        "latency_status": "available" if fresh and delay is not None else "unavailable" if fresh else "expired" if measured_at else "pending",
         "selected": node.id == selected_node,
     }
 
@@ -452,9 +546,20 @@ async def resolve_subscription_proxy(
     )
     chosen = next((node for node in nodes if node.id == selected_node), None)
     if auto_select:
-        if not any(_NODE_DELAYS.get(node.id, (None, 0.0))[0] is not None for node in nodes):
+        fresh_delays = {
+            node.id: delay
+            for node in nodes
+            if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+            and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+        }
+        if not fresh_delays:
             await measure_node_delays(nodes, subscription_url, timeout_seconds)
-        available = [(delay, node) for node in nodes if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None]
+        available = [
+            (delay, node)
+            for node in nodes
+            if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+            and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+        ]
         chosen = min(available, key=lambda item: item[0])[1] if available else chosen or nodes[0]
     elif chosen is None:
         raise RuntimeError("selected proxy node is unavailable")

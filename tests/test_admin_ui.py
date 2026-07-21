@@ -27,7 +27,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('els.updateRepository?.addEventListener("click", updateRepository)', self.javascript)
         self.assertIn('Promise.allSettled([loadRepositoryStatus(), loadProxyConfig()', self.javascript)
         self.assertIn('data.update_available ? "有可用更新" : "已是最新"', self.javascript)
-        self.assertIn('const version = data.version ? `v${data.version}` : "版本未知"', self.javascript)
+        self.assertIn('els.repositoryRevision.textContent = data.version ? `v${data.version}` : "版本未知"', self.javascript)
         self.assertIn("await pollRepositoryUpdate()", self.javascript)
         self.assertIn("系统更新成功，前后端服务已恢复", self.javascript)
 
@@ -41,10 +41,21 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="proxyCountryFilter"', self.html)
         self.assertIn('id="proxyNodeCount"', self.html)
         self.assertIn('node.country === state.proxyCountry', self.javascript)
+        for status in ('"不可用"', '"已过期"', '"未检测"'):
+            self.assertIn(status, self.javascript)
 
-    def test_release_version_is_displayed_from_status_api(self) -> None:
-        self.assertIn('id="sidebarVersion"', self.html)
-        self.assertIn('els.sidebarVersion.textContent = `v${data.version}`', self.javascript)
+    def test_release_version_is_only_displayed_in_admin_update_panel(self) -> None:
+        self.assertNotIn('id="sidebarVersion"', self.html)
+        self.assertNotIn("data.revision", self.javascript)
+        self.assertNotIn("data.commit_message", self.javascript)
+        self.assertIn('els.repositoryRevision.textContent = data.version ? `v${data.version}` : "版本未知"', self.javascript)
+
+    def test_dashboard_copy_and_desktop_scroll_regions_are_simplified(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertNotIn("实时运行概览", self.html)
+        self.assertNotIn("监控服务、并发与任务队列", self.html)
+        self.assertIn("height: 100vh", styles)
+        self.assertIn("overflow-y: auto", styles)
 
     def test_proxy_settings_support_node_subscriptions(self) -> None:
         for element_id in ("proxySource", "proxySubscriptionUrl", "proxyApiUrl"):

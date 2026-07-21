@@ -259,6 +259,8 @@ def claim_task(task_id: str, worker_id: str, owner_token_hash: str, concurrency_
             attempt=max(0, int(meta.get("attempt") or 0)) + 1,
             error="",
             execution_miss_count=0,
+            submit_phase="",
+            submit_started_at="",
             updated_at=claimed_at,
         )
         conn.execute(

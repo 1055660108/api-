@@ -9,7 +9,7 @@ from playwright.async_api import async_playwright
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
 from .browser_runtime import cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_PROFILES_DIR, DOUBAO_STATES_DIR, ensure_dirs, load_settings
-from .store import begin_task_submission, clear_transient_result, mark_pending, mark_submitted, mark_success, save_result, task_exists
+from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, mark_submitted, mark_success, save_result, task_exists
 from .profile_lock import account_profile_lock
 
 
@@ -146,7 +146,8 @@ class DoubaoVideoAutomation:
                         if await option.count():
                             await option.last.click()
                 if not begin_task_submission(self.task_id):
-                    return {"success": False, "retryable": False, "reason": "task canceled before submission"}
+                    canceled = is_task_canceled(self.task_id)
+                    return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 await editor.press("Enter")
                 mark_submitted(self.task_id)
                 submit_deadline = asyncio.get_running_loop().time() + 30

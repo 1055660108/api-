@@ -84,6 +84,14 @@ class BrowserRuntimeTests(unittest.TestCase):
             self.assertLess(source.index("await cancel_tracked_tasks(response_tasks)"), source.index("await safe_close(context)"))
             self.assertNotIn('asyncio.create_task(capture_completion(response))', source)
 
+    def test_submission_barrier_only_reports_real_user_cancellation(self) -> None:
+        root = Path(__file__).parents[1] / "app"
+        for filename in ("automation.py", "doubao_automation.py", "qianwen_automation.py"):
+            source = (root / filename).read_text(encoding="utf-8")
+            self.assertNotIn("task canceled before submission", source)
+            self.assertIn("is_task_canceled(self.task_id)", source)
+            self.assertIn("任务提交状态已变化，正在重试", source)
+
     def test_qianwen_prefers_original_unwatermarked_video_urls(self) -> None:
         from app.qianwen_automation import best_qianwen_video_url, qianwen_video_url_score
 

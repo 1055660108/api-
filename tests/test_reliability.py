@@ -111,6 +111,17 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["status"], store.STATUS_RUNNING)
         self.assertEqual(meta["submit_phase"], "committing")
 
+    def test_new_attempt_clears_stale_submission_barrier(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        self.assertTrue(store.begin_task_submission(task["id"]))
+        store.mark_pending(task["id"], "worker restarted")
+        self.assertTrue(store.mark_running(task["id"], "worker-2"))
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["submit_phase"], "")
+        self.assertEqual(meta["submit_started_at"], "")
+        self.assertTrue(store.begin_task_submission(task["id"]))
+
     def test_cancel_wins_before_submission_barrier(self) -> None:
         task = self.create_task("owner")
         self.assertTrue(store.mark_running(task["id"], "worker-1"))
@@ -306,7 +317,7 @@ class ReliabilityTests(unittest.TestCase):
         exhaust_account.assert_called_once_with("account1", "charge1")
         refund_owner.assert_called_once_with(task["id"], "owner")
 
-    def test_second_result_timeout_fails_and_refunds_owner(self) -> None:
+    def test_second_result_timeout_stays_pending_for_final_retry(self) -> None:
         task = self.create_task("owner")
         store.mark_running(task["id"], "worker-1")
         store.save_result(task["id"], extra={"account_id": "account2", "account_quota_charge_id": "charge2"})
@@ -323,12 +334,68 @@ class ReliabilityTests(unittest.TestCase):
         ) as exhaust_account, patch("app.worker.refund_temp_quota_once") as refund_owner:
             asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
         meta = store.get_meta(task["id"])
-        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
         self.assertEqual(meta["result_timeout_retry_count"], 2)
         self.assertEqual(meta["failed_account_ids"], ["account1", "account2"])
         clear_account.assert_called_once_with("account2", task["id"])
         exhaust_account.assert_called_once_with("account2", "charge2")
+        refund_owner.assert_not_called()
+        self.assertNotIn("account_id", store.load_result(task["id"]))
+
+    def test_third_result_timeout_fails_with_final_reason(self) -> None:
+        task = self.create_task("owner")
+        store.mark_running(task["id"], "worker-3")
+        store.save_result(task["id"], extra={"account_id": "account3", "account_quota_charge_id": "charge3"})
+        store.mark_submitted(task["id"])
+        store.update_meta(
+            task["id"],
+            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(),
+            retry_count=2,
+            result_timeout_retry_count=2,
+            failed_account_ids=["account1", "account2"],
+        )
+        manager = WorkerManager()
+        with patch("app.worker.clear_account_current_task"), patch("app.worker.exhaust_timed_out_account"), patch(
+            "app.worker.refund_temp_quota_once"
+        ) as refund_owner:
+            asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["retry_count"], 3)
+        self.assertEqual(meta["result_timeout_retry_count"], 3)
+        self.assertEqual(meta["error"], "生成超过10分钟，两次重试后仍未返回结果")
         refund_owner.assert_called_once_with(task["id"], "owner")
+
+    def test_retry_wait_without_available_account_eventually_fails_and_refunds(self) -> None:
+        task = self.create_task("owner")
+        store.mark_running(task["id"], "worker-2")
+        store.update_meta(
+            task["id"],
+            result_timeout_retry_count=1,
+            retry_queued_at=(datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat(),
+        )
+        manager = WorkerManager()
+        with patch("app.worker.refund_temp_quota_once") as refund_owner:
+            self.assertTrue(manager._handle_unavailable_account(task["id"], store.get_meta(task["id"]), "dola"))
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["error"], "重试等待可用账号超时，请重新提交")
+        refund_owner.assert_called_once_with(task["id"], "owner")
+
+    def test_listing_globally_timed_out_task_refunds_reserved_owner_quota(self) -> None:
+        created = temp_access.create_temp_tokens(1, 1)[0]
+        owner_hash = str(created["id"])
+        access = temp_access.get_temp_context(str(created["token"]))
+        self.assertIsNotNone(access)
+        task = self.create_task(owner_hash)
+        temp_access.reserve_temp_quota(access, task["id"])
+        self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 0)
+        store.update_meta(task["id"], created_at=(datetime.now(timezone.utc) - timedelta(hours=4)).isoformat())
+        listed = next(item for item in store.list_tasks() if item["id"] == task["id"])
+        self.assertEqual(listed["status"], store.STATUS_FAILED)
+        self.assertEqual(listed["error"], "超时生成失败")
+        self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 1)
+        self.assertTrue(store.load_result(task["id"])["temp_quota_refunded"])
 
     def test_retry_budget_is_shared_across_execution_and_result_timeout(self) -> None:
         task = self.create_task("owner")
@@ -338,9 +405,13 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_submitted(task["id"])
         self.assertEqual(store.retry_timed_out_submitted_task(task["id"], "结果超时"), 2)
         meta = store.get_meta(task["id"])
-        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
         self.assertEqual(meta["retry_count"], 2)
         self.assertEqual(meta["result_timeout_retry_count"], 1)
+        self.assertTrue(store.mark_running(task["id"], "worker-3"))
+        store.mark_submitted(task["id"])
+        self.assertEqual(store.retry_timed_out_submitted_task(task["id"], "结果超时"), 3)
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_FAILED)
 
     def test_legacy_retry_override_cannot_exceed_global_limit(self) -> None:
         task = self.create_task("owner")
@@ -350,6 +421,10 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(store.mark_running(task["id"], "worker-2"))
         store.mark_submitted(task["id"])
         self.assertEqual(store.retry_submitted_task(task["id"], "额度不足", max_retries=5), 2)
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_PENDING)
+        self.assertTrue(store.mark_running(task["id"], "worker-3"))
+        store.mark_submitted(task["id"])
+        self.assertEqual(store.retry_submitted_task(task["id"], "额度不足", max_retries=5), 3)
         self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_FAILED)
 
     def test_watchdog_scan_error_does_not_stop_watchdog(self) -> None:

@@ -24,6 +24,137 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_datetime(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or ""))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _membership_remaining_seconds(item: dict[str, Any], now: datetime) -> float:
+    remaining = max(0.0, float(item.get("remaining_seconds") or 0))
+    if str(item.get("status") or "") != "active":
+        return remaining
+    activated_at = _parse_datetime(item.get("activated_at"))
+    return max(0.0, remaining - max(0.0, (now - activated_at).total_seconds())) if activated_at else remaining
+
+
+def _membership_rank(item: dict[str, Any]) -> tuple[int, str]:
+    try:
+        price_units = points_to_units(item.get("points_cost") or 0.1)
+    except ValueError:
+        price_units = 0
+    return price_units, str(item.get("purchased_at") or "")
+
+
+def _normalize_membership_record(item: dict[str, Any]) -> dict[str, Any]:
+    record = {
+        "id": str(item.get("id") or secrets.token_hex(8)),
+        "package_id": str(item.get("package_id") or ""),
+        "name": str(item.get("name") or "会员"),
+        "points_cost": units_to_points(max(0, int(item.get("points_cost_units") or 0))) if item.get("points_cost_units") is not None else item.get("points_cost", 0),
+        "duration_days": max(1, int(item.get("duration_days") or 1)),
+        "remaining_seconds": max(0.0, float(item.get("remaining_seconds") or 0)),
+        "status": str(item.get("status") or "paused"),
+        "activated_at": str(item.get("activated_at") or ""),
+        "purchased_at": str(item.get("purchased_at") or _now()),
+        "concurrency": max(0, int(item.get("concurrency") or item.get("concurrency_bonus") or 0)),
+        "bonus_free_uses": max(0, int(item.get("bonus_free_uses") or 0)),
+        "task_discount_points": item.get("task_discount_points", 0),
+    }
+    if record["status"] not in {"active", "paused", "expired"}:
+        record["status"] = "paused"
+    try:
+        record["points_cost"] = units_to_points(points_to_units(record["points_cost"] or 0.1))
+    except ValueError:
+        record["points_cost"] = 0
+    try:
+        record["task_discount_points"] = units_to_points(points_to_units(record["task_discount_points"] or 0.1))
+    except ValueError:
+        record["task_discount_points"] = 0
+    return record
+
+
+def _sync_membership_state(entry: dict[str, Any], now: datetime | None = None) -> tuple[dict[str, Any] | None, bool]:
+    current_time = now or datetime.now(timezone.utc)
+    before = json.dumps({"membership": entry.get("membership"), "memberships": entry.get("memberships")}, ensure_ascii=False, sort_keys=True)
+    raw_records = entry.get("memberships")
+    records = [_normalize_membership_record(item) for item in raw_records if isinstance(item, dict)] if isinstance(raw_records, list) else []
+    legacy = entry.get("membership")
+    if not records and isinstance(legacy, dict):
+        expires_at = _parse_datetime(legacy.get("expires_at"))
+        remaining = max(0.0, (expires_at - current_time).total_seconds()) if expires_at else 0.0
+        records.append(_normalize_membership_record({
+            **legacy,
+            "remaining_seconds": remaining,
+            "duration_days": max(1, int(legacy.get("duration_days") or max(1, round(remaining / 86400)))),
+            "status": "active" if remaining > 0 else "expired",
+            "activated_at": current_time.isoformat() if remaining > 0 else "",
+        }))
+
+    while True:
+        active = next((item for item in records if item["status"] == "active"), None)
+        if active and _membership_remaining_seconds(active, current_time) <= 0:
+            active["remaining_seconds"] = 0
+            active["status"] = "expired"
+            active["activated_at"] = ""
+            continue
+        eligible = [item for item in records if item["status"] != "expired" and _membership_remaining_seconds(item, current_time) > 0]
+        if not eligible:
+            active = None
+            break
+        highest = max(eligible, key=_membership_rank)
+        if active is highest:
+            break
+        if active:
+            active["remaining_seconds"] = _membership_remaining_seconds(active, current_time)
+            active["status"] = "paused"
+            active["activated_at"] = ""
+        highest["status"] = "active"
+        highest["activated_at"] = current_time.isoformat()
+        active = highest
+        break
+
+    active = next((item for item in records if item["status"] == "active"), None)
+    for item in records:
+        if item is not active and item["status"] != "expired":
+            item["status"] = "paused"
+            item["activated_at"] = ""
+    entry["memberships"] = records
+    if active:
+        base_concurrency = max(1, int(entry.get("base_concurrency") or 1))
+        effective_concurrency = min(100, base_concurrency + _membership_concurrency_bonus(active))
+        remaining = _membership_remaining_seconds(active, current_time)
+        activated_at = _parse_datetime(active.get("activated_at")) or current_time
+        entry["membership"] = {
+            **active,
+            "expires_at": (activated_at + timedelta(seconds=float(active.get("remaining_seconds") or 0))).isoformat(),
+            "concurrency_bonus": _membership_concurrency_bonus(active),
+            "effective_concurrency": effective_concurrency,
+            "purchased_package_ids": [item["package_id"] for item in records if item["status"] != "expired" and item["package_id"]],
+        }
+    else:
+        entry["membership"] = None
+    after = json.dumps({"membership": entry.get("membership"), "memberships": entry.get("memberships")}, ensure_ascii=False, sort_keys=True)
+    return dict(entry["membership"]) if isinstance(entry.get("membership"), dict) else None, before != after
+
+
+def _public_memberships(entry: dict[str, Any], now: datetime | None = None) -> list[dict[str, Any]]:
+    current_time = now or datetime.now(timezone.utc)
+    rows = []
+    for item in entry.get("memberships") or []:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row["remaining_seconds"] = _membership_remaining_seconds(item, current_time)
+        row["remaining_days"] = round(row["remaining_seconds"] / 86400, 4)
+        rows.append(row)
+    return sorted(rows, key=lambda item: (item.get("status") != "active", -_membership_rank(item)[0], item.get("purchased_at", "")))
+
+
 def _active_membership(entry: dict[str, Any], now: datetime | None = None) -> dict[str, Any] | None:
     membership = entry.get("membership")
     if not isinstance(membership, dict):
@@ -118,10 +249,10 @@ def login_user(identifier: str, password: str) -> dict[str, Any] | None:
     value = str(identifier or "").strip().casefold()
     with _LOCK:
         data = _read()
-        entry = next(
+        candidate = next(
             (
-                item
-                for item in data["users"].values()
+                (key, item)
+                for key, item in data["users"].items()
                 if isinstance(item, dict)
                 and value
                 and value in {
@@ -131,13 +262,23 @@ def login_user(identifier: str, password: str) -> dict[str, Any] | None:
             ),
             None,
         )
+        if candidate is None or not candidate[1].get("enabled", True):
+            return None
+        key, entry = candidate
+        salt_hex = str(entry.get("password_salt") or "")
+        expected_hash = str(entry.get("password_hash") or "")
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except (TypeError, ValueError):
+        return None
+    if not hmac.compare_digest(_password_hash(password, salt), expected_hash):
+        return None
+    with _LOCK:
+        data = _read()
+        entry = data["users"].get(key)
         if not isinstance(entry, dict) or not entry.get("enabled", True):
             return None
-        try:
-            salt = bytes.fromhex(str(entry.get("password_salt") or ""))
-        except (TypeError, ValueError):
-            return None
-        if not hmac.compare_digest(_password_hash(password, salt), str(entry.get("password_hash") or "")):
+        if str(entry.get("password_salt") or "") != salt_hex or not hmac.compare_digest(str(entry.get("password_hash") or ""), expected_hash):
             return None
         now = _now()
         entry["last_login_at"] = now
@@ -217,15 +358,19 @@ def change_user_password_by_token_hash(token_hash: str, current_password: str, n
 
 def user_profile_by_token_hash(token_hash: str) -> dict[str, Any]:
     with _LOCK:
-        entry = next((item for item in _read()["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
+        data = _read()
+        entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not entry or not entry.get("enabled", True):
             raise KeyError(token_hash)
-        membership = _active_membership(entry)
+        membership, changed = _sync_membership_state(entry)
+        if changed:
+            _write(data)
         return {
             "username": str(entry.get("username") or ""),
             "email": str(entry.get("email") or ""),
             "email_verified_at": str(entry.get("email_verified_at") or ""),
             "membership": dict(membership) if membership else None,
+            "memberships": _public_memberships(entry),
         }
 
 
@@ -277,8 +422,10 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     quota = {str(item.get("id") or ""): item for item in temp_entries}
     now = datetime.now(timezone.utc)
     with _LOCK:
+        data = _read()
+        membership_changed = False
         rows = []
-        for entry in _read()["users"].values():
+        for entry in data["users"].values():
             q = quota.get(str(entry.get("token_hash") or ""), {})
             free_limit = max(1, int(entry.get("free_limit") or 3))
             migrated = int(q.get("credit_units") or 0) > 0 or "free_remaining" in q
@@ -288,7 +435,8 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen = datetime.fromisoformat(str(entry.get("last_seen_at") or entry.get("created_at")))
             if seen.tzinfo is None:
                 seen = seen.replace(tzinfo=timezone.utc)
-            membership = _active_membership(entry, now)
+            membership, changed = _sync_membership_state(entry, now)
+            membership_changed = membership_changed or changed
             rows.append({
                 "id": entry["id"], "username": entry["username"], "created_at": entry["created_at"],
                 "email": str(entry.get("email") or ""), "email_verified_at": str(entry.get("email_verified_at") or ""),
@@ -300,6 +448,8 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "base_concurrency": max(1, int(entry.get("base_concurrency") or q.get("concurrency") or 1)),
                 "membership": dict(membership) if membership else None,
             })
+        if membership_changed:
+            _write(data)
         return sorted(rows, key=lambda item: item["created_at"], reverse=True)
 
 
@@ -373,29 +523,19 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
         token_hash = str(entry.get("token_hash") or "")
         token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == token_hash), {})
         base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
-        current_membership = _active_membership(entry, now)
+        current_membership, _ = _sync_membership_state(entry, now)
         package_id = str(package.get("id") or "")
-        purchased_package_ids: list[str] = []
-        if current_membership:
-            purchased_package_ids = [
-                str(item)
-                for item in current_membership.get("purchased_package_ids", [])
-                if str(item)
-            ]
-            legacy_package_id = str(current_membership.get("package_id") or "")
-            if legacy_package_id and legacy_package_id not in purchased_package_ids:
-                purchased_package_ids.append(legacy_package_id)
-            if package_id in purchased_package_ids:
-                raise ValueError("当前会员有效期内，该会员套餐只能购买一次")
-        current_concurrency_bonus = _membership_concurrency_bonus(current_membership)
-        membership_concurrency_bonus = max(current_concurrency_bonus, int(package.get("concurrency") or 1))
+        active_records = [item for item in entry.get("memberships") or [] if isinstance(item, dict) and item.get("status") != "expired" and _membership_remaining_seconds(item, now) > 0]
+        if any(str(item.get("package_id") or "") == package_id for item in active_records):
+            raise ValueError("当前会员有效期内，该会员套餐只能购买一次")
+        from .membership_catalog import list_memberships
+
+        catalog = list_memberships()
+        highest_price = max((points_to_units(item.get("points_cost")) for item in catalog), default=0)
+        if active_records and max((_membership_rank(item)[0] for item in active_records), default=0) >= highest_price > 0:
+            raise ValueError("最高级会员有效期内不能购买其他会员套餐")
+        membership_concurrency_bonus = max(0, int(package.get("concurrency") or 1))
         effective_concurrency = min(100, base_concurrency + membership_concurrency_bonus)
-        current_expiry = now
-        if current_membership:
-            current_expiry = datetime.fromisoformat(str(current_membership["expires_at"]))
-            if current_expiry.tzinfo is None:
-                current_expiry = current_expiry.replace(tzinfo=timezone.utc)
-        expires_at = current_expiry + timedelta(days=int(package.get("duration_days") or 1))
         balance = purchase_temp_membership(
             token_hash,
             max(1, int(entry.get("free_limit") or 1)),
@@ -403,23 +543,29 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
             int(package.get("bonus_free_uses") or 0),
             effective_concurrency,
         )
-        membership = {
+        entry.setdefault("memberships", []).append({
+            "id": secrets.token_hex(8),
             "package_id": package_id,
             "name": str(package.get("name") or "会员"),
+            "points_cost": package.get("points_cost", 0),
+            "duration_days": int(package.get("duration_days") or 1),
+            "remaining_seconds": int(package.get("duration_days") or 1) * 86400,
+            "status": "paused",
+            "activated_at": "",
             "concurrency": membership_concurrency_bonus,
-            "concurrency_bonus": membership_concurrency_bonus,
-            "effective_concurrency": effective_concurrency,
+            "bonus_free_uses": int(package.get("bonus_free_uses") or 0),
+            "task_discount_points": package.get("task_discount_points", 0.1),
             "purchased_at": now.isoformat(),
-            "cycle_started_at": str(current_membership.get("cycle_started_at") or current_membership.get("purchased_at") or now.isoformat()) if current_membership else now.isoformat(),
-            "purchased_package_ids": [*purchased_package_ids, package_id],
-            "expires_at": expires_at.isoformat(),
-        }
+        })
         entry["base_concurrency"] = base_concurrency
+        membership, _ = _sync_membership_state(entry, now)
+        effective_concurrency = int((membership or {}).get("effective_concurrency") or base_concurrency)
+        update_temp_token(token_hash, concurrency=effective_concurrency)
         entry["effective_concurrency"] = effective_concurrency
-        entry["membership"] = membership
         entry["updated_at"] = _now()
         _write(data)
-        return {"membership": dict(membership), "balance": balance}
+        balance["concurrency"] = effective_concurrency
+        return {"membership": dict(membership) if membership else None, "memberships": _public_memberships(entry, now), "balance": balance}
 
 
 def sync_user_membership_by_token_hash(token_hash: str) -> bool:
@@ -428,21 +574,36 @@ def sync_user_membership_by_token_hash(token_hash: str) -> bool:
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not isinstance(entry, dict):
             return False
-        active = _active_membership(entry)
+        active, membership_changed = _sync_membership_state(entry)
         token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == str(token_hash or "")), {})
         base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
         effective_concurrency = min(100, base_concurrency + _membership_concurrency_bonus(active))
         token_concurrency = max(1, int(token.get("concurrency") or 1))
-        if int(entry.get("effective_concurrency") or 0) == effective_concurrency and token_concurrency == effective_concurrency and entry.get("base_concurrency"):
+        if not membership_changed and int(entry.get("effective_concurrency") or 0) == effective_concurrency and token_concurrency == effective_concurrency and entry.get("base_concurrency"):
             return False
         update_temp_token(str(token_hash or ""), concurrency=effective_concurrency)
         entry["effective_concurrency"] = effective_concurrency
         entry["base_concurrency"] = base_concurrency
-        if not active and isinstance(entry.get("membership"), dict):
-            entry["membership"]["status"] = "expired"
         entry["updated_at"] = _now()
         _write(data)
         return True
+
+
+def membership_task_discount_units_by_token_hash(token_hash: str) -> int:
+    with _LOCK:
+        data = _read()
+        entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
+        if not isinstance(entry, dict):
+            return 0
+        active, changed = _sync_membership_state(entry)
+        if changed:
+            _write(data)
+        if not active:
+            return 0
+        try:
+            return points_to_units(active.get("task_discount_points") or 0.1)
+        except ValueError:
+            return 0
 
 
 def rotate_user_token_by_hash(token_hash: str) -> dict[str, Any]:

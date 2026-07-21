@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -137,20 +138,50 @@ class AdminUITests(unittest.TestCase):
         self.assertLess(query_success_index, running_index)
         self.assertIn('if (rawStatus === "failed") return { state: "failed"', self.javascript)
         self.assertIn('if (rawStatus === "canceled") return { state: "failed"', self.javascript)
+        self.assertIn('label: "重试中"', self.javascript)
+        self.assertIn('`第 ${Math.min(retryCount, 2)} / 2 次`', self.javascript)
         self.assertNotIn("activeIds.has(task.id)", self.javascript)
         self.assertIn('label: "待执行"', self.javascript)
         self.assertNotIn("重试 ${retryCount}", self.javascript)
         self.assertIn("生成异常请重试！", self.javascript)
+        self.assertNotIn('const rawStatus = String(task.status || "未知")', self.javascript)
 
     def test_task_batch_query_contract_batches_repaints_and_storage(self) -> None:
         self.assertIn("if (!options.deferRender) renderTaskTable()", self.javascript)
         self.assertIn("await queryTask(id, { quiet: true, deferRender: true })", self.javascript)
         self.assertIn("renderTaskTable({ skipUnchanged: true })", self.javascript)
         self.assertIn('taskRenderSignature: ""', self.javascript)
+        self.assertIn('setAttribute("aria-busy", "true")', self.javascript)
+
+    def test_task_table_uses_stable_operational_layout(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("scrollbar-gutter: stable both-edges", styles)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", styles)
+        self.assertIn("#tasksView .task-table td", styles)
+
+    def test_every_static_non_navigation_button_is_bound(self) -> None:
+        button_tags = re.findall(r"<button\b([^>]*)>", self.html, flags=re.IGNORECASE)
+        button_ids = []
+        for attributes in button_tags:
+            match = re.search(r'\bid="([^"]+)"', attributes, flags=re.IGNORECASE)
+            if match and "nav-item" not in attributes:
+                button_ids.append(match.group(1))
+        self.assertGreaterEqual(len(set(button_ids)), 100)
+        for button_id in sorted(set(button_ids)):
+            self.assertIn(f'getElementById("{button_id}")', self.javascript, button_id)
+            self.assertIn(f"els.{button_id}", self.javascript, button_id)
+
+    def test_mobile_navigation_uses_compact_horizontal_workspace_tabs(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("scroll-snap-type: x proximity", styles)
+        self.assertIn("grid-template-columns: auto minmax(0, 1fr)", styles)
+        self.assertIn("overflow-x: auto", styles)
 
     def test_hs_brand_and_dola_default_quota_are_present(self) -> None:
-        self.assertEqual(self.html.count('class="brand-mark brand-monogram"'), 2)
+        self.assertEqual(self.html.count('class="brand-mark"'), 2)
         self.assertEqual(self.html.count('aria-label="HS"'), 2)
+        self.assertIn('href="/admin/assets/hs-logo.png', self.html)
+        self.assertEqual(self.html.count('src="/admin/assets/hs-logo.png'), 2)
         self.assertNotIn('<div class="brand-mark">DF</div>', self.html)
         self.assertIn('value="1" placeholder="Dola 默认 1"', self.html)
         self.assertIn('platform === "dola" ? 1', self.javascript)
@@ -185,7 +216,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("saveFeedbackRecord", self.javascript)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
-        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState"):
+        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipTaskDiscount", "membershipDetailsButton", "membershipDetailsModal", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState"):
             self.assertIn(f'id="{element_id}"', self.html)
         for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/memberships/", "/admin/announcements", "/admin/notifications/", "/admin/feedback/", "/notifications/read-all"):
             self.assertIn(endpoint, self.javascript)
@@ -193,7 +224,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("8000", self.javascript)
 
     def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
-        for text in ("用户首页", "我的视频", "提示词库", "我的会员", "当前积分"):
+        for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "积分账号", "当前积分"):
             self.assertIn(text, self.html)
         for removed in ("一处掌控所有生成任务", "可用于第三方软件调用，消耗同一积分余额，请妥善保管。", "账户概览", "系统运行概况"):
             self.assertNotIn(removed, self.html)

@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.3-2" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.2.3" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.3-3" />
   </head>
   <body>
     <script>
@@ -16,12 +17,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark brand-monogram" aria-label="HS">
-            <svg viewBox="0 0 64 64" aria-hidden="true">
-              <text class="monogram-letter monogram-h" x="5" y="53">H</text>
-              <text class="monogram-letter monogram-s" x="27" y="53">S</text>
-            </svg>
-          </div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.3" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -83,12 +79,7 @@
     <div class="app-shell hidden" id="appShell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark brand-monogram" aria-label="HS">
-            <svg viewBox="0 0 64 64" aria-hidden="true">
-              <text class="monogram-letter monogram-h" x="5" y="53">H</text>
-              <text class="monogram-letter monogram-s" x="27" y="53">S</text>
-            </svg>
-          </div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.3" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -123,8 +114,8 @@
           <button class="nav-item" type="button" data-view="prompts">
             <span>提示词库</span>
           </button>
-          <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>积分购买</span></button>
-          <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>我的会员</span></button>
+          <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>积分账号</span></button>
+          <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>会员订阅</span></button>
           <button class="nav-item" type="button" data-view="transactions" id="transactionsNavItem"><span>消费明细</span></button>
           <button class="nav-item" type="button" data-view="users" id="usersNavItem"><span>用户管理</span></button>
           <button class="nav-item" type="button" data-view="point-cards" id="pointCardsNavItem"><span>卡密积分</span></button>
@@ -191,9 +182,9 @@
 
         </section>
 
-        <section class="view" id="pointsView" data-title="积分购买">
+        <section class="view" id="pointsView" data-title="积分账号">
           <div class="commerce-header">
-            <div><h2>积分账户</h2><p>购买套餐或使用卡密为当前账号充值。</p></div>
+            <div><h2>积分账号</h2><p>购买套餐或使用卡密为当前账号充值。</p></div>
             <div class="purchase-balance"><span>可用积分</span><strong id="pointsBalance">0</strong></div>
           </div>
           <div class="commerce-grid">
@@ -209,7 +200,7 @@
           </div>
         </section>
 
-        <section class="view" id="membershipView" data-title="我的会员"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>使用账户积分购买会员权益；有效期内同一套餐限购一次。</p></div><span class="settings-state" id="membershipCurrentState">当前无会员</span></div><div class="membership-grid" id="membershipList"></div></section></section>
+        <section class="view" id="membershipView" data-title="会员订阅"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>高级会员优先生效，暂停的低级会员不会消耗剩余天数。</p></div><div class="membership-current"><span class="settings-state" id="membershipCurrentState">当前无会员</span><button class="secondary-button hidden" id="membershipDetailsButton" type="button">详情</button></div></div><div class="membership-grid" id="membershipList"></div></section></section>
 
         <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header"><div><h2>积分明细</h2><p>记录任务消费、退款、卡密兑换和管理员调整。</p></div><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap"><table class="users-table ledger-table"><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
 
@@ -939,9 +930,16 @@
     <div class="modal-backdrop hidden" id="membershipModal" aria-hidden="true">
       <section class="modal-panel package-modal" role="dialog" aria-modal="true" aria-labelledby="membershipModalTitle">
         <div class="modal-header"><div><span class="modal-eyebrow">会员目录</span><h2 id="membershipModalTitle">管理会员套餐</h2><p>启用的套餐会展示在客户端。</p></div><button class="modal-close" id="closeMembershipModal" type="button" aria-label="关闭">×</button></div>
-        <form class="package-create-form membership-create-form" id="membershipForm"><label class="field"><span>套餐名称</span><input id="membershipName" maxlength="80" required /></label><label class="field"><span>所需积分</span><input id="membershipPrice" type="number" min="0.1" step="0.1" required /></label><label class="field"><span>有效天数</span><input id="membershipDuration" type="number" min="1" max="3650" value="30" required /></label><label class="field"><span>并发增量</span><input id="membershipConcurrency" type="number" min="1" max="100" value="2" required /></label><label class="field"><span>赠送视频额度</span><input id="membershipBonus" type="number" min="0" value="0" required /></label><label class="field"><span>排序</span><input id="membershipSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createMembershipButton" type="submit">新增套餐</button><label class="field field-wide"><span>套餐说明</span><input id="membershipDescription" maxlength="500" /></label></form>
+        <form class="package-create-form membership-create-form" id="membershipForm"><label class="field"><span>套餐名称</span><input id="membershipName" maxlength="80" required /></label><label class="field"><span>所需积分</span><input id="membershipPrice" type="number" min="0.1" step="0.1" required /></label><label class="field"><span>有效天数</span><input id="membershipDuration" type="number" min="1" max="3650" value="30" required /></label><label class="field"><span>购买后并发</span><input id="membershipConcurrency" type="number" min="1" max="100" value="2" required /></label><label class="field"><span>单任务积分减免</span><input id="membershipTaskDiscount" type="number" min="0.1" step="0.1" value="0.1" required /></label><label class="field"><span>赠送视频额度</span><input id="membershipBonus" type="number" min="0" value="0" required /></label><label class="field"><span>排序</span><input id="membershipSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createMembershipButton" type="submit">新增套餐</button><label class="field field-wide"><span>套餐说明</span><input id="membershipDescription" maxlength="500" /></label></form>
         <div class="package-list" id="membershipAdminList"></div>
         <div class="modal-actions"><button class="secondary-button" id="cancelMembershipModal" type="button">关闭</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="membershipDetailsModal" aria-hidden="true">
+      <section class="modal-panel membership-details-modal" role="dialog" aria-modal="true" aria-labelledby="membershipDetailsTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">会员权益</span><h2 id="membershipDetailsTitle">已购买会员</h2><p>高级会员使用期间，低级会员的剩余时间会自动暂停。</p></div><button class="modal-close" id="closeMembershipDetailsModal" type="button" aria-label="关闭">×</button></div>
+        <div class="membership-details-list" id="membershipDetailsList"></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelMembershipDetailsModal" type="button">关闭</button></div>
       </section>
     </div>
     <div class="modal-backdrop hidden" id="announcementModal" aria-hidden="true">
@@ -1027,6 +1025,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.2.3-2"></script>
+    <script src="/admin/assets/app.js?v=1.2.3-3"></script>
   </body>
 </html>

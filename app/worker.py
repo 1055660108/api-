@@ -51,6 +51,7 @@ GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 
 RUNNING_WATCH_GRACE_SECONDS = 90
 SUCCESS_WATCH_GRACE_SECONDS = 120
 RESULT_WATCH_DEADLINE_MINUTES = 10
+RETRY_ACCOUNT_WAIT_MINUTES = 5
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -228,7 +229,7 @@ class WorkerManager:
                     if task and not task.done():
                         task.cancel()
                     self._worker_task_ids.pop(worker_id, None)
-                if miss_count >= MAX_TASK_RETRIES:
+                if miss_count > MAX_TASK_RETRIES:
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
         set_active_tasks(self._claimed)
 
@@ -248,11 +249,11 @@ class WorkerManager:
                     if not bool(meta.get("cancel_requested")):
                         if account_id:
                             record_failed_account(task_id, account_id)
-                        retry_count = retry_timed_out_submitted_task(task_id, "生成超过10分钟，正在换账号重试", max_retries=MAX_TASK_RETRIES)
-                        if retry_count < MAX_TASK_RETRIES:
+                        retry_count = retry_timed_out_submitted_task(task_id, "生成超过10分钟，正在重试", max_retries=MAX_TASK_RETRIES)
+                        if retry_count <= MAX_TASK_RETRIES:
                             clear_transient_result(task_id)
                             continue
-                    mark_failed(task_id, "生成结果等待超时，请重新提交")
+                    mark_failed(task_id, "生成超过10分钟，两次重试后仍未返回结果")
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     continue
                 finished_at = self._parse_utc(str(meta.get("finished_at") or meta.get("updated_at") or ""))
@@ -274,6 +275,20 @@ class WorkerManager:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
+
+    def _retry_account_wait_expired(self, meta: dict) -> bool:
+        if max(0, int(meta.get("result_timeout_retry_count") or 0)) < 1:
+            return False
+        queued_at = self._parse_utc(str(meta.get("retry_queued_at") or meta.get("next_attempt_at") or ""))
+        return bool(queued_at and datetime.now(timezone.utc) - queued_at >= timedelta(minutes=RETRY_ACCOUNT_WAIT_MINUTES))
+
+    def _handle_unavailable_account(self, task_id: str, meta: dict, platform: str) -> bool:
+        if self._retry_account_wait_expired(meta):
+            mark_failed(task_id, "重试等待可用账号超时，请重新提交")
+            refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+            return True
+        mark_pending(task_id, f"等待可用{platform}账号")
+        return False
 
     async def _worker_loop(self, worker_id: str) -> None:
         while not self._stopping:
@@ -306,9 +321,11 @@ class WorkerManager:
                     continue
                 account = claim_account_for_worker(worker_id, task_id, exclude_ids=failed_account_ids, platform=platform)
                 if not account:
-                    mark_pending(task_id, f"等待可用{platform}账号")
-                    await asyncio.sleep(3)
+                    if not self._handle_unavailable_account(task_id, meta, platform):
+                        await asyncio.sleep(3)
                     continue
+                if meta.get("retry_queued_at"):
+                    update_meta(task_id, retry_queued_at="")
                 admission = self._platform_guard.admit(platform)
                 if not admission.allowed:
                     account_id = str(account.get("id") or "")
@@ -360,7 +377,7 @@ class WorkerManager:
                     if outcome.get("retryable"):
                         reason = str(outcome.get("reason") or "")[:500]
                         retry_count = record_retry(task_id, reason)
-                        if retry_count >= MAX_TASK_RETRIES:
+                        if retry_count > MAX_TASK_RETRIES:
                             meta = get_meta(task_id)
                             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     else:
@@ -390,7 +407,7 @@ class WorkerManager:
                     self._platform_guard.record_failure(platform)
                 with suppress(FileNotFoundError):
                     retry_count = record_retry(task_id, str(exc)[:500])
-                    if retry_count >= MAX_TASK_RETRIES:
+                    if retry_count > MAX_TASK_RETRIES:
                         meta = get_meta(task_id)
                         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                 if account:

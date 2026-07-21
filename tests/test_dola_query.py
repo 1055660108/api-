@@ -275,6 +275,42 @@ class DolaQueryTests(unittest.TestCase):
         record_failed.assert_called_once_with("0" * 32, "account-1")
         retry_task.assert_called_once_with("0" * 32, query.ACCOUNT_QUOTA_RETRY_TEXT, max_retries=2, delay_seconds=10)
 
+    def test_generation_failure_requeues_submitted_task_and_clears_stale_result(self) -> None:
+        task_id = "0" * 32
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "conversation_id": "12345678901234567",
+            "account_id": "account-1",
+            "account_quota_charge_id": "charge-1",
+        }
+        meta = {"status": query.STATUS_SUBMITTED, "owner_token_hash": "owner-hash"}
+        with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=("", automation.FINAL_FAILURE_TEXT))
+        ), patch.object(query, "save_result"), patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(query, "record_failed_account") as record_failed, patch.object(
+            query, "refund_account_quota_once"
+        ) as refund_account, patch.object(query, "retry_submitted_task", return_value=1) as retry_task, patch.object(
+            query, "clear_transient_result"
+        ) as clear_result:
+            response = asyncio.run(query._query_task_once(task_id))
+        self.assertEqual(response, {"code": "1", "text": query.RETRY_GENERATING_TEXT, "url": ""})
+        clear_account.assert_called_once_with("account-1", task_id)
+        record_failed.assert_called_once_with(task_id, "account-1")
+        refund_account.assert_not_called()
+        retry_task.assert_called_once_with(task_id, automation.FINAL_FAILURE_TEXT, max_retries=2, delay_seconds=10)
+        clear_result.assert_called_once_with(task_id)
+
+    def test_global_task_timeout_returns_terminal_failure(self) -> None:
+        meta = {"status": query.STATUS_FAILED, "owner_token_hash": "owner-hash", "error": "超时生成失败"}
+        with patch.object(query, "expire_task_if_timeout", return_value=True), patch.object(
+            query, "get_meta", return_value=meta
+        ):
+            response = asyncio.run(query._query_task_once("0" * 32))
+        self.assertEqual(response, {"code": "0", "text": "超时生成失败", "url": ""})
+
 
 if __name__ == "__main__":
     unittest.main()

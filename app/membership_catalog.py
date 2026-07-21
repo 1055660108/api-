@@ -50,6 +50,8 @@ def _normalize(item: dict[str, Any]) -> dict[str, Any]:
     duration_days = int(item.get("duration_days") or 0)
     concurrency = int(item.get("concurrency") or 1)
     bonus_free_uses = int(item.get("bonus_free_uses") or 0)
+    raw_task_discount = item.get("task_discount_points")
+    task_discount_points = units_to_points(points_to_units(0.1 if raw_task_discount is None else raw_task_discount))
     if duration_days < 1 or duration_days > 3650:
         raise ValueError("会员积分或有效期无效")
     if concurrency < 1 or concurrency > 100:
@@ -63,6 +65,7 @@ def _normalize(item: dict[str, Any]) -> dict[str, Any]:
         "duration_days": duration_days,
         "concurrency": concurrency,
         "bonus_free_uses": bonus_free_uses,
+        "task_discount_points": task_discount_points,
         "description": str(item.get("description") or "").strip()[:500],
         "payment_url": str(item.get("payment_url") or DEFAULT_PAYMENT_URL).strip()[:500],
         "enabled": bool(item.get("enabled", True)),

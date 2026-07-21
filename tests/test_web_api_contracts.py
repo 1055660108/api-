@@ -96,6 +96,11 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(invalid_client.status_code, 401)
         self.assertEqual(invalid_client.json(), {"detail": "用户名或密码错误"})
 
+    def test_client_login_moves_password_work_off_event_loop(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+        self.assertIn("await asyncio.to_thread(login_user", source)
+        self.assertIn('_rate_limit(request, "client-login-ip", 200, 60)', source)
+
     def test_health_contract_is_role_scoped_for_admin_and_client(self) -> None:
         registered = self.register()
         queue_health = {"ok": True, "backend": "file", "ready": 0, "processing": 0, "delayed": 0, "error": "internal queue detail"}
@@ -254,6 +259,20 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(admin_delete.json()["audience"], "admin")
         self.assertEqual(self.client.get("/tasks", headers={"X-API-Token": self.admin_token}).json()["tasks"], [])
         self.assertTrue(store.get_meta(task["id"])["task_hidden_for_admin"])
+
+    def test_submitted_task_rejects_cancel_without_setting_cancel_requested(self) -> None:
+        registered = self.register("submitted_owner")
+        token = registered["token"]
+        owner_hash = temp_access.hash_token(token)
+        task = store.create_task("已提交任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.mark_submitted(task["id"])
+        response = self.client.delete(f"/tasks/{task['id']}", headers={"X-API-Token": token})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["ok"])
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_SUBMITTED)
+        self.assertFalse(bool(meta.get("cancel_requested")))
 
     def test_client_failed_cleanup_does_not_remove_admin_history(self) -> None:
         registered = self.register()

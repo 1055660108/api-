@@ -286,7 +286,9 @@ class ClientFeatureTests(unittest.TestCase):
 
         user_data = json.loads(users.USERS_PATH.read_text(encoding="utf-8"))
         member_entry = next(item for item in user_data["users"].values() if item["id"] == user_id)
-        member_entry["membership"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+        member_entry["memberships"][0]["remaining_seconds"] = 0
+        member_entry["memberships"][0]["status"] = "expired"
+        member_entry["memberships"][0]["activated_at"] = ""
         users.USERS_PATH.write_text(json.dumps(user_data, ensure_ascii=False), encoding="utf-8")
         self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 4)
         repurchased = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
@@ -297,6 +299,60 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/admin/memberships/{package_id}").status_code, 200)
         self.assertEqual(self.client.get("/memberships", headers=headers).json()["packages"], [])
 
+    def test_membership_priority_pause_resume_and_highest_package_lock(self) -> None:
+        registered = self.register("priority_member")
+        headers = {"X-API-Token": registered["token"]}
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "priority_member")
+        self.client.post(f"/users/{user_id}/points", json={"amount": 100})
+        packages = {}
+        for name, price, concurrency, discount, sort_order in (("基础会员", 10, 2, 0.2, 30), ("高级会员", 20, 4, 0.5, 10), ("旗舰会员", 30, 6, 0.8, 20), ("入门会员", 5, 1, 0.1, 0)):
+            response = self.client.post("/admin/memberships", json={"name": name, "points_cost": price, "duration_days": 30, "concurrency": concurrency, "bonus_free_uses": 0, "task_discount_points": discount, "sort_order": sort_order})
+            self.assertEqual(response.status_code, 201)
+            packages[name] = response.json()["package"]["id"]
+        self.assertEqual([item["name"] for item in self.client.get("/memberships", headers=headers).json()["packages"]], ["入门会员", "高级会员", "旗舰会员", "基础会员"])
+
+        self.assertEqual(self.client.post(f"/memberships/{packages['基础会员']}/purchase", headers=headers).status_code, 200)
+        low_before = self.client.get("/auth/profile", headers=headers).json()["memberships"][0]["remaining_seconds"]
+        self.assertEqual(self.client.post(f"/memberships/{packages['高级会员']}/purchase", headers=headers).status_code, 200)
+        profile = self.client.get("/auth/profile", headers=headers).json()
+        self.assertEqual(profile["membership"]["name"], "高级会员")
+        paused = next(item for item in profile["memberships"] if item["name"] == "基础会员")
+        self.assertEqual(paused["status"], "paused")
+        self.assertGreater(paused["remaining_seconds"], low_before - 5)
+
+        user_data = json.loads(users.USERS_PATH.read_text(encoding="utf-8"))
+        member_entry = next(item for item in user_data["users"].values() if item["id"] == user_id)
+        high = next(item for item in member_entry["memberships"] if item["package_id"] == packages["高级会员"])
+        high.update(remaining_seconds=0, status="expired", activated_at="")
+        users.USERS_PATH.write_text(json.dumps(user_data, ensure_ascii=False), encoding="utf-8")
+        resumed = self.client.get("/auth/profile", headers=headers).json()
+        self.assertEqual(resumed["membership"]["name"], "基础会员")
+        self.assertEqual(next(item for item in resumed["memberships"] if item["name"] == "基础会员")["status"], "active")
+
+        self.assertEqual(self.client.post(f"/memberships/{packages['旗舰会员']}/purchase", headers=headers).status_code, 200)
+        blocked = self.client.post(f"/memberships/{packages['入门会员']}/purchase", headers=headers)
+        self.assertEqual(blocked.status_code, 400)
+        self.assertIn("最高级会员", blocked.json()["detail"])
+
+    def test_membership_discount_reduces_paid_video_cost(self) -> None:
+        registered = self.register("discount_member")
+        headers = {"X-API-Token": registered["token"]}
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "discount_member")
+        self.client.post(f"/users/{user_id}/points", json={"amount": 20})
+        invalid = self.client.post("/admin/memberships", json={"name": "无效套餐", "points_cost": 1, "duration_days": 30, "concurrency": 1, "task_discount_points": 0})
+        self.assertEqual(invalid.status_code, 400)
+        created = self.client.post("/admin/memberships", json={"name": "减免会员", "points_cost": 1, "duration_days": 30, "concurrency": 1, "bonus_free_uses": 0, "task_discount_points": 0.3})
+        package_id = created.json()["package"]["id"]
+        self.assertEqual(self.client.post(f"/memberships/{package_id}/purchase", headers=headers).status_code, 200)
+        with patch.object(main, "active_task_count_for_owner", return_value=0), patch.object(main, "create_sem", asyncio.Semaphore(1)):
+            first = self.client.post("/tasks", headers=headers, data={"prompt": "免费任务", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video"})
+            second = self.client.post("/tasks", headers=headers, data={"prompt": "减免任务", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["billing"]["points_used"], 0.7)
+
     def test_user_search_prefers_exact_username_email_or_id(self) -> None:
         first = self.register("search_user")
         self.register("search_user_extra")
@@ -305,6 +361,14 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(exact["users"][0]["username"], "search_user")
         user_id = exact["users"][0]["id"]
         self.assertEqual(self.client.get(f"/users?q={user_id}").json()["users"][0]["id"], user_id)
+
+    def test_client_sidebar_name_uses_registered_username_not_token_remark(self) -> None:
+        registered = self.register("sidebar_owner")
+        token_hash = temp_access.hash_token(registered["token"])
+        temp_access.update_temp_token(token_hash, remark="管理员备注")
+        access_state = self.client.get("/auth/access-state", headers={"X-API-Token": registered["token"]})
+        self.assertEqual(access_state.status_code, 200)
+        self.assertEqual(access_state.json()["user_name"], "sidebar_owner")
 
     def test_task_consumption_and_admin_adjustments_are_recorded(self) -> None:
         registered = self.register("ledger_user")

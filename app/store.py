@@ -105,6 +105,12 @@ def expire_task_if_timeout(task_id: str) -> bool:
     if result.get("decoded_main_url"):
         return False
     mark_failed(task_id, "超时生成失败")
+    owner_hash = str(meta.get("owner_token_hash") or "")
+    if owner_hash:
+        from .temp_access import refund_temp_quota_hash
+
+        if refund_temp_quota_hash(owner_hash, task_id):
+            mark_result_once(task_id, "temp_quota_refunded", True)
     return True
 
 
@@ -431,7 +437,7 @@ def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_PENDING or bool(meta.get("cancel_requested")):
             return False
-        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", execution_miss_count=0, updated_at=claimed_at)
+        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", execution_miss_count=0, submit_phase="", submit_started_at="", updated_at=claimed_at)
         _write_storage_json(meta_path(task_id), meta)
         return True
 
@@ -441,7 +447,7 @@ def mark_pending(task_id: str, reason: str = "") -> None:
 
 
 def mark_failed(task_id: str, reason: str = "") -> None:
-    update_meta_if(task_id, {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED}, status=STATUS_FAILED, worker_id="", finished_at=utc_now(), error=reason)
+    update_meta_if(task_id, {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED, STATUS_FAILED}, status=STATUS_FAILED, worker_id="", finished_at=utc_now(), error=reason)
 
 
 def mark_canceled(task_id: str, reason: str = "canceled") -> None:
@@ -542,7 +548,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
                 normalized_reason = "浏览器超时" if str(reason or "") == "browser timeout" else "Dola 当前地区不可用" if str(reason or "") == "region restricted" else reason
                 meta.update(retry_count=count, worker_id="", error=normalized_reason)
-                if count >= MAX_TASK_RETRIES:
+                if count > MAX_TASK_RETRIES:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
@@ -559,7 +565,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
         if str(reason or "") == "region restricted":
             reason = "Dola 当前地区不可用"
         meta.update(retry_count=count, worker_id="", error=reason)
-        if count >= MAX_TASK_RETRIES:
+        if count > MAX_TASK_RETRIES:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
@@ -577,7 +583,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
                     return max(0, int(meta.get("retry_count") or 0))
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
                 meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
-                if count >= max_retries:
+                if count > max_retries:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
@@ -590,7 +596,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
             return max(0, int(meta.get("retry_count") or 0))
         count = max(0, int(meta.get("retry_count") or 0)) + 1
         meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
-        if count >= max_retries:
+        if count > max_retries:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
@@ -609,8 +615,8 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
                 previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
                 timeout_count = previous_timeout_count + 1
                 count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
-                meta.update(retry_count=count, result_timeout_retry_count=timeout_count, worker_id="", error=reason, result_watch_miss_count=0)
-                if count >= max_retries:
+                meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0)
+                if count > max_retries:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
@@ -624,8 +630,8 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
         previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
         timeout_count = previous_timeout_count + 1
         count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
-        meta.update(retry_count=count, result_timeout_retry_count=timeout_count, worker_id="", error=reason, result_watch_miss_count=0)
-        if count >= max_retries:
+        meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0)
+        if count > max_retries:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
@@ -639,7 +645,7 @@ def record_execution_miss(task_id: str, reason: str = "任务未执行，重新�
         def mutate(meta: dict[str, Any]) -> int:
             miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
             count = max(0, int(meta.get("retry_count") or 0)) + 1
-            if count >= MAX_TASK_RETRIES:
+            if count > MAX_TASK_RETRIES:
                 meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
             else:
                 meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
@@ -650,7 +656,7 @@ def record_execution_miss(task_id: str, reason: str = "任务未执行，重新�
     meta = get_meta(task_id)
     miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
     count = max(0, int(meta.get("retry_count") or 0)) + 1
-    if count >= MAX_TASK_RETRIES:
+    if count > MAX_TASK_RETRIES:
         update_meta(task_id, retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
     else:
         update_meta(task_id, retry_count=count, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
@@ -964,7 +970,8 @@ def migrate_task_owner(old_token_hash: str, new_token_hash: str) -> int:
 
 def is_task_canceled(task_id: str) -> bool:
     try:
-        return str(get_meta(task_id).get("status") or "") == STATUS_CANCELED
+        meta = get_meta(task_id)
+        return str(meta.get("status") or "") == STATUS_CANCELED or bool(meta.get("cancel_requested"))
     except FileNotFoundError:
         return True
 

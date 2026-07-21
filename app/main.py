@@ -63,7 +63,6 @@ from .store import (
     delete_task,
     get_meta,
     images_dir,
-    mark_cancel_requested,
     mark_failed,
     migrate_task_owner,
     list_tasks,
@@ -124,7 +123,7 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
@@ -379,6 +378,10 @@ def _health_payload(access: AccessContext) -> dict:
 
 def _client_access_payload(access: AccessContext) -> dict:
     balance = user_balance_by_token_hash(access.token_hash, list_temp_tokens())
+    try:
+        user_name = str(user_identity_by_token_hash(access.token_hash).get("username") or "")
+    except KeyError:
+        user_name = temp_token_remarks().get(access.token_hash, "")
     return {
         "quota": {
             "limit": access.limit,
@@ -388,7 +391,7 @@ def _client_access_payload(access: AccessContext) -> dict:
         },
         "token_concurrency": access.concurrency,
         "task_retention_days": access.task_retention_days,
-        "user_name": temp_token_remarks().get(access.token_hash, ""),
+        "user_name": user_name,
     }
 
 
@@ -738,11 +741,13 @@ async def client_registration_email_domains():
 
 @app.post("/auth/login")
 async def client_login(request: Request):
+    import asyncio
+
     payload = await _request_payload(request)
     identifier = payload.get("identifier") or payload.get("username") or ""
-    _rate_limit(request, "client-login-ip", 60, 60)
+    _rate_limit(request, "client-login-ip", 200, 60)
     _rate_limit(request, "client-login-identifier", 20, 60, str(identifier).strip().casefold())
-    result = login_user(identifier, payload.get("password", ""))
+    result = await asyncio.to_thread(login_user, identifier, payload.get("password", ""))
     if not result:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     return {"ok": True, **result}
@@ -1365,7 +1370,9 @@ async def openai_chat_completions(
             active_count = active_task_count_for_owner(access.token_hash)
             if active_count >= access.concurrency:
                 raise OpenAIAPIError(429, "并发数量不足，等待前方任务完成后继续执行！", "rate_limit_error", code="rate_limit_exceeded")
-        cost_units = model_cost_units(platform, model, task_type)
+        base_cost_units = model_cost_units(platform, model, task_type)
+        discount_units = membership_task_discount_units_by_token_hash(access.token_hash) if access.is_temp else 0
+        cost_units = max(1, base_cost_units - discount_units)
         user_id = _transaction_user_id(access)
         reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
         reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
@@ -1884,7 +1891,9 @@ async def submit_task(
                 active_count = active_task_count_for_owner(access.token_hash)
                 if active_count >= access.concurrency:
                     raise HTTPException(status_code=429, detail="并发数量不足，等待前方任务完成后继续执行！")
-            cost_units = model_cost_units(platform, model, task_type)
+            base_cost_units = model_cost_units(platform, model, task_type)
+            discount_units = membership_task_discount_units_by_token_hash(access.token_hash) if access.is_temp else 0
+            cost_units = max(1, base_cost_units - discount_units)
             user_id = _transaction_user_id(access)
             reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
             reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
@@ -2090,7 +2099,6 @@ async def remove_task(access: Annotated[AccessContext, Depends(require_token)], 
             raise HTTPException(status_code=404, detail="task not found")
         status = str(meta.get("status") or "")
         if status == "submitted" or str(meta.get("submit_phase") or "") in {"committing", "submitted"}:
-            mark_cancel_requested(task_id, "已提交平台生成，无法取消")
             return {"ok": False, "cancelable": False, "detail": "已提交平台生成，无法取消"}
         if status in {"pending", "running"}:
             canceled, canceled_meta = request_task_cancel(task_id)

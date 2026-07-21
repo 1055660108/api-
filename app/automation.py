@@ -699,7 +699,8 @@ class DolaFetchAutomation:
 
                 attachments = await self._upload_images_if_needed(page)
                 if not begin_task_submission(self.task_id):
-                    return {"success": False, "retryable": False, "reason": "task canceled before submission"}
+                    canceled = is_task_canceled(self.task_id)
+                    return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 result = await page.evaluate(
                     SUBMIT_SCRIPT,
                     {

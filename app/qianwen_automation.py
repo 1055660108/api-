@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright
 from .accounts import disable_account_for_login, update_account_cookies
 from .browser_runtime import cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import QIANWEN_PROFILES_DIR, TASKS_DIR, ensure_dirs, load_settings
-from .store import begin_task_submission, clear_transient_result, mark_pending, mark_submitted, mark_success, save_result, task_exists
+from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, mark_submitted, mark_success, save_result, task_exists
 from .profile_lock import account_profile_lock
 
 
@@ -265,7 +265,8 @@ class QianwenVideoAutomation:
                 send_button = page.locator('button[aria-label="发送消息"]:visible').first
                 await send_button.wait_for(state="visible", timeout=15000)
                 if not begin_task_submission(self.task_id):
-                    return {"success": False, "retryable": False, "reason": "task canceled before submission"}
+                    canceled = is_task_canceled(self.task_id)
+                    return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 await send_button.click(force=True)
                 mark_submitted(self.task_id)
                 await page.wait_for_timeout(8000)

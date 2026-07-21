@@ -208,13 +208,9 @@
                 <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>管理员账号</h2><p>当前账号只读，密码可在安全弹窗中修改。</p></div><span class="settings-state" id="adminPasswordState">安全登录</span></div>
                 <div class="settings-card-value"><div><span>管理员账号</span><strong id="adminAccountDisplay">-</strong></div><button class="primary-button" id="openPasswordModal" type="button">修改密码</button></div>
               </section>
-              <section class="panel config-panel" id="repositoryUpdatePanel">
-                <div class="settings-card-header"><div><span class="settings-icon">↻</span><h2>后端自动更新</h2><p>通过部署控制器拉取 main、构建镜像、更新 API 与 Worker，并在失败时自动回滚。</p></div><span class="settings-state" id="repositoryUpdateState">等待读取</span></div>
+              <section class="panel config-panel settings-featured" id="repositoryUpdatePanel">
+                <div class="settings-card-header"><div><span class="settings-icon">↻</span><h2>系统更新</h2><p>基于同一版本镜像同步更新管理前端、客户端、API 与 Worker，失败时自动回滚。</p></div><span class="settings-state" id="repositoryUpdateState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
-              </section>
-              <section class="panel config-panel hidden" id="proxyConfigPanel">
-                <div class="settings-card-header"><div><span class="settings-icon">↗</span><h2>网络代理</h2><p>支持代理提取 API 或节点订阅，Dola 任务启动时自动使用。</p></div><span class="settings-state" id="configState">等待读取</span></div>
-                <div class="settings-card-value"><div><span>代理来源</span><strong id="proxyApiDisplay">等待读取</strong></div><button class="primary-button" id="openProxyModal" type="button">编辑代理</button></div>
               </section>
               <section class="panel config-panel" id="emailConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>注册邮箱验证</h2><p>设置允许注册的邮箱后缀，并使用 QQ 邮箱 SMTP 发送验证码。</p></div><span class="settings-state" id="emailConfigState">等待读取</span></div>
@@ -240,8 +236,10 @@
             <div class="node-controls">
               <label class="field"><span>代理状态</span><select id="proxyEnabledSelect"><option value="true">自动开启</option><option value="false">关闭代理</option></select></label>
               <label class="field"><span>节点模式</span><select id="proxyAutoSelect"><option value="true">自动选择最低延迟</option><option value="false">手动选择节点</option></select></label>
+              <label class="field"><span>地区筛选</span><select id="proxyCountryFilter"><option value="all">全部地区</option></select></label>
               <span class="settings-state" id="proxyNodesState">等待读取</span>
             </div>
+            <div class="node-summary"><span id="proxyNodeCount">0 个节点</span><span>点击节点即可切换为手动模式</span></div>
             <div class="node-grid" id="proxyNodeGrid"><div class="empty-state">请先配置节点订阅</div></div>
           </section>
         </section>

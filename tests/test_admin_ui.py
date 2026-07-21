@@ -26,6 +26,21 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('/admin/repository-update', self.javascript)
         self.assertIn('els.updateRepository?.addEventListener("click", updateRepository)', self.javascript)
         self.assertIn('Promise.allSettled([loadRepositoryStatus(), loadProxyConfig()', self.javascript)
+        self.assertIn('data.update_available ? "有可用更新" : "已是最新"', self.javascript)
+        self.assertIn('const version = data.version ? `v${data.version}` : "版本未知"', self.javascript)
+        self.assertIn("await pollRepositoryUpdate()", self.javascript)
+        self.assertIn("系统更新成功，前后端服务已恢复", self.javascript)
+
+    def test_update_is_admin_only_and_proxy_has_single_entry(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('body[data-portal="client"] #repositoryUpdatePanel', styles)
+        self.assertNotIn('id="proxyConfigPanel"', self.html)
+        self.assertEqual(self.html.count('id="openProxyModalFromNodes"'), 1)
+
+    def test_proxy_nodes_can_be_filtered_by_country(self) -> None:
+        self.assertIn('id="proxyCountryFilter"', self.html)
+        self.assertIn('id="proxyNodeCount"', self.html)
+        self.assertIn('node.country === state.proxyCountry', self.javascript)
 
     def test_release_version_is_displayed_from_status_api(self) -> None:
         self.assertIn('id="sidebarVersion"', self.html)
@@ -38,6 +53,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('proxy_subscription_refresh_seconds: 900', self.javascript)
         self.assertIn('toast("请输入节点订阅链接", "error")', self.javascript)
         self.assertIn('els.proxySource?.addEventListener("change", updateProxySourceFields)', self.javascript)
+        self.assertIn('function proxySubscriptionError(error)', self.javascript)
+        self.assertIn('await loadProxyNodes(source === "subscription")', self.javascript)
 
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):

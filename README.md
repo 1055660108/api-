@@ -14,7 +14,7 @@
 一键安装：
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/DaFangYue/dola_fetch_service/main/scripts/install.sh")
+bash <(curl -fsSL "https://raw.githubusercontent.com/1055660108/api-/main/scripts/install.sh")
 ```
 
 安装完成后窗口提示：

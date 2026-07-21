@@ -25,6 +25,15 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "require mihomo"):
             proxy_manager.parse_proxy_subscription(encoded)
 
+    def test_urlsafe_base64_subscription_without_padding_is_parsed(self) -> None:
+        content = "vless://user@hk.example.com:443#Hong-Kong\ntrojan://secret@sg.example.com:443#Singapore"
+        encoded = base64.urlsafe_b64encode(content.encode()).decode().rstrip("=")
+
+        nodes = proxy_manager.subscription_node_list(encoded)
+
+        self.assertEqual([node.country for node in nodes], ["香港", "新加坡"])
+        self.assertEqual([node.protocol for node in nodes], ["vless", "trojan"])
+
     def test_subscription_nodes_include_country_and_stable_id(self) -> None:
         nodes = proxy_manager.subscription_node_list(
             "vless://user@hk.example.com:443#%F0%9F%87%AD%F0%9F%87%B0%20Hong%20Kong\n"
@@ -45,6 +54,38 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         payload = proxy_manager.node_payload(nodes[0])
         self.assertEqual(set(payload), {"id", "name", "country", "protocol", "server", "port", "latency_ms", "latency_measured", "selected"})
         self.assertNotIn("secret", str(payload))
+
+    def test_base64_clash_yaml_nodes_are_listed(self) -> None:
+        content = "proxies:\n  - {name: Japan 01, type: trojan, server: jp.example.com, port: 443, password: secret}\n"
+        nodes = proxy_manager.subscription_node_list(base64.b64encode(content.encode()).decode())
+
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0].name, "Japan 01")
+        self.assertEqual(nodes[0].protocol, "trojan")
+
+    async def test_subscription_download_allows_limited_redirects(self) -> None:
+        response = type("Response", (), {"status_code": 200, "content": b"vless://user@example.com:443#node"})()
+        client = AsyncMock()
+        client.get.return_value = response
+        context = AsyncMock()
+        context.__aenter__.return_value = client
+        proxy_manager._SUBSCRIPTION_CACHE.update(url="", nodes=(), refreshed_at=0.0)
+
+        with patch.object(proxy_manager.httpx, "AsyncClient", return_value=context) as client_factory:
+            nodes = await proxy_manager.fetch_subscription_node_list("https://subscription.example/token", force=True)
+
+        self.assertEqual(len(nodes), 1)
+        self.assertTrue(client_factory.call_args.kwargs["follow_redirects"])
+        self.assertEqual(client_factory.call_args.kwargs["max_redirects"], 5)
+
+    async def test_subscription_redirect_limit_has_distinct_error(self) -> None:
+        context = AsyncMock()
+        context.__aenter__.return_value.get.side_effect = proxy_manager.httpx.TooManyRedirects("too many redirects")
+        proxy_manager._SUBSCRIPTION_CACHE.update(url="", nodes=(), refreshed_at=0.0)
+
+        with patch.object(proxy_manager.httpx, "AsyncClient", return_value=context):
+            with self.assertRaisesRegex(RuntimeError, "redirect limit"):
+                await proxy_manager.fetch_subscription_node_list("https://subscription.example/token", force=True)
 
     async def test_tunnel_subscription_uses_local_mihomo_proxy(self) -> None:
         response = type(

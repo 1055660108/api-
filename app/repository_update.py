@@ -9,8 +9,10 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import __version__
 
-REPOSITORY_URL = os.environ.get("DOLA_UPDATE_REPOSITORY_URL", "https://github.com/DaFangYue/dola_fetch_service.git").strip()
+
+REPOSITORY_URL = os.environ.get("DOLA_UPDATE_REPOSITORY_URL", "https://github.com/1055660108/api-.git").strip()
 REPOSITORY_BRANCH = os.environ.get("DOLA_UPDATE_BRANCH", "main").strip() or "main"
 CONTROLLER_SOCKET = Path(os.environ.get("DOLA_UPDATE_CONTROLLER_SOCKET", "/run/dola-update/controller.sock"))
 _UPDATE_LOCK = threading.Lock()
@@ -40,7 +42,13 @@ def _normalized_repository(value: str) -> str:
     parsed = urlparse(repository)
     if parsed.scheme != "https" or parsed.hostname != "github.com":
         raise RuntimeError("repository origin is not an allowed GitHub URL")
-    return f"https://github.com/{parsed.path.strip('/')}"
+    return f"https://github.com/{parsed.path.strip('/')}".removesuffix(".git").lower()
+
+
+def _revision_details(root: Path, revision: str) -> tuple[str, str]:
+    short_revision = _run_git(root, "rev-parse", "--short", revision, timeout=15)
+    commit_message = _run_git(root, "log", "-1", "--format=%s", revision, timeout=15)
+    return short_revision, commit_message
 
 
 def _controller_request(method: str, path: str) -> dict[str, str | bool]:
@@ -67,8 +75,20 @@ def repository_status(root: Path) -> dict[str, str | bool]:
     origin = _run_git(root, "remote", "get-url", "origin", timeout=15)
     if _normalized_repository(origin) != _normalized_repository(REPOSITORY_URL):
         raise RuntimeError("repository origin does not match the configured update source")
-    revision = _run_git(root, "rev-parse", "--short", "HEAD", timeout=15)
-    return {"repository": REPOSITORY_URL, "branch": REPOSITORY_BRANCH, "revision": revision, "updating": _UPDATE_LOCK.locked()}
+    _run_git(root, "fetch", "--prune", "origin", REPOSITORY_BRANCH)
+    revision, commit_message = _revision_details(root, "HEAD")
+    latest_revision, latest_commit_message = _revision_details(root, f"origin/{REPOSITORY_BRANCH}")
+    return {
+        "repository": REPOSITORY_URL,
+        "branch": REPOSITORY_BRANCH,
+        "revision": revision,
+        "version": __version__,
+        "commit_message": commit_message,
+        "latest_revision": latest_revision,
+        "latest_commit_message": latest_commit_message,
+        "update_available": revision != latest_revision,
+        "updating": _UPDATE_LOCK.locked(),
+    }
 
 
 def update_repository(root: Path) -> dict[str, str | bool]:
@@ -79,7 +99,6 @@ def update_repository(root: Path) -> dict[str, str | bool]:
     try:
         status = repository_status(root)
         before = str(status["revision"])
-        _run_git(root, "fetch", "--prune", "origin", REPOSITORY_BRANCH)
         changed_files = _run_git(root, "diff", "--name-only", f"HEAD..origin/{REPOSITORY_BRANCH}", timeout=15).splitlines()
         local_changes = _run_git(root, "status", "--porcelain", "--untracked-files=all", timeout=15).splitlines()
         changed_paths = {line[3:].strip() for line in local_changes if len(line) > 3}
@@ -87,12 +106,15 @@ def update_repository(root: Path) -> dict[str, str | bool]:
         if conflicts:
             raise RuntimeError(f"local changes conflict with update: {', '.join(conflicts[:10])}")
         _run_git(root, "merge", "--ff-only", f"origin/{REPOSITORY_BRANCH}")
-        after = _run_git(root, "rev-parse", "--short", "HEAD", timeout=15)
+        after, commit_message = _revision_details(root, "HEAD")
         return {
             "ok": True,
             "updated": before != after,
             "before_revision": before,
             "revision": after,
+            "version": __version__,
+            "commit_message": commit_message,
+            "update_available": False,
             "branch": REPOSITORY_BRANCH,
             "restart_required": before != after,
         }

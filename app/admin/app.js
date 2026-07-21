@@ -161,6 +161,8 @@ const els = {
   proxyNodeGrid: document.getElementById("proxyNodeGrid"),
   proxyEnabledSelect: document.getElementById("proxyEnabledSelect"),
   proxyAutoSelect: document.getElementById("proxyAutoSelect"),
+  proxyCountryFilter: document.getElementById("proxyCountryFilter"),
+  proxyNodeCount: document.getElementById("proxyNodeCount"),
   proxyNodesState: document.getElementById("proxyNodesState"),
   refreshProxyNodes: document.getElementById("refreshProxyNodes"),
   openProxyModalFromNodes: document.getElementById("openProxyModalFromNodes"),
@@ -330,6 +332,7 @@ const state = {
   proxyEnabled: true,
   proxyAutoSelect: true,
   proxySelectedNode: "",
+  proxyCountry: "all",
   taskRetentionDays: 7,
   userName: "",
   prompts: [],
@@ -488,13 +491,15 @@ async function loadRepositoryStatus() {
   if (portal === "client" || !els.repositoryRevision) return;
   try {
     const data = await apiFetch("/admin/repository-update");
-    els.repositoryRevision.textContent = `${data.branch || "main"} · ${data.revision || "未知"}`;
-    els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? `更新失败：${data.error}` : "可更新";
-    if (els.updateRepository) els.updateRepository.disabled = Boolean(data.updating);
+    const version = data.version ? `v${data.version}` : "版本未知";
+    const commit = data.commit_message ? ` · ${data.commit_message}` : "";
+    els.repositoryRevision.textContent = `${version} · ${data.revision || "未知"}${commit}`;
+    els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? `更新失败：${data.error}` : data.update_available ? "有可用更新" : "已是最新";
+    if (els.updateRepository) setBusy(els.updateRepository, Boolean(data.updating), data.phase || "正在更新");
     return data;
   } catch (error) {
     els.repositoryUpdateState.textContent = `更新不可用：${error.message}`;
-    if (els.updateRepository) els.updateRepository.disabled = false;
+    if (els.updateRepository) els.updateRepository.disabled = els.updateRepository.dataset.updatePolling === "true";
     return null;
   }
 }
@@ -505,24 +510,39 @@ async function updateRepository() {
   els.repositoryUpdateState.textContent = "正在拉取";
   try {
     const data = await apiFetch("/admin/repository-update", { method: "POST" });
-    els.repositoryUpdateState.textContent = data.updating ? "已开始部署" : data.updated ? "更新完成" : "已是最新";
+    els.repositoryUpdateState.textContent = data.updating ? "已开始部署" : data.updated ? "更新完成" : data.update_available ? "有可用更新" : "已是最新";
     toast(data.updating ? "更新已开始，服务会短暂重启，请稍后刷新页面查看结果" : data.updated ? "更新部署完成" : "当前已是最新版本");
-    if (data.updating) {
-      const startedAt = Date.now();
-      const poll = async () => {
-        if (Date.now() - startedAt > 10 * 60 * 1000) return;
-        const status = await loadRepositoryStatus();
-        if (status?.updating) window.setTimeout(poll, 3000);
-        else if (status?.error) toast(`更新失败：${status.error}`, "error");
-      };
-      window.setTimeout(poll, 3000);
-    }
+    if (data.updating) await pollRepositoryUpdate();
+    else await loadRepositoryStatus();
   } catch (error) {
     els.repositoryUpdateState.textContent = "更新失败";
     toast(`更新失败：${error.message}`, "error");
   } finally {
-    setBusy(els.updateRepository, false);
+    if (!els.updateRepository?.dataset.updatePolling) setBusy(els.updateRepository, false);
   }
+}
+
+async function pollRepositoryUpdate() {
+  const deadline = Date.now() + 15 * 60 * 1000;
+  els.updateRepository.dataset.updatePolling = "true";
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    const status = await loadRepositoryStatus();
+    if (status?.updating || !status) continue;
+    delete els.updateRepository.dataset.updatePolling;
+    setBusy(els.updateRepository, false);
+    if (status.error) {
+      toast(`更新失败：${status.error}`, "error");
+      return;
+    }
+    els.repositoryUpdateState.textContent = "更新成功，前后端服务已恢复";
+    toast("系统更新成功，前后端服务已恢复");
+    return;
+  }
+  delete els.updateRepository.dataset.updatePolling;
+  setBusy(els.updateRepository, false);
+  els.repositoryUpdateState.textContent = "更新状态轮询超时，请稍后重新检查";
+  toast("更新仍未完成，请稍后重新检查", "error");
 }
 
 function toast(message, type = "info") {
@@ -1190,15 +1210,38 @@ async function loadProxyConfig() {
 
 function renderProxyNodes() {
   if (!els.proxyNodeGrid) return;
+  const countries = [...new Set(state.proxyNodes.map((node) => node.country || "未知"))].sort((left, right) => left.localeCompare(right, "zh-CN"));
+  if (els.proxyCountryFilter) {
+    const current = countries.includes(state.proxyCountry) ? state.proxyCountry : "all";
+    els.proxyCountryFilter.innerHTML = ['<option value="all">全部地区</option>', ...countries.map((country) => `<option value="${escapeHtml(country)}">${escapeHtml(country)}</option>`)].join("");
+    els.proxyCountryFilter.value = current;
+    state.proxyCountry = current;
+  }
+  const visibleNodes = state.proxyCountry === "all" ? state.proxyNodes : state.proxyNodes.filter((node) => node.country === state.proxyCountry);
+  if (els.proxyNodeCount) els.proxyNodeCount.textContent = `${visibleNodes.length} / ${state.proxyNodes.length} 个节点`;
   if (!state.proxyNodes.length) {
     els.proxyNodeGrid.innerHTML = '<div class="empty-state">暂无可用节点，请配置订阅后刷新</div>';
     return;
   }
-  els.proxyNodeGrid.innerHTML = state.proxyNodes.map((node) => {
+  if (!visibleNodes.length) {
+    els.proxyNodeGrid.innerHTML = '<div class="empty-state">当前地区暂无节点</div>';
+    return;
+  }
+  els.proxyNodeGrid.innerHTML = visibleNodes.map((node) => {
     const latency = node.latency_ms ? `${node.latency_ms} ms` : node.latency_measured ? "超时" : "未检测";
     const selected = node.selected || node.id === state.proxySelectedNode;
     return `<button class="proxy-node-card${selected ? " selected" : ""}" type="button" data-proxy-node-id="${escapeHtml(node.id)}"><span class="proxy-node-name">${escapeHtml(node.name)}</span><span class="proxy-node-country">${escapeHtml(node.country)} · ${escapeHtml(node.protocol.toUpperCase())}</span><strong class="proxy-node-latency${node.latency_ms ? " good" : ""}">${escapeHtml(latency)}</strong></button>`;
   }).join("");
+}
+
+function proxySubscriptionError(error) {
+  const message = String(error?.message || "未知错误");
+  if (message.includes("redirect")) return `订阅重定向失败：${message}`;
+  if (message.includes("timed out") || message.includes("network error")) return `订阅网络错误：${message}`;
+  if (message.includes("HTTP")) return `订阅服务错误：${message}`;
+  if (message.includes("too large")) return `订阅内容过大：${message}`;
+  if (message.includes("empty") || message.includes("no usable nodes")) return `订阅格式错误：${message}`;
+  return `节点读取失败：${message}`;
 }
 
 async function loadProxyNodes(refresh = false) {
@@ -1219,7 +1262,7 @@ async function loadProxyNodes(refresh = false) {
     if (els.proxyNodesState) els.proxyNodesState.textContent = refresh ? "延迟已更新" : "已读取";
   } catch (error) {
     if (els.proxyNodesState) els.proxyNodesState.textContent = "读取失败";
-    if (refresh || error.message !== "proxy subscription is not configured") toast(`节点读取失败：${error.message}`, "error");
+    if (refresh || error.message !== "proxy subscription is not configured") toast(proxySubscriptionError(error), "error");
     renderProxyNodes();
   } finally {
     setBusy(els.refreshProxyNodes, false);
@@ -1286,8 +1329,10 @@ async function saveProxyConfig() {
     if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = source === "subscription" ? "节点订阅" : source === "api" ? "代理提取 API" : "直连";
     toast(source === "direct" ? "已切换为直连运行" : "代理配置已更新");
     closeSettingsModal(els.proxyModal);
+    await loadProxyConfig();
+    await loadProxyNodes(source === "subscription");
   } catch (error) {
-    toast(`保存失败：${error.message}`, "error");
+    toast(source === "subscription" ? proxySubscriptionError(error) : `保存失败：${error.message}`, "error");
   } finally {
     setBusy(els.saveProxyConfig, false);
   }
@@ -2796,6 +2841,7 @@ function bindEvents() {
   els.refreshProxyNodes?.addEventListener("click", () => loadProxyNodes(true));
   els.proxyEnabledSelect?.addEventListener("change", saveProxyMode);
   els.proxyAutoSelect?.addEventListener("change", saveProxyMode);
+  els.proxyCountryFilter?.addEventListener("change", () => { state.proxyCountry = els.proxyCountryFilter.value; renderProxyNodes(); });
   els.proxyNodeGrid?.addEventListener("click", (event) => {
     const card = event.target.closest("[data-proxy-node-id]");
     if (card) selectProxyNode(card.dataset.proxyNodeId);

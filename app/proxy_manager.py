@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import httpx
+import yaml
 
 
 PROXY_LINE_RE = re.compile(r"(?:(?:https?|socks5h?)://)?([A-Za-z0-9.-]+:\d{2,5})")
@@ -98,29 +99,63 @@ def _node_from_uri(uri: str, index: int) -> ProxyNode:
     return ProxyNode(_node_id(uri), name[:200], identify_country(name, server), protocol, server, port, uri)
 
 
-def subscription_node_list(text: str) -> tuple[ProxyNode, ...]:
-    parsed = parse_subscription_nodes(text)
-    values = [*parsed.native_proxies, *parsed.tunnel_nodes]
-    nodes = [_node_from_uri(value, index) for index, value in enumerate(values, 1)]
-    if nodes:
-        return tuple(nodes)
-    yaml_nodes: list[ProxyNode] = []
-    current: dict[str, str] = {}
-    for line in text.splitlines():
-        match = re.match(r"^\s*-\s*name:\s*['\"]?(.*?)['\"]?\s*$", line)
-        if match:
-            if current.get("name"):
-                uri = f"{current.get('type', 'proxy')}://{current.get('server', '')}:{current.get('port', '0')}#{current['name']}"
-                yaml_nodes.append(_node_from_uri(uri, len(yaml_nodes) + 1))
-            current = {"name": match.group(1).strip(" '\"")}
+def _subscription_sources(text: str) -> tuple[str, ...]:
+    cleaned = str(text or "").replace("\ufeff", "").strip()
+    if not cleaned:
+        raise RuntimeError("proxy subscription returned empty response")
+    sources = [cleaned]
+    compact = re.sub(r"\s+", "", cleaned)
+    padded = compact + "=" * (-len(compact) % 4)
+    for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+        try:
+            decoded = decoder(padded).decode("utf-8")
+        except (ValueError, UnicodeDecodeError, base64.binascii.Error):
             continue
-        field = re.match(r"^\s+(type|server|port):\s*['\"]?([^'\"\s]+)", line)
-        if current and field:
-            current[field.group(1)] = field.group(2)
-    if current.get("name"):
-        uri = f"{current.get('type', 'proxy')}://{current.get('server', '')}:{current.get('port', '0')}#{current['name']}"
-        yaml_nodes.append(_node_from_uri(uri, len(yaml_nodes) + 1))
-    return tuple(yaml_nodes)
+        if decoded.strip() and decoded.strip() != cleaned:
+            sources.insert(0, decoded.strip())
+            break
+    return tuple(sources)
+
+
+def _clash_nodes(source: str) -> tuple[ProxyNode, ...]:
+    try:
+        document = yaml.safe_load(source)
+    except yaml.YAMLError:
+        return ()
+    if not isinstance(document, dict) or not isinstance(document.get("proxies"), list):
+        return ()
+    nodes: list[ProxyNode] = []
+    for item in document["proxies"]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        protocol = str(item.get("type") or "").strip().lower()
+        server = str(item.get("server") or "").strip()
+        try:
+            port = int(item.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if not name or not protocol or not server or port < 1 or port > 65535:
+            continue
+        uri = f"{protocol}://{server}:{port}#{quote(name)}"
+        nodes.append(_node_from_uri(uri, len(nodes) + 1))
+    return tuple(nodes)
+
+
+def subscription_node_list(text: str) -> tuple[ProxyNode, ...]:
+    collected: list[ProxyNode] = []
+    seen: set[str] = set()
+    for source in _subscription_sources(text):
+        parsed = parse_subscription_nodes(source)
+        values = [*parsed.native_proxies, *parsed.tunnel_nodes]
+        nodes = tuple(_node_from_uri(value, index) for index, value in enumerate(values, 1)) if values else _clash_nodes(source)
+        for node in nodes:
+            if node.id not in seen:
+                seen.add(node.id)
+                collected.append(node)
+        if collected:
+            break
+    return tuple(collected)
 
 
 def _proxy_candidates(value: Any) -> Iterable[str]:
@@ -171,17 +206,7 @@ def parse_proxy_subscription(text: str) -> list[str]:
 
 
 def parse_subscription_nodes(text: str) -> SubscriptionNodes:
-    cleaned = str(text or "").replace("\ufeff", "").strip()
-    if not cleaned:
-        raise RuntimeError("proxy subscription returned empty response")
-    sources = [cleaned]
-    compact = re.sub(r"\s+", "", cleaned)
-    try:
-        decoded = base64.b64decode(compact + "=" * (-len(compact) % 4), validate=False).decode("utf-8", errors="ignore")
-        if decoded.strip() and decoded.strip() != cleaned:
-            sources.append(decoded)
-    except Exception:
-        pass
+    sources = _subscription_sources(text)
     native_proxies: list[str] = []
     tunnel_nodes: list[str] = []
     seen_native: set[str] = set()
@@ -321,8 +346,15 @@ async def fetch_subscription_node_list(
         if not force and fresh and _SUBSCRIPTION_CACHE["url"] == subscription_url:
             return tuple(_SUBSCRIPTION_CACHE["nodes"])
         timeout = httpx.Timeout(float(timeout_seconds), connect=min(10.0, float(timeout_seconds)))
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-            response = await client.get(subscription_url, headers={"User-Agent": MIHOMO_USER_AGENT})
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, max_redirects=5, trust_env=False) as client:
+                response = await client.get(subscription_url, headers={"User-Agent": MIHOMO_USER_AGENT})
+        except httpx.TooManyRedirects as exc:
+            raise RuntimeError("proxy subscription exceeded redirect limit") from exc
+        except httpx.TimeoutException as exc:
+            raise RuntimeError("proxy subscription request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"proxy subscription network error: {exc}") from exc
         if response.status_code < 200 or response.status_code >= 300:
             raise RuntimeError(f"proxy subscription failed with HTTP {response.status_code}")
         if len(response.content) > 5 * 1024 * 1024:

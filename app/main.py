@@ -631,7 +631,7 @@ async def admin_point_cards(limit: int = Query(500, ge=1, le=2000), status: str 
     if query:
         normalized_code = "".join(character for character in query.upper() if character.isalnum())
         query_digest = hashlib.sha256(normalized_code.encode("ascii")).hexdigest() if len(normalized_code) >= 12 else ""
-        rows = [item for item in rows if query_digest == str(item.get("code_hash") or "") or query in " ".join((str(item.get("code_hint") or ""), str(item.get("redeemed_username") or ""), str(item.get("note") or ""))).casefold()]
+        rows = [item for item in rows if query_digest == str(item.get("code_hash") or "") or query in " ".join((str(item.get("code") or ""), str(item.get("code_hint") or ""), str(item.get("redeemed_username") or ""), str(item.get("note") or ""))).casefold()]
     return {"cards": rows, "total": len(rows)}
 
 

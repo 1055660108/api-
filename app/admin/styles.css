@@ -4494,3 +4494,184 @@ textarea:focus-visible {
   .point-card-header-meta { align-items: stretch; flex-direction: column; }
   .purchase-balance { justify-content: start; text-align: left; }
 }
+
+/* 1.2.2 workspace refinements */
+.home-summary {
+  min-height: 108px;
+  padding: 22px 24px;
+}
+
+.home-summary .eyebrow { color: var(--brand-dark); }
+body[data-portal="client"] .admin-home-heading,
+body[data-portal="admin"] .client-home-heading,
+body[data-portal="admin"] .home-points { display: none; }
+
+.home-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.home-points {
+  display: grid;
+  gap: 3px;
+  min-width: 104px;
+  padding-right: 24px;
+  border-right: 1px solid var(--line);
+}
+
+.home-points span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.home-points strong {
+  color: var(--ink);
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+body[data-portal="client"] .metric-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+body[data-portal="client"] .metric-card {
+  min-height: 116px;
+  padding: 18px 20px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.sidebar-client-identity span {
+  width: 100%;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.prompt-picker {
+  position: relative;
+}
+
+.my-prompt-menu {
+  position: absolute;
+  z-index: 40;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  width: min(380px, calc(100vw - 48px));
+  max-height: 320px;
+  padding: 6px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(23, 32, 38, 0.14);
+}
+
+.my-prompt-menu.hidden { display: none; }
+
+.my-prompt-menu button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 11px 12px;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+}
+
+.my-prompt-menu button:hover { background: #f3f6f7; }
+.my-prompt-menu strong { font-size: 13px; }
+.my-prompt-menu span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.my-prompt-empty {
+  padding: 18px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.message-workspace { margin-top: 18px; }
+
+.message-toolbar {
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.message-feedback-panel { padding: 0; overflow: hidden; }
+.message-feedback-panel > .panel-header { padding: 20px 22px; border-bottom: 1px solid var(--line); }
+.message-feedback-panel .table-wrap { margin: 0; border: 0; border-radius: 0; }
+.message-feedback-panel .message-table { min-width: 980px; table-layout: fixed; }
+.message-feedback-panel .message-table th:nth-child(1) { width: 150px; }
+.message-feedback-panel .message-table th:nth-child(2) { width: 110px; }
+.message-feedback-panel .message-table th:nth-child(3) { width: 28%; }
+.message-feedback-panel .message-table th:nth-child(4) { width: 32%; }
+.message-feedback-panel .message-table th:nth-child(5) { width: 132px; }
+.message-feedback-panel .message-table th,
+.message-feedback-panel .message-table td { padding: 14px 16px; vertical-align: top; }
+
+.message-admin-grid {
+  grid-template-columns: minmax(420px, 0.9fr) minmax(480px, 1.1fr);
+  gap: 20px;
+}
+
+.notification-compose,
+.notification-history { padding: 22px; }
+.notification-compose { gap: 18px; }
+.notification-compose .panel-header,
+.notification-history .panel-header { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.recipient-list { gap: 10px; padding: 0; }
+.recipient-option { padding: 12px; background: #fff; }
+
+.point-card-table { min-width: 1040px; }
+.point-card-table th:nth-child(1) { width: 278px; }
+.point-card-table th:nth-child(8) { width: 150px; }
+.point-card-table th,
+.point-card-table td { padding: 14px 16px; }
+
+.point-card-code {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.point-card-code code {
+  flex: 1 1 auto;
+  color: #25323a;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.point-card-code .card-copy-button {
+  flex: 0 0 auto;
+  min-width: 54px;
+}
+
+@media (max-width: 1100px) {
+  .message-admin-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  .home-summary,
+  .home-summary-actions { align-items: stretch; flex-direction: column; }
+  .home-summary { gap: 18px; }
+  .home-summary-actions { gap: 14px; }
+  .home-points { padding: 0 0 12px; border-right: 0; border-bottom: 1px solid var(--line); }
+  body[data-portal="client"] .metric-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 480px) {
+  body[data-portal="client"] .metric-grid { grid-template-columns: 1fr; }
+}

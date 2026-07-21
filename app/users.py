@@ -374,6 +374,19 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
         token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == token_hash), {})
         base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
         current_membership = _active_membership(entry, now)
+        package_id = str(package.get("id") or "")
+        purchased_package_ids: list[str] = []
+        if current_membership:
+            purchased_package_ids = [
+                str(item)
+                for item in current_membership.get("purchased_package_ids", [])
+                if str(item)
+            ]
+            legacy_package_id = str(current_membership.get("package_id") or "")
+            if legacy_package_id and legacy_package_id not in purchased_package_ids:
+                purchased_package_ids.append(legacy_package_id)
+            if package_id in purchased_package_ids:
+                raise ValueError("当前会员有效期内，该会员套餐只能购买一次")
         current_concurrency_bonus = _membership_concurrency_bonus(current_membership)
         membership_concurrency_bonus = max(current_concurrency_bonus, int(package.get("concurrency") or 1))
         effective_concurrency = min(100, base_concurrency + membership_concurrency_bonus)
@@ -391,12 +404,14 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
             effective_concurrency,
         )
         membership = {
-            "package_id": str(package.get("id") or ""),
+            "package_id": package_id,
             "name": str(package.get("name") or "会员"),
             "concurrency": membership_concurrency_bonus,
             "concurrency_bonus": membership_concurrency_bonus,
             "effective_concurrency": effective_concurrency,
             "purchased_at": now.isoformat(),
+            "cycle_started_at": str(current_membership.get("cycle_started_at") or current_membership.get("purchased_at") or now.isoformat()) if current_membership else now.isoformat(),
+            "purchased_package_ids": [*purchased_package_ids, package_id],
             "expires_at": expires_at.isoformat(),
         }
         entry["base_concurrency"] = base_concurrency

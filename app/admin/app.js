@@ -35,6 +35,8 @@ const els = {
   adminPassword: document.getElementById("adminPassword"),
   clientTokenDisplay: document.getElementById("clientTokenDisplay"),
   clientAccountName: document.getElementById("clientAccountName"),
+  dashboardAccountName: document.getElementById("dashboardAccountName"),
+  dashboardPointsBalance: document.getElementById("dashboardPointsBalance"),
   sidebarMembershipName: document.getElementById("sidebarMembershipName"),
   sidebarVersion: document.getElementById("sidebarVersion"),
   copyClientToken: document.getElementById("copyClientToken"),
@@ -188,6 +190,8 @@ const els = {
   taskForm: document.getElementById("taskForm"),
   promptInput: document.getElementById("promptInput"),
   saveCurrentPrompt: document.getElementById("saveCurrentPrompt"),
+  openMyPrompts: document.getElementById("openMyPrompts"),
+  myPromptMenu: document.getElementById("myPromptMenu"),
   promptGrid: document.getElementById("promptGrid"),
   addPromptButton: document.getElementById("addPromptButton"),
   promptEditor: document.getElementById("promptEditor"),
@@ -433,6 +437,7 @@ const state = {
   deletingTaskIds: new Set(),
   pointPackages: [],
   memberships: [],
+  membership: null,
   activeAnnouncement: null,
   pointCards: [],
   userSearch: "",
@@ -470,6 +475,25 @@ function savePrompts() {
   localStorage.setItem(promptStorageKey(), JSON.stringify(state.prompts));
 }
 
+function newPromptId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `prompt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function renderMyPromptMenu() {
+  if (!els.myPromptMenu) return;
+  els.myPromptMenu.innerHTML = state.prompts.length ? state.prompts.map((item) => `
+    <button type="button" role="menuitem" data-my-prompt-id="${escapeHtml(item.id)}">
+      <strong>${escapeHtml(item.title || "常用提示词")}</strong>
+      <span>${escapeHtml(item.content)}</span>
+    </button>`).join("") : '<div class="my-prompt-empty">提示词库中暂无内容</div>';
+}
+
+function closeMyPromptMenu() {
+  els.myPromptMenu?.classList.add("hidden");
+  els.openMyPrompts?.setAttribute("aria-expanded", "false");
+}
+
 function renderPrompts() {
   if (!els.promptGrid) return;
   const pages = Math.max(1, Math.ceil(state.prompts.length / state.promptPageSize));
@@ -498,10 +522,11 @@ function openPromptEditor(item = null) {
 function addPrompt(content, title = "常用提示词") {
   const value = String(content || "").trim();
   if (!value) return toast("请先输入提示词", "error");
-  state.prompts.unshift({ id: crypto.randomUUID(), title: String(title || "常用提示词").trim(), content: value, updated_at: new Date().toISOString() });
+  state.prompts.unshift({ id: newPromptId(), title: String(title || "常用提示词").trim(), content: value, updated_at: new Date().toISOString() });
   state.promptPage = 1;
   savePrompts();
   renderPrompts();
+  renderMyPromptMenu();
   toast("提示词已保存", "success");
 }
 
@@ -884,13 +909,22 @@ function startAutoRefresh() {
     }, 15000);
   }
   if (!state.countdownTimer) {
-    state.countdownTimer = window.setInterval(updateAccountResetCountdown, 1000);
+    state.countdownTimer = window.setInterval(() => {
+      updateAccountResetCountdown();
+      updateMembershipRemaining();
+    }, 1000);
   }
 }
 
 function applyPortalText() {
   document.body.dataset.portal = portal;
   document.title = portal === "client" ? "客户入口" : "管理面板";
+  const dashboardLabel = portal === "client" ? "用户首页" : "总览";
+  const dashboardNavLabel = document.querySelector('.nav-item[data-view="dashboard"] span');
+  const dashboardView = document.getElementById("dashboardView");
+  if (dashboardNavLabel) dashboardNavLabel.textContent = dashboardLabel;
+  if (dashboardView) dashboardView.dataset.title = dashboardLabel;
+  if (els.viewTitle) els.viewTitle.textContent = dashboardLabel;
   if (els.clientEntryUrl) els.clientEntryUrl.value = getClientEntryUrl();
   document.querySelectorAll(".login-heading .eyebrow").forEach((node) => {
     node.textContent = portal === "client" ? "" : "管理面板";
@@ -920,6 +954,7 @@ function applyAccessScope(data = {}) {
   if (els.adminAccountDisplay) els.adminAccountDisplay.textContent = state.adminUsername || els.adminUsername?.value || "-";
   if (els.changeAdminUsername) els.changeAdminUsername.value = state.adminUsername || els.adminUsername?.value || "";
   if (els.clientAccountName) els.clientAccountName.textContent = state.userName;
+  if (els.dashboardAccountName) els.dashboardAccountName.textContent = state.userName;
   if (els.clientSettingsAccount) els.clientSettingsAccount.textContent = state.userName;
   if (data.quota) {
     const used = Math.max(0, Number(data.quota.used || 0));
@@ -928,6 +963,7 @@ function applyAccessScope(data = {}) {
     state.points = Math.max(0, Number(data.quota.points ?? limit - Math.max(used, 3)));
   }
   if (els.pointsBalance) els.pointsBalance.textContent = String(state.points);
+  if (els.dashboardPointsBalance) els.dashboardPointsBalance.textContent = String(state.points);
   if (els.submitFreeRemaining) els.submitFreeRemaining.textContent = String(state.freeRemaining);
   if (els.submitPointsBalance) els.submitPointsBalance.textContent = String(state.points);
   const selectedPlatform = state.platforms.find((item) => item.id === state.platform);
@@ -1343,6 +1379,42 @@ async function loadMemberships() {
   if (portal !== "client" || !els.membershipList) return;
   const data = await apiFetch("/memberships");
   els.membershipList.innerHTML = (data.packages || []).length ? data.packages.map((item) => `<article class="membership-item"><div><span>${escapeHtml(item.duration_days)} 天</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || "")}</p><div class="membership-benefits"><span>并发 +${escapeHtml(item.concurrency)}</span><span>赠送 ${escapeHtml(item.bonus_free_uses)} 次视频额度</span></div></div><div class="membership-price"><strong>${escapeHtml(item.points_cost)} 积分</strong><button class="primary-button" type="button" data-membership-id="${escapeHtml(item.id)}" data-membership-name="${escapeHtml(item.name)}" data-membership-cost="${escapeHtml(item.points_cost)}">积分购买</button></div></article>`).join("") : '<div class="empty-state">暂无可用会员套餐</div>';
+  updateMembershipPurchaseButtons();
+}
+
+function purchasedMembershipIds() {
+  if (!state.membership) return new Set();
+  const ids = Array.isArray(state.membership.purchased_package_ids) ? [...state.membership.purchased_package_ids] : [];
+  if (state.membership.package_id) ids.push(state.membership.package_id);
+  return new Set(ids.map(String));
+}
+
+function updateMembershipPurchaseButtons() {
+  const purchasedIds = purchasedMembershipIds();
+  els.membershipList?.querySelectorAll("[data-membership-id]").forEach((button) => {
+    const purchased = purchasedIds.has(String(button.dataset.membershipId || ""));
+    button.disabled = purchased;
+    button.textContent = purchased ? "有效期内已购买" : "积分购买";
+  });
+}
+
+function membershipRemainingText() {
+  if (!state.membership?.expires_at) return "普通用户";
+  const remaining = new Date(state.membership.expires_at).getTime() - Date.now();
+  if (!Number.isFinite(remaining) || remaining <= 0) return "普通用户";
+  const totalMinutes = Math.max(1, Math.ceil(remaining / 60000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (days) parts.push(`${days} 天`);
+  if (hours || days) parts.push(`${hours} 小时`);
+  if (!days) parts.push(`${minutes} 分钟`);
+  return `${state.membership.name} · 剩余 ${parts.join(" ")}`;
+}
+
+function updateMembershipRemaining() {
+  if (els.sidebarMembershipName) els.sidebarMembershipName.textContent = membershipRemainingText();
 }
 
 async function purchaseMembership(button) {
@@ -1384,11 +1456,15 @@ async function loadPointCards() {
   const data = await apiFetch(`/admin/point-cards?${params}`);
   state.pointCards = Array.isArray(data.cards) ? data.cards : [];
   if (els.pointCardTotalState) els.pointCardTotalState.textContent = `共 ${state.pointCards.length} 条记录`;
-  els.pointCardTableBody.innerHTML = state.pointCards.length ? state.pointCards.map((item) => `<tr><td><code>${escapeHtml(item.code_hint)}</code></td><td><span class="card-type-chip">积分卡密</span></td><td>${escapeHtml(item.points)} 积分</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_username || "-")}</td><td>${item.redeemed_at ? escapeHtml(formatTime(item.redeemed_at)) : "-"}</td><td>永久有效</td><td>${escapeHtml(item.note || "-")}</td></tr>`).join("") : '<tr><td colspan="8"><div class="empty-state">暂无卡密记录</div></td></tr>';
+  els.pointCardTableBody.innerHTML = state.pointCards.length ? state.pointCards.map((item) => {
+    const code = item.code || item.code_hint || "";
+    const copyButton = item.code ? `<button type="button" class="icon-button card-copy-button" data-copy-point-card="${escapeHtml(item.code)}" title="复制完整卡密">复制</button>` : '<button type="button" class="icon-button card-copy-button" disabled title="旧卡密无法恢复完整内容">不可复制</button>';
+    return `<tr><td><div class="point-card-code"><code title="${escapeHtml(code)}">${escapeHtml(code)}</code>${copyButton}</div></td><td><span class="card-type-chip">积分卡密</span></td><td>${escapeHtml(item.points)} 积分</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_username || "-")}</td><td>${item.redeemed_at ? escapeHtml(formatTime(item.redeemed_at)) : "-"}</td><td>永久有效</td><td>${escapeHtml(item.note || "-")}</td></tr>`;
+  }).join("") : '<tr><td colspan="8"><div class="empty-state">暂无卡密记录</div></td></tr>';
 }
 
 function exportPointCardsCsv() {
-  const rows = [["兑换码", "类型", "面值", "状态", "使用者", "使用时间", "过期时间", "备注"], ...state.pointCards.map((item) => [item.code_hint, "积分卡密", item.points, item.status === "unused" ? "未使用" : "已兑换", item.redeemed_username || "", item.redeemed_at || "", "永久有效", item.note || ""])];
+  const rows = [["兑换码", "类型", "面值", "状态", "使用者", "使用时间", "过期时间", "备注"], ...state.pointCards.map((item) => [item.code || item.code_hint, "积分卡密", item.points, item.status === "unused" ? "未使用" : "已兑换", item.redeemed_username || "", item.redeemed_at || "", "永久有效", item.note || ""])];
   const csv = `\ufeff${rows.map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\r\n")}`;
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -1425,7 +1501,7 @@ async function loadUsers() {
   if (els.prevUserPage) els.prevUserPage.disabled = state.userPage <= 1;
   if (els.nextUserPage) els.nextUserPage.disabled = state.userPage >= state.userTotalPages;
   const users = Array.isArray(data.users) ? data.users : [];
-  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="secondary-button" data-user-concurrency="${escapeHtml(item.id)}" data-current-concurrency="${Number(item.base_concurrency || 1)}">并发</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
+  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
 }
 
 async function changeClientPassword(event) {
@@ -1471,8 +1547,10 @@ async function loadClientProfile() {
   const data = await apiFetch("/auth/profile");
   if (els.clientEmailDisplay) els.clientEmailDisplay.textContent = data.email || "未绑定";
   if (els.clientEmailState) els.clientEmailState.textContent = data.email_verified_at ? "已验证" : "未验证";
-  if (els.membershipCurrentState) els.membershipCurrentState.textContent = data.membership ? `${data.membership.name} · ${formatTime(data.membership.expires_at)} 到期` : "当前无会员";
-  if (els.sidebarMembershipName) els.sidebarMembershipName.textContent = data.membership ? data.membership.name : "普通用户";
+  state.membership = data.membership || null;
+  if (els.membershipCurrentState) els.membershipCurrentState.textContent = data.membership ? `${membershipRemainingText()} · ${formatTime(data.membership.expires_at)} 到期` : "当前无会员";
+  updateMembershipRemaining();
+  updateMembershipPurchaseButtons();
 }
 
 function selectedEmail(localInput, domainSelect) {
@@ -2901,22 +2979,29 @@ async function copyText(value, label = "内容") {
   }
 
   try {
-    if (navigator.clipboard?.writeText && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.setAttribute("readonly", "");
-      textarea.style.position = "fixed";
-      textarea.style.left = "-9999px";
-      textarea.style.top = "0";
-      document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      const copied = document.execCommand("copy");
-      document.body.removeChild(textarea);
-      if (!copied) throw new Error("copy command failed");
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast(`${label}已复制`);
+        return;
+      } catch (_) {
+        // Fall through for HTTP deployments and browsers that deny clipboard permissions.
+      }
     }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    if (!copied) throw new Error("copy command failed");
     toast(`${label}已复制`);
   } catch (error) {
     console.warn("copy failed", error);
@@ -2950,6 +3035,10 @@ function bindEvents() {
   els.pointCardForm?.addEventListener("submit", generatePointCards);
   els.refreshPointCards?.addEventListener("click", loadPointCards);
   els.exportPointCards?.addEventListener("click", exportPointCardsCsv);
+  els.pointCardTableBody?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-copy-point-card]");
+    if (button) copyText(button.dataset.copyPointCard, "卡密");
+  });
   els.pointCardSearch?.addEventListener("input", () => {
     window.clearTimeout(state.pointCardSearchTimer);
     state.pointCardSearchTimer = window.setTimeout(loadPointCards, 250);
@@ -3150,15 +3239,6 @@ function bindEvents() {
         toast("用户已删除");
         return loadUsers();
       }
-      const concurrencyButton = event.target.closest("[data-user-concurrency]");
-      if (concurrencyButton) {
-        const current = Number(concurrencyButton.dataset.currentConcurrency || 1);
-        const concurrency = Number(window.prompt("请输入管理员基础并发数量（1-100）", String(current)));
-        if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 100) return toast("并发数量需为 1-100", "error");
-        await apiFetch(`/users/${concurrencyButton.dataset.userConcurrency}`, { method: "PATCH", body: { concurrency } });
-        toast("用户并发已更新");
-        return loadUsers();
-      }
       const deductButton = event.target.closest("[data-deduct-user-points]");
       if (deductButton) {
         const balance = Number(deductButton.dataset.userPointsBalance || 0);
@@ -3337,7 +3417,29 @@ function bindEvents() {
   document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.viewShortcut));
   });
-  els.saveCurrentPrompt?.addEventListener("click", () => addPrompt(els.promptInput.value, els.promptInput.value.trim().slice(0, 20) || "常用提示词"));
+  els.openMyPrompts?.addEventListener("click", () => {
+    const opening = els.myPromptMenu.classList.contains("hidden");
+    if (opening) renderMyPromptMenu();
+    els.myPromptMenu.classList.toggle("hidden", !opening);
+    els.openMyPrompts.setAttribute("aria-expanded", opening ? "true" : "false");
+  });
+  els.myPromptMenu?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-my-prompt-id]");
+    if (!button) return;
+    const item = state.prompts.find((entry) => entry.id === button.dataset.myPromptId);
+    if (!item) return;
+    els.promptInput.value = item.content;
+    closeMyPromptMenu();
+    els.promptInput.focus();
+    toast(`已使用“${item.title || "提示词"}”`);
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".prompt-picker")) closeMyPromptMenu();
+  });
+  els.saveCurrentPrompt?.addEventListener("click", () => {
+    const value = els.promptInput?.value || "";
+    addPrompt(value, value.trim().slice(0, 20) || "常用提示词");
+  });
   els.addPromptButton?.addEventListener("click", () => openPromptEditor());
   els.cancelPromptEdit?.addEventListener("click", () => els.promptEditor.classList.add("hidden"));
   els.promptEditor?.addEventListener("submit", (event) => {
@@ -3346,10 +3448,12 @@ function bindEvents() {
     if (!content) return toast("请输入提示词内容", "error");
     const item = state.prompts.find((entry) => entry.id === state.editingPromptId);
     if (item) Object.assign(item, { title: els.promptTitleInput.value.trim() || "常用提示词", content, updated_at: new Date().toISOString() });
-    else state.prompts.unshift({ id: crypto.randomUUID(), title: els.promptTitleInput.value.trim() || "常用提示词", content, updated_at: new Date().toISOString() });
+    else state.prompts.unshift({ id: newPromptId(), title: els.promptTitleInput.value.trim() || "常用提示词", content, updated_at: new Date().toISOString() });
     savePrompts();
     els.promptEditor.classList.add("hidden");
     renderPrompts();
+    renderMyPromptMenu();
+    toast("提示词已保存", "success");
   });
   els.promptPrevPage?.addEventListener("click", () => { state.promptPage -= 1; renderPrompts(); });
   els.promptNextPage?.addEventListener("click", () => { state.promptPage += 1; renderPrompts(); });
@@ -3373,7 +3477,7 @@ function bindEvents() {
     if (!item) return;
     if (action === "use") { els.promptInput.value = item.content; switchView("submit"); els.promptInput.focus(); }
     if (action === "edit") openPromptEditor(item);
-    if (action === "delete" && window.confirm("确认删除这条提示词？")) { state.prompts = state.prompts.filter((entry) => entry.id !== item.id); savePrompts(); renderPrompts(); }
+    if (action === "delete" && window.confirm("确认删除这条提示词？")) { state.prompts = state.prompts.filter((entry) => entry.id !== item.id); savePrompts(); renderPrompts(); renderMyPromptMenu(); }
   });
 
   document.querySelectorAll(".nav-item").forEach((button) => {
@@ -3728,6 +3832,7 @@ async function init() {
     try {
       const health = await requestJson(authPath, savedToken);
       state.apiToken = savedToken;
+      loadPrompts();
       applyAccessScope(health);
       clearTokenFromUrl();
       showApp();

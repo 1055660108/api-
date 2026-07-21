@@ -177,6 +177,9 @@ class ClientFeatureTests(unittest.TestCase):
         generated = self.client.post("/admin/point-cards", json={"points": 12.5, "count": 1, "note": "测试批次"})
         self.assertEqual(generated.status_code, 201)
         code = generated.json()["cards"][0]["code"]
+        listed_before_redeem = self.client.get("/admin/point-cards").json()["cards"]
+        self.assertEqual(listed_before_redeem[0]["code"], code)
+        self.assertEqual(point_cards._read()["cards"][point_cards._digest(code)]["code"], code)
         first_headers = {"X-API-Token": first["token"]}
         redeemed = self.client.post("/points/redeem", headers=first_headers, json={"code": code})
         self.assertEqual(redeemed.status_code, 200)
@@ -235,14 +238,22 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(profile["membership"]["name"], "月度会员")
         self.assertEqual(profile["membership"]["concurrency_bonus"], 3)
         self.assertEqual(profile["membership"]["effective_concurrency"], 5)
+        self.assertEqual(profile["membership"]["purchased_package_ids"], [package_id])
+        duplicate = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertIn("只能购买一次", duplicate.json()["detail"])
         transactions = self.client.get("/points/transactions", headers=headers).json()["transactions"]
         self.assertEqual(transactions[0]["kind"], "membership_purchase")
+        self.assertEqual(sum(item["kind"] == "membership_purchase" for item in transactions), 1)
 
         user_data = json.loads(users.USERS_PATH.read_text(encoding="utf-8"))
         member_entry = next(item for item in user_data["users"].values() if item["id"] == user_id)
         member_entry["membership"]["expires_at"] = "2000-01-01T00:00:00+00:00"
         users.USERS_PATH.write_text(json.dumps(user_data, ensure_ascii=False), encoding="utf-8")
         self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 2)
+        repurchased = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
+        self.assertEqual(repurchased.status_code, 200)
+        self.assertEqual(repurchased.json()["membership"]["purchased_package_ids"], [package_id])
 
         self.assertEqual(self.client.patch(f"/admin/memberships/{package_id}", json={"points_cost": 12.5}).json()["package"]["points_cost"], 12.5)
         self.assertEqual(self.client.delete(f"/admin/memberships/{package_id}").status_code, 200)

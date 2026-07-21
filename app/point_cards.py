@@ -70,6 +70,7 @@ def generate_cards(points: object, count: int, note: str = "") -> list[dict[str,
             record = {
                 "id": secrets.token_hex(12),
                 "code_hash": digest,
+                "code": code,
                 "code_hint": f"{code[:7]}...{code[-4:]}",
                 "points_units": units,
                 "points": units_to_points(units),

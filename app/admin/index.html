@@ -97,7 +97,7 @@
 
         <nav class="nav" aria-label="主导航" id="mainNav">
           <button class="nav-item active" type="button" data-view="dashboard">
-            <span>总览</span>
+            <span>用户首页</span>
           </button>
           <button class="nav-item" type="button" data-view="submit">
             <span>提交任务</span>
@@ -118,13 +118,13 @@
             <span>接口说明</span>
           </button>
           <button class="nav-item" type="button" data-view="videos" id="videosNavItem">
-            <span>视频库</span>
+            <span>我的视频</span>
           </button>
           <button class="nav-item" type="button" data-view="prompts">
-            <span>提示词管理</span>
+            <span>提示词库</span>
           </button>
           <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>积分购买</span></button>
-          <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>会员</span></button>
+          <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>我的会员</span></button>
           <button class="nav-item" type="button" data-view="transactions" id="transactionsNavItem"><span>消费明细</span></button>
           <button class="nav-item" type="button" data-view="users" id="usersNavItem"><span>用户管理</span></button>
           <button class="nav-item" type="button" data-view="point-cards" id="pointCardsNavItem"><span>卡密积分</span></button>
@@ -143,13 +143,13 @@
 
       <main class="main">
         <header class="page-header">
-          <div><h1 id="viewTitle">总览</h1></div>
+          <div><h1 id="viewTitle">用户首页</h1></div>
           <div class="page-header-meta"><span class="status-dot ok"></span><span>管理员会话</span></div>
         </header>
 
-        <section class="view active" id="dashboardView" data-title="总览">
-          <div class="dashboard-hero"><div><h2>一处掌控所有生成任务</h2></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></div>
-          <section class="panel client-token-card"><div><span class="eyebrow">访问凭证</span><h2>API Token</h2><p>可用于第三方软件调用，消耗同一积分余额，请妥善保管。</p></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新 Token</button></div></section>
+        <section class="view active" id="dashboardView" data-title="用户首页">
+          <div class="dashboard-hero home-summary"><div><span class="eyebrow">账户概览</span><h2 class="client-home-heading">欢迎回来，<span id="dashboardAccountName">当前用户</span></h2><h2 class="admin-home-heading">系统运行概况</h2></div><div class="home-summary-actions"><div class="home-points"><span>当前积分</span><strong id="dashboardPointsBalance">0</strong></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></div></div>
+          <section class="panel client-token-card"><div><span class="eyebrow">访问凭证</span><h2>API Token</h2></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新 Token</button></div></section>
           <div class="dashboard-actions"><button class="secondary-button dashboard-logout" id="dashboardLogoutButton" type="button">退出登录</button></div>
           <div class="metric-grid">
             <div class="metric-card">
@@ -207,7 +207,7 @@
           </div>
         </section>
 
-        <section class="view" id="membershipView" data-title="会员"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>使用账户积分购买会员权益。</p></div><span class="settings-state" id="membershipCurrentState">当前无会员</span></div><div class="membership-grid" id="membershipList"></div></section></section>
+        <section class="view" id="membershipView" data-title="我的会员"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>使用账户积分购买会员权益；有效期内同一套餐限购一次。</p></div><span class="settings-state" id="membershipCurrentState">当前无会员</span></div><div class="membership-grid" id="membershipList"></div></section></section>
 
         <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header"><div><h2>积分明细</h2><p>记录任务消费、退款、卡密兑换和管理员调整。</p></div><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap"><table class="users-table ledger-table"><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
 
@@ -303,8 +303,8 @@
             <section class="message-panel hidden" data-message-panel="announcements"><div class="message-panel-header"><div><h2>平台公告</h2><p>查看管理员发布的平台公告。</p></div></div><div class="message-list" id="clientAnnouncementList"></div></section>
           </div>
 
-          <div class="admin-message-center">
-            <section class="panel users-panel" data-message-panel="feedback">
+          <div class="admin-message-center message-workspace">
+            <section class="panel users-panel message-feedback-panel" data-message-panel="feedback">
               <div class="panel-header"><div><h2>反馈处理</h2><p>处理状态和管理员回复保存后会立即展示给用户。</p></div></div>
               <div class="table-wrap users-table-wrap"><table class="users-table message-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>管理员回复</th><th>处理状态</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div>
             </section>
@@ -341,6 +341,10 @@
 
               <div class="composer-footer">
                 <div class="composer-controls">
+                  <div class="prompt-picker">
+                    <button class="reference-button" id="openMyPrompts" type="button" aria-expanded="false" aria-controls="myPromptMenu">我的提示词</button>
+                    <div class="my-prompt-menu hidden" id="myPromptMenu" role="menu"></div>
+                  </div>
                   <button class="reference-button prompt-save-button" id="saveCurrentPrompt" type="button"><span class="plus-icon">+</span> 保存提示词</button>
                   <select id="platformSelect" class="sr-only" aria-label="生成平台">
                     <option value="dola">Dola</option>
@@ -378,7 +382,7 @@
           </form>
         </section>
 
-        <section class="view" id="promptsView" data-title="提示词管理">
+        <section class="view" id="promptsView" data-title="提示词库">
           <section class="panel prompt-manager-panel">
             <div class="panel-header prompt-manager-header">
               <div><span class="eyebrow">Prompt Library</span><h2>常用提示词</h2><p>保存创作灵感，拖动排序，点击即可带入任务。</p></div>
@@ -460,7 +464,7 @@
           </section>
         </section>
 
-        <section class="view" id="videosView" data-title="视频库">
+        <section class="view" id="videosView" data-title="我的视频">
           <section class="panel">
             <div class="panel-header"><div><h2>我的视频</h2><p>选择视频后可批量删除对应任务记录</p></div><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
             <div class="video-library" id="videoLibrary"></div>

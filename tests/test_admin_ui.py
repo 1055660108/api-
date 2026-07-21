@@ -185,12 +185,23 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("saveFeedbackRecord", self.javascript)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
-        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion"):
+        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "myPromptMenu"):
             self.assertIn(f'id="{element_id}"', self.html)
         for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/memberships/", "/admin/announcements", "/notifications/read-all"):
             self.assertIn(endpoint, self.javascript)
         self.assertIn("https://pay.ldxp.cn/shop/huisu/fhm9gj", self.javascript)
         self.assertIn("8000", self.javascript)
+
+    def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
+        for text in ("用户首页", "我的视频", "提示词库", "我的会员", "当前积分"):
+            self.assertIn(text, self.html)
+        for removed in ("一处掌控所有生成任务", "可用于第三方软件调用，消耗同一积分余额，请妥善保管。"):
+            self.assertNotIn(removed, self.html)
+        self.assertIn("function newPromptId()", self.javascript)
+        self.assertIn('data-copy-point-card', self.javascript)
+        self.assertIn('item.code || item.code_hint', self.javascript)
+        self.assertNotIn('data-user-concurrency=', self.javascript)
+        self.assertIn("updateMembershipRemaining", self.javascript)
 
 
 if __name__ == "__main__":

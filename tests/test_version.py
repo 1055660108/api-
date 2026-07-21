@@ -13,7 +13,7 @@ class VersionTests(unittest.TestCase):
         compose = (root / "compose.yaml").read_text(encoding="utf-8")
         dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.0.1")
+        self.assertEqual(version, "1.0.2")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertIn("COPY VERSION ./VERSION", dockerfile)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 from playwright.async_api import async_playwright
@@ -20,6 +21,42 @@ MEDIA_URL_RE = re.compile(r'https?://[^"\\\s]+(?:\.mp4|mime_type=video|video_mp4
 TASK_KEY_RE = re.compile(r"(?:task|job|request|aigc|generation|message)[_-]?id", re.IGNORECASE)
 
 
+def qianwen_video_url_score(url: str, key: str = "") -> int:
+    value = str(url or "").lower()
+    field = str(key or "").lower()
+    score = 0
+    clean_markers = ("no_watermark", "without_watermark", "watermark_free", "unwatermarked", "watermark=0", "watermark%3d0", "wm=0")
+    original_markers = ("original", "origin", "source", "download", "raw")
+    if any(marker in field or marker in value for marker in clean_markers):
+        score += 300
+    if any(marker in field for marker in original_markers):
+        score += 140
+    if "main_url" in field:
+        score += 100
+    elif "video_url" in field:
+        score += 70
+    elif "play_url" in field:
+        score += 30
+    if ".mp4" in value or "video_mp4" in value:
+        score += 20
+    if ".m3u8" in value:
+        score -= 10
+    explicitly_clean = any(marker in field or marker in value for marker in clean_markers)
+    if not explicitly_clean and ("watermark" in field or "watermark=1" in value or "wm=1" in value):
+        score -= 240
+    if any(marker in field or marker in value for marker in ("preview", "thumbnail", "poster", "sample")):
+        score -= 120
+    return score
+
+
+def best_qianwen_video_url(candidates: dict[str, int] | list[str]) -> str:
+    if isinstance(candidates, dict):
+        rows = candidates.items()
+    else:
+        rows = ((url, qianwen_video_url_score(url)) for url in candidates)
+    return max(rows, key=lambda item: (item[1], ".mp4" in item[0].lower()), default=("", 0))[0]
+
+
 class QianwenVideoAutomation:
     def __init__(self, task_id: str, prompt: str, ratio: str, model: str, task_type: str = "video", account: dict[str, Any] | None = None):
         self.task_id = task_id
@@ -34,6 +71,8 @@ class QianwenVideoAutomation:
         self.network_events: list[dict[str, Any]] = []
         self.remote_task_ids: list[str] = []
         self.remote_video_urls: list[str] = []
+        self.remote_video_scores: dict[str, int] = {}
+        self.first_video_candidate_at = 0.0
         self.remote_error = ""
 
     async def _refresh_cookies(self, context) -> None:
@@ -67,6 +106,9 @@ class QianwenVideoAutomation:
             for match in MEDIA_URL_RE.findall(text.replace("\\u0026", "&").replace("\\/", "/")):
                 if match not in self.remote_video_urls:
                     self.remote_video_urls.append(match)
+                self.remote_video_scores[match] = max(self.remote_video_scores.get(match, -1000), qianwen_video_url_score(match, key))
+                if not self.first_video_candidate_at:
+                    self.first_video_candidate_at = time.monotonic()
 
     async def _capture_response(self, response) -> None:
         request = response.request
@@ -213,6 +255,8 @@ class QianwenVideoAutomation:
                 self.network_events.clear()
                 self.remote_task_ids.clear()
                 self.remote_video_urls.clear()
+                self.remote_video_scores.clear()
+                self.first_video_candidate_at = 0.0
                 self.remote_error = ""
                 initial_image_urls: set[str] = set()
                 if self.task_type == "image":
@@ -266,11 +310,13 @@ class QianwenVideoAutomation:
                 deadline = asyncio.get_running_loop().time() + 1800
                 while asyncio.get_running_loop().time() < deadline:
                     if self.remote_video_urls:
-                        url = self.remote_video_urls[-1]
-                        await self._refresh_cookies(context)
-                        save_result(self.task_id, extra={"decoded_main_url": url, "qianwen_remote_task_ids": self.remote_task_ids, "qianwen_page_url": page.url})
-                        mark_success(self.task_id)
-                        return {"success": True, "retryable": False, "reason": ""}
+                        url = best_qianwen_video_url(self.remote_video_scores)
+                        score = self.remote_video_scores.get(url, 0)
+                        if score >= 200 or time.monotonic() - self.first_video_candidate_at >= 8:
+                            await self._refresh_cookies(context)
+                            save_result(self.task_id, extra={"decoded_main_url": url, "qianwen_remote_task_ids": self.remote_task_ids, "qianwen_page_url": page.url, "qianwen_video_url_score": score})
+                            mark_success(self.task_id)
+                            return {"success": True, "retryable": False, "reason": ""}
                     if self.task_type == "image":
                         current_image_urls = await page.locator("img").evaluate_all("items => items.map(item => item.src).filter(Boolean)")
                         candidates = [str(src) for src in current_image_urls if str(src).startswith("http") and str(src) not in initial_image_urls]
@@ -281,21 +327,26 @@ class QianwenVideoAutomation:
                             mark_success(self.task_id)
                             return {"success": True, "retryable": False, "reason": ""}
                     videos = page.locator("video")
-                    for index in range(await videos.count()):
-                        src = str(await videos.nth(index).get_attribute("src") or "")
-                        if src.startswith("http"):
+                    video_sources = [str(await videos.nth(index).get_attribute("src") or "") for index in range(await videos.count())]
+                    video_sources = [src for src in video_sources if src.startswith("http")]
+                    if video_sources:
+                        src = best_qianwen_video_url(video_sources)
+                        src_score = qianwen_video_url_score(src, "video_element")
+                        if src_score >= 140:
                             await self._refresh_cookies(context)
-                            save_result(self.task_id, extra={"decoded_main_url": src, "qianwen_page_url": page.url})
+                            save_result(self.task_id, extra={"decoded_main_url": src, "qianwen_page_url": page.url, "qianwen_video_url_score": src_score})
                             mark_success(self.task_id)
                             return {"success": True, "retryable": False, "reason": ""}
                     html = await page.content()
-                    match = VIDEO_URL_RE.search(html.replace("\\u0026", "&").replace("\\/", "/"))
-                    if match:
-                        url = match.group(0)
-                        await self._refresh_cookies(context)
-                        save_result(self.task_id, extra={"decoded_main_url": url, "qianwen_page_url": page.url})
-                        mark_success(self.task_id)
-                        return {"success": True, "retryable": False, "reason": ""}
+                    matches = VIDEO_URL_RE.findall(html.replace("\\u0026", "&").replace("\\/", "/"))
+                    if matches:
+                        url = best_qianwen_video_url(matches)
+                        url_score = qianwen_video_url_score(url, "page_html")
+                        if url_score >= 140:
+                            await self._refresh_cookies(context)
+                            save_result(self.task_id, extra={"decoded_main_url": url, "qianwen_page_url": page.url, "qianwen_video_url_score": url_score})
+                            mark_success(self.task_id)
+                            return {"success": True, "retryable": False, "reason": ""}
                     body = await page.locator("body").inner_text()
                     if any(marker in body[-1800:] for marker in ("生成失败", "生成遇到问题", "内容违规")):
                         await self._save_diagnostics(page, "generation failed")

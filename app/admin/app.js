@@ -35,7 +35,6 @@ const els = {
   adminPassword: document.getElementById("adminPassword"),
   clientTokenDisplay: document.getElementById("clientTokenDisplay"),
   clientAccountName: document.getElementById("clientAccountName"),
-  dashboardAccountName: document.getElementById("dashboardAccountName"),
   dashboardPointsBalance: document.getElementById("dashboardPointsBalance"),
   sidebarMembershipName: document.getElementById("sidebarMembershipName"),
   sidebarVersion: document.getElementById("sidebarVersion"),
@@ -68,6 +67,7 @@ const els = {
   pointCardTypeFilter: document.getElementById("pointCardTypeFilter"),
   pointCardStatusFilter: document.getElementById("pointCardStatusFilter"),
   pointCardTotalState: document.getElementById("pointCardTotalState"),
+  pointCardLegacyState: document.getElementById("pointCardLegacyState"),
   pointCardTableBody: document.getElementById("pointCardTableBody"),
   submitFreeRemaining: document.getElementById("submitFreeRemaining"),
   submitPointsBalance: document.getElementById("submitPointsBalance"),
@@ -191,7 +191,13 @@ const els = {
   promptInput: document.getElementById("promptInput"),
   saveCurrentPrompt: document.getElementById("saveCurrentPrompt"),
   openMyPrompts: document.getElementById("openMyPrompts"),
-  myPromptMenu: document.getElementById("myPromptMenu"),
+  promptPickerModal: document.getElementById("promptPickerModal"),
+  closePromptPickerModal: document.getElementById("closePromptPickerModal"),
+  cancelPromptPickerModal: document.getElementById("cancelPromptPickerModal"),
+  promptPickerList: document.getElementById("promptPickerList"),
+  promptPickerPrev: document.getElementById("promptPickerPrev"),
+  promptPickerNext: document.getElementById("promptPickerNext"),
+  promptPickerPageState: document.getElementById("promptPickerPageState"),
   promptGrid: document.getElementById("promptGrid"),
   addPromptButton: document.getElementById("addPromptButton"),
   promptEditor: document.getElementById("promptEditor"),
@@ -424,6 +430,8 @@ const state = {
   prompts: [],
   promptPage: 1,
   promptPageSize: 8,
+  promptPickerPage: 1,
+  promptPickerPageSize: 6,
   editingPromptId: "",
   clientRegisterMode: false,
   registrationEmailVerificationEnabled: true,
@@ -480,18 +488,20 @@ function newPromptId() {
   return `prompt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function renderMyPromptMenu() {
-  if (!els.myPromptMenu) return;
-  els.myPromptMenu.innerHTML = state.prompts.length ? state.prompts.map((item) => `
-    <button type="button" role="menuitem" data-my-prompt-id="${escapeHtml(item.id)}">
+function renderPromptPicker() {
+  if (!els.promptPickerList) return;
+  const pages = Math.max(1, Math.ceil(state.prompts.length / state.promptPickerPageSize));
+  state.promptPickerPage = Math.min(Math.max(1, state.promptPickerPage), pages);
+  const start = (state.promptPickerPage - 1) * state.promptPickerPageSize;
+  const items = state.prompts.slice(start, start + state.promptPickerPageSize);
+  els.promptPickerList.innerHTML = items.length ? items.map((item) => `
+    <button class="prompt-picker-item" type="button" data-prompt-picker-id="${escapeHtml(item.id)}">
       <strong>${escapeHtml(item.title || "常用提示词")}</strong>
       <span>${escapeHtml(item.content)}</span>
-    </button>`).join("") : '<div class="my-prompt-empty">提示词库中暂无内容</div>';
-}
-
-function closeMyPromptMenu() {
-  els.myPromptMenu?.classList.add("hidden");
-  els.openMyPrompts?.setAttribute("aria-expanded", "false");
+    </button>`).join("") : '<div class="empty-state">提示词库中暂无内容，请先保存提示词。</div>';
+  if (els.promptPickerPageState) els.promptPickerPageState.textContent = `第 ${state.promptPickerPage} / ${pages} 页 · 共 ${state.prompts.length} 条`;
+  if (els.promptPickerPrev) els.promptPickerPrev.disabled = state.promptPickerPage <= 1;
+  if (els.promptPickerNext) els.promptPickerNext.disabled = state.promptPickerPage >= pages;
 }
 
 function renderPrompts() {
@@ -526,7 +536,7 @@ function addPrompt(content, title = "常用提示词") {
   state.promptPage = 1;
   savePrompts();
   renderPrompts();
-  renderMyPromptMenu();
+  renderPromptPicker();
   toast("提示词已保存", "success");
 }
 
@@ -882,7 +892,7 @@ function showApp() {
 function startAutoRefresh() {
   if (!state.refreshTimer) {
     state.refreshTimer = window.setInterval(async () => {
-      if (!state.apiToken || els.appShell.classList.contains("hidden")) return;
+      if ((portal === "client" && !state.apiToken) || document.hidden || els.appShell.classList.contains("hidden")) return;
       if (state.autoRefreshing) return;
       state.autoRefreshing = true;
       try {
@@ -906,7 +916,7 @@ function startAutoRefresh() {
       } finally {
         state.autoRefreshing = false;
       }
-    }, 15000);
+    }, 30000);
   }
   if (!state.countdownTimer) {
     state.countdownTimer = window.setInterval(() => {
@@ -954,7 +964,6 @@ function applyAccessScope(data = {}) {
   if (els.adminAccountDisplay) els.adminAccountDisplay.textContent = state.adminUsername || els.adminUsername?.value || "-";
   if (els.changeAdminUsername) els.changeAdminUsername.value = state.adminUsername || els.adminUsername?.value || "";
   if (els.clientAccountName) els.clientAccountName.textContent = state.userName;
-  if (els.dashboardAccountName) els.dashboardAccountName.textContent = state.userName;
   if (els.clientSettingsAccount) els.clientSettingsAccount.textContent = state.userName;
   if (data.quota) {
     const used = Math.max(0, Number(data.quota.used || 0));
@@ -1140,12 +1149,14 @@ function switchView(name) {
 
 const FEEDBACK_STATUS_LABELS = { pending: "待处理", reviewing: "处理中", resolved: "已解决", closed: "已关闭" };
 
-function setMessageTab(tab) {
+function setMessageTab(tab, options = {}) {
   state.messageTab = ["feedback", "notifications", "announcements"].includes(tab) ? tab : "feedback";
   document.querySelectorAll("[data-message-tab]").forEach((button) => button.classList.toggle("active", button.dataset.messageTab === state.messageTab));
   document.querySelectorAll("[data-message-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.messagePanel !== state.messageTab));
   if (portal === "client" && state.messageTab === "notifications") {
-    apiFetch("/notifications/read-all", { method: "POST" }).then(loadClientNotifications).catch(() => {});
+    apiFetch("/notifications/read-all", { method: "POST" }).then(() => loadMessageCenter({ quiet: true })).catch(() => {});
+  } else if (options.refresh !== false) {
+    loadMessageCenter({ quiet: true });
   }
 }
 
@@ -1187,7 +1198,8 @@ async function loadFeedback() {
     <td><div class="feedback-content">${escapeHtml(item.content || "")}</div></td>
     <td><textarea class="feedback-reply-input" data-feedback-note="${escapeHtml(item.id)}" maxlength="5000" placeholder="输入回复内容">${escapeHtml(item.admin_note || "")}</textarea></td>
     <td><div class="feedback-status-actions"><select data-feedback-status="${escapeHtml(item.id)}"><option value="pending" ${item.status === "pending" ? "selected" : ""}>待处理</option><option value="reviewing" ${item.status === "reviewing" ? "selected" : ""}>处理中</option><option value="resolved" ${item.status === "resolved" ? "selected" : ""}>已解决</option><option value="closed" ${item.status === "closed" ? "selected" : ""}>已关闭</option></select><button class="primary-button compact-button" type="button" data-save-feedback="${escapeHtml(item.id)}">保存</button></div></td>
-  </tr>`).join("") : '<tr><td colspan="5"><div class="empty-state">暂无用户反馈</div></td></tr>';
+    <td><button class="danger-button compact-button" type="button" data-delete-feedback="${escapeHtml(item.id)}">删除</button></td>
+  </tr>`).join("") : '<tr><td colspan="6"><div class="empty-state">暂无用户反馈</div></td></tr>';
 }
 
 async function saveFeedbackRecord(feedbackId) {
@@ -1215,7 +1227,7 @@ async function loadAdminNotifications() {
   if (portal !== "admin" || !els.adminNotificationList) return;
   const data = await apiFetch("/admin/notifications?limit=200");
   const rows = Array.isArray(data.notifications) ? data.notifications : [];
-  els.adminNotificationList.innerHTML = rows.length ? rows.map((item) => `<article class="message-card compact"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><span class="message-status ${item.read_at ? "resolved" : "pending"}">${item.read_at ? "已读" : "未读"}</span></div><p>${escapeHtml(item.content)}</p><small>接收用户：${escapeHtml(item.username || item.user_id)}</small></article>`).join("") : '<div class="empty-state">暂无发送记录</div>';
+  els.adminNotificationList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-message-row" data-notification-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><div class="message-row-actions"><span class="message-status ${item.read_at ? "resolved" : "pending"}">${item.read_at ? "已读" : "未读"}</span><button class="danger-button compact-button" type="button" data-delete-notification>删除</button></div></div><p>${escapeHtml(item.content)}</p><small>接收用户：${escapeHtml(item.username || item.user_id)}</small></article>`).join("") : '<div class="empty-state">暂无发送记录</div>';
 }
 
 async function loadClientAnnouncements() {
@@ -1232,7 +1244,7 @@ async function loadAdminAnnouncements() {
   const data = await apiFetch("/admin/announcements");
   const rows = Array.isArray(data.announcements) ? data.announcements : [];
   const levelLabels = { small: "小公告", large: "大公告", emergency: "紧急公告" };
-  els.adminAnnouncementList.innerHTML = rows.length ? rows.map((item) => `<article class="message-card compact" data-announcement-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(levelLabels[item.level] || "大公告")} · ${escapeHtml(formatTime(item.created_at))}</span></div><div class="announcement-actions">${item.level === "emergency" && item.enabled ? `<button class="secondary-button compact-button" type="button" data-toggle-announcement-lock data-locked="${Boolean(item.lock_screen)}">${item.lock_screen ? "解除锁屏" : "启用锁屏"}</button>` : ""}<button class="${item.enabled ? "danger-button" : "secondary-button"} compact-button" type="button" data-toggle-announcement data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button></div></div><p>${escapeHtml(item.content)}</p></article>`).join("") : '<div class="empty-state">暂无公告</div>';
+  els.adminAnnouncementList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-message-row" data-announcement-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(levelLabels[item.level] || "大公告")} · ${escapeHtml(formatTime(item.created_at))}</span></div><div class="announcement-actions">${item.level === "emergency" && item.enabled ? `<button class="secondary-button compact-button" type="button" data-toggle-announcement-lock data-locked="${Boolean(item.lock_screen)}">${item.lock_screen ? "解除锁屏" : "启用锁屏"}</button>` : ""}<button class="secondary-button compact-button" type="button" data-toggle-announcement data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button compact-button" type="button" data-delete-announcement>删除</button></div></div><p>${escapeHtml(item.content)}</p></article>`).join("") : '<div class="empty-state">暂无公告</div>';
 }
 
 async function showNextUnseenAnnouncement() {
@@ -1308,8 +1320,17 @@ async function submitAdminAnnouncement(event) {
 
 async function loadMessageCenter(options = {}) {
   try {
-    if (portal === "client") await Promise.all([loadClientFeedback(), loadClientNotifications(), loadClientAnnouncements()]);
-    else await Promise.all([loadFeedback(), loadNotificationRecipients(), loadAdminNotifications(), loadAdminAnnouncements()]);
+    if (portal === "client") {
+      if (state.messageTab === "feedback") await loadClientFeedback();
+      else if (state.messageTab === "notifications") await loadClientNotifications();
+      else await loadClientAnnouncements();
+    } else if (state.messageTab === "feedback") {
+      await loadFeedback();
+    } else if (state.messageTab === "notifications") {
+      await Promise.all([loadNotificationRecipients(), loadAdminNotifications()]);
+    } else {
+      await loadAdminAnnouncements();
+    }
   } catch (error) {
     if (!options.quiet) toast(`消息读取失败：${error.message}`, "error");
   }
@@ -1323,7 +1344,7 @@ async function submitFeedback(event) {
     els.feedbackForm.reset();
     closeSettingsModal(els.feedbackModal);
     toast("反馈已提交，感谢你的建议");
-    setMessageTab("feedback");
+    setMessageTab("feedback", { refresh: false });
     await loadClientFeedback();
   } catch (error) {
     toast(`提交失败：${error.message}`, "error");
@@ -1414,7 +1435,8 @@ function membershipRemainingText() {
 }
 
 function updateMembershipRemaining() {
-  if (els.sidebarMembershipName) els.sidebarMembershipName.textContent = membershipRemainingText();
+  const text = membershipRemainingText();
+  if (els.sidebarMembershipName && els.sidebarMembershipName.textContent !== text) els.sidebarMembershipName.textContent = text;
 }
 
 async function purchaseMembership(button) {
@@ -1456,9 +1478,14 @@ async function loadPointCards() {
   const data = await apiFetch(`/admin/point-cards?${params}`);
   state.pointCards = Array.isArray(data.cards) ? data.cards : [];
   if (els.pointCardTotalState) els.pointCardTotalState.textContent = `共 ${state.pointCards.length} 条记录`;
+  const legacyCount = state.pointCards.filter((item) => !item.code).length;
+  if (els.pointCardLegacyState) {
+    els.pointCardLegacyState.textContent = legacyCount ? `${legacyCount} 条历史记录仅保留掩码` : "";
+    els.pointCardLegacyState.classList.toggle("hidden", !legacyCount);
+  }
   els.pointCardTableBody.innerHTML = state.pointCards.length ? state.pointCards.map((item) => {
     const code = item.code || item.code_hint || "";
-    const copyButton = item.code ? `<button type="button" class="icon-button card-copy-button" data-copy-point-card="${escapeHtml(item.code)}" title="复制完整卡密">复制</button>` : '<button type="button" class="icon-button card-copy-button" disabled title="旧卡密无法恢复完整内容">不可复制</button>';
+    const copyButton = item.code ? `<button type="button" class="icon-button card-copy-button" data-copy-point-card="${escapeHtml(item.code)}" title="复制完整卡密">复制</button>` : '<span class="legacy-code-label" title="旧版本未保存原始卡密，无法从哈希恢复">历史掩码</span>';
     return `<tr><td><div class="point-card-code"><code title="${escapeHtml(code)}">${escapeHtml(code)}</code>${copyButton}</div></td><td><span class="card-type-chip">积分卡密</span></td><td>${escapeHtml(item.points)} 积分</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_username || "-")}</td><td>${item.redeemed_at ? escapeHtml(formatTime(item.redeemed_at)) : "-"}</td><td>永久有效</td><td>${escapeHtml(item.note || "-")}</td></tr>`;
   }).join("") : '<tr><td colspan="8"><div class="empty-state">暂无卡密记录</div></td></tr>';
 }
@@ -3076,6 +3103,20 @@ function bindEvents() {
     }
   });
   els.feedbackTableBody?.addEventListener("click", async (event) => {
+    const deleteButton = event.target.closest("[data-delete-feedback]");
+    if (deleteButton) {
+      if (!window.confirm("确认删除这条用户反馈？删除后无法恢复。")) return;
+      setBusy(deleteButton, true, "删除中");
+      try {
+        await apiFetch(`/admin/feedback/${encodeURIComponent(deleteButton.dataset.deleteFeedback)}`, { method: "DELETE" });
+        await loadFeedback();
+        toast("反馈已删除");
+      } catch (error) {
+        toast(`反馈删除失败：${error.message}`, "error");
+        setBusy(deleteButton, false);
+      }
+      return;
+    }
     const button = event.target.closest("[data-save-feedback]");
     if (!button) return;
     setBusy(button, true, "保存中");
@@ -3099,11 +3140,32 @@ function bindEvents() {
       toast(`通知状态更新失败：${error.message}`, "error");
     }
   });
+  els.adminNotificationList?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-delete-notification]");
+    const article = button?.closest("[data-notification-id]");
+    if (!button || !article || !window.confirm("确认删除这条通知记录？用户端对应通知也会删除。")) return;
+    setBusy(button, true, "删除中");
+    try {
+      await apiFetch(`/admin/notifications/${encodeURIComponent(article.dataset.notificationId)}`, { method: "DELETE" });
+      await loadAdminNotifications();
+      toast("通知已删除");
+    } catch (error) {
+      toast(`通知删除失败：${error.message}`, "error");
+      setBusy(button, false);
+    }
+  });
   els.adminAnnouncementList?.addEventListener("click", async (event) => {
-    const button = event.target.closest("[data-toggle-announcement], [data-toggle-announcement-lock]");
+    const button = event.target.closest("[data-toggle-announcement], [data-toggle-announcement-lock], [data-delete-announcement]");
     const article = button?.closest("[data-announcement-id]");
     if (!button || !article) return;
     try {
+      if (button.hasAttribute("data-delete-announcement")) {
+        if (!window.confirm("确认删除这条公告？删除后所有用户都将无法查看。")) return;
+        await apiFetch(`/admin/announcements/${encodeURIComponent(article.dataset.announcementId)}`, { method: "DELETE" });
+        await loadAdminAnnouncements();
+        toast("公告已删除");
+        return;
+      }
       const body = button.hasAttribute("data-toggle-announcement-lock") ? { lock_screen: button.dataset.locked !== "true" } : { enabled: button.dataset.enabled !== "true" };
       await apiFetch(`/admin/announcements/${encodeURIComponent(article.dataset.announcementId)}`, { method: "PATCH", body });
       await loadAdminAnnouncements();
@@ -3353,7 +3415,7 @@ function bindEvents() {
       toast(`会员套餐读取失败：${error.message}`, "error");
     }
   });
-  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal]].forEach(([modal, closeButton, cancelButton]) => {
+  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal]].forEach(([modal, closeButton, cancelButton]) => {
     if (closeButton) closeButton.onclick = (event) => {
       event.preventDefault();
       closeSettingsModal(modal);
@@ -3418,24 +3480,22 @@ function bindEvents() {
     button.addEventListener("click", () => switchView(button.dataset.viewShortcut));
   });
   els.openMyPrompts?.addEventListener("click", () => {
-    const opening = els.myPromptMenu.classList.contains("hidden");
-    if (opening) renderMyPromptMenu();
-    els.myPromptMenu.classList.toggle("hidden", !opening);
-    els.openMyPrompts.setAttribute("aria-expanded", opening ? "true" : "false");
+    state.promptPickerPage = 1;
+    renderPromptPicker();
+    openSettingsModal(els.promptPickerModal, els.promptPickerList?.querySelector("button"));
   });
-  els.myPromptMenu?.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-my-prompt-id]");
+  els.promptPickerList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-prompt-picker-id]");
     if (!button) return;
-    const item = state.prompts.find((entry) => entry.id === button.dataset.myPromptId);
+    const item = state.prompts.find((entry) => entry.id === button.dataset.promptPickerId);
     if (!item) return;
     els.promptInput.value = item.content;
-    closeMyPromptMenu();
+    closeSettingsModal(els.promptPickerModal);
     els.promptInput.focus();
     toast(`已使用“${item.title || "提示词"}”`);
   });
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest(".prompt-picker")) closeMyPromptMenu();
-  });
+  els.promptPickerPrev?.addEventListener("click", () => { state.promptPickerPage -= 1; renderPromptPicker(); });
+  els.promptPickerNext?.addEventListener("click", () => { state.promptPickerPage += 1; renderPromptPicker(); });
   els.saveCurrentPrompt?.addEventListener("click", () => {
     const value = els.promptInput?.value || "";
     addPrompt(value, value.trim().slice(0, 20) || "常用提示词");
@@ -3452,7 +3512,7 @@ function bindEvents() {
     savePrompts();
     els.promptEditor.classList.add("hidden");
     renderPrompts();
-    renderMyPromptMenu();
+    renderPromptPicker();
     toast("提示词已保存", "success");
   });
   els.promptPrevPage?.addEventListener("click", () => { state.promptPage -= 1; renderPrompts(); });
@@ -3477,7 +3537,7 @@ function bindEvents() {
     if (!item) return;
     if (action === "use") { els.promptInput.value = item.content; switchView("submit"); els.promptInput.focus(); }
     if (action === "edit") openPromptEditor(item);
-    if (action === "delete" && window.confirm("确认删除这条提示词？")) { state.prompts = state.prompts.filter((entry) => entry.id !== item.id); savePrompts(); renderPrompts(); renderMyPromptMenu(); }
+    if (action === "delete" && window.confirm("确认删除这条提示词？")) { state.prompts = state.prompts.filter((entry) => entry.id !== item.id); savePrompts(); renderPrompts(); renderPromptPicker(); }
   });
 
   document.querySelectorAll(".nav-item").forEach((button) => {

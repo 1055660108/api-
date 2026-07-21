@@ -110,3 +110,13 @@ def update_feedback(feedback_id: str, status: str, admin_note: str) -> dict[str,
             record["resolved_at"] = record["updated_at"]
         _write(data)
         return record
+
+
+def delete_feedback(feedback_id: str) -> dict[str, Any]:
+    with _LOCK:
+        data = _read()
+        record = data["feedback"].pop(str(feedback_id or ""), None)
+        if not isinstance(record, dict):
+            raise KeyError(feedback_id)
+        _write(data)
+        return record

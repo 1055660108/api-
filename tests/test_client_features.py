@@ -157,6 +157,10 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(own_feedback[0]["admin_note"], "问题已经处理，请刷新后重试。")
         self.assertEqual(self.client.get("/feedback", headers=second_headers).json()["feedback"], [])
 
+        deleted_feedback = self.client.delete(f"/admin/feedback/{feedback_id}")
+        self.assertEqual(deleted_feedback.status_code, 200)
+        self.assertEqual(self.client.get("/feedback", headers=first_headers).json()["feedback"], [])
+
         first_notifications = self.client.get("/notifications", headers=first_headers).json()
         self.assertEqual(first_notifications["unread"], 1)
         notification_id = first_notifications["notifications"][0]["id"]
@@ -169,6 +173,11 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(read_all.status_code, 200)
         self.assertEqual(read_all.json()["updated"], 1)
         self.assertEqual(self.client.get("/notifications", headers=second_headers).json()["unread"], 0)
+
+        deleted_notification = self.client.delete(f"/admin/notifications/{notification_id}")
+        self.assertEqual(deleted_notification.status_code, 200)
+        self.assertEqual(self.client.get("/notifications", headers=first_headers).json()["notifications"], [])
+        self.assertEqual(len(self.client.get("/notifications", headers=second_headers).json()["notifications"]), 1)
 
     def test_point_cards_redeem_once_and_create_transaction(self) -> None:
         first = self.register("card_user_one")
@@ -215,6 +224,9 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertTrue(emergency_row["lock_screen"])
         unlocked = self.client.patch(f"/admin/announcements/{emergency_id}", json={"lock_screen": False})
         self.assertFalse(unlocked.json()["announcement"]["lock_screen"])
+        deleted = self.client.delete(f"/admin/announcements/{emergency_id}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertNotIn(emergency_id, {item["id"] for item in self.client.get("/admin/announcements").json()["announcements"]})
 
     def test_membership_catalog_admin_crud_and_public_filtering(self) -> None:
         registered = self.register("member_user")

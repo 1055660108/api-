@@ -34,8 +34,8 @@ from .config import (
     validate_startup_credentials,
 )
 from .email_verification import consume_registration_code, normalize_domains, normalize_email, send_registration_code, validate_allowed_email
-from .feedback import create_feedback, list_feedback, list_feedback_for_user, update_feedback
-from .notifications import create_announcement, create_notifications, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, update_announcement
+from .feedback import create_feedback, delete_feedback, list_feedback, list_feedback_for_user, update_feedback
+from .notifications import create_announcement, create_notifications, delete_announcement, delete_notification, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, update_announcement
 from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, normalize_platform
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
@@ -927,10 +927,26 @@ async def admin_update_feedback(feedback_id: str, request: Request):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.delete("/admin/feedback/{feedback_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_feedback(feedback_id: str):
+    try:
+        return {"ok": True, "feedback": delete_feedback(feedback_id)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="反馈不存在")
+
+
 @app.get("/admin/notifications", dependencies=[Depends(require_admin)])
 async def admin_notifications(limit: int = Query(200, ge=1, le=1000)):
     rows = list_admin_notifications(limit)
     return {"notifications": rows, "total": len(rows)}
+
+
+@app.delete("/admin/notifications/{notification_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_notification(notification_id: str):
+    try:
+        return {"ok": True, "notification": delete_notification(notification_id)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="通知不存在")
 
 
 @app.get("/admin/announcements", dependencies=[Depends(require_admin)])
@@ -955,6 +971,14 @@ async def admin_update_announcement(announcement_id: str, request: Request):
         enabled = str(payload["enabled"]).lower() in {"1", "true", "yes", "on"} if "enabled" in payload else None
         lock_screen = str(payload["lock_screen"]).lower() in {"1", "true", "yes", "on"} if "lock_screen" in payload else None
         return {"ok": True, "announcement": update_announcement(announcement_id, enabled=enabled, lock_screen=lock_screen)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="公告不存在")
+
+
+@app.delete("/admin/announcements/{announcement_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_announcement(announcement_id: str):
+    try:
+        return {"ok": True, "announcement": delete_announcement(announcement_id)}
     except KeyError:
         raise HTTPException(status_code=404, detail="公告不存在")
 

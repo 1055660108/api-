@@ -130,6 +130,16 @@ def mark_all_notifications_read(user_id: str) -> int:
     return changed
 
 
+def delete_notification(notification_id: str) -> dict[str, Any]:
+    with _LOCK:
+        data = _read()
+        record = data["notifications"].pop(str(notification_id or ""), None)
+        if not isinstance(record, dict):
+            raise KeyError(notification_id)
+        _write(data)
+        return record
+
+
 def create_announcement(title: str, content: str, level: str = "large", lock_screen: bool = False) -> dict[str, Any]:
     title = str(title or "").strip()
     content = str(content or "").strip()
@@ -211,3 +221,15 @@ def update_announcement(announcement_id: str, *, enabled: bool | None = None, lo
 
 def set_announcement_enabled(announcement_id: str, enabled: bool) -> dict[str, Any]:
     return update_announcement(announcement_id, enabled=enabled)
+
+
+def delete_announcement(announcement_id: str) -> dict[str, Any]:
+    with _LOCK:
+        data = _read()
+        record = data["announcements"].pop(str(announcement_id or ""), None)
+        if not isinstance(record, dict):
+            raise KeyError(announcement_id)
+        _write(data)
+        public = dict(record)
+        public.pop("seen_by", None)
+        return public

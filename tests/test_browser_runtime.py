@@ -84,6 +84,21 @@ class BrowserRuntimeTests(unittest.TestCase):
             self.assertLess(source.index("await cancel_tracked_tasks(response_tasks)"), source.index("await safe_close(context)"))
             self.assertNotIn('asyncio.create_task(capture_completion(response))', source)
 
+    def test_qianwen_prefers_original_unwatermarked_video_urls(self) -> None:
+        from app.qianwen_automation import best_qianwen_video_url, qianwen_video_url_score
+
+        preview = "https://cdn.example/preview-watermark.mp4?watermark=1"
+        play = "https://cdn.example/result.m3u8"
+        original = "https://cdn.example/original.mp4?lr=unwatermarked"
+        scores = {
+            preview: qianwen_video_url_score(preview, "preview_video_url"),
+            play: qianwen_video_url_score(play, "play_url"),
+            original: qianwen_video_url_score(original, "download_url_without_watermark"),
+        }
+        self.assertEqual(best_qianwen_video_url(scores), original)
+        self.assertGreater(scores[original], scores[play])
+        self.assertGreater(scores[play], scores[preview])
+
 
 if __name__ == "__main__":
     unittest.main()

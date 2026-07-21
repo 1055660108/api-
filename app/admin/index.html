@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=20260721-ui-54" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.3" />
   </head>
   <body>
     <script>
@@ -148,8 +148,10 @@
         </header>
 
         <section class="view active" id="dashboardView" data-title="用户首页">
-          <div class="dashboard-hero home-summary"><div><span class="eyebrow">账户概览</span><h2 class="client-home-heading">欢迎回来，<span id="dashboardAccountName">当前用户</span></h2><h2 class="admin-home-heading">系统运行概况</h2></div><div class="home-summary-actions"><div class="home-points"><span>当前积分</span><strong id="dashboardPointsBalance">0</strong></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></div></div>
-          <section class="panel client-token-card"><div><span class="eyebrow">访问凭证</span><h2>API Token</h2></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新 Token</button></div></section>
+          <div class="home-account-row">
+            <section class="panel home-points-card"><div><span>当前积分</span><strong id="dashboardPointsBalance">0</strong></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></section>
+            <section class="panel client-token-card"><div><span>API Token</span><strong>访问凭证</strong></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新</button></div></section>
+          </div>
           <div class="dashboard-actions"><button class="secondary-button dashboard-logout" id="dashboardLogoutButton" type="button">退出登录</button></div>
           <div class="metric-grid">
             <div class="metric-card">
@@ -215,7 +217,7 @@
           <section class="panel point-card-workspace">
             <div class="point-card-header">
               <div><h2>积分卡密</h2><p>生成、查询和导出用户兑换记录。</p></div>
-              <div class="point-card-header-meta"><span id="pointCardTotalState">共 0 条记录</span><button class="primary-button" id="openPointCardModal" type="button">生成卡密</button></div>
+              <div class="point-card-header-meta"><div class="point-card-summary"><span id="pointCardTotalState">共 0 条记录</span><span class="hidden" id="pointCardLegacyState"></span></div><button class="primary-button" id="openPointCardModal" type="button">生成卡密</button></div>
             </div>
             <div class="point-card-toolbar">
               <div class="point-card-filters"><input id="pointCardSearch" type="search" placeholder="搜索兑换码、用户名或备注" /><select id="pointCardTypeFilter"><option value="all">全部类型</option><option value="points">积分卡密</option></select><select id="pointCardStatusFilter"><option value="all">全部状态</option><option value="unused">未使用</option><option value="redeemed">已兑换</option></select></div>
@@ -306,7 +308,7 @@
           <div class="admin-message-center message-workspace">
             <section class="panel users-panel message-feedback-panel" data-message-panel="feedback">
               <div class="panel-header"><div><h2>反馈处理</h2><p>处理状态和管理员回复保存后会立即展示给用户。</p></div></div>
-              <div class="table-wrap users-table-wrap"><table class="users-table message-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>管理员回复</th><th>处理状态</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div>
+              <div class="table-wrap users-table-wrap"><table class="users-table message-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>管理员回复</th><th>处理状态</th><th>操作</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div>
             </section>
             <section class="message-admin-grid hidden" data-message-panel="notifications">
               <form class="panel notification-compose" id="adminNotificationForm">
@@ -341,10 +343,7 @@
 
               <div class="composer-footer">
                 <div class="composer-controls">
-                  <div class="prompt-picker">
-                    <button class="reference-button" id="openMyPrompts" type="button" aria-expanded="false" aria-controls="myPromptMenu">我的提示词</button>
-                    <div class="my-prompt-menu hidden" id="myPromptMenu" role="menu"></div>
-                  </div>
+                  <button class="reference-button" id="openMyPrompts" type="button">我的提示词</button>
                   <button class="reference-button prompt-save-button" id="saveCurrentPrompt" type="button"><span class="plus-icon">+</span> 保存提示词</button>
                   <select id="platformSelect" class="sr-only" aria-label="生成平台">
                     <option value="dola">Dola</option>
@@ -949,7 +948,14 @@
       <section class="modal-panel announcement-modal-panel" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle"><div class="announcement-modal-accent" aria-hidden="true"></div><div class="modal-header"><div><span class="modal-eyebrow">平台公告</span><h2 id="announcementModalTitle"></h2></div><button class="modal-close" id="closeAnnouncementModal" type="button" aria-label="关闭">×</button></div><div class="announcement-modal-content" id="announcementModalContent"></div><div class="announcement-modal-footer"><span>HS 服务通知</span><button class="primary-button" id="confirmAnnouncementModal" type="button">确认</button></div></section>
     </div>
     <div class="modal-backdrop hidden" id="pointCardModal" aria-hidden="true">
-      <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><div><span class="modal-eyebrow">卡密积分</span><h2 id="pointCardModalTitle">生成兑换码</h2><p>完整兑换码仅在本次生成后显示。</p></div><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
+      <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><div><span class="modal-eyebrow">卡密积分</span><h2 id="pointCardModalTitle">生成兑换码</h2><p>完整兑换码会保存到卡密列表，可随时复制或导出。</p></div><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
+    </div>
+    <div class="modal-backdrop hidden" id="promptPickerModal" aria-hidden="true">
+      <section class="modal-panel prompt-picker-modal" role="dialog" aria-modal="true" aria-labelledby="promptPickerTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">提示词库</span><h2 id="promptPickerTitle">选择提示词</h2><p>选择后会直接带入当前生成任务。</p></div><button class="modal-close" id="closePromptPickerModal" type="button" aria-label="关闭">×</button></div>
+        <div class="prompt-picker-list" id="promptPickerList"></div>
+        <div class="prompt-picker-footer"><button class="page-button" id="promptPickerPrev" type="button">上一页</button><span id="promptPickerPageState">第 1 / 1 页</span><button class="page-button" id="promptPickerNext" type="button">下一页</button><button class="secondary-button" id="cancelPromptPickerModal" type="button">取消</button></div>
+      </section>
     </div>
     <aside class="small-announcement hidden" id="smallAnnouncementToast" aria-live="polite"><div class="small-announcement-head"><span>平台公告</span><strong id="smallAnnouncementTitle"></strong></div><p id="smallAnnouncementContent"></p><div class="small-announcement-progress" aria-hidden="true"></div></aside>
     <div class="emergency-announcement hidden" id="emergencyAnnouncementOverlay" role="alertdialog" aria-modal="true"><div class="emergency-announcement-inner"><div class="emergency-rule" aria-hidden="true"></div><span class="emergency-label">紧急公告</span><h1 id="emergencyAnnouncementTitle"></h1><div id="emergencyAnnouncementContent"></div><button class="primary-button" id="closeEmergencyAnnouncement" type="button">确认并进入</button><p class="emergency-lock-note hidden" id="emergencyLockNote">系统维护中，管理员解除锁定后可继续使用。</p></div></div>
@@ -1021,6 +1027,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=20260721-ui-54"></script>
+    <script src="/admin/assets/app.js?v=1.2.3"></script>
   </body>
 </html>

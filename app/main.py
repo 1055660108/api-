@@ -47,7 +47,7 @@ from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
 from .package_catalog import create_package, disable_package, list_packages, update_package
 from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, get_membership, list_memberships, update_membership
-from .point_cards import generate_cards, list_cards, redeem_card
+from .point_cards import generate_cards, list_cards, purge_legacy_cards, redeem_card
 from .point_transactions import list_transactions, record_transaction
 from .store import (
     active_task_ids,
@@ -55,6 +55,7 @@ from .store import (
     account_active_tasks,
     cleanup_expired_task_cache,
     create_task,
+    fail_initializing_tasks,
     finalize_task_creation,
     find_or_create_task,
     active_task_count_for_owner,
@@ -79,6 +80,8 @@ from .temp_access import (
     create_temp_tokens,
     delete_temp_token,
     get_temp_context,
+    get_temp_context_by_hash,
+    get_temp_reservation,
     hash_token,
     list_temp_tokens,
     refund_temp_quota_hash,
@@ -121,7 +124,7 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
@@ -203,10 +206,13 @@ async def lifespan(app: FastAPI):
     validate_startup_credentials(ensure_config())
     if postgres_enabled():
         ensure_postgres_schema()
+    purge_legacy_cards()
     running_marker = DATA_DIR / ".service-running"
     running_marker.parent.mkdir(parents=True, exist_ok=True)
     running_marker.write_text(str(time.time()), encoding="utf-8")
     repair_registered_user_tokens()
+    for stale_task in fail_initializing_tasks():
+        refund_temp_quota_once(str(stale_task.get("id") or ""), str(stale_task.get("owner_token_hash") or ""))
     reset_daily_account_quotas_if_needed()
     reconcile_account_quotas()
     create_sem = asyncio.Semaphore(2)
@@ -366,18 +372,24 @@ def _health_payload(access: AccessContext) -> dict:
         data["components"]["browser"]["executable_path"] = browser_path or ""
         data["components"]["browser"]["error"] = browser_error
     if access.is_temp:
-        balance = user_balance_by_token_hash(access.token_hash, list_temp_tokens())
-        data["quota"] = {
+        data.update(_client_access_payload(access))
+        data["browser_workers"] = access.concurrency
+    return data
+
+
+def _client_access_payload(access: AccessContext) -> dict:
+    balance = user_balance_by_token_hash(access.token_hash, list_temp_tokens())
+    return {
+        "quota": {
             "limit": access.limit,
             "used": access.used,
             "remaining": access.remaining,
             **balance,
-        }
-        data["browser_workers"] = access.concurrency
-        data["token_concurrency"] = access.concurrency
-        data["task_retention_days"] = access.task_retention_days
-        data["user_name"] = temp_token_remarks().get(access.token_hash, "")
-    return data
+        },
+        "token_concurrency": access.concurrency,
+        "task_retention_days": access.task_retention_days,
+        "user_name": temp_token_remarks().get(access.token_hash, ""),
+    }
 
 
 def _admit_task_creation() -> None:
@@ -514,6 +526,11 @@ async def admin_change_password(request: Request):
 @app.get("/auth/client", dependencies=[Depends(require_temp)])
 async def client_auth(access: Annotated[AccessContext, Depends(require_temp)]):
     return _health_payload(access)
+
+
+@app.get("/auth/access-state", dependencies=[Depends(require_temp)])
+async def client_access_state(access: Annotated[AccessContext, Depends(require_temp)]):
+    return _client_access_payload(access)
 
 
 @app.get("/points/packages", dependencies=[Depends(require_temp)])
@@ -1331,8 +1348,6 @@ async def openai_chat_completions(
     if platform == "qianwen" and payload.task_type != "video":
         raise OpenAIAPIError(400, "Qianwen only supports video tasks", "invalid_request_error", "task_type", "unsupported_value")
     task_type = "video"
-    if access.is_temp and active_task_count_for_owner(access.token_hash) >= access.concurrency:
-        raise OpenAIAPIError(429, "Concurrency limit exceeded", "rate_limit_error", code="rate_limit_exceeded")
     _rate_limit(request, "openai-task", 30, 60, access.token_hash)
     key = _idempotency_key(idempotency_key)
     fingerprint = _request_fingerprint("openai", access.token_hash, {"prompt": repair_text(prompt), "ratio": payload.ratio, "platform": platform, "model": model, "task_type": task_type})
@@ -1345,15 +1360,21 @@ async def openai_chat_completions(
             task_id = str(meta["id"])
             content = json.dumps({"task_id": task_id, "status": str(meta.get("status") or "submitted"), "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
             return {"id": f"chatcmpl-{task_id}", "object": "chat.completion", "created": int(time.time()), "model": payload.model, "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+        if access.is_temp:
+            access = get_temp_context_by_hash(access.token_hash) or access
+            active_count = active_task_count_for_owner(access.token_hash)
+            if active_count >= access.concurrency:
+                raise OpenAIAPIError(429, "并发数量不足，等待前方任务完成后继续执行！", "rate_limit_error", code="rate_limit_exceeded")
         cost_units = model_cost_units(platform, model, task_type)
         user_id = _transaction_user_id(access)
-        charged = access.is_temp and access.free_remaining <= 0
         reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
-        if charged and user_id:
+        reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
+        charged_units = int(reservation.get("units") or 0)
+        if charged_units > 0 and user_id:
             record_transaction(
                 user_id,
                 "consume",
-                -cost_units,
+                -charged_units,
                 "视频任务消费",
                 balance_units=reserved_access.credit_units,
                 reference_id=str(meta["id"]),
@@ -1362,6 +1383,11 @@ async def openai_chat_completions(
         finalize_task_creation(str(meta["id"]))
     except ValueError as exc:
         raise OpenAIAPIError(409, str(exc), "invalid_request_error", "Idempotency-Key", "idempotency_conflict")
+    except OpenAIAPIError:
+        if "meta" in locals():
+            refund_temp_quota_hash(access.token_hash, str(meta["id"]))
+            delete_task(str(meta["id"]))
+        raise
     except QuotaExceeded:
         if "meta" in locals():
             delete_task(str(meta["id"]))
@@ -1783,13 +1809,17 @@ async def temp_tokens_update(token_id: str, request: Request):
     if "limit" not in payload and "concurrency" not in payload and "remark" not in payload and "note" not in payload and "task_retention_days" not in payload:
         raise HTTPException(status_code=400, detail="limit, concurrency, task_retention_days or remark is required")
     try:
+        requested_concurrency = int(payload["concurrency"]) if "concurrency" in payload else None
         token = update_temp_token(
             token_id,
             limit=int(payload["limit"]) if "limit" in payload else None,
-            concurrency=int(payload["concurrency"]) if "concurrency" in payload else None,
+            concurrency=None,
             task_retention_days=int(payload["task_retention_days"]) if "task_retention_days" in payload else None,
             remark=str(payload.get("remark") if "remark" in payload else payload.get("note")) if "remark" in payload or "note" in payload else None,
         )
+        if requested_concurrency is not None:
+            effective = set_user_concurrency_by_token_hash(token_id, requested_concurrency)
+            token = update_temp_token(token_id, concurrency=requested_concurrency) if effective is None else next(item for item in list_temp_tokens() if item["id"] == token_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="token not found")
     except (TypeError, ValueError):
@@ -1849,18 +1879,21 @@ async def submit_task(
                 meta, created = create_task(prompt, ratio, owner_token_hash=access.token_hash if access.is_temp else "", platform=platform, model=model, task_type=task_type, enqueue=False), True
             if not created:
                 return {"id": meta["id"], "replayed": True}
-            if access.is_temp and active_task_count_for_owner(access.token_hash) >= access.concurrency:
-                mark_failed(meta["id"], "已超出并发上限，及时联系管理员调整。")
-                return {"id": meta["id"]}
+            if access.is_temp:
+                access = get_temp_context_by_hash(access.token_hash) or access
+                active_count = active_task_count_for_owner(access.token_hash)
+                if active_count >= access.concurrency:
+                    raise HTTPException(status_code=429, detail="并发数量不足，等待前方任务完成后继续执行！")
             cost_units = model_cost_units(platform, model, task_type)
             user_id = _transaction_user_id(access)
-            charged = access.is_temp and access.free_remaining <= 0
             reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
-            if charged and user_id:
+            reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
+            charged_units = int(reservation.get("units") or 0)
+            if charged_units > 0 and user_id:
                 record_transaction(
                     user_id,
                     "consume",
-                    -cost_units,
+                    -charged_units,
                     "视频任务消费",
                     balance_units=reserved_access.credit_units,
                     reference_id=str(meta["id"]),
@@ -1900,6 +1933,11 @@ async def submit_task(
                 "used": reserved_access.used,
                 "remaining": reserved_access.remaining,
                 **balance,
+            }
+            response["token_concurrency"] = reserved_access.concurrency
+            response["billing"] = {
+                "free_used": bool(reservation.get("free")),
+                "points_used": units_to_points(int(reservation.get("units") or 0)),
             }
         return response
 

@@ -133,6 +133,15 @@ class ReliabilityTests(unittest.TestCase):
             task = store.create_task("入队任务", "9:16")
         queue.enqueue.assert_called_once_with(task["id"])
 
+    def test_initializing_tasks_are_failed_during_recovery(self) -> None:
+        task = store.create_task("未完成创建", "9:16", owner_token_hash="owner", enqueue=False)
+        failed = store.fail_initializing_tasks()
+        self.assertEqual([item["id"] for item in failed], [task["id"]])
+        recovered = store.get_meta(task["id"])
+        self.assertEqual(recovered["status"], store.STATUS_FAILED)
+        self.assertIn("未成功进入队列", recovered["error"])
+        self.assertEqual(store.fail_initializing_tasks(), [])
+
     def test_redis_release_preserves_delayed_retry_time(self) -> None:
         task = self.create_task()
         available_at = datetime.now(timezone.utc) + timedelta(seconds=30)
@@ -234,6 +243,20 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIsNone(accounts.account_for_worker("worker-2"))
         self.assertFalse(accounts.refund_account_quota(created["id"], claimed["quota_charge_id"]))
 
+    def test_result_timeout_keeps_charge_and_exhausts_account_for_today(self) -> None:
+        created = accounts.add_account("Dola", "session=value", quota_limit=2)
+        claimed = accounts.claim_account_for_worker("worker-1", "task-1")
+        self.assertIsNotNone(claimed)
+        self.assertTrue(accounts.exhaust_timed_out_account(created["id"], claimed["quota_charge_id"]))
+        exhausted = accounts.list_accounts()[0]
+        account_data = json.loads(self.accounts_path.read_text(encoding="utf-8"))["accounts"][0]
+        charge = next(item for item in account_data["quota_charges"] if item["charge_id"] == claimed["quota_charge_id"])
+        self.assertEqual(charge["status"], "settled")
+        self.assertEqual(charge["settle_reason"], "result_timeout")
+        self.assertEqual(exhausted["quota_used"], 1)
+        self.assertEqual(account_data["quota_exhausted_date"], accounts.local_today())
+        self.assertIsNone(accounts.account_for_worker("worker-2"))
+
     def test_reconciliation_repairs_quota_used_from_charge_ledger(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=3)
         claimed = accounts.claim_account_for_worker("worker-1", "task-1")
@@ -249,11 +272,11 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_running(task["id"], "worker-1")
         store.save_result(task["id"], extra={"account_id": "account1", "account_quota_charge_id": "charge1"})
         store.mark_submitted(task["id"])
-        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat())
+        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat())
         manager = WorkerManager()
         with patch("app.worker.clear_account_current_task") as clear_account, patch(
-            "app.worker.refund_account_quota_once"
-        ) as refund_account, patch("app.worker.refund_temp_quota_once") as refund_owner, patch(
+            "app.worker.exhaust_timed_out_account"
+        ) as exhaust_account, patch("app.worker.refund_temp_quota_once") as refund_owner, patch(
             "app.worker.query_task", new=AsyncMock()
         ):
             asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
@@ -262,7 +285,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["result_timeout_retry_count"], 1)
         self.assertIn("account1", meta["failed_account_ids"])
         clear_account.assert_called_once_with("account1", task["id"])
-        refund_account.assert_called_once_with(task["id"], "account1", "charge1")
+        exhaust_account.assert_called_once_with("account1", "charge1")
         refund_owner.assert_not_called()
         self.assertNotIn("account_id", store.load_result(task["id"]))
 
@@ -271,15 +294,16 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_running(task["id"], "worker-1")
         store.save_result(task["id"], extra={"account_id": "account1", "account_quota_charge_id": "charge1"})
         store.mark_submitted(task["id"])
-        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat(), cancel_requested=True)
+        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(), cancel_requested=True)
         manager = WorkerManager()
-        with patch("app.worker.clear_account_current_task"), patch("app.worker.refund_account_quota_once"), patch(
+        with patch("app.worker.clear_account_current_task"), patch("app.worker.exhaust_timed_out_account") as exhaust_account, patch(
             "app.worker.refund_temp_quota_once"
         ) as refund_owner:
             asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
         meta = store.get_meta(task["id"])
         self.assertEqual(meta["status"], store.STATUS_FAILED)
         self.assertNotIn("result_timeout_retry_count", meta)
+        exhaust_account.assert_called_once_with("account1", "charge1")
         refund_owner.assert_called_once_with(task["id"], "owner")
 
     def test_second_result_timeout_fails_and_refunds_owner(self) -> None:
@@ -289,22 +313,44 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_submitted(task["id"])
         store.update_meta(
             task["id"],
-            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat(),
+            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(),
             result_timeout_retry_count=1,
             failed_account_ids=["account1"],
         )
         manager = WorkerManager()
         with patch("app.worker.clear_account_current_task") as clear_account, patch(
-            "app.worker.refund_account_quota_once"
-        ) as refund_account, patch("app.worker.refund_temp_quota_once") as refund_owner:
+            "app.worker.exhaust_timed_out_account"
+        ) as exhaust_account, patch("app.worker.refund_temp_quota_once") as refund_owner:
             asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
         meta = store.get_meta(task["id"])
         self.assertEqual(meta["status"], store.STATUS_FAILED)
         self.assertEqual(meta["result_timeout_retry_count"], 2)
         self.assertEqual(meta["failed_account_ids"], ["account1", "account2"])
         clear_account.assert_called_once_with("account2", task["id"])
-        refund_account.assert_called_once_with(task["id"], "account2", "charge2")
+        exhaust_account.assert_called_once_with("account2", "charge2")
         refund_owner.assert_called_once_with(task["id"], "owner")
+
+    def test_retry_budget_is_shared_across_execution_and_result_timeout(self) -> None:
+        task = self.create_task("owner")
+        store.mark_running(task["id"], "worker-1")
+        self.assertEqual(store.record_retry(task["id"], "首次失败"), 1)
+        self.assertTrue(store.mark_running(task["id"], "worker-2"))
+        store.mark_submitted(task["id"])
+        self.assertEqual(store.retry_timed_out_submitted_task(task["id"], "结果超时"), 2)
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["retry_count"], 2)
+        self.assertEqual(meta["result_timeout_retry_count"], 1)
+
+    def test_legacy_retry_override_cannot_exceed_global_limit(self) -> None:
+        task = self.create_task("owner")
+        store.mark_running(task["id"], "worker-1")
+        store.mark_submitted(task["id"])
+        self.assertEqual(store.retry_submitted_task(task["id"], "额度不足", max_retries=5), 1)
+        self.assertTrue(store.mark_running(task["id"], "worker-2"))
+        store.mark_submitted(task["id"])
+        self.assertEqual(store.retry_submitted_task(task["id"], "额度不足", max_retries=5), 2)
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_FAILED)
 
     def test_watchdog_scan_error_does_not_stop_watchdog(self) -> None:
         manager = WorkerManager()

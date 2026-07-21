@@ -273,7 +273,7 @@ class DolaQueryTests(unittest.TestCase):
         clear_account.assert_called_once_with("account-1", "0" * 32)
         exhaust_account.assert_called_once_with("account-1", "charge-1")
         record_failed.assert_called_once_with("0" * 32, "account-1")
-        retry_task.assert_called_once_with("0" * 32, query.ACCOUNT_QUOTA_RETRY_TEXT, max_retries=5, delay_seconds=10)
+        retry_task.assert_called_once_with("0" * 32, query.ACCOUNT_QUOTA_RETRY_TEXT, max_retries=2, delay_seconds=10)
 
 
 if __name__ == "__main__":

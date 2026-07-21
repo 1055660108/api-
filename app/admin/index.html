@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.3" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.3-2" />
   </head>
   <body>
     <script>
@@ -149,7 +149,7 @@
 
         <section class="view active" id="dashboardView" data-title="用户首页">
           <div class="home-account-row">
-            <section class="panel home-points-card"><div><span>当前积分</span><strong id="dashboardPointsBalance">0</strong></div><button class="primary-button" type="button" data-view-shortcut="submit">创建新任务</button></section>
+            <section class="panel home-points-card"><div><span>当前积分</span><strong id="dashboardPointsBalance">0</strong></div></section>
             <section class="panel client-token-card"><div><span>API Token</span><strong>访问凭证</strong></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新</button></div></section>
           </div>
           <div class="dashboard-actions"><button class="secondary-button dashboard-logout" id="dashboardLogoutButton" type="button">退出登录</button></div>
@@ -217,7 +217,7 @@
           <section class="panel point-card-workspace">
             <div class="point-card-header">
               <div><h2>积分卡密</h2><p>生成、查询和导出用户兑换记录。</p></div>
-              <div class="point-card-header-meta"><div class="point-card-summary"><span id="pointCardTotalState">共 0 条记录</span><span class="hidden" id="pointCardLegacyState"></span></div><button class="primary-button" id="openPointCardModal" type="button">生成卡密</button></div>
+              <div class="point-card-header-meta"><div class="point-card-summary"><span id="pointCardTotalState">共 0 条记录</span></div><button class="primary-button" id="openPointCardModal" type="button">生成卡密</button></div>
             </div>
             <div class="point-card-toolbar">
               <div class="point-card-filters"><input id="pointCardSearch" type="search" placeholder="搜索兑换码、用户名或备注" /><select id="pointCardTypeFilter"><option value="all">全部类型</option><option value="points">积分卡密</option></select><select id="pointCardStatusFilter"><option value="all">全部状态</option><option value="unused">未使用</option><option value="redeemed">已兑换</option></select></div>
@@ -290,7 +290,7 @@
               <button type="button" data-message-tab="notifications">通知</button>
               <button type="button" data-message-tab="announcements">公告</button>
             </div>
-            <button class="secondary-button" id="refreshMessages" type="button">刷新</button>
+            <div class="message-refresh"><span id="messagesRefreshState" role="status" aria-live="polite"></span><button class="secondary-button" id="refreshMessages" type="button">刷新</button></div>
           </div>
 
           <div class="client-message-center">
@@ -1027,6 +1027,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.2.3"></script>
+    <script src="/admin/assets/app.js?v=1.2.3-2"></script>
   </body>
 </html>

@@ -67,7 +67,6 @@ const els = {
   pointCardTypeFilter: document.getElementById("pointCardTypeFilter"),
   pointCardStatusFilter: document.getElementById("pointCardStatusFilter"),
   pointCardTotalState: document.getElementById("pointCardTotalState"),
-  pointCardLegacyState: document.getElementById("pointCardLegacyState"),
   pointCardTableBody: document.getElementById("pointCardTableBody"),
   submitFreeRemaining: document.getElementById("submitFreeRemaining"),
   submitPointsBalance: document.getElementById("submitPointsBalance"),
@@ -79,6 +78,7 @@ const els = {
   messageUnreadCount: document.getElementById("messageUnreadCount"),
   feedbackTableBody: document.getElementById("feedbackTableBody"),
   refreshMessages: document.getElementById("refreshMessages"),
+  messagesRefreshState: document.getElementById("messagesRefreshState"),
   clientFeedbackList: document.getElementById("clientFeedbackList"),
   clientNotificationList: document.getElementById("clientNotificationList"),
   adminNotificationForm: document.getElementById("adminNotificationForm"),
@@ -418,6 +418,7 @@ const state = {
   savingTokenIds: new Set(),
   autoRefreshing: false,
   refreshTimer: 0,
+  accessRefreshTimer: 0,
   countdownTimer: 0,
   nextQuotaResetAt: "",
   proxyNodes: [],
@@ -890,6 +891,16 @@ function showApp() {
 }
 
 function startAutoRefresh() {
+  if (portal === "client" && !state.accessRefreshTimer) {
+    state.accessRefreshTimer = window.setInterval(async () => {
+      if (!state.apiToken || document.hidden || els.appShell.classList.contains("hidden") || state.submitting) return;
+      try {
+        applyAccessScope(await apiFetch("/auth/access-state"));
+      } catch (error) {
+        if (error.status === 401 || error.status === 403) expireSession();
+      }
+    }, 5000);
+  }
   if (!state.refreshTimer) {
     state.refreshTimer = window.setInterval(async () => {
       if ((portal === "client" && !state.apiToken) || document.hidden || els.appShell.classList.contains("hidden")) return;
@@ -1109,8 +1120,10 @@ async function logout() {
   localStorage.removeItem(portalStorageKey(TOKEN_KEY));
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
   if (state.refreshTimer) window.clearInterval(state.refreshTimer);
+  if (state.accessRefreshTimer) window.clearInterval(state.accessRefreshTimer);
   if (state.countdownTimer) window.clearInterval(state.countdownTimer);
   state.refreshTimer = 0;
+  state.accessRefreshTimer = 0;
   state.countdownTimer = 0;
   showLogin("已退出");
 }
@@ -1331,8 +1344,27 @@ async function loadMessageCenter(options = {}) {
     } else {
       await loadAdminAnnouncements();
     }
+    return true;
   } catch (error) {
     if (!options.quiet) toast(`消息读取失败：${error.message}`, "error");
+    return false;
+  }
+}
+
+async function refreshMessageCenter() {
+  setBusy(els.refreshMessages, true, "刷新中");
+  if (els.messagesRefreshState) els.messagesRefreshState.textContent = "正在刷新...";
+  try {
+    const refreshed = await loadMessageCenter();
+    if (!refreshed) {
+      if (els.messagesRefreshState) els.messagesRefreshState.textContent = "刷新失败";
+      return;
+    }
+    const refreshedAt = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    if (els.messagesRefreshState) els.messagesRefreshState.textContent = `最近刷新 ${refreshedAt}`;
+    toast("消息已刷新");
+  } finally {
+    setBusy(els.refreshMessages, false);
   }
 }
 
@@ -1478,20 +1510,15 @@ async function loadPointCards() {
   const data = await apiFetch(`/admin/point-cards?${params}`);
   state.pointCards = Array.isArray(data.cards) ? data.cards : [];
   if (els.pointCardTotalState) els.pointCardTotalState.textContent = `共 ${state.pointCards.length} 条记录`;
-  const legacyCount = state.pointCards.filter((item) => !item.code).length;
-  if (els.pointCardLegacyState) {
-    els.pointCardLegacyState.textContent = legacyCount ? `${legacyCount} 条历史记录仅保留掩码` : "";
-    els.pointCardLegacyState.classList.toggle("hidden", !legacyCount);
-  }
   els.pointCardTableBody.innerHTML = state.pointCards.length ? state.pointCards.map((item) => {
-    const code = item.code || item.code_hint || "";
-    const copyButton = item.code ? `<button type="button" class="icon-button card-copy-button" data-copy-point-card="${escapeHtml(item.code)}" title="复制完整卡密">复制</button>` : '<span class="legacy-code-label" title="旧版本未保存原始卡密，无法从哈希恢复">历史掩码</span>';
+    const code = item.code || "";
+    const copyButton = `<button type="button" class="icon-button card-copy-button" data-copy-point-card="${escapeHtml(code)}" title="复制完整卡密">复制</button>`;
     return `<tr><td><div class="point-card-code"><code title="${escapeHtml(code)}">${escapeHtml(code)}</code>${copyButton}</div></td><td><span class="card-type-chip">积分卡密</span></td><td>${escapeHtml(item.points)} 积分</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_username || "-")}</td><td>${item.redeemed_at ? escapeHtml(formatTime(item.redeemed_at)) : "-"}</td><td>永久有效</td><td>${escapeHtml(item.note || "-")}</td></tr>`;
   }).join("") : '<tr><td colspan="8"><div class="empty-state">暂无卡密记录</div></td></tr>';
 }
 
 function exportPointCardsCsv() {
-  const rows = [["兑换码", "类型", "面值", "状态", "使用者", "使用时间", "过期时间", "备注"], ...state.pointCards.map((item) => [item.code || item.code_hint, "积分卡密", item.points, item.status === "unused" ? "未使用" : "已兑换", item.redeemed_username || "", item.redeemed_at || "", "永久有效", item.note || ""])];
+  const rows = [["兑换码", "类型", "面值", "状态", "使用者", "使用时间", "过期时间", "备注"], ...state.pointCards.map((item) => [item.code, "积分卡密", item.points, item.status === "unused" ? "未使用" : "已兑换", item.redeemed_username || "", item.redeemed_at || "", "永久有效", item.note || ""])];
   const csv = `\ufeff${rows.map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\r\n")}`;
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -2985,9 +3012,10 @@ async function submitTask(event) {
   els.submitState.textContent = "提交中";
   try {
     const data = await apiFetch("/tasks", { method: "POST", body: form });
-    if (data.quota) applyAccessScope({ quota: data.quota, task_retention_days: state.taskRetentionDays, user_name: state.userName });
+    if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
     els.submitState.textContent = `已提交：${shortId(data.id)}`;
-    toast(`任务已提交：${data.id}`);
+    const billingText = data.billing?.free_used ? "，已扣除 1 次视频额度" : Number(data.billing?.points_used || 0) > 0 ? `，已扣除 ${data.billing.points_used} 积分` : "";
+    toast(`任务已提交${billingText}：${data.id}`);
     await refreshTasks({ quiet: true });
     resetSubmitForm({ force: true });
   } catch (error) {
@@ -3090,7 +3118,7 @@ function bindEvents() {
     if (!emergency) els.announcementLockScreen.checked = false;
   });
   els.membershipForm?.addEventListener("submit", createMembership);
-  els.refreshMessages?.addEventListener("click", () => loadMessageCenter());
+  els.refreshMessages?.addEventListener("click", refreshMessageCenter);
   els.feedbackTableBody?.addEventListener("change", async (event) => {
     const select = event.target.closest("[data-feedback-status]");
     if (!select) return;

@@ -10,7 +10,7 @@ import httpx
 
 from .accounts import clear_account_current_task, exhaust_account_quota, refund_account_quota, settle_account_quota
 from .automation import is_final_generation_failure
-from .store import STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, record_failed_account, record_retry, retry_submitted_task, save_result
+from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, record_failed_account, record_retry, retry_submitted_task, save_result
 from .temp_access import refund_temp_quota_hash
 
 
@@ -472,7 +472,7 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             return {"code": "0", "text": "浏览器超时", "url": ""}
         if meta.get("status") == STATUS_FAILED and str(meta.get("error") or "") == "region restricted":
             return {"code": "0", "text": "Dola 当前地区不可用", "url": ""}
-        if meta.get("status") == STATUS_FAILED and int(meta.get("retry_count") or 0) >= 2:
+        if meta.get("status") == STATUS_FAILED and int(meta.get("retry_count") or 0) >= MAX_TASK_RETRIES:
             return {"code": "0", "text": "多次生成失败", "url": ""}
         if meta.get("status") == STATUS_FAILED:
             return {"code": "0", "text": str(meta.get("error") or "失败"), "url": ""}
@@ -576,8 +576,8 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             clear_account_current_task(account_id, task_id)
             exhaust_account_quota(account_id, str(result.get("account_quota_charge_id") or ""))
             record_failed_account(task_id, account_id)
-        retry_count = retry_submitted_task(task_id, ACCOUNT_QUOTA_RETRY_TEXT, max_retries=5, delay_seconds=10)
-        if retry_count < 5:
+        retry_count = retry_submitted_task(task_id, ACCOUNT_QUOTA_RETRY_TEXT, max_retries=MAX_TASK_RETRIES, delay_seconds=10)
+        if retry_count < MAX_TASK_RETRIES:
             clear_transient_result(task_id)
             return {"code": "1", "text": ACCOUNT_QUOTA_RETRY_TEXT, "url": ""}
         meta = get_meta(task_id)
@@ -598,7 +598,7 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             if account_id:
                 record_failed_account(task_id, account_id)
             retry_count = record_retry(task_id, text[:500])
-            if retry_count >= 2:
+            if retry_count >= MAX_TASK_RETRIES:
                 meta = get_meta(task_id)
                 mark_failed(task_id, "多次生成失败")
                 refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
@@ -608,7 +608,7 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             record_failed_account(task_id, account_id)
             refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
         retry_count = record_retry(task_id, text[:500])
-        if retry_count >= 2:
+        if retry_count >= MAX_TASK_RETRIES:
             meta = get_meta(task_id)
             mark_failed(task_id, "多次生成失败")
             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))

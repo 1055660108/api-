@@ -1029,6 +1029,49 @@ def settle_account_quota(account_id: str, charge_id: str) -> bool:
         return settled
 
 
+def exhaust_timed_out_account(account_id: str, charge_id: str = "") -> bool:
+    """Keep a timed-out generation charged and exclude its account for today."""
+    if not account_id:
+        return False
+    with _ACCOUNTS_LOCK:
+        def mutate(data: dict[str, Any]) -> bool:
+            for account in data.get("accounts") or []:
+                if str(account.get("id") or "") != str(account_id):
+                    continue
+                now = utc_now()
+                if charge_id:
+                    charges = _initialize_quota_ledger(account)
+                    matching_charge = None
+                    for charge in charges:
+                        if str(charge.get("charge_id") or "") != str(charge_id):
+                            continue
+                        matching_charge = charge
+                        break
+                    if matching_charge is None:
+                        matching_charge = {"charge_id": str(charge_id), "status": "settled", "settled_at": now, "settle_reason": "result_timeout"}
+                        charges.append(matching_charge)
+                    else:
+                        matching_charge.update(status="settled", settled_at=now, settle_reason="result_timeout")
+                        matching_charge.pop("refunded_at", None)
+                        matching_charge.pop("refund_reason", None)
+                    account["quota_charges"] = charges
+                    account["quota_used"] = _reconciled_quota_used(account)
+                else:
+                    account["quota_used"] = max(1, int(account.get("quota_used") or 0))
+                account["quota_exhausted_date"] = local_today()
+                account["updated_at"] = now
+                return True
+            return False
+
+        if postgres.enabled():
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        exhausted = mutate(data)
+        if exhausted:
+            _write_data(data)
+        return exhausted
+
+
 def exhaust_account_quota(account_id: str, charge_id: str = "") -> bool:
     if not account_id:
         return False

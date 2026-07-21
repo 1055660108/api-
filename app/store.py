@@ -24,6 +24,7 @@ STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 STATUS_CANCELED = "canceled"
 TASK_TIMEOUT_HOURS = 3
+MAX_TASK_RETRIES = 2
 LOCAL_TZ = timezone(timedelta(hours=8))
 _TASK_LOCKS_LOCK = threading.RLock()
 _TASK_LOCKS: dict[str, threading.RLock] = {}
@@ -329,6 +330,25 @@ def finalize_task_creation(task_id: str) -> dict[str, Any]:
         return meta
 
 
+def fail_initializing_tasks(reason: str = "任务未成功进入队列，请重新提交") -> list[dict[str, Any]]:
+    failed: list[dict[str, Any]] = []
+    for item in list_tasks():
+        task_id = str(item.get("id") or "")
+        if not task_id or str(item.get("status") or "") != "initializing":
+            continue
+        updated = update_meta_if(
+            task_id,
+            {"initializing"},
+            status=STATUS_FAILED,
+            worker_id="",
+            finished_at=utc_now(),
+            error=reason,
+        )
+        if updated:
+            failed.append(updated)
+    return failed
+
+
 def set_task_images(task_id: str, paths: Iterable[Path]) -> None:
     with task_lock(task_id):
         image_count = len(list(paths))
@@ -421,7 +441,7 @@ def mark_pending(task_id: str, reason: str = "") -> None:
 
 
 def mark_failed(task_id: str, reason: str = "") -> None:
-    update_meta_if(task_id, {STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED}, status=STATUS_FAILED, worker_id="", finished_at=utc_now(), error=reason)
+    update_meta_if(task_id, {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED}, status=STATUS_FAILED, worker_id="", finished_at=utc_now(), error=reason)
 
 
 def mark_canceled(task_id: str, reason: str = "canceled") -> None:
@@ -522,7 +542,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
                 normalized_reason = "浏览器超时" if str(reason or "") == "browser timeout" else "Dola 当前地区不可用" if str(reason or "") == "region restricted" else reason
                 meta.update(retry_count=count, worker_id="", error=normalized_reason)
-                if count >= 2:
+                if count >= MAX_TASK_RETRIES:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
@@ -539,7 +559,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
         if str(reason or "") == "region restricted":
             reason = "Dola 当前地区不可用"
         meta.update(retry_count=count, worker_id="", error=reason)
-        if count >= 2:
+        if count >= MAX_TASK_RETRIES:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
@@ -548,7 +568,8 @@ def record_retry(task_id: str, reason: str = "") -> int:
         return count
 
 
-def retry_submitted_task(task_id: str, reason: str, max_retries: int = 2, delay_seconds: int = 45) -> int:
+def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_RETRIES, delay_seconds: int = 45) -> int:
+    max_retries = max(1, min(MAX_TASK_RETRIES, int(max_retries)))
     with task_lock(task_id):
         if postgres.enabled():
             def mutate(meta: dict[str, Any]) -> int:
@@ -578,14 +599,17 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = 2, delay_
         return count
 
 
-def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int = 2, delay_seconds: int = 10) -> int:
+def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_RETRIES, delay_seconds: int = 10) -> int:
+    max_retries = max(1, min(MAX_TASK_RETRIES, int(max_retries)))
     with task_lock(task_id):
         if postgres.enabled():
             def mutate(meta: dict[str, Any]) -> int:
                 if str(meta.get("status") or "") != STATUS_SUBMITTED or bool(meta.get("cancel_requested")):
                     return max(0, int(meta.get("result_timeout_retry_count") or 0))
-                count = max(0, int(meta.get("result_timeout_retry_count") or 0)) + 1
-                meta.update(result_timeout_retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
+                previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
+                timeout_count = previous_timeout_count + 1
+                count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
+                meta.update(retry_count=count, result_timeout_retry_count=timeout_count, worker_id="", error=reason, result_watch_miss_count=0)
                 if count >= max_retries:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
@@ -597,8 +621,10 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_SUBMITTED or bool(meta.get("cancel_requested")):
             return max(0, int(meta.get("result_timeout_retry_count") or 0))
-        count = max(0, int(meta.get("result_timeout_retry_count") or 0)) + 1
-        meta.update(result_timeout_retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
+        previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
+        timeout_count = previous_timeout_count + 1
+        count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
+        meta.update(retry_count=count, result_timeout_retry_count=timeout_count, worker_id="", error=reason, result_watch_miss_count=0)
         if count >= max_retries:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
@@ -611,21 +637,23 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
 def record_execution_miss(task_id: str, reason: str = "任务未执行，重新排队") -> int:
     if postgres.enabled():
         def mutate(meta: dict[str, Any]) -> int:
-            count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
-            if count >= 2:
-                meta.update(execution_miss_count=count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
+            miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
+            count = max(0, int(meta.get("retry_count") or 0)) + 1
+            if count >= MAX_TASK_RETRIES:
+                meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
             else:
-                meta.update(execution_miss_count=count, worker_id="", error=reason, status=STATUS_PENDING)
+                meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
             meta["updated_at"] = utc_now()
             return count
 
         return postgres.mutate_task_part(task_id, "meta", mutate)
     meta = get_meta(task_id)
-    count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
-    if count >= 2:
-        update_meta(task_id, execution_miss_count=count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
+    miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
+    count = max(0, int(meta.get("retry_count") or 0)) + 1
+    if count >= MAX_TASK_RETRIES:
+        update_meta(task_id, retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
     else:
-        update_meta(task_id, execution_miss_count=count, worker_id="", error=reason, status=STATUS_PENDING)
+        update_meta(task_id, retry_count=count, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
     return count
 
 

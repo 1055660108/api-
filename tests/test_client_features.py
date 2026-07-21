@@ -202,6 +202,23 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["redeemed_username"], "card_user_one")
 
+    def test_legacy_point_cards_are_removed(self) -> None:
+        current = point_cards.generate_cards(10, 1)[0]
+        data = point_cards._read()
+        data["cards"]["legacy-digest"] = {
+            "id": "legacy-card",
+            "code_hash": "legacy-digest",
+            "code_hint": "HS-OLD...CARD",
+            "points": 5,
+            "status": "unused",
+        }
+        point_cards._write(data)
+
+        self.assertEqual(point_cards.purge_legacy_cards(), 1)
+        remaining = point_cards.list_cards()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["code"], current["code"])
+
     def test_announcements_are_seen_per_user(self) -> None:
         first = self.register("announcement_one")
         second = self.register("announcement_two")
@@ -251,6 +268,15 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(profile["membership"]["concurrency_bonus"], 3)
         self.assertEqual(profile["membership"]["effective_concurrency"], 5)
         self.assertEqual(profile["membership"]["purchased_package_ids"], [package_id])
+        token_id = temp_access.hash_token(registered["token"])
+        adjusted = self.client.patch(f"/temp-tokens/{token_id}", json={"concurrency": 7})
+        self.assertEqual(adjusted.status_code, 200)
+        self.assertEqual(adjusted.json()["token"]["concurrency"], 7)
+        self.assertEqual(self.client.get("/auth/access-state", headers=headers).json()["token_concurrency"], 7)
+        adjusted_user = next(item for item in self.client.get("/users").json()["users"] if item["id"] == user_id)
+        self.assertEqual(adjusted_user["concurrency"], 7)
+        self.assertEqual(adjusted_user["base_concurrency"], 4)
+        self.assertEqual(self.client.get("/auth/profile", headers=headers).json()["membership"]["effective_concurrency"], 7)
         duplicate = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
         self.assertEqual(duplicate.status_code, 400)
         self.assertIn("只能购买一次", duplicate.json()["detail"])
@@ -262,7 +288,7 @@ class ClientFeatureTests(unittest.TestCase):
         member_entry = next(item for item in user_data["users"].values() if item["id"] == user_id)
         member_entry["membership"]["expires_at"] = "2000-01-01T00:00:00+00:00"
         users.USERS_PATH.write_text(json.dumps(user_data, ensure_ascii=False), encoding="utf-8")
-        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 2)
+        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 4)
         repurchased = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
         self.assertEqual(repurchased.status_code, 200)
         self.assertEqual(repurchased.json()["membership"]["purchased_package_ids"], [package_id])
@@ -287,6 +313,7 @@ class ClientFeatureTests(unittest.TestCase):
         user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "ledger_user")
         self.assertEqual(self.client.post(f"/users/{user_id}/points", json={"amount": 5}).status_code, 200)
         with patch.object(main, "active_task_count_for_owner", return_value=0), patch.object(main, "create_sem", asyncio.Semaphore(1)):
+            responses = []
             for index in range(4):
                 response = self.client.post(
                     "/tasks",
@@ -294,6 +321,13 @@ class ClientFeatureTests(unittest.TestCase):
                     data={"prompt": f"测试任务 {index}", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video"},
                 )
                 self.assertEqual(response.status_code, 200)
+                responses.append(response.json())
+        self.assertTrue(responses[0]["billing"]["free_used"])
+        self.assertEqual(responses[0]["billing"]["points_used"], 0)
+        self.assertFalse(responses[-1]["billing"]["free_used"])
+        self.assertEqual(responses[-1]["billing"]["points_used"], 1)
+        self.assertEqual(responses[-1]["quota"]["points"], 2)
+        self.assertEqual(self.client.get("/auth/access-state", headers=headers).json()["quota"]["points"], 2)
         self.assertEqual(self.client.post(f"/users/{user_id}/points/deduct", json={"amount": 1}).status_code, 200)
         rows = self.client.get("/points/transactions", headers=headers).json()["transactions"]
         kinds = [item["kind"] for item in rows]

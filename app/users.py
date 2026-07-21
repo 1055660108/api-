@@ -476,14 +476,33 @@ def set_user_concurrency(user_id: str, concurrency: int) -> None:
         entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
         if not entry:
             raise KeyError(user_id)
-        base_concurrency = max(1, int(concurrency))
-        membership = _active_membership(entry)
-        effective_concurrency = min(100, base_concurrency + _membership_concurrency_bonus(membership))
-        update_temp_token(str(entry.get("token_hash") or ""), concurrency=effective_concurrency)
-        entry["base_concurrency"] = base_concurrency
-        entry["effective_concurrency"] = effective_concurrency
-        entry["updated_at"] = _now()
+        effective_concurrency = _set_effective_concurrency(entry, concurrency)
         _write(data)
+
+
+def _set_effective_concurrency(entry: dict[str, Any], concurrency: int) -> int:
+    requested = max(1, min(100, int(concurrency)))
+    membership_bonus = _membership_concurrency_bonus(_active_membership(entry))
+    base_concurrency = max(1, requested - membership_bonus)
+    effective_concurrency = min(100, base_concurrency + membership_bonus)
+    update_temp_token(str(entry.get("token_hash") or ""), concurrency=effective_concurrency)
+    entry["base_concurrency"] = base_concurrency
+    entry["effective_concurrency"] = effective_concurrency
+    if isinstance(entry.get("membership"), dict) and _active_membership(entry):
+        entry["membership"]["effective_concurrency"] = effective_concurrency
+    entry["updated_at"] = _now()
+    return effective_concurrency
+
+
+def set_user_concurrency_by_token_hash(token_hash: str, concurrency: int) -> int | None:
+    with _LOCK:
+        data = _read()
+        entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
+        if not isinstance(entry, dict):
+            return None
+        effective_concurrency = _set_effective_concurrency(entry, concurrency)
+        _write(data)
+        return effective_concurrency
 
 
 def delete_user(user_id: str) -> None:

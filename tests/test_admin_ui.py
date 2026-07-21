@@ -185,7 +185,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("saveFeedbackRecord", self.javascript)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
-        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "pointCardLegacyState"):
+        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState"):
             self.assertIn(f'id="{element_id}"', self.html)
         for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/memberships/", "/admin/announcements", "/admin/notifications/", "/admin/feedback/", "/notifications/read-all"):
             self.assertIn(endpoint, self.javascript)
@@ -199,7 +199,7 @@ class AdminUITests(unittest.TestCase):
             self.assertNotIn(removed, self.html)
         self.assertIn("function newPromptId()", self.javascript)
         self.assertIn('data-copy-point-card', self.javascript)
-        self.assertIn('item.code || item.code_hint', self.javascript)
+        self.assertNotIn('item.code || item.code_hint', self.javascript)
         self.assertIn('data-prompt-picker-id', self.javascript)
         self.assertIn('data-delete-feedback', self.javascript)
         self.assertIn('data-delete-notification', self.javascript)
@@ -208,6 +208,12 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("updateMembershipRemaining", self.javascript)
         self.assertIn("document.hidden", self.javascript)
         self.assertIn("30000", self.javascript)
+        self.assertIn('apiFetch("/auth/access-state")', self.javascript)
+        self.assertIn("5000", self.javascript)
+        self.assertIn("已扣除 ${data.billing.points_used} 积分", self.javascript)
+        self.assertNotIn("创建新任务", self.html)
+        self.assertNotIn("历史掩码", self.html + self.javascript)
+        self.assertIn('addEventListener("click", refreshMessageCenter)', self.javascript)
 
 
 if __name__ == "__main__":

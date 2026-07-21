@@ -7,7 +7,7 @@ import socket
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import account_for_current_task, claim_account_for_worker, clear_account_current_task, refund_account_quota, settle_account_quota
+from .accounts import account_for_current_task, claim_account_for_worker, clear_account_current_task, exhaust_timed_out_account, refund_account_quota, settle_account_quota
 from .automation import DolaFetchAutomation, is_final_generation_failure
 from .doubao_automation import DoubaoVideoAutomation
 from .qianwen_automation import QianwenVideoAutomation
@@ -28,6 +28,7 @@ from .store import (
     mark_pending,
     mark_submitted,
     mark_result_once,
+    MAX_TASK_RETRIES,
     record_failed_account,
     record_execution_miss,
     record_result_watch_miss,
@@ -45,12 +46,11 @@ from .temp_access import refund_temp_quota_hash
 from .temp_access import temp_token_concurrency_limits
 
 
-MAX_TASK_RETRIES = 2
 DOLA_SUBMIT_INTERVAL_SECONDS = 5.0
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 1-3 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
 SUCCESS_WATCH_GRACE_SECONDS = 120
-RESULT_WATCH_DEADLINE_MINUTES = 15
+RESULT_WATCH_DEADLINE_MINUTES = 10
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -243,13 +243,13 @@ class WorkerManager:
                 if submitted_at and datetime.now(timezone.utc) - submitted_at >= timedelta(minutes=RESULT_WATCH_DEADLINE_MINUTES):
                     account_id = str(result.get("account_id") or "")
                     if account_id:
+                        exhaust_timed_out_account(account_id, str(result.get("account_quota_charge_id") or ""))
                         clear_account_current_task(account_id, task_id)
-                        refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
                     if not bool(meta.get("cancel_requested")):
                         if account_id:
                             record_failed_account(task_id, account_id)
-                        retry_count = retry_timed_out_submitted_task(task_id, "生成超过15分钟，正在换账号重试")
-                        if retry_count < 2:
+                        retry_count = retry_timed_out_submitted_task(task_id, "生成超过10分钟，正在换账号重试", max_retries=MAX_TASK_RETRIES)
+                        if retry_count < MAX_TASK_RETRIES:
                             clear_transient_result(task_id)
                             continue
                     mark_failed(task_id, "生成结果等待超时，请重新提交")

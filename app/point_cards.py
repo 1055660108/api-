@@ -93,6 +93,23 @@ def list_cards(limit: int = 500) -> list[dict[str, Any]]:
     return rows[:max(1, min(2000, int(limit)))]
 
 
+def purge_legacy_cards() -> int:
+    """Remove card records created before full redemption codes were persisted."""
+    with _LOCK:
+        data = _read()
+        cards = data["cards"]
+        legacy_keys = [
+            key
+            for key, record in cards.items()
+            if not isinstance(record, dict) or not str(record.get("code") or "").strip()
+        ]
+        for key in legacy_keys:
+            cards.pop(key, None)
+        if legacy_keys:
+            _write(data)
+    return len(legacy_keys)
+
+
 def redeem_card(code: str, user_id: str, token_hash: str, username: str = "") -> dict[str, Any]:
     normalized = _normalize(code)
     if len(normalized) < 12:

@@ -4498,8 +4498,8 @@ textarea:focus-visible {
 /* 1.2.3 workspace refinements */
 .home-account-row {
   display: grid;
-  grid-template-columns: minmax(260px, 0.75fr) minmax(480px, 1.25fr);
-  gap: 28px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
   margin-bottom: 18px;
 }
 
@@ -4515,7 +4515,7 @@ textarea:focus-visible {
 .home-points-card {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 20px;
 }
 
@@ -4538,7 +4538,7 @@ textarea:focus-visible {
 }
 
 .home-account-row .client-token-card > div:first-child strong { font-size: 16px; }
-.home-account-row .token-display { width: min(480px, 68%); }
+.home-account-row .token-display { width: min(440px, 70%); }
 body[data-portal="admin"] .home-account-row { display: none; }
 
 body[data-portal="client"] .metric-grid {
@@ -4627,6 +4627,9 @@ body[data-portal="client"] .metric-card {
   border-radius: 8px;
 }
 
+.message-refresh { display: flex; align-items: center; gap: 10px; }
+.message-refresh span { min-width: 112px; color: var(--muted); font-size: 12px; text-align: right; }
+
 .message-feedback-panel { padding: 0; overflow: hidden; }
 .message-feedback-panel > .panel-header { padding: 20px 22px; border-bottom: 1px solid var(--line); }
 .message-feedback-panel .table-wrap { margin: 0; border: 0; border-radius: 0; }
@@ -4700,17 +4703,6 @@ body[data-portal="client"] .metric-card {
 }
 
 .point-card-summary { display: grid; gap: 4px; text-align: right; }
-.point-card-summary #pointCardLegacyState { color: #8a5a14; }
-.legacy-code-label {
-  flex: 0 0 auto;
-  padding: 4px 7px;
-  color: #7a5a2b;
-  background: #fff8e8;
-  border: 1px solid #ead9b6;
-  border-radius: 4px;
-  font-size: 11px;
-  white-space: nowrap;
-}
 
 @media (max-width: 1100px) {
   .message-admin-grid { grid-template-columns: 1fr; }
@@ -4718,7 +4710,7 @@ body[data-portal="client"] .metric-card {
 
 @media (max-width: 760px) {
   .home-account-row { grid-template-columns: 1fr; gap: 14px; }
-  .home-points-card { align-items: stretch; flex-direction: column; }
+  .home-points-card { align-items: stretch; }
   .home-points-card > div { grid-template-columns: auto 1fr; align-items: baseline; }
   .home-points-card span { white-space: nowrap; }
   .home-account-row .client-token-card { align-items: stretch; flex-direction: column; }
@@ -4726,6 +4718,7 @@ body[data-portal="client"] .metric-card {
   .prompt-picker-footer { flex-wrap: wrap; }
   .prompt-picker-footer span { order: -1; flex-basis: 100%; }
   body[data-portal="client"] .metric-grid { grid-template-columns: 1fr 1fr; }
+  .message-refresh span { display: none; }
 }
 
 @media (max-width: 480px) {

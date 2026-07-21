@@ -384,6 +384,20 @@ def get_temp_context(token: str) -> AccessContext | None:
     )
 
 
+def get_temp_context_by_hash(token_hash: str) -> AccessContext | None:
+    normalized_hash = str(token_hash or "").strip().lower()
+    entry = _read_data()["tokens"].get(normalized_hash)
+    return get_temp_context_from_entry(normalized_hash, entry) if isinstance(entry, dict) else None
+
+
+def get_temp_reservation(token_hash: str, task_id: str) -> dict[str, Any]:
+    entry = _read_data()["tokens"].get(str(token_hash or "").strip().lower())
+    if not isinstance(entry, dict):
+        return {}
+    reservation = entry.get("reservations", {}).get(str(task_id or ""))
+    return dict(reservation) if isinstance(reservation, dict) else {}
+
+
 def _migrate_entry(entry: dict[str, Any], free_limit: int) -> bool:
     if int(entry.get("billing_version") or 0) >= 2:
         return False

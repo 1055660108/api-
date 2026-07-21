@@ -139,6 +139,38 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 409)
 
+    def test_concurrency_rejection_returns_429_without_leaving_initializing_task(self) -> None:
+        registered = self.register("limited_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        existing = store.create_task("正在生成的任务", "9:16", owner_token_hash=owner_hash)
+        response = self.client.post(
+            "/tasks",
+            headers={"X-API-Token": registered["token"]},
+            data={"prompt": "不应进入队列", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video"},
+        )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()["detail"], "并发数量不足，等待前方任务完成后继续执行！")
+        tasks = store.list_tasks(owner_token_hash=owner_hash)
+        self.assertEqual([item["id"] for item in tasks], [existing["id"]])
+        self.assertNotIn("initializing", {item["status"] for item in tasks})
+        access_state = self.client.get("/auth/access-state", headers={"X-API-Token": registered["token"]}).json()
+        self.assertEqual(access_state["quota"]["free_remaining"], 1)
+        self.assertEqual(access_state["token_concurrency"], 1)
+
+    def test_openai_concurrency_rejection_keeps_error_shape_and_cleans_task(self) -> None:
+        registered = self.register("limited_openai_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        existing = store.create_task("正在生成的任务", "9:16", owner_token_hash=owner_hash)
+        response = self.client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {registered['token']}"},
+            json={"model": "dola:Seedance 2.0", "messages": [{"role": "user", "content": "不应进入队列"}]},
+        )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()["error"]["code"], "rate_limit_exceeded")
+        self.assertEqual(response.json()["error"]["message"], "并发数量不足，等待前方任务完成后继续执行！")
+        self.assertEqual([item["id"] for item in store.list_tasks(owner_token_hash=owner_hash)], [existing["id"]])
+
     def test_query_parameter_token_is_not_accepted(self) -> None:
         registered = self.register("query_token_client")
         response = self.client.get(f"/tasks?token={registered['token']}")

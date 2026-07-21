@@ -20,6 +20,7 @@ from .store import (
     clear_transient_result,
     get_meta,
     has_pending_tasks,
+    expire_task_if_timeout,
     is_task_canceled,
     list_tasks,
     load_result,
@@ -62,6 +63,17 @@ def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
 def refund_account_quota_once(task_id: str, account_id: str, charge_id: str = "") -> None:
     if account_id and refund_account_quota(account_id, charge_id or task_id):
         mark_account_refund_once(task_id, account_id)
+
+
+def consume_failed_account_quota(task_id: str, account: dict, platform: str) -> None:
+    account_id = str(account.get("id") or "")
+    charge_id = str(account.get("quota_charge_id") or "")
+    if not account_id:
+        return
+    if platform == "dola":
+        settle_account_quota(account_id, charge_id)
+    else:
+        refund_account_quota_once(task_id, account_id, charge_id)
 
 
 class WorkerManager:
@@ -310,6 +322,8 @@ class WorkerManager:
             account = None
             try:
                 meta = get_meta(task_id)
+                if expire_task_if_timeout(task_id):
+                    continue
                 if is_task_canceled(task_id):
                     continue
                 failed_account_ids = set(str(item) for item in meta.get("failed_account_ids") or [] if item)
@@ -373,7 +387,7 @@ class WorkerManager:
                         if outcome.get("retryable"):
                             if outcome.get("account_fault"):
                                 record_failed_account(task_id, str(account.get("id") or ""))
-                            refund_account_quota_once(task_id, str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
+                            consume_failed_account_quota(task_id, account, platform)
                     if outcome.get("retryable"):
                         reason = str(outcome.get("reason") or "")[:500]
                         retry_count = record_retry(task_id, reason)
@@ -386,7 +400,7 @@ class WorkerManager:
                         meta = get_meta(task_id)
                         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                         if account:
-                            refund_account_quota_once(task_id, str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
+                            consume_failed_account_quota(task_id, account, platform)
                     await asyncio.sleep(2)
             except FileNotFoundError:
                 pass
@@ -412,9 +426,9 @@ class WorkerManager:
                         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                 if account:
                     clear_account_current_task(str(account.get("id") or ""), task_id)
-                    if not is_final_generation_failure(str(exc)):
+                    if platform == "dola" or not is_final_generation_failure(str(exc)):
                         record_failed_account(task_id, str(account.get("id") or ""))
-                        refund_account_quota_once(task_id, str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
+                        consume_failed_account_quota(task_id, account, platform)
                 await asyncio.sleep(2)
             finally:
                 self._queue.release(task_id, worker_id)

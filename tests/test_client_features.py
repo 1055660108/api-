@@ -261,12 +261,12 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(purchased.status_code, 200)
         self.assertEqual(purchased.json()["balance"]["credit_units"], 400)
         self.assertEqual(purchased.json()["balance"]["free_remaining"], 5)
-        self.assertEqual(purchased.json()["balance"]["concurrency"], 5)
-        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 5)
+        self.assertEqual(purchased.json()["balance"]["concurrency"], 3)
+        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 3)
         profile = self.client.get("/auth/profile", headers=headers).json()
         self.assertEqual(profile["membership"]["name"], "月度会员")
-        self.assertEqual(profile["membership"]["concurrency_bonus"], 3)
-        self.assertEqual(profile["membership"]["effective_concurrency"], 5)
+        self.assertEqual(profile["membership"]["concurrency"], 3)
+        self.assertEqual(profile["membership"]["effective_concurrency"], 3)
         self.assertEqual(profile["membership"]["purchased_package_ids"], [package_id])
         token_id = temp_access.hash_token(registered["token"])
         adjusted = self.client.patch(f"/temp-tokens/{token_id}", json={"concurrency": 7})
@@ -275,7 +275,7 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get("/auth/access-state", headers=headers).json()["token_concurrency"], 7)
         adjusted_user = next(item for item in self.client.get("/users").json()["users"] if item["id"] == user_id)
         self.assertEqual(adjusted_user["concurrency"], 7)
-        self.assertEqual(adjusted_user["base_concurrency"], 4)
+        self.assertEqual(adjusted_user["base_concurrency"], 2)
         self.assertEqual(self.client.get("/auth/profile", headers=headers).json()["membership"]["effective_concurrency"], 7)
         duplicate = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
         self.assertEqual(duplicate.status_code, 400)
@@ -290,7 +290,7 @@ class ClientFeatureTests(unittest.TestCase):
         member_entry["memberships"][0]["status"] = "expired"
         member_entry["memberships"][0]["activated_at"] = ""
         users.USERS_PATH.write_text(json.dumps(user_data, ensure_ascii=False), encoding="utf-8")
-        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 4)
+        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 2)
         repurchased = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
         self.assertEqual(repurchased.status_code, 200)
         self.assertEqual(repurchased.json()["membership"]["purchased_package_ids"], [package_id])
@@ -369,6 +369,19 @@ class ClientFeatureTests(unittest.TestCase):
         access_state = self.client.get("/auth/access-state", headers={"X-API-Token": registered["token"]})
         self.assertEqual(access_state.status_code, 200)
         self.assertEqual(access_state.json()["user_name"], "sidebar_owner")
+
+    def test_client_billing_priority_defaults_to_video_and_can_change(self) -> None:
+        registered = self.register("billing_priority_user")
+        headers = {"X-API-Token": registered["token"]}
+        initial = self.client.get("/auth/access-state", headers=headers)
+        self.assertEqual(initial.status_code, 200)
+        self.assertEqual(initial.json()["billing_priority"], "video_first")
+        changed = self.client.patch("/auth/billing-priority", headers=headers, json={"priority": "points_first"})
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(changed.json()["billing_priority"], "points_first")
+        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["billing_priority"], "points_first")
+        invalid = self.client.patch("/auth/billing-priority", headers=headers, json={"priority": "invalid"})
+        self.assertEqual(invalid.status_code, 400)
 
     def test_task_consumption_and_admin_adjustments_are_recorded(self) -> None:
         registered = self.register("ledger_user")

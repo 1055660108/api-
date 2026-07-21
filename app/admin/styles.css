@@ -2310,7 +2310,7 @@ textarea:focus {
 
 .task-table {
   width: 100%;
-  min-width: 1040px;
+  min-width: 900px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -3560,6 +3560,172 @@ textarea:focus {
   }
 }
 
+/* 1.2.4: stable data tables and client billing preference */
+body[data-portal="admin"] .client-billing-panel {
+  display: none !important;
+}
+
+.billing-priority-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: auto;
+}
+
+.billing-priority-control label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 66px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.billing-priority-control label:has(input:checked) {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.billing-priority-control input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--brand);
+}
+
+.billing-priority-control span {
+  display: grid;
+  gap: 3px;
+}
+
+.billing-priority-control strong {
+  font-size: 14px;
+}
+
+.billing-priority-control small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#tasksView .task-table,
+.account-table {
+  display: table !important;
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+#tasksView .task-table {
+  min-width: 1040px;
+}
+
+#tasksView .task-table .task-col { width: 23%; }
+#tasksView .task-table .owner-col { width: 12%; }
+#tasksView .task-table .status-col { width: 11%; }
+#tasksView .task-table .result-col { width: 26%; }
+#tasksView .task-table .video-col { width: 10%; }
+#tasksView .task-table .action-col { width: 18%; }
+
+#tasksView .task-table th,
+#tasksView .task-table td,
+.account-table th,
+.account-table td {
+  box-sizing: border-box;
+  vertical-align: middle;
+}
+
+#tasksView .task-table th,
+#tasksView .task-table td {
+  padding: 12px;
+}
+
+#tasksView .task-table th:nth-child(2),
+#tasksView .task-table td:nth-child(2),
+#tasksView .task-table th:nth-child(3),
+#tasksView .task-table td:nth-child(3),
+#tasksView .task-table th:nth-child(5),
+#tasksView .task-table td:nth-child(5),
+#tasksView .task-table th:nth-child(6),
+#tasksView .task-table td:nth-child(6) {
+  text-align: center;
+}
+
+#tasksView .task-table th:nth-child(1),
+#tasksView .task-table td:nth-child(1),
+#tasksView .task-table th:nth-child(4),
+#tasksView .task-table td:nth-child(4) {
+  text-align: left;
+}
+
+#tasksView .task-status-stack,
+#tasksView .url-cell {
+  align-items: center;
+  justify-items: center;
+}
+
+#tasksView .row-actions {
+  align-items: center;
+}
+
+.account-table {
+  min-width: 880px;
+}
+
+.account-table thead { display: table-header-group !important; }
+.account-table tbody { display: table-row-group !important; }
+.account-table tr { display: table-row !important; }
+.account-table colgroup { display: table-column-group !important; }
+.account-table th,
+.account-table td { display: table-cell !important; padding: 13px 12px; }
+
+.account-table .account-name-col { width: 22%; }
+.account-table .account-status-col { width: 10%; }
+.account-table .account-quota-col { width: 14%; }
+.account-table .account-task-col { width: 18%; }
+.account-table .account-time-col { width: 16%; }
+.account-table .account-action-col { width: 20%; }
+
+.account-table th:nth-child(n + 2),
+.account-table td:nth-child(n + 2) {
+  text-align: center;
+}
+
+.account-table .account-card-label {
+  display: none;
+}
+
+.account-table .account-quota-cell,
+.account-table .account-name-cell {
+  justify-items: center;
+}
+
+.account-table td:first-child .account-name-cell {
+  justify-items: start;
+}
+
+.account-table .quota-row-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: stretch;
+  gap: 6px;
+}
+
+.account-table .quota-row-actions button {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .billing-priority-control {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 560px) {
   .node-controls {
     grid-template-columns: 1fr;
@@ -4702,7 +4868,7 @@ body[data-portal="client"][data-view="points"] .commerce-header {
   .membership-detail-row dl { grid-template-columns: 1fr; gap: 10px; }
 }
 
-/* 1.2.3 workspace refinements */
+/* 1.2.4 workspace refinements */
 .home-account-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5004,4 +5170,44 @@ body[data-portal="client"] .metric-card {
   .main {
     padding-top: 14px;
   }
+}
+
+/* Keep task columns identical in both portals after all responsive cascades. */
+#tasksView .task-table {
+  display: table !important;
+  width: 100%;
+  min-width: 900px;
+  table-layout: fixed;
+}
+
+#tasksView .task-table .task-col { width: 23%; }
+#tasksView .task-table .owner-col { width: 12%; }
+#tasksView .task-table .status-col { width: 11%; }
+#tasksView .task-table .result-col { width: 26%; }
+#tasksView .task-table .video-col { width: 10%; }
+#tasksView .task-table .action-col { width: 18%; }
+
+#tasksView .task-table th,
+#tasksView .task-table td {
+  box-sizing: border-box;
+  padding: 12px;
+  vertical-align: middle;
+}
+
+#tasksView .task-table th:nth-child(2),
+#tasksView .task-table td:nth-child(2),
+#tasksView .task-table th:nth-child(3),
+#tasksView .task-table td:nth-child(3),
+#tasksView .task-table th:nth-child(5),
+#tasksView .task-table td:nth-child(5),
+#tasksView .task-table th:nth-child(6),
+#tasksView .task-table td:nth-child(6) {
+  text-align: center;
+}
+
+#tasksView .task-table th:nth-child(1),
+#tasksView .task-table td:nth-child(1),
+#tasksView .task-table th:nth-child(4),
+#tasksView .task-table td:nth-child(4) {
+  text-align: left;
 }

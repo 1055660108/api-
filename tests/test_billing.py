@@ -64,6 +64,19 @@ class BillingTests(unittest.TestCase):
         second = temp_access.reserve_temp_quota(first, "task-paid", 8)
         self.assertEqual(second.credit_units, 12)
 
+    def test_points_priority_uses_points_then_falls_back_to_video_quota(self) -> None:
+        token = temp_access.create_temp_tokens(1, 2)[0]
+        temp_access.add_temp_credit_units(token["id"], 10)
+        temp_access.set_temp_billing_priority(token["id"], "points_first")
+        access = temp_access.get_temp_context(token["token"])
+        self.assertEqual(access.billing_priority, "points_first")
+        paid = temp_access.reserve_temp_quota(access, "task-paid", 8)
+        self.assertEqual(paid.credit_units, 2)
+        self.assertEqual(paid.free_remaining, 2)
+        free = temp_access.reserve_temp_quota(paid, "task-free", 8)
+        self.assertEqual(free.credit_units, 2)
+        self.assertEqual(free.free_remaining, 1)
+
     def test_task_refund_is_idempotent_for_free_and_paid_reservations(self) -> None:
         token = temp_access.create_temp_tokens(1, 1)[0]
         temp_access.add_temp_credit_units(token["id"], 20)

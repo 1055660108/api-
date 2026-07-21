@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app import accounts, store, task_queue, temp_access
-from app.worker import WorkerManager, refund_account_quota_once, refund_temp_quota_once
+from app.worker import WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -268,6 +268,17 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(account_data["quota_exhausted_date"], accounts.local_today())
         self.assertIsNone(accounts.account_for_worker("worker-2"))
 
+    def test_dola_retry_keeps_account_quota_consumed(self) -> None:
+        accounts.add_account("Dola", "session=value", quota_limit=2)
+        claimed = accounts.claim_account_for_worker("worker-1", "task-1")
+        self.assertIsNotNone(claimed)
+        consume_failed_account_quota("task-1", claimed, "dola")
+        account = accounts.list_accounts()[0]
+        self.assertEqual(account["quota_used"], 1)
+        data = json.loads(self.accounts_path.read_text(encoding="utf-8"))["accounts"][0]
+        charge = next(item for item in data["quota_charges"] if item["charge_id"] == claimed["quota_charge_id"])
+        self.assertEqual(charge["status"], "settled")
+
     def test_reconciliation_repairs_quota_used_from_charge_ledger(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=3)
         claimed = accounts.claim_account_for_worker("worker-1", "task-1")
@@ -396,6 +407,23 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(listed["error"], "超时生成失败")
         self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 1)
         self.assertTrue(store.load_result(task["id"])["temp_quota_refunded"])
+
+    def test_retry_is_failed_and_refunded_after_thirty_minutes(self) -> None:
+        created = temp_access.create_temp_tokens(1, 1)[0]
+        owner_hash = str(created["id"])
+        access = temp_access.get_temp_context(str(created["token"]))
+        task = self.create_task(owner_hash)
+        temp_access.reserve_temp_quota(access, task["id"])
+        store.update_meta(
+            task["id"],
+            retry_count=1,
+            retry_started_at=(datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat(),
+            status=store.STATUS_PENDING,
+        )
+        listed = next(item for item in store.list_tasks() if item["id"] == task["id"])
+        self.assertEqual(listed["status"], store.STATUS_FAILED)
+        self.assertEqual(listed["error"], "重试超过30分钟，生成失败")
+        self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 1)
 
     def test_retry_budget_is_shared_across_execution_and_result_timeout(self) -> None:
         task = self.create_task("owner")

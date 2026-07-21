@@ -269,6 +269,7 @@ class WebAPIContractTests(unittest.TestCase):
         store.mark_submitted(task["id"])
         response = self.client.delete(f"/tasks/{task['id']}", headers={"X-API-Token": token})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["detail"], "已提交生成，无法取消")
         self.assertFalse(response.json()["ok"])
         meta = store.get_meta(task["id"])
         self.assertEqual(meta["status"], store.STATUS_SUBMITTED)

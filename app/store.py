@@ -24,6 +24,7 @@ STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 STATUS_CANCELED = "canceled"
 TASK_TIMEOUT_HOURS = 3
+TASK_RETRY_TIMEOUT_MINUTES = 30
 MAX_TASK_RETRIES = 2
 LOCAL_TZ = timezone(timedelta(hours=8))
 _TASK_LOCKS_LOCK = threading.RLock()
@@ -91,7 +92,12 @@ def is_local_today(value: str) -> bool:
 def is_task_expired(meta: dict[str, Any]) -> bool:
     if str(meta.get("status") or "") in {STATUS_SUCCESS, STATUS_FAILED, STATUS_CANCELED}:
         return False
+    retry_count = max(0, int(meta.get("retry_count") or 0))
+    retry_started_at = parse_time(str(meta.get("retry_started_at") or ""))
     created_at = parse_time(str(meta.get("created_at") or ""))
+    if retry_count > 0:
+        retry_origin = retry_started_at or created_at
+        return bool(retry_origin and datetime.now(timezone.utc) - retry_origin >= timedelta(minutes=TASK_RETRY_TIMEOUT_MINUTES))
     if not created_at:
         return False
     return datetime.now(timezone.utc) - created_at >= timedelta(hours=TASK_TIMEOUT_HOURS)
@@ -104,7 +110,14 @@ def expire_task_if_timeout(task_id: str) -> bool:
     result = load_result(task_id)
     if result.get("decoded_main_url"):
         return False
-    mark_failed(task_id, "超时生成失败")
+    retry_expired = max(0, int(meta.get("retry_count") or 0)) > 0
+    result_account_id = str(result.get("account_id") or "")
+    if result_account_id:
+        from .accounts import clear_account_current_task, exhaust_timed_out_account
+
+        exhaust_timed_out_account(result_account_id, str(result.get("account_quota_charge_id") or ""))
+        clear_account_current_task(result_account_id, task_id)
+    mark_failed(task_id, "重试超过30分钟，生成失败" if retry_expired else "超时生成失败")
     owner_hash = str(meta.get("owner_token_hash") or "")
     if owner_hash:
         from .temp_access import refund_temp_quota_hash
@@ -548,6 +561,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
                 normalized_reason = "浏览器超时" if str(reason or "") == "browser timeout" else "Dola 当前地区不可用" if str(reason or "") == "region restricted" else reason
                 meta.update(retry_count=count, worker_id="", error=normalized_reason)
+                meta.setdefault("retry_started_at", utc_now())
                 if count > MAX_TASK_RETRIES:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
@@ -565,6 +579,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
         if str(reason or "") == "region restricted":
             reason = "Dola 当前地区不可用"
         meta.update(retry_count=count, worker_id="", error=reason)
+        meta.setdefault("retry_started_at", utc_now())
         if count > MAX_TASK_RETRIES:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
@@ -583,6 +598,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
                     return max(0, int(meta.get("retry_count") or 0))
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
                 meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
+                meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
@@ -596,6 +612,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
             return max(0, int(meta.get("retry_count") or 0))
         count = max(0, int(meta.get("retry_count") or 0)) + 1
         meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
+        meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
@@ -616,6 +633,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
                 timeout_count = previous_timeout_count + 1
                 count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
                 meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0)
+                meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
@@ -631,6 +649,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
         timeout_count = previous_timeout_count + 1
         count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
         meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0)
+        meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
@@ -645,6 +664,7 @@ def record_execution_miss(task_id: str, reason: str = "任务未执行，重新�
         def mutate(meta: dict[str, Any]) -> int:
             miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
             count = max(0, int(meta.get("retry_count") or 0)) + 1
+            meta.setdefault("retry_started_at", utc_now())
             if count > MAX_TASK_RETRIES:
                 meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
             else:
@@ -656,10 +676,11 @@ def record_execution_miss(task_id: str, reason: str = "任务未执行，重新�
     meta = get_meta(task_id)
     miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
     count = max(0, int(meta.get("retry_count") or 0)) + 1
+    retry_started_at = str(meta.get("retry_started_at") or utc_now())
     if count > MAX_TASK_RETRIES:
-        update_meta(task_id, retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
+        update_meta(task_id, retry_count=count, retry_started_at=retry_started_at, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
     else:
-        update_meta(task_id, retry_count=count, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
+        update_meta(task_id, retry_count=count, retry_started_at=retry_started_at, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
     return count
 
 
@@ -1087,7 +1108,7 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
             if next_attempt_at and datetime.now(timezone.utc) < next_attempt_at:
                 continue
             if is_task_expired(meta):
-                mark_failed(task_id, "超时生成失败")
+                expire_task_if_timeout(task_id)
                 continue
             owner = str(meta.get("owner_token_hash") or "")
             if owner and owner in concurrency_limits and active_counts.get(owner, 0) >= concurrency_limits[owner]:

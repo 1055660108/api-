@@ -85,6 +85,7 @@ from .temp_access import (
     list_temp_tokens,
     refund_temp_quota_hash,
     reserve_temp_quota,
+    set_temp_billing_priority,
     temp_token_retention_days,
     temp_token_remarks,
     update_temp_token,
@@ -391,6 +392,7 @@ def _client_access_payload(access: AccessContext) -> dict:
         },
         "token_concurrency": access.concurrency,
         "task_retention_days": access.task_retention_days,
+        "billing_priority": access.billing_priority,
         "user_name": user_name,
     }
 
@@ -534,6 +536,19 @@ async def client_auth(access: Annotated[AccessContext, Depends(require_temp)]):
 @app.get("/auth/access-state", dependencies=[Depends(require_temp)])
 async def client_access_state(access: Annotated[AccessContext, Depends(require_temp)]):
     return _client_access_payload(access)
+
+
+@app.patch("/auth/billing-priority", dependencies=[Depends(require_temp)])
+async def client_billing_priority(request: Request, access: Annotated[AccessContext, Depends(require_temp)]):
+    payload = await _request_payload(request)
+    try:
+        token = set_temp_billing_priority(access.token_hash, payload.get("priority", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    refreshed = get_temp_context_by_hash(access.token_hash)
+    if not refreshed:
+        raise HTTPException(status_code=404, detail="用户 Token 不存在")
+    return {"ok": True, "billing_priority": token["billing_priority"], **_client_access_payload(refreshed)}
 
 
 @app.get("/points/packages", dependencies=[Depends(require_temp)])
@@ -2099,7 +2114,7 @@ async def remove_task(access: Annotated[AccessContext, Depends(require_token)], 
             raise HTTPException(status_code=404, detail="task not found")
         status = str(meta.get("status") or "")
         if status == "submitted" or str(meta.get("submit_phase") or "") in {"committing", "submitted"}:
-            return {"ok": False, "cancelable": False, "detail": "已提交平台生成，无法取消"}
+            return {"ok": False, "cancelable": False, "detail": "已提交生成，无法取消"}
         if status in {"pending", "running"}:
             canceled, canceled_meta = request_task_cancel(task_id)
             if not canceled:

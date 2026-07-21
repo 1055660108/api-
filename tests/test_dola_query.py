@@ -188,7 +188,7 @@ class DolaQueryTests(unittest.TestCase):
             query, "fetch_single_chain", new=AsyncMock(return_value=("", query.POLICY_RETRY_TEXT))
         ), patch.object(query, "save_result"), patch.object(
             query, "clear_account_current_task"
-        ) as clear_account, patch.object(query, "refund_account_quota_once") as refund_account, patch.object(
+        ) as clear_account, patch.object(query, "settle_account_quota") as settle_account, patch.object(
             query, "mark_failed"
         ) as mark_failed, patch.object(query, "refund_temp_quota_once") as refund_temp, patch.object(
             query, "retry_submitted_task"
@@ -196,7 +196,7 @@ class DolaQueryTests(unittest.TestCase):
             response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "0", "text": query.POLICY_RETRY_TEXT, "url": ""})
         clear_account.assert_called_once_with("account-1", task_id)
-        refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
+        settle_account.assert_called_once_with("account-1", "charge-1")
         mark_failed.assert_called_once_with(task_id, query.POLICY_RETRY_TEXT)
         refund_temp.assert_called_once_with(task_id, "owner-hash")
         retry_task.assert_not_called()
@@ -263,7 +263,7 @@ class DolaQueryTests(unittest.TestCase):
             query, "fetch_single_chain", new=AsyncMock(return_value=("", quota_text))
         ), patch.object(query, "save_result"), patch.object(
             query, "clear_account_current_task"
-        ) as clear_account, patch.object(query, "exhaust_account_quota") as exhaust_account, patch.object(
+        ) as clear_account, patch.object(query, "exhaust_timed_out_account") as exhaust_account, patch.object(
             query, "record_failed_account"
         ) as record_failed, patch.object(query, "retry_submitted_task", return_value=1) as retry_task, patch.object(
             query, "clear_transient_result"
@@ -291,15 +291,15 @@ class DolaQueryTests(unittest.TestCase):
         ), patch.object(query, "save_result"), patch.object(
             query, "clear_account_current_task"
         ) as clear_account, patch.object(query, "record_failed_account") as record_failed, patch.object(
-            query, "refund_account_quota_once"
-        ) as refund_account, patch.object(query, "retry_submitted_task", return_value=1) as retry_task, patch.object(
+            query, "settle_account_quota"
+        ) as settle_account, patch.object(query, "retry_submitted_task", return_value=1) as retry_task, patch.object(
             query, "clear_transient_result"
         ) as clear_result:
             response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "1", "text": query.RETRY_GENERATING_TEXT, "url": ""})
         clear_account.assert_called_once_with("account-1", task_id)
         record_failed.assert_called_once_with(task_id, "account-1")
-        refund_account.assert_not_called()
+        settle_account.assert_called_once_with("account-1", "charge-1")
         retry_task.assert_called_once_with(task_id, automation.FINAL_FAILURE_TEXT, max_retries=2, delay_seconds=10)
         clear_result.assert_called_once_with(task_id)
 

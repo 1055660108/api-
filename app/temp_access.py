@@ -20,6 +20,9 @@ MAX_TEMP_TOKEN_CONCURRENCY = 100
 DEFAULT_TASK_RETENTION_DAYS = 7
 MIN_TASK_RETENTION_DAYS = 1
 MAX_TASK_RETENTION_DAYS = 15
+VIDEO_FIRST = "video_first"
+POINTS_FIRST = "points_first"
+BILLING_PRIORITIES = {VIDEO_FIRST, POINTS_FIRST}
 TEMP_TOKENS_PATH = DATA_DIR / "temp_tokens.json"
 _LOCK = threading.Lock()
 
@@ -40,6 +43,14 @@ class AccessContext:
     task_retention_days: int = DEFAULT_TASK_RETENTION_DAYS
     free_remaining: int = 0
     credit_units: int = 0
+    billing_priority: str = VIDEO_FIRST
+
+
+def normalize_billing_priority(value: Any) -> str:
+    priority = str(value or VIDEO_FIRST).strip().lower()
+    if priority not in BILLING_PRIORITIES:
+        raise ValueError("扣费优先级无效")
+    return priority
 
 
 def normalize_retention_days(value: Any) -> int:
@@ -92,6 +103,7 @@ def _public_token(token_hash: str, entry: dict[str, Any]) -> dict[str, Any]:
     remark = str(entry.get("remark") or entry.get("note") or "")[:100]
     free_remaining = max(0, int(entry.get("free_remaining") or 0))
     credit_units = max(0, int(entry.get("credit_units") or 0))
+    billing_priority = normalize_billing_priority(entry.get("billing_priority"))
     return {
         "id": token_hash,
         "token": str(entry.get("token") or ""),
@@ -102,6 +114,7 @@ def _public_token(token_hash: str, entry: dict[str, Any]) -> dict[str, Any]:
         "free_remaining": free_remaining,
         "credit_units": credit_units,
         "points": units_to_points(credit_units),
+        "billing_priority": billing_priority,
         "concurrency": concurrency,
         "task_retention_days": task_retention_days,
         "created_at": str(entry.get("created_at") or ""),
@@ -191,7 +204,7 @@ def ensure_temp_tokens(count: int = TEMP_TOKEN_COUNT, limit: int = TEMP_TOKEN_LI
     return [str(item.get("token") or "") for item in ordered if item.get("token")]
 
 
-def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency: int | None = None, remark: str | None = None, task_retention_days: int | None = None) -> dict[str, Any]:
+def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency: int | None = None, remark: str | None = None, task_retention_days: int | None = None, billing_priority: str | None = None) -> dict[str, Any]:
     token_hash = str(token_hash or "").strip().lower()
     with _LOCK:
         if postgres.enabled():
@@ -207,6 +220,8 @@ def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency:
                     entry["task_retention_days"] = normalize_retention_days(task_retention_days)
                 if remark is not None:
                     entry["remark"] = str(remark or "")[:100]
+                if billing_priority is not None:
+                    entry["billing_priority"] = normalize_billing_priority(billing_priority)
                 entry["updated_at"] = _now()
                 return _public_token(token_hash, entry)
 
@@ -223,6 +238,8 @@ def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency:
             entry["task_retention_days"] = normalize_retention_days(task_retention_days)
         if remark is not None:
             entry["remark"] = str(remark or "")[:100]
+        if billing_priority is not None:
+            entry["billing_priority"] = normalize_billing_priority(billing_priority)
         entry["updated_at"] = _now()
         _write_data(data)
         return _public_token(token_hash, entry)
@@ -381,6 +398,7 @@ def get_temp_context(token: str) -> AccessContext | None:
         task_retention_days=normalize_retention_days(entry.get("task_retention_days")),
         free_remaining=max(0, int(entry.get("free_remaining") or 0)),
         credit_units=max(0, int(entry.get("credit_units") or 0)),
+        billing_priority=normalize_billing_priority(entry.get("billing_priority")),
     )
 
 
@@ -489,8 +507,12 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
                     if reservation.get("status") == "reserved":
                         return get_temp_context_from_entry(access.token_hash, entry)
                     raise QuotaExceeded("task quota reservation is closed")
-                free_used = int(entry.get("free_remaining") or 0) > 0
-                charged_units = 0 if free_used else max(1, int(cost_units))
+                required_units = max(1, int(cost_units))
+                points_available = int(entry.get("credit_units") or 0) >= required_units
+                free_used = int(entry.get("free_remaining") or 0) > 0 and not (
+                    normalize_billing_priority(entry.get("billing_priority")) == POINTS_FIRST and points_available
+                )
+                charged_units = 0 if free_used else required_units
                 if not free_used and int(entry.get("credit_units") or 0) < charged_units:
                     raise QuotaExceeded("temporary token quota exhausted")
                 if free_used:
@@ -515,8 +537,12 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
             if reservation.get("status") == "reserved":
                 return get_temp_context_from_entry(access.token_hash, entry)
             raise QuotaExceeded("task quota reservation is closed")
-        free_used = int(entry.get("free_remaining") or 0) > 0
-        charged_units = 0 if free_used else max(1, int(cost_units))
+        required_units = max(1, int(cost_units))
+        points_available = int(entry.get("credit_units") or 0) >= required_units
+        free_used = int(entry.get("free_remaining") or 0) > 0 and not (
+            normalize_billing_priority(entry.get("billing_priority")) == POINTS_FIRST and points_available
+        )
+        charged_units = 0 if free_used else required_units
         if not free_used and int(entry.get("credit_units") or 0) < charged_units:
             raise QuotaExceeded("temporary token quota exhausted")
         if free_used:
@@ -534,7 +560,11 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
 def get_temp_context_from_entry(token_hash: str, entry: dict[str, Any]) -> AccessContext:
     free_remaining = max(0, int(entry.get("free_remaining") or 0))
     credit_units = max(0, int(entry.get("credit_units") or 0))
-    return AccessContext(token_hash=token_hash, is_admin=False, is_temp=True, limit=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, used=0, remaining=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))), task_retention_days=normalize_retention_days(entry.get("task_retention_days")), free_remaining=free_remaining, credit_units=credit_units)
+    return AccessContext(token_hash=token_hash, is_admin=False, is_temp=True, limit=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, used=0, remaining=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))), task_retention_days=normalize_retention_days(entry.get("task_retention_days")), free_remaining=free_remaining, credit_units=credit_units, billing_priority=normalize_billing_priority(entry.get("billing_priority")))
+
+
+def set_temp_billing_priority(token_hash: str, priority: str) -> dict[str, Any]:
+    return update_temp_token(token_hash, billing_priority=normalize_billing_priority(priority))
 
 
 def refund_temp_quota(access: AccessContext) -> None:

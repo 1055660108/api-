@@ -125,14 +125,12 @@ def _sync_membership_state(entry: dict[str, Any], now: datetime | None = None) -
             item["activated_at"] = ""
     entry["memberships"] = records
     if active:
-        base_concurrency = max(1, int(entry.get("base_concurrency") or 1))
-        effective_concurrency = min(100, base_concurrency + _membership_concurrency_bonus(active))
+        effective_concurrency = _membership_concurrency(active)
         remaining = _membership_remaining_seconds(active, current_time)
         activated_at = _parse_datetime(active.get("activated_at")) or current_time
         entry["membership"] = {
             **active,
             "expires_at": (activated_at + timedelta(seconds=float(active.get("remaining_seconds") or 0))).isoformat(),
-            "concurrency_bonus": _membership_concurrency_bonus(active),
             "effective_concurrency": effective_concurrency,
             "purchased_package_ids": [item["package_id"] for item in records if item["status"] != "expired" and item["package_id"]],
         }
@@ -168,10 +166,10 @@ def _active_membership(entry: dict[str, Any], now: datetime | None = None) -> di
     return membership if expires_at > (now or datetime.now(timezone.utc)) else None
 
 
-def _membership_concurrency_bonus(membership: dict[str, Any] | None) -> int:
+def _membership_concurrency(membership: dict[str, Any] | None) -> int:
     if not isinstance(membership, dict):
-        return 0
-    return max(0, int(membership.get("concurrency_bonus") or membership.get("concurrency") or 0))
+        return 1
+    return max(1, min(100, int(membership.get("concurrency") or membership.get("concurrency_bonus") or 1)))
 
 
 def _read() -> dict[str, Any]:
@@ -534,8 +532,8 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
         highest_price = max((points_to_units(item.get("points_cost")) for item in catalog), default=0)
         if active_records and max((_membership_rank(item)[0] for item in active_records), default=0) >= highest_price > 0:
             raise ValueError("最高级会员有效期内不能购买其他会员套餐")
-        membership_concurrency_bonus = max(0, int(package.get("concurrency") or 1))
-        effective_concurrency = min(100, base_concurrency + membership_concurrency_bonus)
+        membership_concurrency = max(1, min(100, int(package.get("concurrency") or 1)))
+        effective_concurrency = membership_concurrency
         balance = purchase_temp_membership(
             token_hash,
             max(1, int(entry.get("free_limit") or 1)),
@@ -552,7 +550,7 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
             "remaining_seconds": int(package.get("duration_days") or 1) * 86400,
             "status": "paused",
             "activated_at": "",
-            "concurrency": membership_concurrency_bonus,
+            "concurrency": membership_concurrency,
             "bonus_free_uses": int(package.get("bonus_free_uses") or 0),
             "task_discount_points": package.get("task_discount_points", 0.1),
             "purchased_at": now.isoformat(),
@@ -577,7 +575,7 @@ def sync_user_membership_by_token_hash(token_hash: str) -> bool:
         active, membership_changed = _sync_membership_state(entry)
         token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == str(token_hash or "")), {})
         base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
-        effective_concurrency = min(100, base_concurrency + _membership_concurrency_bonus(active))
+        effective_concurrency = _membership_concurrency(active) if active else base_concurrency
         token_concurrency = max(1, int(token.get("concurrency") or 1))
         if not membership_changed and int(entry.get("effective_concurrency") or 0) == effective_concurrency and token_concurrency == effective_concurrency and entry.get("base_concurrency"):
             return False
@@ -643,14 +641,20 @@ def set_user_concurrency(user_id: str, concurrency: int) -> None:
 
 def _set_effective_concurrency(entry: dict[str, Any], concurrency: int) -> int:
     requested = max(1, min(100, int(concurrency)))
-    membership_bonus = _membership_concurrency_bonus(_active_membership(entry))
-    base_concurrency = max(1, requested - membership_bonus)
-    effective_concurrency = min(100, base_concurrency + membership_bonus)
+    active, _ = _sync_membership_state(entry)
+    if active:
+        active_id = str(active.get("id") or "")
+        for membership in entry.get("memberships") or []:
+            if isinstance(membership, dict) and str(membership.get("id") or "") == active_id:
+                membership["concurrency"] = requested
+                break
+        active, _ = _sync_membership_state(entry)
+        effective_concurrency = _membership_concurrency(active)
+    else:
+        entry["base_concurrency"] = requested
+        effective_concurrency = requested
     update_temp_token(str(entry.get("token_hash") or ""), concurrency=effective_concurrency)
-    entry["base_concurrency"] = base_concurrency
     entry["effective_concurrency"] = effective_concurrency
-    if isinstance(entry.get("membership"), dict) and _active_membership(entry):
-        entry["membership"]["effective_concurrency"] = effective_concurrency
     entry["updated_at"] = _now()
     return effective_concurrency
 

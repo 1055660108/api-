@@ -216,12 +216,14 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("saveFeedbackRecord", self.javascript)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
-        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipTaskDiscount", "membershipDetailsButton", "membershipDetailsModal", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState"):
+        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipTaskDiscount", "membershipDetailsButton", "membershipDetailsModal", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState", "billingPriorityControl", "billingPriorityState"):
             self.assertIn(f'id="{element_id}"', self.html)
         for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/memberships/", "/admin/announcements", "/admin/notifications/", "/admin/feedback/", "/notifications/read-all"):
             self.assertIn(endpoint, self.javascript)
         self.assertIn("https://pay.ldxp.cn/shop/huisu/fhm9gj", self.javascript)
         self.assertIn("8000", self.javascript)
+        self.assertIn('/auth/billing-priority', self.javascript)
+        self.assertNotIn("Prompt Library", self.html)
 
     def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
         for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "积分账号", "当前积分"):

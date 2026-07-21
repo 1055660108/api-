@@ -182,11 +182,12 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("saveFeedbackRecord", self.javascript)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
-        for element_id in ("pointCardsNavItem", "pointCardForm", "redeemForm", "transactionsView", "membershipList", "membershipModal", "adminAnnouncementForm", "announcementModal", "repositoryLatestVersion"):
+        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion"):
             self.assertIn(f'id="{element_id}"', self.html)
-        for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/admin/announcements", "/notifications/read-all"):
+        for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/memberships/", "/admin/announcements", "/notifications/read-all"):
             self.assertIn(endpoint, self.javascript)
         self.assertIn("https://pay.ldxp.cn/shop/huisu/fhm9gj", self.javascript)
+        self.assertIn("8000", self.javascript)
 
 
 if __name__ == "__main__":

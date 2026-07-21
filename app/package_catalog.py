@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .billing import package_bonus_free_uses, points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
@@ -15,6 +16,7 @@ from . import postgres
 PACKAGE_CATALOG_PATH = DATA_DIR / "point_packages.json"
 DEFAULT_PACKAGE_POINTS = (1, 6, 18, 30, 68, 128, 256)
 _LOCK = threading.RLock()
+DEFAULT_PAYMENT_URL = "https://pay.ldxp.cn/shop/huisu/fhm9gj"
 
 
 def _now() -> str:
@@ -29,6 +31,7 @@ def _default_packages() -> list[dict[str, Any]]:
             "name": f"{points} 积分",
             "points": points,
             "bonus_free_uses": package_bonus_free_uses(points),
+            "payment_url": DEFAULT_PAYMENT_URL,
             "enabled": True,
             "sort_order": index,
             "created_at": timestamp,
@@ -49,11 +52,16 @@ def _normalize_package(item: dict[str, Any]) -> dict[str, Any]:
     bonus = int(item.get("bonus_free_uses", package_bonus_free_uses(points)))
     if bonus < 0 or bonus > 1000000:
         raise ValueError("赠送次数需为 0-1000000")
+    payment_url = str(item.get("payment_url") or DEFAULT_PAYMENT_URL).strip()[:500]
+    parsed_payment_url = urlparse(payment_url)
+    if parsed_payment_url.scheme not in {"http", "https"} or not parsed_payment_url.netloc:
+        raise ValueError("购买链接必须是有效的 HTTP 或 HTTPS 地址")
     return {
         "id": package_id,
         "name": name,
         "points": points,
         "bonus_free_uses": bonus,
+        "payment_url": payment_url,
         "enabled": bool(item.get("enabled", True)),
         "sort_order": int(item.get("sort_order", 0)),
         "created_at": str(item.get("created_at") or _now()),
@@ -120,7 +128,7 @@ def create_package(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_package(package_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"name", "points", "bonus_free_uses", "enabled", "sort_order"}
+    allowed = {"name", "points", "bonus_free_uses", "payment_url", "enabled", "sort_order"}
     updates = {key: value for key, value in payload.items() if key in allowed}
     if not updates:
         raise ValueError("没有可更新的套餐字段")

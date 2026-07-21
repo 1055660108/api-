@@ -35,7 +35,7 @@ from .config import (
 )
 from .email_verification import consume_registration_code, normalize_domains, normalize_email, send_registration_code, validate_allowed_email
 from .feedback import create_feedback, list_feedback, list_feedback_for_user, update_feedback
-from .notifications import create_announcement, create_notifications, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, set_announcement_enabled
+from .notifications import create_announcement, create_notifications, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, update_announcement
 from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, normalize_platform
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
@@ -46,7 +46,7 @@ from .repository_update import repository_status, update_repository
 from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
 from .package_catalog import create_package, disable_package, list_packages, update_package
-from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, list_memberships, update_membership
+from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, get_membership, list_memberships, update_membership
 from .point_cards import generate_cards, list_cards, redeem_card
 from .point_transactions import list_transactions, record_transaction
 from .store import (
@@ -121,7 +121,7 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_enabled, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
@@ -254,6 +254,9 @@ async def require_token(
         return AccessContext(token_hash=hash_token(supplied), is_admin=True, is_temp=False)
     settings = load_settings()
     temp_context = get_temp_context(supplied)
+    if temp_context:
+        if sync_user_membership_by_token_hash(temp_context.token_hash):
+            temp_context = get_temp_context(supplied)
     if temp_context and user_token_is_enabled(temp_context.token_hash):
         touch_user_by_token(supplied)
         return temp_context
@@ -295,6 +298,8 @@ async def require_openai_token(authorization: Annotated[str | None, Header()] = 
     if configured and supplied == configured:
         return AccessContext(token_hash=hash_token(supplied), is_admin=True, is_temp=False)
     context = get_temp_context(supplied)
+    if context and sync_user_membership_by_token_hash(context.token_hash):
+        context = get_temp_context(supplied)
     if context and user_token_is_enabled(context.token_hash):
         touch_user_by_token(supplied)
         return context
@@ -521,7 +526,7 @@ async def points_redeem(request: Request, access: Annotated[AccessContext, Depen
     payload = await _request_payload(request)
     try:
         user = user_identity_by_token_hash(access.token_hash)
-        result = redeem_card(payload.get("code", ""), str(user.get("id") or ""), access.token_hash)
+        result = redeem_card(payload.get("code", ""), str(user.get("id") or ""), access.token_hash, str(user.get("username") or ""))
         card = result["card"]
         balance = result["balance"]
         record_transaction(
@@ -550,7 +555,30 @@ async def point_transactions(access: Annotated[AccessContext, Depends(require_te
 
 @app.get("/memberships", dependencies=[Depends(require_temp)])
 async def memberships():
-    return {"packages": list_memberships(), "payment_url": DEFAULT_PAYMENT_URL}
+    return {"packages": list_memberships()}
+
+
+@app.post("/memberships/{package_id}/purchase", dependencies=[Depends(require_temp)])
+async def purchase_membership(package_id: str, access: Annotated[AccessContext, Depends(require_temp)]):
+    try:
+        package = get_membership(package_id)
+        user = user_identity_by_token_hash(access.token_hash)
+        result = purchase_user_membership(str(user.get("id") or ""), package)
+        balance = result["balance"]
+        record_transaction(
+            str(user.get("id") or ""),
+            "membership_purchase",
+            -points_to_units(package.get("points_cost")),
+            f"购买会员：{package.get('name')}",
+            balance_units=int(balance.get("credit_units") or 0),
+            reference_id=str(package.get("id") or ""),
+            detail=f"有效期 {package.get('duration_days')} 天 / 并发 {package.get('concurrency')} / 赠送视频额度 {package.get('bonus_free_uses')}",
+        )
+        return {"ok": True, "package": package, **result}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="会员套餐或用户不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/admin/points/packages", dependencies=[Depends(require_admin)])
@@ -591,8 +619,20 @@ async def admin_disable_points_package(package_id: str):
 
 
 @app.get("/admin/point-cards", dependencies=[Depends(require_admin)])
-async def admin_point_cards(limit: int = Query(500, ge=1, le=2000)):
-    return {"cards": list_cards(limit)}
+async def admin_point_cards(limit: int = Query(500, ge=1, le=2000), status: str = "", q: str = ""):
+    rows = list_cards(limit)
+    usernames = {str(item.get("id") or ""): str(item.get("username") or "") for item in list_users(list_temp_tokens())}
+    for item in rows:
+        item["redeemed_username"] = str(item.get("redeemed_username") or usernames.get(str(item.get("redeemed_by") or ""), ""))
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status in {"unused", "redeemed"}:
+        rows = [item for item in rows if item.get("status") == normalized_status]
+    query = str(q or "").strip().casefold()
+    if query:
+        normalized_code = "".join(character for character in query.upper() if character.isalnum())
+        query_digest = hashlib.sha256(normalized_code.encode("ascii")).hexdigest() if len(normalized_code) >= 12 else ""
+        rows = [item for item in rows if query_digest == str(item.get("code_hash") or "") or query in " ".join((str(item.get("code_hint") or ""), str(item.get("redeemed_username") or ""), str(item.get("note") or ""))).casefold()]
+    return {"cards": rows, "total": len(rows)}
 
 
 @app.post("/admin/point-cards", dependencies=[Depends(require_admin)], status_code=201)
@@ -902,7 +942,8 @@ async def admin_announcements():
 async def admin_create_announcement(request: Request):
     payload = await _request_payload(request)
     try:
-        return {"ok": True, "announcement": create_announcement(payload.get("title", ""), payload.get("content", ""))}
+        lock_screen = str(payload.get("lock_screen", "false")).lower() in {"1", "true", "yes", "on"}
+        return {"ok": True, "announcement": create_announcement(payload.get("title", ""), payload.get("content", ""), payload.get("level", "large"), lock_screen)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -911,8 +952,9 @@ async def admin_create_announcement(request: Request):
 async def admin_update_announcement(announcement_id: str, request: Request):
     payload = await _request_payload(request)
     try:
-        enabled = str(payload.get("enabled", "true")).lower() in {"1", "true", "yes", "on"}
-        return {"ok": True, "announcement": set_announcement_enabled(announcement_id, enabled)}
+        enabled = str(payload["enabled"]).lower() in {"1", "true", "yes", "on"} if "enabled" in payload else None
+        lock_screen = str(payload["lock_screen"]).lower() in {"1", "true", "yes", "on"} if "lock_screen" in payload else None
+        return {"ok": True, "announcement": update_announcement(announcement_id, enabled=enabled, lock_screen=lock_screen)}
     except KeyError:
         raise HTTPException(status_code=404, detail="公告不存在")
 
@@ -945,8 +987,12 @@ async def admin_create_notifications(request: Request):
 
 
 @app.get("/users", dependencies=[Depends(require_admin)])
-async def users_list(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+async def users_list(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), q: str = ""):
     rows = list_users(list_temp_tokens())
+    query = str(q or "").strip().casefold()
+    if query:
+        rows = [item for item in rows if query in {str(item.get("username") or "").casefold(), str(item.get("email") or "").casefold(), str(item.get("id") or "").casefold()} or query in str(item.get("username") or "").casefold() or query in str(item.get("email") or "").casefold()]
+        rows.sort(key=lambda item: (query not in {str(item.get("username") or "").casefold(), str(item.get("email") or "").casefold(), str(item.get("id") or "").casefold()}, str(item.get("username") or "").casefold()))
     total = len(rows)
     total_pages = max(1, (total + page_size - 1) // page_size)
     current_page = min(page, total_pages)

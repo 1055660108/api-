@@ -30,7 +30,7 @@ class RepositoryUpdateTests(unittest.TestCase):
             "current commit",
             "def5678",
             "latest commit",
-            "1.1.0",
+            "1.2.0",
             "app/main.py",
             "",
             "updated",
@@ -55,7 +55,7 @@ class RepositoryUpdateTests(unittest.TestCase):
             "current commit",
             "def5678",
             "latest commit",
-            "1.1.0",
+            "1.2.0",
             "app/main.py",
             " M app/main.py",
         ]
@@ -71,15 +71,15 @@ class RepositoryUpdateTests(unittest.TestCase):
             "current commit",
             "def5678",
             "latest commit",
-            "1.1.0",
+            "1.2.0",
         ]
         with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=outputs):
             result = repository_update.repository_status(self.root)
 
-        self.assertEqual(result["version"], "1.1.0")
+        self.assertEqual(result["version"], "1.2.0")
         self.assertEqual(result["commit_message"], "current commit")
         self.assertEqual(result["latest_commit_message"], "latest commit")
-        self.assertEqual(result["latest_version"], "1.1.0")
+        self.assertEqual(result["latest_version"], "1.2.0")
         self.assertTrue(result["update_available"])
 
     def test_https_and_ssh_repository_urls_are_equivalent(self) -> None:

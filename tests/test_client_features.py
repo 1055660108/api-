@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -185,6 +186,9 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(len(transactions), 1)
         self.assertEqual(transactions[0]["kind"], "redeem")
         self.assertEqual(transactions[0]["amount"], 12.5)
+        history = self.client.get(f"/admin/point-cards?q={code}").json()["cards"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["redeemed_username"], "card_user_one")
 
     def test_announcements_are_seen_per_user(self) -> None:
         first = self.register("announcement_one")
@@ -200,19 +204,54 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get("/announcements", headers=first_headers).json()["unseen"], 0)
         self.assertEqual(self.client.get("/announcements", headers=second_headers).json()["unseen"], 1)
 
+        emergency = self.client.post("/admin/announcements", json={"title": "紧急维护", "content": "服务维护中", "level": "emergency", "lock_screen": True})
+        emergency_id = emergency.json()["announcement"]["id"]
+        listed = self.client.get("/announcements", headers=second_headers).json()["announcements"]
+        emergency_row = next(item for item in listed if item["id"] == emergency_id)
+        self.assertEqual(emergency_row["level"], "emergency")
+        self.assertTrue(emergency_row["lock_screen"])
+        unlocked = self.client.patch(f"/admin/announcements/{emergency_id}", json={"lock_screen": False})
+        self.assertFalse(unlocked.json()["announcement"]["lock_screen"])
+
     def test_membership_catalog_admin_crud_and_public_filtering(self) -> None:
         registered = self.register("member_user")
         headers = {"X-API-Token": registered["token"]}
         self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
-        created = self.client.post("/admin/memberships", json={"name": "月度会员", "price": 29.9, "duration_days": 30, "description": "月度套餐"})
+        user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "member_user")
+        self.client.post(f"/users/{user_id}/points", json={"amount": 50})
+        created = self.client.post("/admin/memberships", json={"name": "月度会员", "points_cost": 10, "duration_days": 30, "concurrency": 3, "bonus_free_uses": 4, "description": "月度套餐"})
         self.assertEqual(created.status_code, 201)
         package_id = created.json()["package"]["id"]
         public = self.client.get("/memberships", headers=headers).json()
         self.assertEqual(public["packages"][0]["name"], "月度会员")
-        self.assertEqual(public["payment_url"], "https://pay.ldxp.cn/shop/huisu/fhm9gj")
-        self.assertEqual(self.client.patch(f"/admin/memberships/{package_id}", json={"price": 39.9}).json()["package"]["price"], 39.9)
+        purchased = self.client.post(f"/memberships/{package_id}/purchase", headers=headers)
+        self.assertEqual(purchased.status_code, 200)
+        self.assertEqual(purchased.json()["balance"]["credit_units"], 400)
+        self.assertEqual(purchased.json()["balance"]["free_remaining"], 5)
+        self.assertEqual(purchased.json()["balance"]["concurrency"], 3)
+        profile = self.client.get("/auth/profile", headers=headers).json()
+        self.assertEqual(profile["membership"]["name"], "月度会员")
+        transactions = self.client.get("/points/transactions", headers=headers).json()["transactions"]
+        self.assertEqual(transactions[0]["kind"], "membership_purchase")
+
+        user_data = json.loads(users.USERS_PATH.read_text(encoding="utf-8"))
+        member_entry = next(item for item in user_data["users"].values() if item["id"] == user_id)
+        member_entry["membership"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+        users.USERS_PATH.write_text(json.dumps(user_data, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 1)
+
+        self.assertEqual(self.client.patch(f"/admin/memberships/{package_id}", json={"points_cost": 12.5}).json()["package"]["points_cost"], 12.5)
         self.assertEqual(self.client.delete(f"/admin/memberships/{package_id}").status_code, 200)
         self.assertEqual(self.client.get("/memberships", headers=headers).json()["packages"], [])
+
+    def test_user_search_prefers_exact_username_email_or_id(self) -> None:
+        first = self.register("search_user")
+        self.register("search_user_extra")
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        exact = self.client.get("/users?q=search_user").json()
+        self.assertEqual(exact["users"][0]["username"], "search_user")
+        user_id = exact["users"][0]["id"]
+        self.assertEqual(self.client.get(f"/users?q={user_id}").json()["users"][0]["id"], user_id)
 
     def test_task_consumption_and_admin_adjustments_are_recorded(self) -> None:
         registered = self.register("ledger_user")

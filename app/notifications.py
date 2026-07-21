@@ -130,18 +130,24 @@ def mark_all_notifications_read(user_id: str) -> int:
     return changed
 
 
-def create_announcement(title: str, content: str) -> dict[str, Any]:
+def create_announcement(title: str, content: str, level: str = "large", lock_screen: bool = False) -> dict[str, Any]:
     title = str(title or "").strip()
     content = str(content or "").strip()
     if not title or len(title) > 120:
         raise ValueError("公告标题需为 1-120 个字符")
     if not content or len(content) > 5000:
         raise ValueError("公告内容需为 1-5000 个字符")
+    level = str(level or "large").strip().lower()
+    if level not in {"small", "large", "emergency"}:
+        raise ValueError("公告类型必须为 small、large 或 emergency")
+    lock_screen = bool(lock_screen) if level == "emergency" else False
     now = _now()
     announcement = {
         "id": secrets.token_hex(12),
         "title": title,
         "content": content,
+        "level": level,
+        "lock_screen": lock_screen,
         "enabled": True,
         "seen_by": [],
         "created_at": now,
@@ -161,6 +167,8 @@ def list_announcements(user_id: str = "", include_disabled: bool = False) -> lis
         rows = [item for item in rows if item.get("enabled", True)]
     for item in rows:
         seen_by = {str(value) for value in item.pop("seen_by", [])}
+        item["level"] = str(item.get("level") or "large")
+        item["lock_screen"] = bool(item.get("lock_screen", False)) if item["level"] == "emergency" else False
         item["seen"] = bool(user_id and str(user_id) in seen_by)
     rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return rows
@@ -184,15 +192,22 @@ def mark_announcement_seen(announcement_id: str, user_id: str) -> dict[str, Any]
         return public
 
 
-def set_announcement_enabled(announcement_id: str, enabled: bool) -> dict[str, Any]:
+def update_announcement(announcement_id: str, *, enabled: bool | None = None, lock_screen: bool | None = None) -> dict[str, Any]:
     with _LOCK:
         data = _read()
         record = data["announcements"].get(str(announcement_id or ""))
         if not isinstance(record, dict):
             raise KeyError(announcement_id)
-        record["enabled"] = bool(enabled)
+        if enabled is not None:
+            record["enabled"] = bool(enabled)
+        if lock_screen is not None:
+            record["lock_screen"] = bool(lock_screen) if record.get("level") == "emergency" else False
         record["updated_at"] = _now()
         _write(data)
         public = dict(record)
         public.pop("seen_by", None)
         return public
+
+
+def set_announcement_enabled(announcement_id: str, enabled: bool) -> dict[str, Any]:
+    return update_announcement(announcement_id, enabled=enabled)

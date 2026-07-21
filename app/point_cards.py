@@ -92,7 +92,7 @@ def list_cards(limit: int = 500) -> list[dict[str, Any]]:
     return rows[:max(1, min(2000, int(limit)))]
 
 
-def redeem_card(code: str, user_id: str, token_hash: str) -> dict[str, Any]:
+def redeem_card(code: str, user_id: str, token_hash: str, username: str = "") -> dict[str, Any]:
     normalized = _normalize(code)
     if len(normalized) < 12:
         raise ValueError("卡密格式无效")
@@ -106,12 +106,14 @@ def redeem_card(code: str, user_id: str, token_hash: str) -> dict[str, Any]:
             raise ValueError("卡密已被使用")
         card["status"] = "redeeming"
         card["redeemed_by"] = str(user_id or "")
+        card["redeemed_username"] = str(username or "").strip()[:80]
         _write(data)
         try:
             credited = add_temp_credit_units(token_hash, int(card.get("points_units") or 0))
         except Exception:
             card["status"] = "unused"
             card["redeemed_by"] = ""
+            card["redeemed_username"] = ""
             _write(data)
             raise
         card["status"] = "redeemed"

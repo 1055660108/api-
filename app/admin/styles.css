@@ -3870,6 +3870,23 @@ body[data-portal="admin"] #transactionsView {
   font-size: 24px;
 }
 
+.membership-benefits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.membership-benefits span,
+.card-type-chip {
+  padding: 5px 8px;
+  color: #08756b;
+  background: #dcf8f2;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .ledger-amount.credit { color: var(--ok); }
 .ledger-amount.debit { color: var(--danger); }
 
@@ -3877,8 +3894,184 @@ body[data-portal="admin"] #transactionsView {
   grid-template-columns: minmax(320px, .62fr) minmax(0, 1.38fr);
 }
 
-#point-cardsView .users-table {
-  min-width: 620px;
+.point-card-workspace {
+  padding: 0;
+  overflow: hidden;
+}
+
+.point-card-toolbar,
+.point-card-filters,
+.point-card-actions,
+.user-search-toolbar,
+.announcement-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.point-card-toolbar {
+  justify-content: space-between;
+  padding: 18px;
+  background: #eef8f8;
+  border-bottom: 1px solid var(--line);
+}
+
+.point-card-filters {
+  flex: 1;
+}
+
+.point-card-filters input {
+  width: min(320px, 40vw);
+}
+
+.point-card-filters select {
+  width: 150px;
+}
+
+.point-card-actions button {
+  white-space: nowrap;
+}
+
+.point-card-table-wrap {
+  max-height: calc(100vh - 260px);
+  margin: 0 18px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.point-card-table {
+  min-width: 1000px;
+}
+
+.point-card-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.point-card-workspace > .list-footer {
+  padding: 14px 18px 18px;
+}
+
+.point-card-modal-panel {
+  width: min(100%, 620px);
+  padding: 24px;
+  border-radius: 8px;
+}
+
+.point-card-modal-panel .modal-header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.point-card-modal-panel .modal-header h2,
+.point-card-modal-panel .modal-header p {
+  margin: 0;
+}
+
+.point-card-modal-panel .modal-header p {
+  color: var(--muted);
+}
+
+.user-search-toolbar {
+  margin-bottom: 16px;
+}
+
+.user-search-toolbar input {
+  width: min(420px, 55vw);
+}
+
+.small-announcement {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 4500;
+  width: min(380px, calc(100vw - 32px));
+  padding: 18px;
+  color: #111827;
+  background: #fff;
+  border: 1px solid #b9d7d2;
+  border-left: 5px solid #0f8f83;
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, .2);
+}
+
+.small-announcement > div {
+  display: grid;
+  gap: 4px;
+}
+
+.small-announcement span {
+  color: #08756b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.small-announcement p {
+  margin: 10px 0 0;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.emergency-announcement {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  padding: 32px;
+  place-items: center;
+  color: #fff;
+  background: #15181d;
+}
+
+.emergency-announcement-inner {
+  width: min(760px, 100%);
+  text-align: center;
+}
+
+.emergency-label {
+  display: inline-block;
+  padding: 6px 10px;
+  color: #fff;
+  background: #c62828;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.emergency-announcement h1 {
+  margin: 22px 0 16px;
+  font-size: 36px;
+}
+
+.emergency-announcement-inner > div {
+  color: #d9dee5;
+  font-size: 16px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+}
+
+.emergency-announcement button {
+  width: auto;
+  min-width: 180px;
+  margin-top: 28px;
+}
+
+.emergency-lock-note {
+  margin-top: 24px;
+  color: #f6caca;
+}
+
+body.announcement-locked {
+  overflow: hidden;
+}
+
+.announcement-lock-field {
+  padding: 12px;
+  background: var(--danger-soft);
+  border: 1px solid #f4b8b8;
+  border-radius: 8px;
 }
 
 .compact-form-grid {
@@ -3931,7 +4124,7 @@ body[data-portal="admin"] #transactionsView {
 }
 
 .membership-item-fields {
-  grid-template-columns: 1.3fr repeat(3, minmax(70px, .7fr));
+  grid-template-columns: 1.3fr repeat(5, minmax(70px, .7fr));
 }
 
 @media (max-width: 1100px) {
@@ -3943,6 +4136,11 @@ body[data-portal="admin"] #transactionsView {
 
   .membership-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .point-card-toolbar {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 
@@ -3986,5 +4184,32 @@ body[data-portal="admin"] #transactionsView {
 
   .token-display input {
     grid-column: 1 / -1;
+  }
+
+  .point-card-filters,
+  .point-card-actions,
+  .user-search-toolbar,
+  .announcement-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .point-card-filters input,
+  .point-card-filters select,
+  .user-search-toolbar input {
+    width: 100%;
+  }
+
+  .small-announcement {
+    right: 16px;
+    bottom: 16px;
+  }
+
+  .emergency-announcement {
+    padding: 22px;
+  }
+
+  .emergency-announcement h1 {
+    font-size: 28px;
   }
 }

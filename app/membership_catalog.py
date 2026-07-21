@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import math
 import secrets
 import threading
 from datetime import datetime, timezone
 from typing import Any
 
 from . import postgres
+from .billing import points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
 
 
@@ -43,15 +43,26 @@ def _normalize(item: dict[str, Any]) -> dict[str, Any]:
     name = str(item.get("name") or "").strip()[:80]
     if not name:
         raise ValueError("会员套餐名称不能为空")
-    price = float(item.get("price") or 0)
+    raw_points_cost = item.get("points_cost")
+    if raw_points_cost is None:
+        raw_points_cost = item.get("price") or 1
+    points_cost = units_to_points(points_to_units(raw_points_cost))
     duration_days = int(item.get("duration_days") or 0)
-    if not math.isfinite(price) or price < 0 or duration_days < 1 or duration_days > 3650:
-        raise ValueError("会员价格或有效期无效")
+    concurrency = int(item.get("concurrency") or 1)
+    bonus_free_uses = int(item.get("bonus_free_uses") or 0)
+    if duration_days < 1 or duration_days > 3650:
+        raise ValueError("会员积分或有效期无效")
+    if concurrency < 1 or concurrency > 100:
+        raise ValueError("会员并发数量需为 1-100")
+    if bonus_free_uses < 0 or bonus_free_uses > 1000000:
+        raise ValueError("赠送视频额度需为 0-1000000")
     return {
         "id": str(item.get("id") or secrets.token_hex(8)),
         "name": name,
-        "price": round(price, 2),
+        "points_cost": points_cost,
         "duration_days": duration_days,
+        "concurrency": concurrency,
+        "bonus_free_uses": bonus_free_uses,
         "description": str(item.get("description") or "").strip()[:500],
         "payment_url": str(item.get("payment_url") or DEFAULT_PAYMENT_URL).strip()[:500],
         "enabled": bool(item.get("enabled", True)),
@@ -67,6 +78,13 @@ def list_memberships(include_disabled: bool = False) -> list[dict[str, Any]]:
     if not include_disabled:
         rows = [item for item in rows if item["enabled"]]
     return sorted(rows, key=lambda item: (item["sort_order"], item["created_at"]))
+
+
+def get_membership(package_id: str) -> dict[str, Any]:
+    item = next((row for row in list_memberships() if str(row.get("id") or "") == str(package_id or "")), None)
+    if not isinstance(item, dict):
+        raise KeyError(package_id)
+    return item
 
 
 def create_membership(payload: dict[str, Any]) -> dict[str, Any]:

@@ -260,6 +260,40 @@ def deduct_temp_points(token_hash: str, free_limit: int, amount: object) -> dict
         return _public_token(token_hash, entry)
 
 
+def purchase_temp_membership(token_hash: str, free_limit: int, points_cost: object, bonus_free_uses: int, concurrency: int) -> dict[str, Any]:
+    token_hash = str(token_hash or "").strip().lower()
+    units = points_to_units(points_cost)
+    bonus = max(0, int(bonus_free_uses))
+    target_concurrency = max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(concurrency)))
+    with _LOCK:
+        def apply(entry: dict[str, Any]) -> dict[str, Any]:
+            _migrate_entry(entry, free_limit)
+            if int(entry.get("credit_units") or 0) < units:
+                raise ValueError("用户积分不足")
+            entry["credit_units"] = int(entry.get("credit_units") or 0) - units
+            entry["free_remaining"] = int(entry.get("free_remaining") or 0) + bonus
+            entry["concurrency"] = target_concurrency
+            _sync_legacy_fields(entry)
+            entry["updated_at"] = _now()
+            return _public_token(token_hash, entry)
+
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> dict[str, Any]:
+                entry = (data.get("tokens") or {}).get(token_hash)
+                if not isinstance(entry, dict):
+                    raise KeyError("token not found")
+                return apply(entry)
+
+            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+        data = _read_data()
+        entry = data["tokens"].get(token_hash)
+        if not isinstance(entry, dict):
+            raise KeyError("token not found")
+        result = apply(entry)
+        _write_data(data)
+        return result
+
+
 def temp_token_concurrency_limits() -> dict[str, int]:
     data = _read_data()
     limits: dict[str, int] = {}

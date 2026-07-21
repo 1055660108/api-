@@ -11,7 +11,7 @@ from typing import Any
 
 from .billing import points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
-from .temp_access import add_temp_credit_units, create_temp_tokens, deduct_temp_points, delete_temp_token, hash_token, list_temp_tokens, migrate_temp_token, rotate_temp_token, update_temp_token
+from .temp_access import add_temp_credit_units, create_temp_tokens, deduct_temp_points, delete_temp_token, hash_token, list_temp_tokens, migrate_temp_token, purchase_temp_membership, rotate_temp_token, update_temp_token
 from . import postgres
 
 
@@ -22,6 +22,19 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9_\u4e00-\u9fff]{3,24}$")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _active_membership(entry: dict[str, Any], now: datetime | None = None) -> dict[str, Any] | None:
+    membership = entry.get("membership")
+    if not isinstance(membership, dict):
+        return None
+    try:
+        expires_at = datetime.fromisoformat(str(membership.get("expires_at") or ""))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return membership if expires_at > (now or datetime.now(timezone.utc)) else None
 
 
 def _read() -> dict[str, Any]:
@@ -83,6 +96,8 @@ def register_user(username: str, password: str, email: str = "") -> dict[str, An
             "token": token_entry["token"],
             "points_purchased": 0,
             "free_limit": 1,
+            "base_concurrency": 1,
+            "effective_concurrency": 1,
             "created_at": now,
             "last_login_at": now,
             "last_seen_at": now,
@@ -199,10 +214,12 @@ def user_profile_by_token_hash(token_hash: str) -> dict[str, Any]:
         entry = next((item for item in _read()["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not entry or not entry.get("enabled", True):
             raise KeyError(token_hash)
+        membership = _active_membership(entry)
         return {
             "username": str(entry.get("username") or ""),
             "email": str(entry.get("email") or ""),
             "email_verified_at": str(entry.get("email_verified_at") or ""),
+            "membership": dict(membership) if membership else None,
         }
 
 
@@ -265,6 +282,7 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen = datetime.fromisoformat(str(entry.get("last_seen_at") or entry.get("created_at")))
             if seen.tzinfo is None:
                 seen = seen.replace(tzinfo=timezone.utc)
+            membership = _active_membership(entry, now)
             rows.append({
                 "id": entry["id"], "username": entry["username"], "created_at": entry["created_at"],
                 "email": str(entry.get("email") or ""), "email_verified_at": str(entry.get("email_verified_at") or ""),
@@ -273,6 +291,8 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "free_remaining": free_remaining, "points": points,
                 "used": used, "enabled": bool(entry.get("enabled", True)), "token": str(q.get("token") or entry.get("token") or ""),
                 "concurrency": max(1, int(q.get("concurrency") or 1)),
+                "base_concurrency": max(1, int(entry.get("base_concurrency") or q.get("concurrency") or 1)),
+                "membership": dict(membership) if membership else None,
             })
         return sorted(rows, key=lambda item: item["created_at"], reverse=True)
 
@@ -337,6 +357,70 @@ def deduct_user_points(user_id: str, amount: object) -> None:
         deduct_temp_points(str(entry.get("token_hash") or ""), max(1, int(entry.get("free_limit") or 1)), amount)
 
 
+def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    with _LOCK:
+        data = _read()
+        entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
+        if not isinstance(entry, dict):
+            raise KeyError(user_id)
+        token_hash = str(entry.get("token_hash") or "")
+        token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == token_hash), {})
+        base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
+        current_membership = _active_membership(entry, now)
+        current_membership_concurrency = max(1, int((current_membership or {}).get("concurrency") or 1))
+        membership_concurrency = max(current_membership_concurrency, int(package.get("concurrency") or 1))
+        effective_concurrency = max(base_concurrency, membership_concurrency)
+        current_expiry = now
+        if current_membership:
+            current_expiry = datetime.fromisoformat(str(current_membership["expires_at"]))
+            if current_expiry.tzinfo is None:
+                current_expiry = current_expiry.replace(tzinfo=timezone.utc)
+        expires_at = current_expiry + timedelta(days=int(package.get("duration_days") or 1))
+        balance = purchase_temp_membership(
+            token_hash,
+            max(1, int(entry.get("free_limit") or 1)),
+            package.get("points_cost"),
+            int(package.get("bonus_free_uses") or 0),
+            effective_concurrency,
+        )
+        membership = {
+            "package_id": str(package.get("id") or ""),
+            "name": str(package.get("name") or "会员"),
+            "concurrency": membership_concurrency,
+            "purchased_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        }
+        entry["base_concurrency"] = base_concurrency
+        entry["effective_concurrency"] = effective_concurrency
+        entry["membership"] = membership
+        entry["updated_at"] = _now()
+        _write(data)
+        return {"membership": dict(membership), "balance": balance}
+
+
+def sync_user_membership_by_token_hash(token_hash: str) -> bool:
+    with _LOCK:
+        data = _read()
+        entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
+        if not isinstance(entry, dict):
+            return False
+        active = _active_membership(entry)
+        token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == str(token_hash or "")), {})
+        base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
+        effective_concurrency = max(base_concurrency, int((active or {}).get("concurrency") or 1))
+        if int(entry.get("effective_concurrency") or 0) == effective_concurrency and entry.get("base_concurrency"):
+            return False
+        update_temp_token(str(token_hash or ""), concurrency=effective_concurrency)
+        entry["effective_concurrency"] = effective_concurrency
+        entry["base_concurrency"] = base_concurrency
+        if not active and isinstance(entry.get("membership"), dict):
+            entry["membership"]["status"] = "expired"
+        entry["updated_at"] = _now()
+        _write(data)
+        return True
+
+
 def rotate_user_token_by_hash(token_hash: str) -> dict[str, Any]:
     with _LOCK:
         data = _read()
@@ -368,7 +452,14 @@ def set_user_concurrency(user_id: str, concurrency: int) -> None:
         entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
         if not entry:
             raise KeyError(user_id)
-        update_temp_token(str(entry.get("token_hash") or ""), concurrency=concurrency)
+        base_concurrency = max(1, int(concurrency))
+        membership = _active_membership(entry)
+        effective_concurrency = max(base_concurrency, int((membership or {}).get("concurrency") or 1))
+        update_temp_token(str(entry.get("token_hash") or ""), concurrency=effective_concurrency)
+        entry["base_concurrency"] = base_concurrency
+        entry["effective_concurrency"] = effective_concurrency
+        entry["updated_at"] = _now()
+        _write(data)
 
 
 def delete_user(user_id: str) -> None:

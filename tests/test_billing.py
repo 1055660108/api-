@@ -108,11 +108,13 @@ class BillingTests(unittest.TestCase):
         self.assertEqual([item["points"] for item in package_catalog.list_packages()], [1, 6, 18, 30, 68, 128, 256])
 
     def test_package_catalog_supports_publish_adjust_and_disable(self) -> None:
-        created = package_catalog.create_package({"name": "测试套餐", "points": 12.5, "bonus_free_uses": 3, "sort_order": 0})
+        created = package_catalog.create_package({"name": "测试套餐", "points": 12.5, "bonus_free_uses": 3, "sort_order": 0, "payment_url": "https://pay.example.com/package-a"})
         self.assertEqual(created["points"], 12.5)
-        adjusted = package_catalog.update_package(created["id"], {"points": 15, "name": "调整套餐"})
+        self.assertEqual(created["payment_url"], "https://pay.example.com/package-a")
+        adjusted = package_catalog.update_package(created["id"], {"points": 15, "name": "调整套餐", "payment_url": "https://pay.example.com/package-b"})
         self.assertEqual(adjusted["name"], "调整套餐")
         self.assertEqual(adjusted["points"], 15)
+        self.assertEqual(adjusted["payment_url"], "https://pay.example.com/package-b")
         package_catalog.disable_package(created["id"])
         self.assertNotIn(created["id"], [item["id"] for item in package_catalog.list_packages()])
         self.assertIn(created["id"], [item["id"] for item in package_catalog.list_packages(include_disabled=True)])

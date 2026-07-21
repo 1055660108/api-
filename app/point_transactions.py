@@ -52,6 +52,8 @@ def record_transaction(
     balance_units: int | None = None,
     reference_id: str = "",
     detail: str = "",
+    video_quota_change: int = 0,
+    video_quota_balance: int | None = None,
 ) -> dict[str, Any]:
     user_id = str(user_id or "").strip()
     if not user_id:
@@ -64,6 +66,8 @@ def record_transaction(
         "amount": _points(amount_units),
         "balance_units": int(balance_units) if balance_units is not None else None,
         "balance": _points(balance_units) if balance_units is not None else None,
+        "video_quota_change": int(video_quota_change),
+        "video_quota_balance": max(0, int(video_quota_balance)) if video_quota_balance is not None else None,
         "title": str(title or "积分变动").strip()[:120],
         "detail": str(detail or "").strip()[:500],
         "reference_id": str(reference_id or "").strip()[:120],

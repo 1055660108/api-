@@ -224,6 +224,18 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("8000", self.javascript)
         self.assertIn('/auth/billing-priority', self.javascript)
         self.assertNotIn("Prompt Library", self.html)
+        self.assertIn("视频额度变动", self.html)
+        self.assertIn('video_quota_consume: "额度使用"', self.javascript)
+        self.assertIn('item.video_quota_change', self.javascript)
+        self.assertIn('els.refreshTransactions?.addEventListener("click", refreshTransactions)', self.javascript)
+        self.assertIn('els.refreshPointCards?.addEventListener("click", refreshPointCards)', self.javascript)
+        self.assertIn('toast("消费明细已刷新")', self.javascript)
+        self.assertIn('toast("卡密记录已刷新")', self.javascript)
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".ledger-table tbody tr", styles)
+        self.assertIn("height: 108px", styles)
+        self.assertIn("overflow-wrap: anywhere", styles)
+        self.assertNotIn(".ledger-task-id { width: fit-content", styles)
 
     def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
         for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "积分账号", "当前积分"):

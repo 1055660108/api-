@@ -573,6 +573,27 @@ def refund_temp_quota(access: AccessContext) -> None:
     refund_temp_quota_hash(access.token_hash)
 
 
+def _record_reservation_refund(transaction: dict[str, Any], refund_id: str) -> None:
+    user_id = str(transaction.get("user_id") or "")
+    units = int(transaction.get("units") or 0)
+    video_quota_change = int(transaction.get("video_quota_change") or 0)
+    if not user_id or (units <= 0 and video_quota_change == 0):
+        return
+    from .point_transactions import record_transaction
+
+    record_transaction(
+        user_id,
+        "video_quota_refund" if video_quota_change else "refund",
+        units,
+        "视频额度任务退款" if video_quota_change else "任务退款",
+        balance_units=int(transaction.get("balance_units") or 0),
+        video_quota_change=video_quota_change,
+        video_quota_balance=int(transaction.get("video_quota_balance") or 0),
+        reference_id=refund_id,
+        detail=f"任务 ID：{refund_id}" if refund_id else "",
+    )
+
+
 def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
     token_hash = str(token_hash or "").strip().lower()
     if not token_hash:
@@ -590,6 +611,13 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                         return False
                     if reservation.get("free"):
                         entry["free_remaining"] = int(entry.get("free_remaining") or 0) + 1
+                        refunded_transaction.update({
+                            "user_id": str(reservation.get("user_id") or ""),
+                            "units": 0,
+                            "balance_units": int(entry.get("credit_units") or 0),
+                            "video_quota_change": 1,
+                            "video_quota_balance": int(entry.get("free_remaining") or 0),
+                        })
                     else:
                         units = int(reservation.get("units") or 0)
                         entry["credit_units"] = int(entry.get("credit_units") or 0) + units
@@ -597,6 +625,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                             "user_id": str(reservation.get("user_id") or ""),
                             "units": units,
                             "balance_units": int(entry.get("credit_units") or 0),
+                            "video_quota_balance": int(entry.get("free_remaining") or 0),
                         })
                     reservation["status"] = "refunded"
                     reservation["refunded_at"] = _now()
@@ -613,17 +642,8 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                 return True
 
             refunded = postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
-            if refunded and refunded_transaction.get("user_id") and int(refunded_transaction.get("units") or 0) > 0:
-                from .point_transactions import record_transaction
-
-                record_transaction(
-                    str(refunded_transaction["user_id"]),
-                    "refund",
-                    int(refunded_transaction["units"]),
-                    "任务退款",
-                    balance_units=int(refunded_transaction["balance_units"]),
-                    reference_id=refund_id,
-                )
+            if refunded:
+                _record_reservation_refund(refunded_transaction, refund_id)
             return refunded
         data = _read_data()
         entry = data["tokens"].get(token_hash)
@@ -635,6 +655,13 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                 return False
             if reservation.get("free"):
                 entry["free_remaining"] = int(entry.get("free_remaining") or 0) + 1
+                refunded_transaction.update({
+                    "user_id": str(reservation.get("user_id") or ""),
+                    "units": 0,
+                    "balance_units": int(entry.get("credit_units") or 0),
+                    "video_quota_change": 1,
+                    "video_quota_balance": int(entry.get("free_remaining") or 0),
+                })
             else:
                 units = int(reservation.get("units") or 0)
                 entry["credit_units"] = int(entry.get("credit_units") or 0) + units
@@ -642,6 +669,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                     "user_id": str(reservation.get("user_id") or ""),
                     "units": units,
                     "balance_units": int(entry.get("credit_units") or 0),
+                    "video_quota_balance": int(entry.get("free_remaining") or 0),
                 })
             reservation["status"] = "refunded"
             reservation["refunded_at"] = _now()
@@ -657,15 +685,5 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                 entry["quota_refund_ids"] = refunded[-1000:]
         entry["updated_at"] = _now()
         _write_data(data)
-        if refunded_transaction.get("user_id") and int(refunded_transaction.get("units") or 0) > 0:
-            from .point_transactions import record_transaction
-
-            record_transaction(
-                str(refunded_transaction["user_id"]),
-                "refund",
-                int(refunded_transaction["units"]),
-                "任务退款",
-                balance_units=int(refunded_transaction["balance_units"]),
-                reference_id=refund_id,
-            )
+        _record_reservation_refund(refunded_transaction, refund_id)
         return True

@@ -570,6 +570,7 @@ async def points_redeem(request: Request, access: Annotated[AccessContext, Depen
             int(card.get("points_units") or 0),
             "卡密兑换",
             balance_units=int(balance.get("credit_units") or 0),
+            video_quota_balance=int(balance.get("free_remaining") or 0),
             reference_id=str(card.get("id") or ""),
         )
         return {"ok": True, "points": card.get("points", 0), "balance": balance}
@@ -606,6 +607,8 @@ async def purchase_membership(package_id: str, access: Annotated[AccessContext, 
             -points_to_units(package.get("points_cost")),
             f"购买会员：{package.get('name')}",
             balance_units=int(balance.get("credit_units") or 0),
+            video_quota_change=int(package.get("bonus_free_uses") or 0),
+            video_quota_balance=int(balance.get("free_remaining") or 0),
             reference_id=str(package.get("id") or ""),
             detail=f"有效期 {package.get('duration_days')} 天 / 并发 {package.get('concurrency')} / 赠送视频额度 {package.get('bonus_free_uses')}",
         )
@@ -722,7 +725,18 @@ async def client_register(request: Request):
         email = ""
         if settings.registration_email_verification_enabled:
             email = consume_registration_code(payload.get("email", ""), payload.get("email_code", ""), settings)
-        return {"ok": True, **register_user(payload.get("username", ""), payload.get("password", ""), email)}
+        registered = register_user(payload.get("username", ""), payload.get("password", ""), email)
+        identity = user_identity_by_token_hash(hash_token(str(registered.get("token") or "")))
+        record_transaction(
+            str(identity.get("id") or ""),
+            "video_quota_credit",
+            0,
+            "注册赠送视频额度",
+            balance_units=0,
+            video_quota_change=1,
+            video_quota_balance=1,
+        )
+        return {"ok": True, **registered}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -1073,6 +1087,7 @@ async def users_add_points(user_id: str, request: Request):
             points_to_units(payload.get("amount")),
             "管理员充值",
             balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
+            video_quota_balance=int(user.get("free_remaining") or 0),
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -1093,6 +1108,7 @@ async def users_deduct_points(user_id: str, request: Request):
             -points_to_units(payload.get("amount")),
             "管理员扣除",
             balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
+            video_quota_balance=int(user.get("free_remaining") or 0),
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -1392,13 +1408,16 @@ async def openai_chat_completions(
         reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
         reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
         charged_units = int(reservation.get("units") or 0)
-        if charged_units > 0 and user_id:
+        if user_id and reservation:
+            free_used = bool(reservation.get("free"))
             record_transaction(
                 user_id,
-                "consume",
-                -charged_units,
-                "视频任务消费",
+                "video_quota_consume" if free_used else "consume",
+                0 if free_used else -charged_units,
+                "视频额度任务消费" if free_used else "视频任务消费",
                 balance_units=reserved_access.credit_units,
+                video_quota_change=-1 if free_used else 0,
+                video_quota_balance=reserved_access.free_remaining,
                 reference_id=str(meta["id"]),
                 detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
             )
@@ -1913,13 +1932,16 @@ async def submit_task(
             reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
             reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
             charged_units = int(reservation.get("units") or 0)
-            if charged_units > 0 and user_id:
+            if user_id and reservation:
+                free_used = bool(reservation.get("free"))
                 record_transaction(
                     user_id,
-                    "consume",
-                    -charged_units,
-                    "视频任务消费",
+                    "video_quota_consume" if free_used else "consume",
+                    0 if free_used else -charged_units,
+                    "视频额度任务消费" if free_used else "视频任务消费",
                     balance_units=reserved_access.credit_units,
+                    video_quota_change=-1 if free_used else 0,
+                    video_quota_balance=reserved_access.free_remaining,
                     reference_id=str(meta["id"]),
                     detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
                 )

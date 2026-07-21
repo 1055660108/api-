@@ -3662,6 +3662,102 @@ body[data-portal="admin"] .client-billing-panel {
   text-align: left;
 }
 
+/* Stable consumption ledger rows */
+.ledger-table-wrap {
+  overflow-x: auto;
+}
+
+.ledger-table {
+  width: 100%;
+  min-width: 880px;
+  table-layout: fixed;
+}
+
+.ledger-table .ledger-time-col { width: 15%; }
+.ledger-table .ledger-type-col { width: 11%; }
+.ledger-table .ledger-detail-col { width: 33%; }
+.ledger-table .ledger-points-col { width: 11%; }
+.ledger-table .ledger-quota-col { width: 14%; }
+.ledger-table .ledger-balance-col { width: 16%; }
+
+.ledger-table th,
+.ledger-table td {
+  box-sizing: border-box;
+  padding: 12px;
+  vertical-align: middle;
+}
+
+.ledger-table tbody tr,
+.ledger-table tbody td {
+  height: 108px;
+}
+
+.ledger-description {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  height: 76px;
+  overflow: hidden;
+}
+
+.ledger-description > strong,
+.ledger-description > small {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger-description > small {
+  color: var(--muted);
+}
+
+.ledger-task-id {
+  display: block;
+  width: 100%;
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.ledger-amount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  min-height: 28px;
+  border-radius: 4px;
+  background: #f4f6f8;
+}
+
+.ledger-amount.neutral {
+  color: var(--muted);
+}
+
+.ledger-balance {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.ledger-balance span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ledger-balance strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
 #tasksView .task-status-stack,
 #tasksView .url-cell {
   align-items: center;
@@ -4825,7 +4921,7 @@ body[data-portal="client"][data-view="points"] .commerce-header {
 
 .ledger-description { display: grid; gap: 4px; min-width: 220px; }
 .ledger-description small { color: var(--muted); }
-.ledger-task-id { width: fit-content; max-width: 100%; overflow: hidden; color: #344054; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-task-id { width: 100%; max-width: 100%; overflow: visible; color: #344054; font-size: 12px; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
 
 .announcement-modal-panel { width: min(100%, 560px); padding: 0; overflow: hidden; border-radius: 8px; }
 .announcement-modal-accent { height: 4px; background: var(--brand); }

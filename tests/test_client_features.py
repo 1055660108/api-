@@ -195,9 +195,13 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(redeemed.json()["points"], 12.5)
         self.assertEqual(self.client.post("/points/redeem", headers={"X-API-Token": second["token"]}, json={"code": code}).status_code, 400)
         transactions = self.client.get("/points/transactions", headers=first_headers).json()["transactions"]
-        self.assertEqual(len(transactions), 1)
-        self.assertEqual(transactions[0]["kind"], "redeem")
-        self.assertEqual(transactions[0]["amount"], 12.5)
+        self.assertEqual(len(transactions), 2)
+        redeemed_transaction = next(item for item in transactions if item["kind"] == "redeem")
+        self.assertEqual(redeemed_transaction["amount"], 12.5)
+        self.assertEqual(redeemed_transaction["video_quota_balance"], 1)
+        registration_credit = next(item for item in transactions if item["kind"] == "video_quota_credit")
+        self.assertEqual(registration_credit["video_quota_change"], 1)
+        self.assertEqual(registration_credit["video_quota_balance"], 1)
         history = self.client.get(f"/admin/point-cards?q={code}").json()["cards"]
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["redeemed_username"], "card_user_one")
@@ -282,6 +286,8 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertIn("只能购买一次", duplicate.json()["detail"])
         transactions = self.client.get("/points/transactions", headers=headers).json()["transactions"]
         self.assertEqual(transactions[0]["kind"], "membership_purchase")
+        self.assertEqual(transactions[0]["video_quota_change"], 4)
+        self.assertEqual(transactions[0]["video_quota_balance"], 5)
         self.assertEqual(sum(item["kind"] == "membership_purchase" for item in transactions), 1)
 
         user_data = json.loads(users.USERS_PATH.read_text(encoding="utf-8"))
@@ -410,7 +416,14 @@ class ClientFeatureTests(unittest.TestCase):
         kinds = [item["kind"] for item in rows]
         self.assertIn("admin_credit", kinds)
         self.assertIn("consume", kinds)
+        self.assertIn("video_quota_consume", kinds)
         self.assertIn("admin_deduct", kinds)
+        quota_consumed = next(item for item in rows if item["kind"] == "video_quota_consume")
+        self.assertEqual(quota_consumed["amount"], 0)
+        self.assertEqual(quota_consumed["video_quota_change"], -1)
+        self.assertEqual(quota_consumed["video_quota_balance"], 0)
+        self.assertEqual(quota_consumed["reference_id"], responses[0]["id"])
+        self.assertIn(f"任务 ID：{responses[0]['id']}", quota_consumed["detail"])
         consumed = next(item for item in rows if item["kind"] == "consume")
         self.assertEqual(consumed["amount"], -1)
         self.assertEqual(consumed["title"], "视频任务消费")

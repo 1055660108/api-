@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.2.4" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.4" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.4-2" />
   </head>
   <body>
     <script>
@@ -202,7 +202,7 @@
 
         <section class="view" id="membershipView" data-title="会员订阅"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>高级会员优先生效，暂停的低级会员不会消耗剩余天数。</p></div><div class="membership-current"><span class="settings-state" id="membershipCurrentState">当前无会员</span><button class="secondary-button hidden" id="membershipDetailsButton" type="button">详情</button></div></div><div class="membership-grid" id="membershipList"></div></section></section>
 
-        <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header"><div><h2>积分明细</h2><p>记录任务消费、退款、卡密兑换和管理员调整。</p></div><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap"><table class="users-table ledger-table"><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
+        <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header"><div><h2>消费明细</h2><p>记录积分与视频额度的增加、使用和退款。</p></div><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap ledger-table-wrap"><table class="users-table ledger-table"><colgroup><col class="ledger-time-col"><col class="ledger-type-col"><col class="ledger-detail-col"><col class="ledger-points-col"><col class="ledger-quota-col"><col class="ledger-balance-col"></colgroup><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>视频额度变动</th><th>当前余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
 
         <section class="view" id="point-cardsView" data-title="卡密积分">
           <section class="panel point-card-workspace">
@@ -1032,6 +1032,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.2.4"></script>
+    <script src="/admin/assets/app.js?v=1.2.4-2"></script>
   </body>
 </html>

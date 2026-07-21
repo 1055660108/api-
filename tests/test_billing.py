@@ -104,6 +104,21 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(rows[0]["kind"], "refund")
         self.assertEqual(rows[0]["amount"], 0.8)
 
+    def test_free_quota_refund_records_video_quota_and_task_id(self) -> None:
+        token = temp_access.create_temp_tokens(1, 1)[0]
+        access = temp_access.get_temp_context(token["token"])
+        temp_access.reserve_temp_quota(access, "task-free", 8, user_id="user-1")
+        self.assertTrue(temp_access.refund_temp_quota_hash(token["id"], "task-free"))
+        self.assertFalse(temp_access.refund_temp_quota_hash(token["id"], "task-free"))
+        rows = point_transactions.list_transactions("user-1")["transactions"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "video_quota_refund")
+        self.assertEqual(rows[0]["amount"], 0)
+        self.assertEqual(rows[0]["video_quota_change"], 1)
+        self.assertEqual(rows[0]["video_quota_balance"], 1)
+        self.assertEqual(rows[0]["reference_id"], "task-free")
+        self.assertIn("任务 ID：task-free", rows[0]["detail"])
+
     def test_old_user_migration_preserves_free_and_paid_balance(self) -> None:
         self.tokens_path.write_text(json.dumps({"tokens": {"owner": {"limit": 8, "used": 2}}}), encoding="utf-8")
         self.assertTrue(temp_access.migrate_temp_token("owner", 3))

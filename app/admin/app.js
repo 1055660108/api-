@@ -1539,13 +1539,32 @@ async function purchaseMembership(button) {
 async function loadTransactions() {
   if (portal !== "client" || !els.transactionTableBody) return;
   const data = await apiFetch("/points/transactions?page=1&page_size=100");
-  const labels = { consume: "任务消费", refund: "任务退款", redeem: "卡密兑换", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
+  const labels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "卡密兑换", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
+  const taskKinds = new Set(["consume", "video_quota_consume", "refund", "video_quota_refund"]);
   els.transactionTableBody.innerHTML = (data.transactions || []).length ? data.transactions.map((item) => {
     const detailLines = String(item.detail || "").split("\n").filter((line) => line && !line.startsWith("任务 ID："));
-    const taskReference = item.kind === "consume" && item.reference_id ? `<code class="ledger-task-id">任务 ID：${escapeHtml(item.reference_id)}</code>` : "";
+    const taskReference = taskKinds.has(item.kind) && item.reference_id ? `<code class="ledger-task-id" title="任务 ID：${escapeHtml(item.reference_id)}">任务 ID：${escapeHtml(item.reference_id)}</code>` : "";
     const detail = detailLines.length ? `<small>${escapeHtml(detailLines.join(" / "))}</small>` : "";
-    return `<tr><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(labels[item.kind] || item.title || "积分变动")}</td><td><div class="ledger-description"><strong>${escapeHtml(item.title || "积分变动")}</strong>${taskReference}${detail}</div></td><td><strong class="ledger-amount ${Number(item.amount) >= 0 ? "credit" : "debit"}">${Number(item.amount) >= 0 ? "+" : ""}${escapeHtml(item.amount)}</strong></td><td>${item.balance == null ? "-" : escapeHtml(item.balance)}</td></tr>`;
-  }).join("") : '<tr><td colspan="5"><div class="empty-state">暂无积分明细</div></td></tr>';
+    const pointChange = Number(item.amount || 0);
+    const quotaChange = Number(item.video_quota_change || 0);
+    const pointsText = pointChange === 0 ? "-" : `${pointChange > 0 ? "+" : ""}${pointChange}`;
+    const quotaText = quotaChange === 0 ? "-" : `${quotaChange > 0 ? "+" : ""}${quotaChange}`;
+    const pointClass = pointChange > 0 ? "credit" : pointChange < 0 ? "debit" : "neutral";
+    const quotaClass = quotaChange > 0 ? "credit" : quotaChange < 0 ? "debit" : "neutral";
+    return `<tr><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(labels[item.kind] || item.title || "账户变动")}</td><td><div class="ledger-description"><strong>${escapeHtml(item.title || "账户变动")}</strong>${taskReference}${detail}</div></td><td><strong class="ledger-amount ${pointClass}">${escapeHtml(pointsText)}</strong></td><td><strong class="ledger-amount ${quotaClass}">${escapeHtml(quotaText)}</strong></td><td><div class="ledger-balance"><span>积分 <strong>${item.balance == null ? "-" : escapeHtml(item.balance)}</strong></span><span>视频额度 <strong>${item.video_quota_balance == null ? "-" : escapeHtml(item.video_quota_balance)}</strong></span></div></td></tr>`;
+  }).join("") : '<tr><td colspan="6"><div class="empty-state">暂无消费明细</div></td></tr>';
+}
+
+async function refreshTransactions() {
+  setBusy(els.refreshTransactions, true, "刷新中");
+  try {
+    await loadTransactions();
+    toast("消费明细已刷新");
+  } catch (error) {
+    toast(`消费明细刷新失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.refreshTransactions, false);
+  }
 }
 
 async function loadPointCards() {
@@ -1563,6 +1582,18 @@ async function loadPointCards() {
     const copyButton = `<button type="button" class="icon-button card-copy-button" data-copy-point-card="${escapeHtml(code)}" title="复制完整卡密">复制</button>`;
     return `<tr><td><div class="point-card-code"><code title="${escapeHtml(code)}">${escapeHtml(code)}</code>${copyButton}</div></td><td><span class="card-type-chip">积分卡密</span></td><td>${escapeHtml(item.points)} 积分</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_username || "-")}</td><td>${item.redeemed_at ? escapeHtml(formatTime(item.redeemed_at)) : "-"}</td><td>永久有效</td><td>${escapeHtml(item.note || "-")}</td></tr>`;
   }).join("") : '<tr><td colspan="8"><div class="empty-state">暂无卡密记录</div></td></tr>';
+}
+
+async function refreshPointCards() {
+  setBusy(els.refreshPointCards, true, "刷新中");
+  try {
+    await loadPointCards();
+    toast("卡密记录已刷新");
+  } catch (error) {
+    toast(`卡密记录刷新失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.refreshPointCards, false);
+  }
 }
 
 function exportPointCardsCsv() {
@@ -3141,9 +3172,9 @@ function bindEvents() {
   els.adminNotificationForm?.addEventListener("submit", submitAdminNotification);
   els.adminAnnouncementForm?.addEventListener("submit", submitAdminAnnouncement);
   els.redeemForm?.addEventListener("submit", redeemPoints);
-  els.refreshTransactions?.addEventListener("click", loadTransactions);
+  els.refreshTransactions?.addEventListener("click", refreshTransactions);
   els.pointCardForm?.addEventListener("submit", generatePointCards);
-  els.refreshPointCards?.addEventListener("click", loadPointCards);
+  els.refreshPointCards?.addEventListener("click", refreshPointCards);
   els.exportPointCards?.addEventListener("click", exportPointCardsCsv);
   els.pointCardTableBody?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-copy-point-card]");

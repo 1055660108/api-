@@ -219,6 +219,7 @@ class ClientFeatureTests(unittest.TestCase):
         self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
         user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "member_user")
         self.client.post(f"/users/{user_id}/points", json={"amount": 50})
+        self.assertEqual(self.client.patch(f"/users/{user_id}", json={"concurrency": 2}).status_code, 200)
         created = self.client.post("/admin/memberships", json={"name": "月度会员", "points_cost": 10, "duration_days": 30, "concurrency": 3, "bonus_free_uses": 4, "description": "月度套餐"})
         self.assertEqual(created.status_code, 201)
         package_id = created.json()["package"]["id"]
@@ -228,9 +229,12 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(purchased.status_code, 200)
         self.assertEqual(purchased.json()["balance"]["credit_units"], 400)
         self.assertEqual(purchased.json()["balance"]["free_remaining"], 5)
-        self.assertEqual(purchased.json()["balance"]["concurrency"], 3)
+        self.assertEqual(purchased.json()["balance"]["concurrency"], 5)
+        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 5)
         profile = self.client.get("/auth/profile", headers=headers).json()
         self.assertEqual(profile["membership"]["name"], "月度会员")
+        self.assertEqual(profile["membership"]["concurrency_bonus"], 3)
+        self.assertEqual(profile["membership"]["effective_concurrency"], 5)
         transactions = self.client.get("/points/transactions", headers=headers).json()["transactions"]
         self.assertEqual(transactions[0]["kind"], "membership_purchase")
 
@@ -238,7 +242,7 @@ class ClientFeatureTests(unittest.TestCase):
         member_entry = next(item for item in user_data["users"].values() if item["id"] == user_id)
         member_entry["membership"]["expires_at"] = "2000-01-01T00:00:00+00:00"
         users.USERS_PATH.write_text(json.dumps(user_data, ensure_ascii=False), encoding="utf-8")
-        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 1)
+        self.assertEqual(self.client.get("/auth/client", headers=headers).json()["token_concurrency"], 2)
 
         self.assertEqual(self.client.patch(f"/admin/memberships/{package_id}", json={"points_cost": 12.5}).json()["package"]["points_cost"], 12.5)
         self.assertEqual(self.client.delete(f"/admin/memberships/{package_id}").status_code, 200)
@@ -276,6 +280,8 @@ class ClientFeatureTests(unittest.TestCase):
         consumed = next(item for item in rows if item["kind"] == "consume")
         self.assertEqual(consumed["amount"], -1)
         self.assertEqual(consumed["title"], "视频任务消费")
+        self.assertEqual(consumed["reference_id"], consumed["detail"].splitlines()[0].removeprefix("任务 ID："))
+        self.assertIn(f"任务 ID：{consumed['reference_id']}", consumed["detail"])
 
 
 if __name__ == "__main__":

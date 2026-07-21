@@ -1333,7 +1333,7 @@ async def openai_chat_completions(
                 "视频任务消费",
                 balance_units=reserved_access.credit_units,
                 reference_id=str(meta["id"]),
-                detail=f"{PLATFORM_LABELS.get(platform, platform)} / {model}",
+                detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
             )
         finalize_task_creation(str(meta["id"]))
     except ValueError as exc:
@@ -1840,7 +1840,7 @@ async def submit_task(
                     "视频任务消费",
                     balance_units=reserved_access.credit_units,
                     reference_id=str(meta["id"]),
-                    detail=f"{PLATFORM_LABELS.get(platform, platform)} / {model}",
+                    detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
                 )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))

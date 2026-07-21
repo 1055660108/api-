@@ -47,8 +47,9 @@ class AdminUITests(unittest.TestCase):
         for status in ('"不可用"', '"已过期"', '"未检测"'):
             self.assertIn(status, self.javascript)
 
-    def test_release_version_is_only_displayed_in_admin_update_panel(self) -> None:
-        self.assertNotIn('id="sidebarVersion"', self.html)
+    def test_release_version_is_displayed_in_sidebar_and_admin_update_panel(self) -> None:
+        self.assertIn('id="sidebarVersion"', self.html)
+        self.assertIn('sidebarVersion: document.getElementById("sidebarVersion")', self.javascript)
         self.assertNotIn("data.revision", self.javascript)
         self.assertNotIn("data.commit_message", self.javascript)
         self.assertIn('els.repositoryRevision.textContent = data.version ? `v${data.version}` : "版本未知"', self.javascript)
@@ -107,8 +108,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('`${platformLabel} ${Number(stats.total ?? state.accountTotal)} 个`', self.javascript)
 
     def test_purchase_bonus_emphasizes_the_free_use_count(self) -> None:
-        self.assertIn('class="purchase-bonus"', self.javascript)
-        self.assertIn('<b>${escapeHtml(item.bonus_free_uses)}</b>', self.javascript)
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('class="purchase-package"', self.javascript)
+        self.assertIn("purchase-package-meta", self.javascript)
+        self.assertIn(".purchase-options button.purchase-package", styles)
 
     def test_task_refresh_uses_stable_order_and_latest_response(self) -> None:
         self.assertIn("const requestId = ++state.taskRefreshRequestId", self.javascript)
@@ -182,7 +185,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("saveFeedbackRecord", self.javascript)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
-        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion"):
+        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion"):
             self.assertIn(f'id="{element_id}"', self.html)
         for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/memberships/", "/admin/announcements", "/notifications/read-all"):
             self.assertIn(endpoint, self.javascript)

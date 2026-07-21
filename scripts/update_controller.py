@@ -23,6 +23,7 @@ IMAGE_REPOSITORY = os.environ.get("DOLA_IMAGE_NAME", "dola-fetch-service").strip
 IMAGE_TAG = os.environ.get("DOLA_IMAGE_TAG", "").strip()
 STATE_LOCK = threading.Lock()
 FETCH_LOCK = threading.Lock()
+DEPLOY_START_DELAY_SECONDS = 2.0
 STATE: dict[str, str | bool] = {"updating": False, "phase": "空闲", "error": ""}
 
 
@@ -159,13 +160,19 @@ def deploy() -> None:
         set_state(updating=False, phase="更新失败", error=error, updated=False)
 
 
+def deploy_after_response() -> None:
+    time.sleep(DEPLOY_START_DELAY_SECONDS)
+    deploy()
+
+
 def start_deploy() -> dict[str, str | bool]:
     with STATE_LOCK:
         if STATE["updating"]:
             raise RuntimeError("repository update is already running")
         STATE.update({"updating": True, "phase": "准备更新", "error": "", "updated": False})
-    threading.Thread(target=deploy, daemon=True).start()
-    return status(refresh=False)
+    response = status(refresh=False)
+    threading.Thread(target=deploy_after_response, daemon=True).start()
+    return response
 
 
 class Handler(BaseHTTPRequestHandler):

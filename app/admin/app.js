@@ -516,6 +516,12 @@ async function loadRepositoryStatus() {
   }
 }
 
+function isTransientRepositoryUpdateError(error) {
+  const status = Number(error?.status || 0);
+  const message = String(error?.message || "");
+  return [502, 503, 504].includes(status) || /bad gateway|failed to fetch|networkerror|abort/i.test(message);
+}
+
 async function updateRepository() {
   if (!window.confirm("确定部署 GitHub main 最新版本吗？系统将自动构建镜像、重启 API 与 Worker，并执行健康检查。")) return;
   setBusy(els.updateRepository, true, "正在更新");
@@ -527,8 +533,14 @@ async function updateRepository() {
     if (data.updating) await pollRepositoryUpdate();
     else await loadRepositoryStatus();
   } catch (error) {
-    els.repositoryUpdateState.textContent = "更新失败";
-    toast(`更新失败：${error.message}`, "error");
+    if (isTransientRepositoryUpdateError(error)) {
+      els.repositoryUpdateState.textContent = "服务正在重启，等待恢复";
+      toast("服务正在重启，将继续检查更新结果");
+      await pollRepositoryUpdate();
+    } else {
+      els.repositoryUpdateState.textContent = "更新失败";
+      toast(`更新失败：${error.message}`, "error");
+    }
   } finally {
     if (!els.updateRepository?.dataset.updatePolling) setBusy(els.updateRepository, false);
   }

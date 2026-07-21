@@ -10,6 +10,12 @@ from scripts import update_controller
 
 
 class UpdateControllerTests(unittest.TestCase):
+    def test_deploy_waits_until_update_response_can_be_sent(self) -> None:
+        with patch.object(update_controller.time, "sleep") as sleep, patch.object(update_controller, "deploy") as deploy:
+            update_controller.deploy_after_response()
+        sleep.assert_called_once_with(update_controller.DEPLOY_START_DELAY_SECONDS)
+        deploy.assert_called_once_with()
+
     def test_uncommitted_paths_include_modified_and_renamed_files(self) -> None:
         self.assertEqual(
             update_controller.uncommitted_paths(" M app/main.py\nR  old.py -> new.py\n?? local.txt"),

@@ -29,6 +29,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('data.update_available ? "有可用更新" : "已是最新"', self.javascript)
         self.assertIn('els.repositoryRevision.textContent = data.version ? `v${data.version}` : "版本未知"', self.javascript)
         self.assertIn("await pollRepositoryUpdate()", self.javascript)
+        self.assertIn("isTransientRepositoryUpdateError", self.javascript)
+        self.assertIn("[502, 503, 504].includes(status)", self.javascript)
+        self.assertIn("服务正在重启，将继续检查更新结果", self.javascript)
         self.assertIn("系统更新成功，前后端服务已恢复", self.javascript)
 
     def test_update_is_admin_only_and_proxy_has_single_entry(self) -> None:

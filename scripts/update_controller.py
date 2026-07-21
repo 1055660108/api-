@@ -59,6 +59,17 @@ def normalized_repository(value: str) -> str:
     return f"https://github.com/{parsed.path.strip('/')}".removesuffix(".git").lower()
 
 
+def uncommitted_paths(porcelain: str) -> list[str]:
+    paths: list[str] = []
+    for line in str(porcelain or "").splitlines():
+        path = line[3:].strip() if len(line) > 3 else line.strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        if path:
+            paths.append(path)
+    return paths
+
+
 def set_state(**values: str | bool) -> None:
     with STATE_LOCK:
         STATE.update(values)
@@ -113,8 +124,9 @@ def deploy() -> None:
         set_state(phase="检查仓库", error="")
         if normalized_repository(git("remote", "get-url", "origin", timeout=15)) != normalized_repository(EXPECTED_ORIGIN):
             raise RuntimeError("repository origin does not match the configured update source")
-        if git("status", "--porcelain", "--untracked-files=all", timeout=15):
-            raise RuntimeError("application repository has uncommitted changes")
+        changes = uncommitted_paths(git("status", "--porcelain", "--untracked-files=all", timeout=15))
+        if changes:
+            raise RuntimeError(f"application repository has uncommitted changes: {', '.join(changes[:10])}")
         before = git("rev-parse", "HEAD", timeout=15)
         run("docker", "image", "inspect", current_image, timeout=30)
         run("docker", "tag", current_image, rollback_image_name(), timeout=30)

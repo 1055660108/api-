@@ -3,12 +3,23 @@ from __future__ import annotations
 import importlib
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from scripts import update_controller
 
 
 class UpdateControllerTests(unittest.TestCase):
+    def test_uncommitted_paths_include_modified_and_renamed_files(self) -> None:
+        self.assertEqual(
+            update_controller.uncommitted_paths(" M app/main.py\nR  old.py -> new.py\n?? local.txt"),
+            ["app/main.py", "new.py", "local.txt"],
+        )
+
+    def test_installer_does_not_modify_tracked_runtime_config(self) -> None:
+        install_script = (Path(__file__).resolve().parents[1] / "scripts" / "install.sh").read_text(encoding="utf-8")
+        self.assertNotIn("write_runtime_config", install_script)
+
     def test_custom_port_and_image_are_used(self) -> None:
         environment = {"DOLA_PORT": "9191", "DOLA_IMAGE_NAME": "registry.example/dola", "DOLA_IMAGE_TAG": "stable"}
         with patch.dict(os.environ, environment, clear=False):

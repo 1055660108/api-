@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=20260721-message-center-50" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=20260721-commerce-messages-52" />
   </head>
   <body>
     <script>
@@ -121,7 +121,9 @@
           </button>
           <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>积分购买</span></button>
           <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>会员</span></button>
+          <button class="nav-item" type="button" data-view="transactions" id="transactionsNavItem"><span>消费明细</span></button>
           <button class="nav-item" type="button" data-view="users" id="usersNavItem"><span>用户管理</span></button>
+          <button class="nav-item" type="button" data-view="point-cards" id="pointCardsNavItem"><span>卡密积分</span></button>
           <button class="nav-item" type="button" data-view="messages" id="messagesNavItem"><span id="messagesNavLabel">消息处理</span><b class="nav-count hidden" id="messageUnreadCount">0</b></button>
           <button class="nav-item" type="button" data-view="settings" id="settingsNavItem"><span>设置</span></button>
         </nav>
@@ -182,9 +184,13 @@
 
         </section>
 
-        <section class="view" id="pointsView" data-title="积分购买"><section class="panel purchase-panel"><span class="eyebrow">积分</span><h2>购买积分</h2><div class="purchase-balance"><strong id="pointsBalance">0</strong><span>可用积分</span></div><p>积分精确到 0.1，视频额度可用于全部模型。购买 30 积分及以上可获得额外视频额度。</p><div class="purchase-options" id="purchaseOptions"></div><div class="points-bonus-notice"><strong>赠送规则</strong><span>赠送的是视频额度，不计入积分余额；任务优先使用视频额度。</span></div></section></section>
+        <section class="view" id="pointsView" data-title="积分购买"><div class="commerce-grid"><section class="panel purchase-panel"><div class="section-heading"><div><span class="eyebrow">积分</span><h2>购买积分</h2></div><div class="purchase-balance"><strong id="pointsBalance">0</strong><span>可用积分</span></div></div><div class="purchase-options" id="purchaseOptions"></div></section><form class="panel redeem-panel" id="redeemForm"><div><span class="eyebrow">卡密</span><h2>兑换积分</h2></div><label class="field"><span>卡密号码</span><input id="redeemCode" autocomplete="off" maxlength="32" placeholder="HS-XXXX-XXXX-XXXX-XXXX" required /></label><button class="primary-button" id="redeemButton" type="submit">立即兑换</button></form></div></section>
 
-        <section class="view" id="membershipView" data-title="会员"></section>
+        <section class="view" id="membershipView" data-title="会员"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>选择套餐后前往支付页面。</p></div></div><div class="membership-grid" id="membershipList"></div></section></section>
+
+        <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header"><div><h2>积分明细</h2><p>记录任务消费、退款、卡密兑换和管理员调整。</p></div><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap"><table class="users-table ledger-table"><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
+
+        <section class="view" id="point-cardsView" data-title="卡密积分"><div class="card-code-layout"><form class="panel card-generator" id="pointCardForm"><div class="panel-header"><div><h2>生成卡密</h2><p>生成后请及时保存完整卡密。</p></div></div><div class="form-grid compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><button class="primary-button" id="generatePointCards" type="submit">生成卡密</button><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div></form><section class="panel card-history"><div class="panel-header"><div><h2>卡密记录</h2><p>完整卡密仅在生成时显示。</p></div><button class="secondary-button" id="refreshPointCards" type="button">刷新</button></div><div class="table-wrap"><table class="users-table"><thead><tr><th>卡密</th><th>积分</th><th>状态</th><th>兑换用户</th><th>时间</th></tr></thead><tbody id="pointCardTableBody"></tbody></table></div></section></div></section>
 
         <section class="view" id="usersView" data-title="用户管理"><section class="panel users-panel"><div class="panel-header"><div><h2>注册用户</h2><p>数据由后端分页返回；每 15 秒刷新账号、积分和在线状态</p></div><div class="task-stat-pill success"><span>当前在线</span><strong id="onlineUserCount">0</strong></div></div><div class="table-wrap users-table-wrap"><table class="users-table"><colgroup><col class="user-col"><col class="token-col"><col class="time-col"><col class="time-col"><col class="status-col"><col class="balance-col"><col class="actions-col"></colgroup><thead><tr><th>用户</th><th>实时账号</th><th>注册时间</th><th>最后活跃</th><th>状态</th><th>视频额度/积分</th><th>操作</th></tr></thead><tbody id="userTableBody"></tbody></table></div><div class="list-footer"><div class="pager"><button class="page-button" id="prevUserPage" type="button">上一页</button><span id="userPageState">第 1 / 1 页</span><button class="page-button" id="nextUserPage" type="button">下一页</button><select id="userPageSize" aria-label="用户每页数量"><option value="10">每页 10 条</option><option value="20" selected>每页 20 条</option><option value="50">每页 50 条</option></select></div><span id="userTotalState">共 0 位用户</span></div></section></section>
 
@@ -204,8 +210,8 @@
                 <div class="settings-card-value"><div><span>管理员账号</span><strong id="adminAccountDisplay">-</strong></div><button class="primary-button" id="openPasswordModal" type="button">修改密码</button></div>
               </section>
               <section class="panel config-panel settings-featured" id="repositoryUpdatePanel">
-                <div class="settings-card-header"><div><span class="settings-icon">↻</span><h2>系统更新</h2><p>基于同一版本镜像同步更新管理前端、客户端、API 与 Worker，失败时自动回滚。</p></div><span class="settings-state" id="repositoryUpdateState">等待读取</span></div>
-                <div class="settings-card-value"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
+                <div class="settings-card-header"><div><span class="settings-icon">↻</span><h2>系统更新</h2><p>检查仓库版本并更新服务。</p></div><span class="settings-state" id="repositoryUpdateState">等待读取</span></div>
+                <div class="settings-card-value version-values"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><div><span>最新版本</span><strong id="repositoryLatestVersion">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
               </section>
               <section class="panel config-panel" id="emailConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>注册邮箱验证</h2><p>设置允许注册的邮箱后缀，并使用 QQ 邮箱 SMTP 发送验证码。</p></div><span class="settings-state" id="emailConfigState">等待读取</span></div>
@@ -218,6 +224,10 @@
               <section class="panel config-panel" id="packageConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◫</span><h2>积分套餐</h2><p>新增、调整、上架或停用客户端展示的积分套餐。</p></div><span class="settings-state" id="packageConfigState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>套餐目录</span><strong id="packageConfigDisplay">等待读取</strong></div><button class="primary-button" id="openPackageModal" type="button">管理套餐</button></div>
+              </section>
+              <section class="panel config-panel" id="membershipConfigPanel">
+                <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>会员管理</h2><p>配置客户端显示的会员套餐。</p></div><span class="settings-state" id="membershipConfigState">等待读取</span></div>
+                <div class="settings-card-value"><div><span>套餐目录</span><strong id="membershipConfigDisplay">等待读取</strong></div><button class="primary-button" id="openMembershipModal" type="button">管理会员</button></div>
               </section>
             </div>
           </div>
@@ -243,6 +253,7 @@
             <div class="segmented-control" role="tablist" aria-label="消息类型">
               <button class="active" type="button" data-message-tab="feedback">反馈</button>
               <button type="button" data-message-tab="notifications">通知</button>
+              <button type="button" data-message-tab="announcements">公告</button>
             </div>
             <button class="secondary-button" id="refreshMessages" type="button">刷新</button>
           </div>
@@ -256,6 +267,7 @@
               <div class="message-panel-header"><div><h2>通知</h2><p>管理员发送给你的服务通知和处理消息。</p></div></div>
               <div class="message-list" id="clientNotificationList"></div>
             </section>
+            <section class="message-panel hidden" data-message-panel="announcements"><div class="message-panel-header"><div><h2>平台公告</h2><p>查看管理员发布的平台公告。</p></div></div><div class="message-list" id="clientAnnouncementList"></div></section>
           </div>
 
           <div class="admin-message-center">
@@ -277,6 +289,7 @@
                 <div class="message-list" id="adminNotificationList"></div>
               </section>
             </section>
+            <section class="message-admin-grid hidden" data-message-panel="announcements"><form class="panel notification-compose" id="adminAnnouncementForm"><div class="panel-header"><div><h2>发布公告</h2><p>公告会在用户下次上线时弹出。</p></div></div><label class="field"><span>公告标题</span><input id="announcementTitle" maxlength="120" required /></label><label class="field"><span>公告内容</span><textarea id="announcementContent" maxlength="5000" required></textarea></label><div class="modal-actions"><button class="primary-button" id="publishAnnouncementButton" type="submit">发布公告</button></div></form><section class="panel notification-history"><div class="panel-header"><div><h2>公告记录</h2><p>可停用不再展示的公告。</p></div></div><div class="message-list" id="adminAnnouncementList"></div></section></section>
           </div>
         </section>
 
@@ -887,6 +900,17 @@
         <div class="modal-actions"><button class="secondary-button" id="cancelPackageModal" type="button">关闭</button></div>
       </section>
     </div>
+    <div class="modal-backdrop hidden" id="membershipModal" aria-hidden="true">
+      <section class="modal-panel package-modal" role="dialog" aria-modal="true" aria-labelledby="membershipModalTitle">
+        <div class="modal-header"><div><span class="modal-eyebrow">会员目录</span><h2 id="membershipModalTitle">管理会员套餐</h2><p>启用的套餐会展示在客户端。</p></div><button class="modal-close" id="closeMembershipModal" type="button" aria-label="关闭">×</button></div>
+        <form class="package-create-form membership-create-form" id="membershipForm"><label class="field"><span>套餐名称</span><input id="membershipName" maxlength="80" required /></label><label class="field"><span>价格</span><input id="membershipPrice" type="number" min="0" step="0.01" required /></label><label class="field"><span>有效天数</span><input id="membershipDuration" type="number" min="1" max="3650" value="30" required /></label><label class="field"><span>排序</span><input id="membershipSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createMembershipButton" type="submit">新增套餐</button><label class="field field-wide"><span>套餐说明</span><input id="membershipDescription" maxlength="500" /></label></form>
+        <div class="package-list" id="membershipAdminList"></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelMembershipModal" type="button">关闭</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="announcementModal" aria-hidden="true">
+      <section class="modal-panel announcement-modal-panel" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle"><div class="modal-header"><div><span class="modal-eyebrow">平台公告</span><h2 id="announcementModalTitle"></h2></div><button class="modal-close" id="closeAnnouncementModal" type="button" aria-label="关闭">×</button></div><div class="announcement-modal-content" id="announcementModalContent"></div><div class="modal-actions"><button class="primary-button" id="confirmAnnouncementModal" type="button">我知道了</button></div></section>
+    </div>
     <div class="modal-backdrop hidden" id="createTokenModal" aria-hidden="true">
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="createTokenModalTitle">
         <div class="modal-header">
@@ -955,6 +979,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=20260721-update-restart-51"></script>
+    <script src="/admin/assets/app.js?v=20260721-commerce-messages-52"></script>
   </body>
 </html>

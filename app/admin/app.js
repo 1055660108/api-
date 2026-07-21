@@ -39,6 +39,22 @@ const els = {
   refreshClientToken: document.getElementById("refreshClientToken"),
   pointsBalance: document.getElementById("pointsBalance"),
   purchaseOptions: document.getElementById("purchaseOptions"),
+  redeemForm: document.getElementById("redeemForm"),
+  redeemCode: document.getElementById("redeemCode"),
+  redeemButton: document.getElementById("redeemButton"),
+  membershipList: document.getElementById("membershipList"),
+  refreshTransactions: document.getElementById("refreshTransactions"),
+  transactionTableBody: document.getElementById("transactionTableBody"),
+  pointCardForm: document.getElementById("pointCardForm"),
+  pointCardPoints: document.getElementById("pointCardPoints"),
+  pointCardCount: document.getElementById("pointCardCount"),
+  pointCardNote: document.getElementById("pointCardNote"),
+  generatePointCards: document.getElementById("generatePointCards"),
+  generatedPointCards: document.getElementById("generatedPointCards"),
+  generatedPointCardCodes: document.getElementById("generatedPointCardCodes"),
+  copyGeneratedPointCards: document.getElementById("copyGeneratedPointCards"),
+  refreshPointCards: document.getElementById("refreshPointCards"),
+  pointCardTableBody: document.getElementById("pointCardTableBody"),
   submitFreeRemaining: document.getElementById("submitFreeRemaining"),
   submitPointsBalance: document.getElementById("submitPointsBalance"),
   submitCostText: document.getElementById("submitCostText"),
@@ -59,6 +75,17 @@ const els = {
   notificationRecipientState: document.getElementById("notificationRecipientState"),
   sendNotificationButton: document.getElementById("sendNotificationButton"),
   adminNotificationList: document.getElementById("adminNotificationList"),
+  clientAnnouncementList: document.getElementById("clientAnnouncementList"),
+  adminAnnouncementForm: document.getElementById("adminAnnouncementForm"),
+  announcementTitle: document.getElementById("announcementTitle"),
+  announcementContent: document.getElementById("announcementContent"),
+  publishAnnouncementButton: document.getElementById("publishAnnouncementButton"),
+  adminAnnouncementList: document.getElementById("adminAnnouncementList"),
+  announcementModal: document.getElementById("announcementModal"),
+  announcementModalTitle: document.getElementById("announcementModalTitle"),
+  announcementModalContent: document.getElementById("announcementModalContent"),
+  closeAnnouncementModal: document.getElementById("closeAnnouncementModal"),
+  confirmAnnouncementModal: document.getElementById("confirmAnnouncementModal"),
   openFeedbackModal: document.getElementById("openFeedbackModal"),
   feedbackModal: document.getElementById("feedbackModal"),
   closeFeedbackModal: document.getElementById("closeFeedbackModal"),
@@ -194,6 +221,7 @@ const els = {
   repositoryUpdatePanel: document.getElementById("repositoryUpdatePanel"),
   repositoryUpdateState: document.getElementById("repositoryUpdateState"),
   repositoryRevision: document.getElementById("repositoryRevision"),
+  repositoryLatestVersion: document.getElementById("repositoryLatestVersion"),
   updateRepository: document.getElementById("updateRepository"),
   emailConfigPanel: document.getElementById("emailConfigPanel"),
   emailConfigState: document.getElementById("emailConfigState"),
@@ -234,6 +262,20 @@ const els = {
   packageSortOrder: document.getElementById("packageSortOrder"),
   createPackageButton: document.getElementById("createPackageButton"),
   packageList: document.getElementById("packageList"),
+  membershipConfigState: document.getElementById("membershipConfigState"),
+  membershipConfigDisplay: document.getElementById("membershipConfigDisplay"),
+  openMembershipModal: document.getElementById("openMembershipModal"),
+  membershipModal: document.getElementById("membershipModal"),
+  closeMembershipModal: document.getElementById("closeMembershipModal"),
+  cancelMembershipModal: document.getElementById("cancelMembershipModal"),
+  membershipForm: document.getElementById("membershipForm"),
+  membershipName: document.getElementById("membershipName"),
+  membershipPrice: document.getElementById("membershipPrice"),
+  membershipDuration: document.getElementById("membershipDuration"),
+  membershipSortOrder: document.getElementById("membershipSortOrder"),
+  membershipDescription: document.getElementById("membershipDescription"),
+  createMembershipButton: document.getElementById("createMembershipButton"),
+  membershipAdminList: document.getElementById("membershipAdminList"),
   quotaNavItem: document.getElementById("quotaNavItem"),
   quotaView: document.getElementById("quotaView"),
   accountsNavItem: document.getElementById("accountsNavItem"),
@@ -359,6 +401,8 @@ const state = {
   queryingTaskIds: new Set(),
   deletingTaskIds: new Set(),
   pointPackages: [],
+  memberships: [],
+  activeAnnouncement: null,
   taskRefreshRequestId: 0,
   accountRefreshRequestId: 0,
   taskSearchTimer: 0,
@@ -506,6 +550,7 @@ async function loadRepositoryStatus() {
   try {
     const data = await apiFetch("/admin/repository-update");
     els.repositoryRevision.textContent = data.version ? `v${data.version}` : "版本未知";
+    if (els.repositoryLatestVersion) els.repositoryLatestVersion.textContent = data.latest_version ? `v${data.latest_version}` : "版本未知";
     els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? `更新失败：${data.error}` : data.update_available ? "有可用更新" : "已是最新";
     if (els.updateRepository) setBusy(els.updateRepository, Boolean(data.updating), data.phase || "正在更新");
     return data;
@@ -772,6 +817,7 @@ function showApp() {
   els.appShell.classList.remove("hidden");
   switchView("dashboard");
   startAutoRefresh();
+  if (portal === "client") window.setTimeout(() => showNextUnseenAnnouncement().catch(() => {}), 250);
 }
 
 function startAutoRefresh() {
@@ -1004,7 +1050,10 @@ function switchView(name) {
   if (name === "users") loadUsers();
   if (name === "messages") loadMessageCenter();
   if (name === "points") loadPointPackages();
-  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadPlatforms(), loadAdminPointPackages()]);
+  if (name === "membership") loadMemberships();
+  if (name === "transactions") loadTransactions();
+  if (name === "point-cards") loadPointCards();
+  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships()]);
   if (name === "proxy-nodes" && portal === "admin") loadProxyNodes();
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
@@ -1012,9 +1061,12 @@ function switchView(name) {
 const FEEDBACK_STATUS_LABELS = { pending: "待处理", reviewing: "处理中", resolved: "已解决", closed: "已关闭" };
 
 function setMessageTab(tab) {
-  state.messageTab = tab === "notifications" ? "notifications" : "feedback";
+  state.messageTab = ["feedback", "notifications", "announcements"].includes(tab) ? tab : "feedback";
   document.querySelectorAll("[data-message-tab]").forEach((button) => button.classList.toggle("active", button.dataset.messageTab === state.messageTab));
   document.querySelectorAll("[data-message-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.messagePanel !== state.messageTab));
+  if (portal === "client" && state.messageTab === "notifications") {
+    apiFetch("/notifications/read-all", { method: "POST" }).then(loadClientNotifications).catch(() => {});
+  }
 }
 
 async function loadClientFeedback() {
@@ -1035,7 +1087,7 @@ async function loadClientNotifications() {
   const rows = Array.isArray(data.notifications) ? data.notifications : [];
   const unread = Number(data.unread || 0);
   if (els.messageUnreadCount) {
-    els.messageUnreadCount.textContent = String(unread);
+    els.messageUnreadCount.textContent = unread > 0 ? "1" : "0";
     els.messageUnreadCount.classList.toggle("hidden", unread <= 0);
   }
   els.clientNotificationList.innerHTML = rows.length ? rows.map((item) => `
@@ -1086,10 +1138,63 @@ async function loadAdminNotifications() {
   els.adminNotificationList.innerHTML = rows.length ? rows.map((item) => `<article class="message-card compact"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><span class="message-status ${item.read_at ? "resolved" : "pending"}">${item.read_at ? "已读" : "未读"}</span></div><p>${escapeHtml(item.content)}</p><small>接收用户：${escapeHtml(item.username || item.user_id)}</small></article>`).join("") : '<div class="empty-state">暂无发送记录</div>';
 }
 
+async function loadClientAnnouncements() {
+  if (portal !== "client" || !els.clientAnnouncementList) return [];
+  const data = await apiFetch("/announcements");
+  const rows = Array.isArray(data.announcements) ? data.announcements : [];
+  els.clientAnnouncementList.innerHTML = rows.length ? rows.map((item) => `<article class="message-card ${item.seen ? "read" : "unread"}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><span class="message-status ${item.seen ? "resolved" : "pending"}">${item.seen ? "已查看" : "未查看"}</span></div><p>${escapeHtml(item.content)}</p></article>`).join("") : '<div class="empty-state">暂无公告</div>';
+  return rows;
+}
+
+async function loadAdminAnnouncements() {
+  if (portal !== "admin" || !els.adminAnnouncementList) return;
+  const data = await apiFetch("/admin/announcements");
+  const rows = Array.isArray(data.announcements) ? data.announcements : [];
+  els.adminAnnouncementList.innerHTML = rows.length ? rows.map((item) => `<article class="message-card compact" data-announcement-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><button class="${item.enabled ? "danger-button" : "secondary-button"} compact-button" type="button" data-toggle-announcement data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button></div><p>${escapeHtml(item.content)}</p></article>`).join("") : '<div class="empty-state">暂无公告</div>';
+}
+
+async function showNextUnseenAnnouncement() {
+  if (portal !== "client" || !state.apiToken || state.activeAnnouncement) return;
+  const rows = await loadClientAnnouncements();
+  const item = rows.find((row) => !row.seen);
+  if (!item) return;
+  state.activeAnnouncement = item;
+  els.announcementModalTitle.textContent = item.title || "平台公告";
+  els.announcementModalContent.textContent = item.content || "";
+  els.announcementModal.classList.remove("hidden");
+  els.announcementModal.setAttribute("aria-hidden", "false");
+}
+
+async function closeActiveAnnouncement() {
+  const item = state.activeAnnouncement;
+  els.announcementModal?.classList.add("hidden");
+  els.announcementModal?.setAttribute("aria-hidden", "true");
+  state.activeAnnouncement = null;
+  if (item?.id) {
+    await apiFetch(`/announcements/${encodeURIComponent(item.id)}/seen`, { method: "PATCH" });
+    await loadClientAnnouncements();
+  }
+}
+
+async function submitAdminAnnouncement(event) {
+  event.preventDefault();
+  setBusy(els.publishAnnouncementButton, true, "发布中");
+  try {
+    await apiFetch("/admin/announcements", { method: "POST", body: { title: els.announcementTitle.value.trim(), content: els.announcementContent.value.trim() } });
+    els.adminAnnouncementForm.reset();
+    await loadAdminAnnouncements();
+    toast("公告已发布");
+  } catch (error) {
+    toast(`公告发布失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.publishAnnouncementButton, false);
+  }
+}
+
 async function loadMessageCenter(options = {}) {
   try {
-    if (portal === "client") await Promise.all([loadClientFeedback(), loadClientNotifications()]);
-    else await Promise.all([loadFeedback(), loadNotificationRecipients(), loadAdminNotifications()]);
+    if (portal === "client") await Promise.all([loadClientFeedback(), loadClientNotifications(), loadClientAnnouncements()]);
+    else await Promise.all([loadFeedback(), loadNotificationRecipients(), loadAdminNotifications(), loadAdminAnnouncements()]);
   } catch (error) {
     if (!options.quiet) toast(`消息读取失败：${error.message}`, "error");
   }
@@ -1134,9 +1239,61 @@ async function loadPointPackages() {
   if (!els.purchaseOptions || portal !== "client") return;
   try {
     const data = await apiFetch("/points/packages");
-    els.purchaseOptions.innerHTML = (data.packages || []).map((item) => `<button type="button" disabled><strong>${escapeHtml(item.name || `${item.points} 积分`)}</strong>${item.bonus_free_uses ? `<span class="purchase-bonus"><small>赠送</small><b>${escapeHtml(item.bonus_free_uses)}</b><small>次视频额度</small></span>` : ""}</button>`).join("");
+    const paymentUrl = data.payment_url || "https://pay.ldxp.cn/shop/huisu/fhm9gj";
+    els.purchaseOptions.innerHTML = (data.packages || []).map((item) => `<button type="button" data-purchase-url="${escapeHtml(paymentUrl)}"><strong>${escapeHtml(item.name || `${item.points} 积分`)}</strong>${item.bonus_free_uses ? `<span class="purchase-bonus"><small>赠送</small><b>${escapeHtml(item.bonus_free_uses)}</b><small>次视频额度</small></span>` : ""}<span>前往购买</span></button>`).join("");
   } catch (error) {
     toast(`套餐读取失败：${error.message}`, "error");
+  }
+}
+
+async function redeemPoints(event) {
+  event.preventDefault();
+  setBusy(els.redeemButton, true, "兑换中");
+  try {
+    const data = await apiFetch("/points/redeem", { method: "POST", body: { code: els.redeemCode.value.trim() } });
+    els.redeemForm.reset();
+    await refreshHealth();
+    toast(`已兑换 ${data.points} 积分`);
+  } catch (error) {
+    toast(`兑换失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.redeemButton, false);
+  }
+}
+
+async function loadMemberships() {
+  if (portal !== "client" || !els.membershipList) return;
+  const data = await apiFetch("/memberships");
+  els.membershipList.innerHTML = (data.packages || []).length ? data.packages.map((item) => `<article class="membership-item"><div><span>${escapeHtml(item.duration_days)} 天</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || "")}</p></div><div class="membership-price"><strong>¥${Number(item.price || 0).toFixed(2)}</strong><button class="primary-button" type="button" data-membership-url="${escapeHtml(item.payment_url || data.payment_url)}">购买</button></div></article>`).join("") : '<div class="empty-state">暂无可用会员套餐</div>';
+}
+
+async function loadTransactions() {
+  if (portal !== "client" || !els.transactionTableBody) return;
+  const data = await apiFetch("/points/transactions?page=1&page_size=100");
+  const labels = { consume: "任务消费", refund: "任务退款", redeem: "卡密兑换", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
+  els.transactionTableBody.innerHTML = (data.transactions || []).length ? data.transactions.map((item) => `<tr><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(labels[item.kind] || item.title || "积分变动")}</td><td><strong>${escapeHtml(item.title || "积分变动")}</strong>${item.detail ? `<br><small>${escapeHtml(item.detail)}</small>` : ""}</td><td><strong class="ledger-amount ${Number(item.amount) >= 0 ? "credit" : "debit"}">${Number(item.amount) >= 0 ? "+" : ""}${escapeHtml(item.amount)}</strong></td><td>${item.balance == null ? "-" : escapeHtml(item.balance)}</td></tr>`).join("") : '<tr><td colspan="5"><div class="empty-state">暂无积分明细</div></td></tr>';
+}
+
+async function loadPointCards() {
+  if (portal !== "admin" || !els.pointCardTableBody) return;
+  const data = await apiFetch("/admin/point-cards?limit=500");
+  els.pointCardTableBody.innerHTML = (data.cards || []).length ? data.cards.map((item) => `<tr><td><code>${escapeHtml(item.code_hint)}</code></td><td>${escapeHtml(item.points)}</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_by || "-")}</td><td>${escapeHtml(formatTime(item.redeemed_at || item.created_at))}</td></tr>`).join("") : '<tr><td colspan="5"><div class="empty-state">暂无卡密记录</div></td></tr>';
+}
+
+async function generatePointCards(event) {
+  event.preventDefault();
+  setBusy(els.generatePointCards, true, "生成中");
+  try {
+    const data = await apiFetch("/admin/point-cards", { method: "POST", body: { points: Number(els.pointCardPoints.value), count: Number(els.pointCardCount.value), note: els.pointCardNote.value.trim() } });
+    const codes = (data.cards || []).map((item) => item.code).join("\n");
+    els.generatedPointCardCodes.textContent = codes;
+    els.generatedPointCards.classList.toggle("hidden", !codes);
+    await loadPointCards();
+    toast(`已生成 ${data.count || 0} 张卡密`);
+  } catch (error) {
+    toast(`生成失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.generatePointCards, false);
   }
 }
 
@@ -1263,6 +1420,38 @@ async function createPointPackage(event) {
     toast(`新增失败：${error.message}`, "error");
   } finally {
     setBusy(els.createPackageButton, false);
+  }
+}
+
+function renderAdminMemberships() {
+  if (!els.membershipAdminList || portal !== "admin") return;
+  const enabledCount = state.memberships.filter((item) => item.enabled).length;
+  if (els.membershipConfigDisplay) els.membershipConfigDisplay.textContent = `${enabledCount} 个启用 / ${state.memberships.length} 个套餐`;
+  if (els.membershipConfigState) els.membershipConfigState.textContent = "已读取";
+  els.membershipAdminList.innerHTML = state.memberships.length ? state.memberships.map((item) => `<article class="package-item" data-membership-id="${escapeHtml(item.id)}"><div class="package-item-heading"><div><strong>${escapeHtml(item.name)}</strong><span class="chip ${item.enabled ? "success" : "failed"}">${item.enabled ? "已启用" : "已停用"}</span></div><span>¥${Number(item.price).toFixed(2)}</span></div><div class="package-item-fields membership-item-fields"><label class="field"><span>名称</span><input data-membership-name value="${escapeHtml(item.name)}" maxlength="80"></label><label class="field"><span>价格</span><input data-membership-price type="number" min="0" step="0.01" value="${escapeHtml(item.price)}"></label><label class="field"><span>天数</span><input data-membership-duration type="number" min="1" max="3650" value="${escapeHtml(item.duration_days)}"></label><label class="field"><span>排序</span><input data-membership-sort type="number" value="${escapeHtml(item.sort_order)}"></label><label class="field field-wide"><span>说明</span><input data-membership-description value="${escapeHtml(item.description || "")}" maxlength="500"></label></div><div class="package-item-actions"><button class="secondary-button" type="button" data-action="save-membership">保存</button><button class="${item.enabled ? "danger-button" : "primary-button"}" type="button" data-action="toggle-membership">${item.enabled ? "停用" : "启用"}</button></div></article>`).join("") : '<div class="empty-state">暂无会员套餐</div>';
+}
+
+async function loadAdminMemberships() {
+  if (portal !== "admin") return;
+  const data = await apiFetch("/admin/memberships");
+  state.memberships = Array.isArray(data.packages) ? data.packages : [];
+  renderAdminMemberships();
+}
+
+async function createMembership(event) {
+  event.preventDefault();
+  setBusy(els.createMembershipButton, true, "新增中");
+  try {
+    await apiFetch("/admin/memberships", { method: "POST", body: { name: els.membershipName.value.trim(), price: Number(els.membershipPrice.value), duration_days: Number(els.membershipDuration.value), sort_order: Number(els.membershipSortOrder.value), description: els.membershipDescription.value.trim() } });
+    els.membershipForm.reset();
+    els.membershipDuration.value = "30";
+    els.membershipSortOrder.value = "0";
+    await loadAdminMemberships();
+    toast("会员套餐已新增");
+  } catch (error) {
+    toast(`新增失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.createMembershipButton, false);
   }
 }
 
@@ -2633,6 +2822,23 @@ function bindEvents() {
   els.clientEmailForm?.addEventListener("submit", changeClientEmail);
   els.feedbackForm?.addEventListener("submit", submitFeedback);
   els.adminNotificationForm?.addEventListener("submit", submitAdminNotification);
+  els.adminAnnouncementForm?.addEventListener("submit", submitAdminAnnouncement);
+  els.redeemForm?.addEventListener("submit", redeemPoints);
+  els.refreshTransactions?.addEventListener("click", loadTransactions);
+  els.pointCardForm?.addEventListener("submit", generatePointCards);
+  els.refreshPointCards?.addEventListener("click", loadPointCards);
+  els.copyGeneratedPointCards?.addEventListener("click", () => copyText(els.generatedPointCardCodes?.textContent || "", "卡密"));
+  els.purchaseOptions?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-purchase-url]");
+    if (button) window.open(button.dataset.purchaseUrl, "_blank", "noopener,noreferrer");
+  });
+  els.membershipList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-membership-url]");
+    if (button) window.open(button.dataset.membershipUrl, "_blank", "noopener,noreferrer");
+  });
+  els.confirmAnnouncementModal?.addEventListener("click", () => closeActiveAnnouncement().catch((error) => toast(`公告状态更新失败：${error.message}`, "error")));
+  els.closeAnnouncementModal?.addEventListener("click", () => closeActiveAnnouncement().catch((error) => toast(`公告状态更新失败：${error.message}`, "error")));
+  els.membershipForm?.addEventListener("submit", createMembership);
   els.refreshMessages?.addEventListener("click", () => loadMessageCenter());
   els.feedbackTableBody?.addEventListener("change", async (event) => {
     const select = event.target.closest("[data-feedback-status]");
@@ -2667,6 +2873,18 @@ function bindEvents() {
       await loadClientNotifications();
     } catch (error) {
       toast(`通知状态更新失败：${error.message}`, "error");
+    }
+  });
+  els.adminAnnouncementList?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-toggle-announcement]");
+    const article = button?.closest("[data-announcement-id]");
+    if (!button || !article) return;
+    try {
+      await apiFetch(`/admin/announcements/${encodeURIComponent(article.dataset.announcementId)}`, { method: "PATCH", body: { enabled: button.dataset.enabled !== "true" } });
+      await loadAdminAnnouncements();
+      toast("公告状态已更新");
+    } catch (error) {
+      toast(`公告操作失败：${error.message}`, "error");
     }
   });
   document.querySelectorAll("[data-message-tab]").forEach((button) => button.addEventListener("click", () => setMessageTab(button.dataset.messageTab)));
@@ -2897,7 +3115,15 @@ function bindEvents() {
       toast(`套餐读取失败：${error.message}`, "error");
     }
   });
-  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal]].forEach(([modal, closeButton, cancelButton]) => {
+  els.openMembershipModal?.addEventListener("click", async () => {
+    try {
+      await loadAdminMemberships();
+      openSettingsModal(els.membershipModal, els.membershipName);
+    } catch (error) {
+      toast(`会员套餐读取失败：${error.message}`, "error");
+    }
+  });
+  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal]].forEach(([modal, closeButton, cancelButton]) => {
     if (closeButton) closeButton.onclick = (event) => {
       event.preventDefault();
       closeSettingsModal(modal);
@@ -2931,6 +3157,29 @@ function bindEvents() {
       await loadAdminPointPackages();
     } catch (error) {
       toast(`套餐操作失败：${error.message}`, "error");
+    } finally {
+      setBusy(button, false);
+    }
+  });
+  els.membershipAdminList?.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    const article = button?.closest("[data-membership-id]");
+    if (!button || !article) return;
+    const item = state.memberships.find((entry) => entry.id === article.dataset.membershipId);
+    if (!item) return;
+    setBusy(button, true, "处理中");
+    try {
+      if (button.dataset.action === "save-membership") {
+        await apiFetch(`/admin/memberships/${encodeURIComponent(item.id)}`, { method: "PATCH", body: { name: article.querySelector("[data-membership-name]").value.trim(), price: Number(article.querySelector("[data-membership-price]").value), duration_days: Number(article.querySelector("[data-membership-duration]").value), sort_order: Number(article.querySelector("[data-membership-sort]").value), description: article.querySelector("[data-membership-description]").value.trim() } });
+      } else if (item.enabled) {
+        await apiFetch(`/admin/memberships/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      } else {
+        await apiFetch(`/admin/memberships/${encodeURIComponent(item.id)}`, { method: "PATCH", body: { enabled: true } });
+      }
+      await loadAdminMemberships();
+      toast("会员套餐已更新");
+    } catch (error) {
+      toast(`会员套餐操作失败：${error.message}`, "error");
     } finally {
       setBusy(button, false);
     }

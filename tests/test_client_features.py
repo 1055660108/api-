@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import admin_auth, config, feedback, main, notifications, package_catalog, store, temp_access, users
+from app import admin_auth, config, feedback, main, membership_catalog, notifications, package_catalog, point_cards, point_transactions, store, temp_access, users
 
 
 class ClientFeatureTests(unittest.TestCase):
@@ -26,6 +27,9 @@ class ClientFeatureTests(unittest.TestCase):
             patch.object(feedback, "FEEDBACK_PATH", self.root / "feedback.json"),
             patch.object(notifications, "NOTIFICATIONS_PATH", self.root / "notifications.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
+            patch.object(point_cards, "POINT_CARDS_PATH", self.root / "point_cards.json"),
+            patch.object(point_transactions, "TRANSACTIONS_PATH", self.root / "point_transactions.json"),
+            patch.object(membership_catalog, "MEMBERSHIP_PATH", self.root / "membership_packages.json"),
             patch.dict("os.environ", {"DOLA_ADMIN_USERNAME": "chosen-admin", "DOLA_ADMIN_PASSWORD": "StrongPassword123"}),
         ]
         for patcher in self.patchers:
@@ -159,6 +163,80 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(marked.status_code, 200)
         self.assertEqual(self.client.get("/notifications", headers=first_headers).json()["unread"], 0)
         self.assertEqual(self.client.get("/notifications", headers=second_headers).json()["unread"], 1)
+
+        read_all = self.client.post("/notifications/read-all", headers=second_headers)
+        self.assertEqual(read_all.status_code, 200)
+        self.assertEqual(read_all.json()["updated"], 1)
+        self.assertEqual(self.client.get("/notifications", headers=second_headers).json()["unread"], 0)
+
+    def test_point_cards_redeem_once_and_create_transaction(self) -> None:
+        first = self.register("card_user_one")
+        second = self.register("card_user_two")
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        generated = self.client.post("/admin/point-cards", json={"points": 12.5, "count": 1, "note": "测试批次"})
+        self.assertEqual(generated.status_code, 201)
+        code = generated.json()["cards"][0]["code"]
+        first_headers = {"X-API-Token": first["token"]}
+        redeemed = self.client.post("/points/redeem", headers=first_headers, json={"code": code})
+        self.assertEqual(redeemed.status_code, 200)
+        self.assertEqual(redeemed.json()["points"], 12.5)
+        self.assertEqual(self.client.post("/points/redeem", headers={"X-API-Token": second["token"]}, json={"code": code}).status_code, 400)
+        transactions = self.client.get("/points/transactions", headers=first_headers).json()["transactions"]
+        self.assertEqual(len(transactions), 1)
+        self.assertEqual(transactions[0]["kind"], "redeem")
+        self.assertEqual(transactions[0]["amount"], 12.5)
+
+    def test_announcements_are_seen_per_user(self) -> None:
+        first = self.register("announcement_one")
+        second = self.register("announcement_two")
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        created = self.client.post("/admin/announcements", json={"title": "维护通知", "content": "今晚进行维护。"})
+        self.assertEqual(created.status_code, 201)
+        announcement_id = created.json()["announcement"]["id"]
+        first_headers = {"X-API-Token": first["token"]}
+        second_headers = {"X-API-Token": second["token"]}
+        self.assertEqual(self.client.get("/announcements", headers=first_headers).json()["unseen"], 1)
+        self.assertEqual(self.client.patch(f"/announcements/{announcement_id}/seen", headers=first_headers).status_code, 200)
+        self.assertEqual(self.client.get("/announcements", headers=first_headers).json()["unseen"], 0)
+        self.assertEqual(self.client.get("/announcements", headers=second_headers).json()["unseen"], 1)
+
+    def test_membership_catalog_admin_crud_and_public_filtering(self) -> None:
+        registered = self.register("member_user")
+        headers = {"X-API-Token": registered["token"]}
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        created = self.client.post("/admin/memberships", json={"name": "月度会员", "price": 29.9, "duration_days": 30, "description": "月度套餐"})
+        self.assertEqual(created.status_code, 201)
+        package_id = created.json()["package"]["id"]
+        public = self.client.get("/memberships", headers=headers).json()
+        self.assertEqual(public["packages"][0]["name"], "月度会员")
+        self.assertEqual(public["payment_url"], "https://pay.ldxp.cn/shop/huisu/fhm9gj")
+        self.assertEqual(self.client.patch(f"/admin/memberships/{package_id}", json={"price": 39.9}).json()["package"]["price"], 39.9)
+        self.assertEqual(self.client.delete(f"/admin/memberships/{package_id}").status_code, 200)
+        self.assertEqual(self.client.get("/memberships", headers=headers).json()["packages"], [])
+
+    def test_task_consumption_and_admin_adjustments_are_recorded(self) -> None:
+        registered = self.register("ledger_user")
+        headers = {"X-API-Token": registered["token"]}
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "ledger_user")
+        self.assertEqual(self.client.post(f"/users/{user_id}/points", json={"amount": 5}).status_code, 200)
+        with patch.object(main, "active_task_count_for_owner", return_value=0), patch.object(main, "create_sem", asyncio.Semaphore(1)):
+            for index in range(4):
+                response = self.client.post(
+                    "/tasks",
+                    headers=headers,
+                    data={"prompt": f"测试任务 {index}", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video"},
+                )
+                self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.post(f"/users/{user_id}/points/deduct", json={"amount": 1}).status_code, 200)
+        rows = self.client.get("/points/transactions", headers=headers).json()["transactions"]
+        kinds = [item["kind"] for item in rows]
+        self.assertIn("admin_credit", kinds)
+        self.assertIn("consume", kinds)
+        self.assertIn("admin_deduct", kinds)
+        consumed = next(item for item in rows if item["kind"] == "consume")
+        self.assertEqual(consumed["amount"], -1)
+        self.assertEqual(consumed["title"], "视频任务消费")
 
 
 if __name__ == "__main__":

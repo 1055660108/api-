@@ -181,6 +181,13 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('apiFetch("/admin/notification-recipients")', self.javascript)
         self.assertIn("saveFeedbackRecord", self.javascript)
 
+    def test_points_messages_memberships_and_cards_are_wired(self) -> None:
+        for element_id in ("pointCardsNavItem", "pointCardForm", "redeemForm", "transactionsView", "membershipList", "membershipModal", "adminAnnouncementForm", "announcementModal", "repositoryLatestVersion"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/admin/announcements", "/notifications/read-all"):
+            self.assertIn(endpoint, self.javascript)
+        self.assertIn("https://pay.ldxp.cn/shop/huisu/fhm9gj", self.javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

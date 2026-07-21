@@ -86,12 +86,14 @@ def status(refresh: bool = True) -> dict[str, str | bool]:
         latest_revision = git("rev-parse", "--short", f"origin/{BRANCH}", timeout=15)
         commit_message = git("log", "-1", "--format=%s", "HEAD", timeout=15)
         latest_commit_message = git("log", "-1", "--format=%s", f"origin/{BRANCH}", timeout=15)
+        latest_version = git("show", f"origin/{BRANCH}:VERSION", timeout=15).strip()
     version = VERSION_PATH.read_text(encoding="utf-8").strip()
     current.update({
         "repository": EXPECTED_ORIGIN,
         "branch": BRANCH,
         "revision": revision,
         "version": version,
+        "latest_version": latest_version,
         "commit_message": commit_message,
         "latest_revision": latest_revision,
         "latest_commit_message": latest_commit_message,

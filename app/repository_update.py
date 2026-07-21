@@ -51,6 +51,10 @@ def _revision_details(root: Path, revision: str) -> tuple[str, str]:
     return short_revision, commit_message
 
 
+def _revision_version(root: Path, revision: str) -> str:
+    return _run_git(root, "show", f"{revision}:VERSION", timeout=15).strip()
+
+
 def _controller_request(method: str, path: str) -> dict[str, str | bool]:
     try:
         transport = httpx.HTTPTransport(uds=str(CONTROLLER_SOCKET))
@@ -78,11 +82,13 @@ def repository_status(root: Path) -> dict[str, str | bool]:
     _run_git(root, "fetch", "--prune", "origin", REPOSITORY_BRANCH)
     revision, commit_message = _revision_details(root, "HEAD")
     latest_revision, latest_commit_message = _revision_details(root, f"origin/{REPOSITORY_BRANCH}")
+    latest_version = _revision_version(root, f"origin/{REPOSITORY_BRANCH}")
     return {
         "repository": REPOSITORY_URL,
         "branch": REPOSITORY_BRANCH,
         "revision": revision,
         "version": __version__,
+        "latest_version": latest_version,
         "commit_message": commit_message,
         "latest_revision": latest_revision,
         "latest_commit_message": latest_commit_message,
@@ -113,6 +119,7 @@ def update_repository(root: Path) -> dict[str, str | bool]:
             "before_revision": before,
             "revision": after,
             "version": __version__,
+            "latest_version": str(status.get("latest_version") or __version__),
             "commit_message": commit_message,
             "update_available": False,
             "branch": REPOSITORY_BRANCH,

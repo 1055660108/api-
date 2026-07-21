@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import config, package_catalog, temp_access, users
+from app import config, package_catalog, point_transactions, temp_access, users
 from app.billing import model_cost_units, package_bonus_free_uses, points_to_units, units_to_points
 
 
@@ -24,6 +24,7 @@ class BillingTests(unittest.TestCase):
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.tokens_path),
             patch.object(users, "USERS_PATH", self.users_path),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.packages_path),
+            patch.object(point_transactions, "TRANSACTIONS_PATH", self.root / "point_transactions.json"),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -76,6 +77,19 @@ class BillingTests(unittest.TestCase):
         data = json.loads(self.tokens_path.read_text(encoding="utf-8"))["tokens"][token["id"]]
         self.assertEqual(data["free_remaining"], 1)
         self.assertEqual(data["credit_units"], 20)
+
+    def test_paid_refund_records_one_ledger_entry(self) -> None:
+        token = temp_access.create_temp_tokens(1, 1)[0]
+        temp_access.add_temp_credit_units(token["id"], 20)
+        access = temp_access.get_temp_context(token["token"])
+        paid_access = temp_access.reserve_temp_quota(access, "task-free", 8, user_id="user-1")
+        temp_access.reserve_temp_quota(paid_access, "task-paid", 8, user_id="user-1")
+        self.assertTrue(temp_access.refund_temp_quota_hash(token["id"], "task-paid"))
+        self.assertFalse(temp_access.refund_temp_quota_hash(token["id"], "task-paid"))
+        rows = point_transactions.list_transactions("user-1")["transactions"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "refund")
+        self.assertEqual(rows[0]["amount"], 0.8)
 
     def test_old_user_migration_preserves_free_and_paid_balance(self) -> None:
         self.tokens_path.write_text(json.dumps({"tokens": {"owner": {"limit": 8, "used": 2}}}), encoding="utf-8")

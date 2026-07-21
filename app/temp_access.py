@@ -425,7 +425,7 @@ def add_temp_credit_units(token_hash: str, units: int) -> dict[str, Any]:
         return _public_token(normalized_hash, entry)
 
 
-def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int = POINT_SCALE) -> AccessContext:
+def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int = POINT_SCALE, user_id: str = "") -> AccessContext:
     if not access.is_temp:
         return access
     with _LOCK:
@@ -450,7 +450,7 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
                 else:
                     entry["credit_units"] = int(entry.get("credit_units") or 0) - charged_units
                 if task_id:
-                    reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "created_at": _now()}
+                    reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "user_id": str(user_id or ""), "created_at": _now()}
                 _sync_legacy_fields(entry)
                 entry["updated_at"] = _now()
                 return get_temp_context_from_entry(access.token_hash, entry)
@@ -476,7 +476,7 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
         else:
             entry["credit_units"] = int(entry.get("credit_units") or 0) - charged_units
         if task_id:
-            reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "created_at": _now()}
+            reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "user_id": str(user_id or ""), "created_at": _now()}
         _sync_legacy_fields(entry)
         entry["updated_at"] = _now()
         _write_data(data)
@@ -499,6 +499,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
     token_hash = str(token_hash or "").strip().lower()
     if not token_hash:
         return False
+    refunded_transaction: dict[str, Any] = {}
     with _LOCK:
         if postgres.enabled():
             def mutate(data: dict[str, Any]) -> bool:
@@ -512,7 +513,13 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                     if reservation.get("free"):
                         entry["free_remaining"] = int(entry.get("free_remaining") or 0) + 1
                     else:
-                        entry["credit_units"] = int(entry.get("credit_units") or 0) + int(reservation.get("units") or 0)
+                        units = int(reservation.get("units") or 0)
+                        entry["credit_units"] = int(entry.get("credit_units") or 0) + units
+                        refunded_transaction.update({
+                            "user_id": str(reservation.get("user_id") or ""),
+                            "units": units,
+                            "balance_units": int(entry.get("credit_units") or 0),
+                        })
                     reservation["status"] = "refunded"
                     reservation["refunded_at"] = _now()
                     _sync_legacy_fields(entry)
@@ -527,7 +534,19 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                 entry["updated_at"] = _now()
                 return True
 
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            refunded = postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            if refunded and refunded_transaction.get("user_id") and int(refunded_transaction.get("units") or 0) > 0:
+                from .point_transactions import record_transaction
+
+                record_transaction(
+                    str(refunded_transaction["user_id"]),
+                    "refund",
+                    int(refunded_transaction["units"]),
+                    "任务退款",
+                    balance_units=int(refunded_transaction["balance_units"]),
+                    reference_id=refund_id,
+                )
+            return refunded
         data = _read_data()
         entry = data["tokens"].get(token_hash)
         if not isinstance(entry, dict):
@@ -539,7 +558,13 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
             if reservation.get("free"):
                 entry["free_remaining"] = int(entry.get("free_remaining") or 0) + 1
             else:
-                entry["credit_units"] = int(entry.get("credit_units") or 0) + int(reservation.get("units") or 0)
+                units = int(reservation.get("units") or 0)
+                entry["credit_units"] = int(entry.get("credit_units") or 0) + units
+                refunded_transaction.update({
+                    "user_id": str(reservation.get("user_id") or ""),
+                    "units": units,
+                    "balance_units": int(entry.get("credit_units") or 0),
+                })
             reservation["status"] = "refunded"
             reservation["refunded_at"] = _now()
             _sync_legacy_fields(entry)
@@ -554,4 +579,15 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                 entry["quota_refund_ids"] = refunded[-1000:]
         entry["updated_at"] = _now()
         _write_data(data)
+        if refunded_transaction.get("user_id") and int(refunded_transaction.get("units") or 0) > 0:
+            from .point_transactions import record_transaction
+
+            record_transaction(
+                str(refunded_transaction["user_id"]),
+                "refund",
+                int(refunded_transaction["units"]),
+                "任务退款",
+                balance_units=int(refunded_transaction["balance_units"]),
+                reference_id=refund_id,
+            )
         return True

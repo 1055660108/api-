@@ -3726,3 +3726,265 @@ textarea:focus {
 .message-table th:nth-child(3) { width: 24%; }
 .message-table th:nth-child(4) { width: 31%; }
 .message-table th:nth-child(5) { width: 18%; }
+
+/* Operational views added in 1.1: compact, neutral, and consistent. */
+body {
+  background: #f3f5f7;
+}
+
+body[data-portal="client"] #pointCardsNavItem,
+body[data-portal="client"] #point-cardsView,
+body[data-portal="client"] #membershipConfigPanel,
+body[data-portal="admin"] #transactionsNavItem,
+body[data-portal="admin"] #transactionsView {
+  display: none !important;
+}
+
+.segmented-control {
+  grid-template-columns: repeat(3, minmax(88px, 1fr));
+}
+
+.settings-stack {
+  align-items: stretch;
+}
+
+.settings-stack .config-panel {
+  display: flex;
+  min-height: 210px;
+  flex-direction: column;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.settings-stack .settings-featured {
+  grid-column: auto;
+}
+
+.settings-card-value {
+  margin-top: auto;
+}
+
+.settings-icon {
+  border-radius: 6px;
+}
+
+.settings-state {
+  border-radius: 6px;
+}
+
+.version-values {
+  align-items: end;
+}
+
+.commerce-grid,
+.card-code-layout,
+.message-admin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.purchase-panel {
+  max-width: none;
+  margin: 0;
+  padding: 24px;
+}
+
+.section-heading,
+.membership-price,
+.generated-codes > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.section-heading h2,
+.redeem-panel h2 {
+  margin: 5px 0 0;
+}
+
+.purchase-balance {
+  margin: 0;
+}
+
+.purchase-balance strong {
+  font-size: 38px;
+}
+
+.purchase-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.purchase-options button {
+  min-height: 96px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.redeem-panel,
+.card-generator,
+.card-history,
+.catalog-panel,
+.ledger-panel {
+  padding: 24px;
+}
+
+.redeem-panel,
+.card-generator {
+  display: grid;
+  gap: 18px;
+}
+
+.membership-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.membership-item {
+  display: flex;
+  min-height: 180px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.membership-item h3,
+.membership-item p {
+  margin: 6px 0 0;
+}
+
+.membership-item p,
+.membership-item span {
+  color: var(--muted);
+}
+
+.membership-price strong {
+  font-size: 24px;
+}
+
+.ledger-amount.credit { color: var(--ok); }
+.ledger-amount.debit { color: var(--danger); }
+
+.card-code-layout {
+  grid-template-columns: minmax(320px, .62fr) minmax(0, 1.38fr);
+}
+
+#point-cardsView .users-table {
+  min-width: 620px;
+}
+
+.compact-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+.generated-codes {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.generated-codes pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  background: #f5f7f9;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.announcement-modal-panel {
+  width: min(100%, 620px);
+  padding: 24px;
+  border-radius: 8px;
+}
+
+.announcement-modal-content {
+  max-height: 50vh;
+  overflow: auto;
+  color: #26323d;
+  font-size: 15px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.membership-create-form {
+  grid-template-columns: 1.4fr repeat(3, minmax(100px, .65fr)) auto;
+}
+
+.membership-item-fields {
+  grid-template-columns: 1.3fr repeat(3, minmax(70px, .7fr));
+}
+
+@media (max-width: 1100px) {
+  .commerce-grid,
+  .card-code-layout,
+  .message-admin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .membership-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .settings-stack,
+  .membership-grid,
+  .purchase-options,
+  .compact-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-stack .config-panel {
+    min-height: 0;
+  }
+
+  .field-wide {
+    grid-column: auto;
+  }
+
+  .section-heading,
+  .version-values {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .segmented-control {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .client-token-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .token-display {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .token-display input {
+    grid-column: 1 / -1;
+  }
+}

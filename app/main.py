@@ -35,7 +35,7 @@ from .config import (
 )
 from .email_verification import consume_registration_code, normalize_domains, normalize_email, send_registration_code, validate_allowed_email
 from .feedback import create_feedback, list_feedback, list_feedback_for_user, update_feedback
-from .notifications import create_notifications, list_admin_notifications, list_notifications_for_user, mark_notification_read
+from .notifications import create_announcement, create_notifications, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, set_announcement_enabled
 from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, normalize_platform
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
@@ -46,6 +46,9 @@ from .repository_update import repository_status, update_repository
 from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
 from .package_catalog import create_package, disable_package, list_packages, update_package
+from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, list_memberships, update_membership
+from .point_cards import generate_cards, list_cards, redeem_card
+from .point_transactions import list_transactions, record_transaction
 from .store import (
     active_task_ids,
     active_task_count_for_owner,
@@ -148,6 +151,15 @@ def _idempotency_key(value: str | None) -> str:
     if key and (len(key) > 128 or any(ord(char) < 33 or ord(char) > 126 for char in key)):
         raise HTTPException(status_code=400, detail="invalid Idempotency-Key")
     return key
+
+
+def _transaction_user_id(access: AccessContext) -> str:
+    if not access.is_temp:
+        return ""
+    try:
+        return str(user_identity_by_token_hash(access.token_hash).get("id") or "")
+    except KeyError:
+        return ""
 
 
 def _request_fingerprint(route: str, owner: str, payload: dict) -> str:
@@ -501,7 +513,44 @@ async def client_auth(access: Annotated[AccessContext, Depends(require_temp)]):
 
 @app.get("/points/packages", dependencies=[Depends(require_temp)])
 async def points_packages():
-    return {"packages": list_packages(), "payment_enabled": False}
+    return {"packages": list_packages(), "payment_enabled": True, "payment_url": DEFAULT_PAYMENT_URL}
+
+
+@app.post("/points/redeem", dependencies=[Depends(require_temp)])
+async def points_redeem(request: Request, access: Annotated[AccessContext, Depends(require_temp)]):
+    payload = await _request_payload(request)
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        result = redeem_card(payload.get("code", ""), str(user.get("id") or ""), access.token_hash)
+        card = result["card"]
+        balance = result["balance"]
+        record_transaction(
+            str(user.get("id") or ""),
+            "redeem",
+            int(card.get("points_units") or 0),
+            "卡密兑换",
+            balance_units=int(balance.get("credit_units") or 0),
+            reference_id=str(card.get("id") or ""),
+        )
+        return {"ok": True, "points": card.get("points", 0), "balance": balance}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="卡密不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/points/transactions", dependencies=[Depends(require_temp)])
+async def point_transactions(access: Annotated[AccessContext, Depends(require_temp)], page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100)):
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        return list_transactions(str(user.get("id") or ""), page, page_size)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="用户不存在或已停用")
+
+
+@app.get("/memberships", dependencies=[Depends(require_temp)])
+async def memberships():
+    return {"packages": list_memberships(), "payment_url": DEFAULT_PAYMENT_URL}
 
 
 @app.get("/admin/points/packages", dependencies=[Depends(require_admin)])
@@ -539,6 +588,52 @@ async def admin_disable_points_package(package_id: str):
         return {"ok": True, "package": disable_package(package_id)}
     except KeyError:
         raise HTTPException(status_code=404, detail="套餐不存在")
+
+
+@app.get("/admin/point-cards", dependencies=[Depends(require_admin)])
+async def admin_point_cards(limit: int = Query(500, ge=1, le=2000)):
+    return {"cards": list_cards(limit)}
+
+
+@app.post("/admin/point-cards", dependencies=[Depends(require_admin)], status_code=201)
+async def admin_generate_point_cards(request: Request):
+    payload = await _request_payload(request)
+    try:
+        cards = generate_cards(payload.get("points"), int(payload.get("count") or 1), payload.get("note", ""))
+        return {"ok": True, "cards": cards, "count": len(cards)}
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/admin/memberships", dependencies=[Depends(require_admin)])
+async def admin_memberships():
+    return {"packages": list_memberships(include_disabled=True)}
+
+
+@app.post("/admin/memberships", dependencies=[Depends(require_admin)], status_code=201)
+async def admin_create_membership(request: Request):
+    try:
+        return {"ok": True, "package": create_membership(await request.json())}
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/admin/memberships/{package_id}", dependencies=[Depends(require_admin)])
+async def admin_update_membership(package_id: str, request: Request):
+    try:
+        return {"ok": True, "package": update_membership(package_id, await request.json())}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="会员套餐不存在")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/admin/memberships/{package_id}", dependencies=[Depends(require_admin)])
+async def admin_disable_membership(package_id: str):
+    try:
+        return {"ok": True, "package": disable_membership(package_id)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="会员套餐不存在")
 
 
 @app.post("/auth/register")
@@ -748,6 +843,34 @@ async def client_notification_read(notification_id: str, access: Annotated[Acces
         raise HTTPException(status_code=404, detail="通知不存在")
 
 
+@app.post("/notifications/read-all", dependencies=[Depends(require_temp)])
+async def client_notifications_read_all(access: Annotated[AccessContext, Depends(require_temp)]):
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        return {"ok": True, "updated": mark_all_notifications_read(str(user.get("id") or ""))}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="用户不存在或已停用")
+
+
+@app.get("/announcements", dependencies=[Depends(require_temp)])
+async def client_announcements(access: Annotated[AccessContext, Depends(require_temp)]):
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        rows = list_announcements(str(user.get("id") or ""))
+        return {"announcements": rows, "total": len(rows), "unseen": sum(not item.get("seen") for item in rows)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="用户不存在或已停用")
+
+
+@app.patch("/announcements/{announcement_id}/seen", dependencies=[Depends(require_temp)])
+async def client_announcement_seen(announcement_id: str, access: Annotated[AccessContext, Depends(require_temp)]):
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        return {"ok": True, "announcement": mark_announcement_seen(announcement_id, str(user.get("id") or ""))}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="公告不存在")
+
+
 @app.get("/admin/feedback", dependencies=[Depends(require_admin)])
 async def admin_feedback(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), status: str = "", q: str = ""):
     return list_feedback(page, page_size, status, q)
@@ -768,6 +891,30 @@ async def admin_update_feedback(feedback_id: str, request: Request):
 async def admin_notifications(limit: int = Query(200, ge=1, le=1000)):
     rows = list_admin_notifications(limit)
     return {"notifications": rows, "total": len(rows)}
+
+
+@app.get("/admin/announcements", dependencies=[Depends(require_admin)])
+async def admin_announcements():
+    return {"announcements": list_announcements(include_disabled=True)}
+
+
+@app.post("/admin/announcements", dependencies=[Depends(require_admin)], status_code=201)
+async def admin_create_announcement(request: Request):
+    payload = await _request_payload(request)
+    try:
+        return {"ok": True, "announcement": create_announcement(payload.get("title", ""), payload.get("content", ""))}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/admin/announcements/{announcement_id}", dependencies=[Depends(require_admin)])
+async def admin_update_announcement(announcement_id: str, request: Request):
+    payload = await _request_payload(request)
+    try:
+        enabled = str(payload.get("enabled", "true")).lower() in {"1", "true", "yes", "on"}
+        return {"ok": True, "announcement": set_announcement_enabled(announcement_id, enabled)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="公告不存在")
 
 
 @app.get("/admin/notification-recipients", dependencies=[Depends(require_admin)])
@@ -812,6 +959,14 @@ async def users_add_points(user_id: str, request: Request):
     payload = await _request_payload(request)
     try:
         credited = add_user_points(user_id, payload.get("amount"), list_temp_tokens())
+        user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
+        record_transaction(
+            user_id,
+            "admin_credit",
+            points_to_units(payload.get("amount")),
+            "管理员充值",
+            balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
     except ValueError as exc:
@@ -824,6 +979,14 @@ async def users_deduct_points(user_id: str, request: Request):
     payload = await _request_payload(request)
     try:
         deduct_user_points(user_id, payload.get("amount"))
+        user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
+        record_transaction(
+            user_id,
+            "admin_deduct",
+            -points_to_units(payload.get("amount")),
+            "管理员扣除",
+            balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
     except ValueError as exc:
@@ -1112,7 +1275,20 @@ async def openai_chat_completions(
             task_id = str(meta["id"])
             content = json.dumps({"task_id": task_id, "status": str(meta.get("status") or "submitted"), "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
             return {"id": f"chatcmpl-{task_id}", "object": "chat.completion", "created": int(time.time()), "model": payload.model, "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
-        reserved_access = reserve_temp_quota(access, str(meta["id"]), model_cost_units(platform, model, task_type))
+        cost_units = model_cost_units(platform, model, task_type)
+        user_id = _transaction_user_id(access)
+        charged = access.is_temp and access.free_remaining <= 0
+        reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
+        if charged and user_id:
+            record_transaction(
+                user_id,
+                "consume",
+                -cost_units,
+                "视频任务消费",
+                balance_units=reserved_access.credit_units,
+                reference_id=str(meta["id"]),
+                detail=f"{PLATFORM_LABELS.get(platform, platform)} / {model}",
+            )
         finalize_task_creation(str(meta["id"]))
     except ValueError as exc:
         raise OpenAIAPIError(409, str(exc), "invalid_request_error", "Idempotency-Key", "idempotency_conflict")
@@ -1606,7 +1782,20 @@ async def submit_task(
             if access.is_temp and active_task_count_for_owner(access.token_hash) >= access.concurrency:
                 mark_failed(meta["id"], "已超出并发上限，及时联系管理员调整。")
                 return {"id": meta["id"]}
-            reserved_access = reserve_temp_quota(access, str(meta["id"]), model_cost_units(platform, model, task_type))
+            cost_units = model_cost_units(platform, model, task_type)
+            user_id = _transaction_user_id(access)
+            charged = access.is_temp and access.free_remaining <= 0
+            reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
+            if charged and user_id:
+                record_transaction(
+                    user_id,
+                    "consume",
+                    -cost_units,
+                    "视频任务消费",
+                    balance_units=reserved_access.credit_units,
+                    reference_id=str(meta["id"]),
+                    detail=f"{PLATFORM_LABELS.get(platform, platform)} / {model}",
+                )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         except QuotaExceeded as exc:

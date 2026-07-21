@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from app import query
+from app import automation, query
 
 
 def single_chain(conversation_id: str, messages: list[dict]) -> dict:
@@ -28,7 +28,7 @@ class DolaQueryTests(unittest.TestCase):
         ), patch.object(
             query, "load_result", return_value={"cookie_string": "sessionid=secret"}
         ), patch.object(query, "save_result") as save_result, patch.object(
-            query, "fetch_recent_conversation_id", new=AsyncMock(return_value="12345678901234567")
+            query, "fetch_matching_recent_conversation_id", new=AsyncMock(return_value="12345678901234567")
         ) as recent:
             result = asyncio.run(query._query_task_once("0" * 32))
         self.assertEqual(result, {"code": "1", "text": "没有文本", "url": ""})
@@ -69,6 +69,58 @@ class DolaQueryTests(unittest.TestCase):
             ],
         )
         self.assertEqual(query.extract_main_url(data), "")
+
+    def test_reference_video_accepts_direct_and_alternate_url_fields(self) -> None:
+        direct_url = "https://example.com/reference-result.mp4"
+        data = single_chain(
+            "12345678901234567",
+            [{"message_index": 2, "video_model": {"video_url": direct_url}}],
+        )
+        self.assertEqual(query.extract_main_url(data), direct_url)
+        self.assertEqual(query.decode_main_url(direct_url), direct_url)
+
+    def test_conversation_ids_support_current_numeric_lengths(self) -> None:
+        for conversation_id in ("123456789012345", "123456789012345678901234"):
+            self.assertEqual(query.extract_conversation_id_from_sse(f'{{"conversation_id":"{conversation_id}"}}'), conversation_id)
+
+    def test_reference_conversation_recovery_requires_submission_match(self) -> None:
+        data = {
+            "conversations": [
+                {
+                    "conversation_id": "12345678901234567",
+                    "update_time": 100,
+                    "collection_id": "collection-other",
+                    "messages": [{"text": "生成视频：其他任务"}],
+                },
+                {
+                    "conversation_id": "22345678901234567",
+                    "update_time": 200,
+                    "collection_id": "collection-reference",
+                    "messages": [{"text": "生成视频：参考图中的人物缓慢转身"}],
+                },
+            ]
+        }
+        self.assertEqual(
+            query.extract_matching_conversation_id(data, collection_id="collection-reference", prompt=""),
+            "22345678901234567",
+        )
+        self.assertEqual(
+            query.extract_matching_conversation_id(data, prompt="参考图中的人物缓慢转身"),
+            "22345678901234567",
+        )
+        self.assertEqual(query.extract_matching_conversation_id(data, prompt="完全不相关的生成任务"), "")
+        duplicate_prompt = {
+            "conversations": [
+                {"conversation_id": "12345678901234567", "messages": [{"text": "重复的参考图生成提示词"}]},
+                {"conversation_id": "22345678901234567", "messages": [{"text": "重复的参考图生成提示词"}]},
+            ]
+        }
+        self.assertEqual(query.extract_matching_conversation_id(duplicate_prompt, prompt="重复的参考图生成提示词"), "")
+
+    def test_reference_submission_waits_for_ack_and_returns_recovery_ids(self) -> None:
+        self.assertIn("attachments && attachments.length ? 60000 : 30000", automation.SUBMIT_SCRIPT)
+        for field in ("local_conversation_id", "collection_id", "unique_key", "submitted_with_images"):
+            self.assertIn(field, automation.SUBMIT_SCRIPT)
 
     def test_message_list_order_breaks_equal_order_values(self) -> None:
         data = single_chain(
@@ -148,6 +200,41 @@ class DolaQueryTests(unittest.TestCase):
         mark_failed.assert_called_once_with(task_id, query.POLICY_RETRY_TEXT)
         refund_temp.assert_called_once_with(task_id, "owner-hash")
         retry_task.assert_not_called()
+
+    def test_reference_task_recovers_matching_recent_conversation(self) -> None:
+        task_id = "0" * 32
+        recovered_id = "22345678901234567"
+        video_url = "https://example.com/reference-result.mp4"
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "submission_collection_id": "collection-reference",
+        }
+        meta = {
+            "status": query.STATUS_SUBMITTED,
+            "image_count": 1,
+            "prompt": "参考图中的人物缓慢转身",
+            "owner_token_hash": "owner-hash",
+        }
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_matching_recent_conversation_id", new=AsyncMock(return_value=recovered_id)
+        ) as recover, patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=(video_url, ""))
+        ), patch.object(query, "save_result") as save_result, patch.object(query, "mark_success"):
+            response = asyncio.run(query._query_task_once(task_id))
+        self.assertEqual(response, {"code": "2", "text": query.SUCCESS_TEXT, "url": video_url})
+        recover.assert_awaited_once_with(
+            "sessionid=secret",
+            collection_id="collection-reference",
+            prompt="参考图中的人物缓慢转身",
+        )
+        self.assertTrue(
+            any(
+                call.kwargs.get("extra", {}).get("conversation_source") == "matched_recent_reference_task"
+                for call in save_result.call_args_list
+            )
+        )
 
     def test_stale_pending_policy_task_is_reconciled_to_failed(self) -> None:
         task_id = "0" * 32

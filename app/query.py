@@ -140,7 +140,7 @@ def _headers(cookie: str) -> dict[str, str]:
     }
 
 
-def _recent_payload() -> dict[str, Any]:
+def _recent_payload(include_messages: bool = False) -> dict[str, Any]:
     return {
         "cmd": 3200,
         "uplink_body": {
@@ -151,7 +151,7 @@ def _recent_payload() -> dict[str, Any]:
                 "conv_version": 0,
                 "direction": 3,
                 "option": {
-                    "not_need_message": True,
+                    "not_need_message": not include_messages,
                     "need_complete_conversation": True,
                     "need_coco_conversation": True,
                     "need_coco_bot": True,
@@ -228,9 +228,9 @@ def extract_conversation_id_from_sse(text: str) -> str:
     if not text:
         return ""
     patterns = (
-        r'\\?"conversation_id\\?"\s*:\s*\\?"?(\d{17})',
-        r"conversation_id(?:\\\\?\"|)\s*[:=]\s*(?:\\\\?\")?(\d{17})",
-        r"/chat/(\d{17})(?:\D|$)",
+        r'\\?"conversation_id\\?"\s*:\s*\\?"?(\d{15,24})',
+        r"conversation_id(?:\\\\?\"|)\s*[:=]\s*(?:\\\\?\")?(\d{15,24})",
+        r"/chat/(\d{15,24})(?:\D|$)",
     )
     for pattern in patterns:
         match = re.search(pattern, text)
@@ -239,32 +239,37 @@ def extract_conversation_id_from_sse(text: str) -> str:
     return ""
 
 
+def _video_url_from_model(value: Any) -> str:
+    parsed = _try_parse_json_string(value) if isinstance(value, str) else value
+    for nested in _walk(parsed):
+        if not isinstance(nested, dict):
+            continue
+        for key in ("main_url", "video_url", "play_url", "download_url"):
+            candidate = nested.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return ""
+
+
 def extract_main_url(data: Any) -> str:
     message = _latest_single_chain_message(data)
     for item in _walk(message):
         if isinstance(item, dict) and "video_model" in item:
-            video_model = item.get("video_model")
-            parsed = _try_parse_json_string(video_model) if isinstance(video_model, str) else video_model
-            for nested in _walk(parsed):
-                if isinstance(nested, dict):
-                    main_url = nested.get("main_url")
-                    if isinstance(main_url, str) and main_url:
-                        return main_url
+            video_url = _video_url_from_model(item.get("video_model"))
+            if video_url:
+                return video_url
         if isinstance(item, dict):
-            main_url = item.get("main_url")
-            if isinstance(main_url, str) and main_url:
-                return main_url
+            for key in ("main_url", "video_url", "play_url", "download_url"):
+                video_url = item.get(key)
+                if isinstance(video_url, str) and video_url:
+                    return video_url
     if message:
         return ""
     for item in _walk(data):
         if isinstance(item, dict) and "video_model" in item:
-            video_model = item.get("video_model")
-            parsed = _try_parse_json_string(video_model) if isinstance(video_model, str) else video_model
-            for nested in _walk(parsed):
-                if isinstance(nested, dict):
-                    main_url = nested.get("main_url")
-                    if isinstance(main_url, str) and main_url:
-                        return main_url
+            video_url = _video_url_from_model(item.get("video_model"))
+            if video_url:
+                return video_url
     for item in _walk(data):
         if isinstance(item, dict):
             main_url = item.get("main_url")
@@ -282,7 +287,39 @@ def _single_chain_messages(data: Any) -> list[dict[str, Any]]:
 
 def _normalize_conversation_id(value: Any) -> str:
     text = str(value or "")
-    return text if text.isdigit() and len(text) == 17 else ""
+    return text if text.isdigit() and 15 <= len(text) <= 24 else ""
+
+
+def _normalized_match_text(value: str) -> str:
+    return re.sub(r"\s+", "", repair_text(str(value or ""))).casefold()
+
+
+def extract_matching_conversation_id(data: Any, *, collection_id: str = "", prompt: str = "") -> str:
+    collection_id = str(collection_id or "").strip()
+    normalized_prompt = _normalized_match_text(prompt)
+    prompt_probe = normalized_prompt[:120] if len(normalized_prompt) >= 8 else ""
+    collection_candidates: list[tuple[tuple[int, int], str]] = []
+    prompt_candidates: list[tuple[tuple[int, int], str]] = []
+    for position, item in enumerate(_walk(data)):
+        if not isinstance(item, dict):
+            continue
+        conversation_id = _normalize_conversation_id(item.get("conversation_id"))
+        if not conversation_id:
+            continue
+        strings = _collect_strings(item)
+        raw_text = "\n".join(strings)
+        collection_match = bool(collection_id and collection_id in raw_text)
+        prompt_match = bool(prompt_probe and prompt_probe in _normalized_match_text(raw_text))
+        if collection_match:
+            collection_candidates.append((_item_order_key(item, position), conversation_id))
+        elif prompt_match:
+            prompt_candidates.append((_item_order_key(item, position), conversation_id))
+    if collection_candidates:
+        return max(collection_candidates, default=((0, 0), ""))[1]
+    prompt_conversation_ids = {conversation_id for _, conversation_id in prompt_candidates}
+    if len(prompt_conversation_ids) == 1:
+        return prompt_conversation_ids.pop()
+    return ""
 
 
 def _numeric_order_value(value: Any) -> int | None:
@@ -375,6 +412,8 @@ def decode_main_url(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
         return ""
+    if cleaned.startswith("http://") or cleaned.startswith("https://"):
+        return cleaned
     for decoder in (base64.b64decode, base64.urlsafe_b64decode):
         try:
             padded = cleaned + "=" * (-len(cleaned) % 4)
@@ -401,6 +440,11 @@ async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any])
 async def fetch_recent_conversation_id(cookie: str) -> str:
     data = await _post_json(RECENT_CONV_URL, _headers(cookie), _recent_payload())
     return extract_conversation_id(data)
+
+
+async def fetch_matching_recent_conversation_id(cookie: str, *, collection_id: str = "", prompt: str = "") -> str:
+    data = await _post_json(RECENT_CONV_URL, _headers(cookie), _recent_payload(include_messages=True))
+    return extract_matching_conversation_id(data, collection_id=collection_id, prompt=prompt)
 
 
 async def fetch_single_chain(cookie: str, conversation_id: str) -> tuple[str, str]:
@@ -458,6 +502,24 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     if not conversation_id:
         conversation_id = str(result.get("conversation_id") or "")
         conversation_source = "submit_result" if conversation_id else ""
+    if not conversation_id and int(meta.get("image_count") or 0) > 0:
+        try:
+            conversation_id = await fetch_matching_recent_conversation_id(
+                cookie,
+                collection_id=str(result.get("submission_collection_id") or ""),
+                prompt=str(meta.get("prompt") or ""),
+            )
+        except Exception as exc:
+            diagnostic = query_error_diagnostic(exc)
+            save_result(
+                task_id,
+                extra={
+                    "conversation_recovery_error": diagnostic["last_query_error"],
+                    "conversation_recovery_error_category": diagnostic["last_query_error_category"],
+                },
+            )
+        if conversation_id:
+            conversation_source = "matched_recent_reference_task"
     if conversation_id:
         save_result(task_id, conversation_id=conversation_id, extra={"conversation_source": conversation_source})
     else:

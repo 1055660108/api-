@@ -285,9 +285,9 @@ async ({prompt, ratio, duration, attachments}) => {
   function extractConversationId(text) {
     if (!text) return "";
     const patterns = [
-      /"conversation_id"\s*:\s*"(\d{17})"/,
-      /conversation_id(?:\\?"|)\s*[:=]\s*(?:\\?")?(\d{17})/,
-      /\/chat\/(\d{17})(?:\D|$)/
+      /"conversation_id"\s*:\s*"(\d{15,24})"/,
+      /conversation_id(?:\\?"|)\s*[:=]\s*(?:\\?")?(\d{15,24})/,
+      /\/chat\/(\d{15,24})(?:\D|$)/
     ];
     for (const re of patterns) {
       const m = text.match(re);
@@ -295,9 +295,9 @@ async ({prompt, ratio, duration, attachments}) => {
     }
     return "";
   }
+  const collectionId = uuid();
+  const uniqueKey = uuid();
   function buildPayload({localConversationId}) {
-    const collectionId = uuid();
-    const uniqueKey = uuid();
     const text = `生成视频：${prompt}${ratio ? `，${ratio}` : ""}`;
     const messages = [];
     if (attachments && attachments.length) {
@@ -443,7 +443,7 @@ async ({prompt, ratio, duration, attachments}) => {
   const reader = response.body && response.body.getReader ? response.body.getReader() : null;
   if (reader) {
     const decoder = new TextDecoder("utf-8");
-    const deadline = Date.now() + 30000;
+    const deadline = Date.now() + (attachments && attachments.length ? 60000 : 30000);
     for (;;) {
       const remain = Math.max(1, deadline - Date.now());
       const timer = new Promise(resolve => setTimeout(() => resolve({timeout: true}), remain));
@@ -472,6 +472,10 @@ async ({prompt, ratio, duration, attachments}) => {
     contentType: response.headers.get("content-type") || "",
     responseBytes: text.length,
     conversation_id: conversationId,
+    local_conversation_id: localConversationId,
+    collection_id: collectionId,
+    unique_key: uniqueKey,
+    submitted_with_images: Boolean(attachments && attachments.length),
     sse_timed_out: timedOut,
     service_frequent: serviceFrequent,
     country_restricted: countryRestricted,
@@ -717,6 +721,10 @@ class DolaFetchAutomation:
                         "chat_status": result.get("status"),
                         "chat_content_type": result.get("contentType"),
                         "chat_response_bytes": int(result.get("responseBytes") or 0),
+                        "local_conversation_id": str(result.get("local_conversation_id") or ""),
+                        "submission_collection_id": str(result.get("collection_id") or ""),
+                        "submission_unique_key": str(result.get("unique_key") or ""),
+                        "submitted_with_images": bool(result.get("submitted_with_images")),
                         "sse_timed_out": bool(result.get("sse_timed_out")),
                     },
                 )

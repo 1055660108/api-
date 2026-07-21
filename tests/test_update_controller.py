@@ -20,6 +20,13 @@ class UpdateControllerTests(unittest.TestCase):
         install_script = (Path(__file__).resolve().parents[1] / "scripts" / "install.sh").read_text(encoding="utf-8")
         self.assertNotIn("write_runtime_config", install_script)
 
+    def test_controller_service_uses_writable_docker_home(self) -> None:
+        installer = (Path(__file__).resolve().parents[1] / "scripts" / "install_update_controller.sh").read_text(encoding="utf-8")
+        self.assertIn('install -d -m 0700 "$CONTROLLER_HOME" "$CONTROLLER_HOME/.docker"', installer)
+        self.assertIn("Environment=HOME=$CONTROLLER_HOME", installer)
+        self.assertIn("Environment=DOCKER_CONFIG=$CONTROLLER_HOME/.docker", installer)
+        self.assertIn("ProtectHome=true", installer)
+
     def test_custom_port_and_image_are_used(self) -> None:
         environment = {"DOLA_PORT": "9191", "DOLA_IMAGE_NAME": "registry.example/dola", "DOLA_IMAGE_TAG": "stable"}
         with patch.dict(os.environ, environment, clear=False):

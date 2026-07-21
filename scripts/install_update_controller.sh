@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/dola-fetch-service}"
 SERVICE_PATH="/etc/systemd/system/dola-update-controller.service"
+CONTROLLER_HOME="/var/lib/dola-update-controller"
 DOLA_PORT="${DOLA_PORT:-8088}"
 DOLA_IMAGE_NAME="${DOLA_IMAGE_NAME:-dola-fetch-service}"
 DOLA_IMAGE_TAG="${DOLA_IMAGE_TAG:-}"
@@ -15,6 +16,7 @@ fi
 test -d "$APP_DIR/.git"
 test -f "$APP_DIR/scripts/update_controller.py"
 install -d -m 0755 /run/dola-update
+install -d -m 0700 "$CONTROLLER_HOME" "$CONTROLLER_HOME/.docker"
 
 cat > "$SERVICE_PATH" <<EOF
 [Unit]
@@ -34,6 +36,8 @@ Environment=DOLA_UPDATE_REPOSITORY_URL=https://github.com/1055660108/api-.git
 Environment=DOLA_PORT=$DOLA_PORT
 Environment=DOLA_IMAGE_NAME=$DOLA_IMAGE_NAME
 Environment=DOLA_IMAGE_TAG=$DOLA_IMAGE_TAG
+Environment=HOME=$CONTROLLER_HOME
+Environment=DOCKER_CONFIG=$CONTROLLER_HOME/.docker
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

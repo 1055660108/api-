@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import admin_auth, config, main, package_catalog, store, temp_access, users
+from app import admin_auth, config, feedback, main, notifications, package_catalog, store, temp_access, users
 
 
 class ClientFeatureTests(unittest.TestCase):
@@ -23,6 +23,8 @@ class ClientFeatureTests(unittest.TestCase):
             patch.object(store, "runtime_path", return_value=self.root / "runtime.json"),
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.root / "temp_tokens.json"),
             patch.object(users, "USERS_PATH", self.root / "users.json"),
+            patch.object(feedback, "FEEDBACK_PATH", self.root / "feedback.json"),
+            patch.object(notifications, "NOTIFICATIONS_PATH", self.root / "notifications.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
             patch.dict("os.environ", {"DOLA_ADMIN_USERNAME": "chosen-admin", "DOLA_ADMIN_PASSWORD": "StrongPassword123"}),
         ]
@@ -114,6 +116,49 @@ class ClientFeatureTests(unittest.TestCase):
         meta = store.get_meta(task["id"])
         self.assertTrue(meta["video_hidden_for_client"])
         self.assertTrue(meta["video_hidden_for_admin"])
+
+    def test_message_center_exposes_feedback_reply_and_targeted_notifications(self) -> None:
+        first = self.register("message_user_one")
+        second = self.register("message_user_two")
+        first_headers = {"X-API-Token": first["token"]}
+        second_headers = {"X-API-Token": second["token"]}
+
+        created = self.client.post(
+            "/feedback",
+            headers=first_headers,
+            json={"category": "问题反馈", "content": "任务状态没有及时更新"},
+        )
+        self.assertEqual(created.status_code, 201)
+        feedback_id = created.json()["feedback"]["id"]
+
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        updated = self.client.patch(
+            f"/admin/feedback/{feedback_id}",
+            json={"status": "resolved", "admin_note": "问题已经处理，请刷新后重试。"},
+        )
+        self.assertEqual(updated.status_code, 200)
+        recipients = self.client.get("/admin/notification-recipients").json()["users"]
+        recipient_ids = [item["id"] for item in recipients]
+        sent = self.client.post(
+            "/admin/notifications",
+            json={"user_ids": recipient_ids, "title": "服务通知", "content": "消息中心已经上线。"},
+        )
+        self.assertEqual(sent.status_code, 201)
+        self.assertEqual(sent.json()["recipient_count"], 2)
+
+        own_feedback = self.client.get("/feedback", headers=first_headers).json()["feedback"]
+        self.assertEqual(len(own_feedback), 1)
+        self.assertEqual(own_feedback[0]["status"], "resolved")
+        self.assertEqual(own_feedback[0]["admin_note"], "问题已经处理，请刷新后重试。")
+        self.assertEqual(self.client.get("/feedback", headers=second_headers).json()["feedback"], [])
+
+        first_notifications = self.client.get("/notifications", headers=first_headers).json()
+        self.assertEqual(first_notifications["unread"], 1)
+        notification_id = first_notifications["notifications"][0]["id"]
+        marked = self.client.patch(f"/notifications/{notification_id}/read", headers=first_headers)
+        self.assertEqual(marked.status_code, 200)
+        self.assertEqual(self.client.get("/notifications", headers=first_headers).json()["unread"], 0)
+        self.assertEqual(self.client.get("/notifications", headers=second_headers).json()["unread"], 1)
 
 
 if __name__ == "__main__":

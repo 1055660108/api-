@@ -59,8 +59,7 @@ body[data-portal="client"] #proxyConfigPanel,
 body[data-portal="client"] #modelConfigPanel,
 body[data-portal="client"] #packageConfigPanel,
 body[data-portal="client"] #emailConfigPanel,
-body[data-portal="client"] #feedbackNavItem,
-body[data-portal="client"] #feedbackView,
+body[data-portal="client"] .admin-message-center,
 body[data-portal="client"] .admin-password-panel,
 body[data-portal="client"] .page-header-meta {
   display: none !important;
@@ -76,7 +75,7 @@ body[data-portal="admin"] #membershipView,
 body[data-portal="admin"] #submitBalance,
 body[data-portal="admin"] .client-password-panel,
 body[data-portal="admin"] .client-email-panel,
-body[data-portal="admin"] .client-feedback-panel,
+body[data-portal="admin"] .client-message-center,
 body[data-portal="client"] .admin-token-field,
 body[data-portal="client"] .admin-credential-field,
 body[data-portal="client"] .login-token-hint { display: none !important; }
@@ -90,6 +89,266 @@ body[data-portal="client"] .login-portal-label { display: none !important; }
 body[data-portal="admin"] .admin-token-field,
 body[data-portal="admin"] .login-token-hint { display: none !important; }
 body[data-portal="client"] .client-nav-empty { min-height: 20px; }
+
+.nav-count {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0 6px;
+  place-items: center;
+  color: #fff;
+  background: var(--danger);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.message-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.segmented-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(96px, 1fr));
+  padding: 4px;
+  background: #e8edf1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.segmented-control button {
+  min-height: 36px;
+  padding: 0 16px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-weight: 800;
+}
+
+.segmented-control button.active {
+  color: var(--ink);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .08);
+}
+
+.message-panel {
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.message-panel-header,
+.recipient-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.message-panel-header {
+  margin-bottom: 20px;
+}
+
+.message-panel-header h2,
+.message-panel-header p {
+  margin: 0;
+}
+
+.message-panel-header p {
+  margin-top: 5px;
+  color: var(--muted);
+}
+
+.message-list {
+  display: grid;
+  gap: 10px;
+}
+
+.message-card {
+  padding: 18px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.message-card.unread {
+  border-left: 4px solid var(--accent);
+  background: #f8fbff;
+}
+
+.message-card.compact {
+  padding: 14px;
+}
+
+.message-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.message-card-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.message-card-head span,
+.message-card > small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.message-card > p,
+.admin-reply p {
+  margin: 12px 0 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.admin-reply {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--ok-soft);
+  border-radius: 6px;
+}
+
+.admin-reply.empty {
+  background: #f4f6f8;
+}
+
+.admin-reply > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.message-status {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.message-status.pending { color: var(--warning); background: var(--warning-soft); }
+.message-status.reviewing { color: #1d4ed8; background: #e8eefc; }
+.message-status.resolved { color: var(--ok); background: var(--ok-soft); }
+.message-status.closed { color: var(--muted); background: #eef1f4; }
+
+.message-table textarea {
+  min-width: 220px;
+  min-height: 76px;
+  resize: vertical;
+}
+
+.feedback-status-actions {
+  display: grid;
+  gap: 8px;
+  min-width: 104px;
+}
+
+.compact-button {
+  min-height: 34px;
+  padding: 7px 12px;
+}
+
+.message-admin-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, .8fr) minmax(420px, 1.2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.notification-compose,
+.notification-history {
+  min-width: 0;
+}
+
+.notification-compose {
+  display: grid;
+  gap: 15px;
+}
+
+.notification-compose textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.recipient-header label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.recipient-header input,
+.recipient-option input {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin: 0;
+}
+
+.recipient-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 280px;
+  padding: 4px;
+  overflow: auto;
+}
+
+.recipient-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 10px;
+  background: #f7f9fa;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.recipient-option span {
+  display: grid;
+  min-width: 0;
+}
+
+.recipient-option strong,
+.recipient-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recipient-option small {
+  color: var(--muted);
+}
+
+.notification-history .message-list {
+  max-height: 680px;
+  overflow: auto;
+}
+
+@media (max-width: 980px) {
+  .message-admin-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .message-toolbar,
+  .message-panel-header { align-items: stretch; flex-direction: column; }
+  .segmented-control { width: 100%; }
+  .recipient-list { grid-template-columns: 1fr; }
+}
 
 .client-auth-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: #edf3f5; border-radius: 12px; }
 .client-auth-tabs button { padding: 9px; background: transparent; border: 0; border-radius: 9px; font-weight: 800; }
@@ -3454,3 +3713,16 @@ textarea:focus {
     width: 100%;
   }
 }
+
+/* Feedback uses a compact five-column layout instead of the wide user table contract. */
+.users-table.message-table {
+  width: 100%;
+  min-width: 900px;
+  table-layout: fixed;
+}
+
+.message-table th:nth-child(1) { width: 15%; }
+.message-table th:nth-child(2) { width: 12%; }
+.message-table th:nth-child(3) { width: 24%; }
+.message-table th:nth-child(4) { width: 31%; }
+.message-table th:nth-child(5) { width: 18%; }

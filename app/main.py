@@ -34,7 +34,8 @@ from .config import (
     validate_startup_credentials,
 )
 from .email_verification import consume_registration_code, normalize_domains, normalize_email, send_registration_code, validate_allowed_email
-from .feedback import create_feedback, list_feedback, update_feedback
+from .feedback import create_feedback, list_feedback, list_feedback_for_user, update_feedback
+from .notifications import create_notifications, list_admin_notifications, list_notifications_for_user, mark_notification_read
 from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, normalize_platform
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
@@ -718,6 +719,35 @@ async def client_create_feedback(request: Request, access: Annotated[AccessConte
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.get("/feedback", dependencies=[Depends(require_temp)])
+async def client_feedback(access: Annotated[AccessContext, Depends(require_temp)]):
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        rows = list_feedback_for_user(str(user.get("id") or ""))
+        return {"feedback": rows, "total": len(rows)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="用户不存在或已停用")
+
+
+@app.get("/notifications", dependencies=[Depends(require_temp)])
+async def client_notifications(access: Annotated[AccessContext, Depends(require_temp)]):
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        rows = list_notifications_for_user(str(user.get("id") or ""))
+        return {"notifications": rows, "total": len(rows), "unread": sum(not item.get("read_at") for item in rows)}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="用户不存在或已停用")
+
+
+@app.patch("/notifications/{notification_id}/read", dependencies=[Depends(require_temp)])
+async def client_notification_read(notification_id: str, access: Annotated[AccessContext, Depends(require_temp)]):
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        return {"ok": True, "notification": mark_notification_read(notification_id, str(user.get("id") or ""))}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="通知不存在")
+
+
 @app.get("/admin/feedback", dependencies=[Depends(require_admin)])
 async def admin_feedback(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), status: str = "", q: str = ""):
     return list_feedback(page, page_size, status, q)
@@ -730,6 +760,39 @@ async def admin_update_feedback(feedback_id: str, request: Request):
         return {"ok": True, "feedback": update_feedback(feedback_id, str(payload.get("status") or "pending"), payload.get("admin_note", ""))}
     except KeyError:
         raise HTTPException(status_code=404, detail="反馈不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/admin/notifications", dependencies=[Depends(require_admin)])
+async def admin_notifications(limit: int = Query(200, ge=1, le=1000)):
+    rows = list_admin_notifications(limit)
+    return {"notifications": rows, "total": len(rows)}
+
+
+@app.get("/admin/notification-recipients", dependencies=[Depends(require_admin)])
+async def admin_notification_recipients():
+    rows = list_users(list_temp_tokens())
+    return {
+        "users": [
+            {"id": item["id"], "username": item["username"], "email": item.get("email", ""), "enabled": item.get("enabled", True)}
+            for item in rows
+        ]
+    }
+
+
+@app.post("/admin/notifications", dependencies=[Depends(require_admin)], status_code=201)
+async def admin_create_notifications(request: Request):
+    payload = await request.json()
+    user_ids = payload.get("user_ids") if isinstance(payload, dict) else []
+    if not isinstance(user_ids, list):
+        raise HTTPException(status_code=400, detail="user_ids must be a list")
+    selected = {str(item or "") for item in user_ids if str(item or "")}
+    recipients = [item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") in selected]
+    if len(recipients) != len(selected):
+        raise HTTPException(status_code=400, detail="所选用户包含无效账号")
+    try:
+        return {"ok": True, **create_notifications(recipients, payload.get("title", ""), payload.get("content", ""))}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

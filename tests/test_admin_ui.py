@@ -166,6 +166,18 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS = 5.0", worker)
         self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS -", worker)
 
+    def test_message_center_replaces_settings_feedback_entry(self) -> None:
+        self.assertIn('id="messagesNavItem"', self.html)
+        self.assertIn('id="messagesView"', self.html)
+        self.assertIn('id="clientFeedbackList"', self.html)
+        self.assertIn('id="clientNotificationList"', self.html)
+        self.assertIn('id="adminNotificationForm"', self.html)
+        self.assertNotIn("client-feedback-panel", self.html)
+        self.assertIn('apiFetch("/feedback")', self.javascript)
+        self.assertIn('apiFetch("/notifications")', self.javascript)
+        self.assertIn('apiFetch("/admin/notification-recipients")', self.javascript)
+        self.assertIn("saveFeedbackRecord", self.javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

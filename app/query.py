@@ -413,7 +413,10 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     expire_task_if_timeout(task_id)
     meta = get_meta(task_id)
     if meta.get("status") not in {STATUS_SUBMITTED, STATUS_SUCCESS}:
-        if meta.get("status") == STATUS_FAILED and is_suspected_policy_false_positive(str(meta.get("error") or "")):
+        if meta.get("status") in {"pending", STATUS_FAILED} and is_suspected_policy_false_positive(str(meta.get("error") or "")):
+            if meta.get("status") == "pending":
+                mark_failed(task_id, POLICY_RETRY_TEXT)
+            refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
             return {"code": "0", "text": POLICY_RETRY_TEXT, "url": ""}
         if int(meta.get("retry_count") or 0) > 0 and is_final_generation_failure(str(meta.get("error") or "")):
             return {"code": "1", "text": RETRY_GENERATING_TEXT, "url": ""}
@@ -522,13 +525,9 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         if is_suspected_policy_false_positive(text):
             if account_id:
                 clear_account_current_task(account_id, task_id)
-                record_failed_account(task_id, account_id)
                 refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
-            retry_count = retry_submitted_task(task_id, POLICY_RETRY_TEXT, max_retries=2, delay_seconds=45)
-            if retry_count < 2:
-                clear_transient_result(task_id)
-                return {"code": "1", "text": POLICY_RETRY_TEXT, "url": ""}
             meta = get_meta(task_id)
+            mark_failed(task_id, POLICY_RETRY_TEXT)
             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
             return {"code": "0", "text": POLICY_RETRY_TEXT, "url": ""}
         if account_id:

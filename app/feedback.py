@@ -83,6 +83,18 @@ def list_feedback(page: int = 1, page_size: int = 20, status: str = "", query: s
     return {"feedback": rows[start:start + page_size], "total": total, "page": page, "page_size": page_size, "total_pages": total_pages}
 
 
+def list_feedback_for_user(user_id: str) -> list[dict[str, Any]]:
+    user_id = str(user_id or "").strip()
+    with _LOCK:
+        rows = [
+            dict(item)
+            for item in _read()["feedback"].values()
+            if isinstance(item, dict) and str(item.get("user_id") or "") == user_id
+        ]
+    rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return rows
+
+
 def update_feedback(feedback_id: str, status: str, admin_note: str) -> dict[str, Any]:
     if status not in STATUSES:
         raise ValueError("反馈状态无效")

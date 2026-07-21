@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=20260720-feedback-49" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=20260721-message-center-50" />
   </head>
   <body>
     <script>
@@ -122,7 +122,7 @@
           <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>积分购买</span></button>
           <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>会员</span></button>
           <button class="nav-item" type="button" data-view="users" id="usersNavItem"><span>用户管理</span></button>
-          <button class="nav-item" type="button" data-view="feedback" id="feedbackNavItem"><span>用户反馈</span></button>
+          <button class="nav-item" type="button" data-view="messages" id="messagesNavItem"><span id="messagesNavLabel">消息处理</span><b class="nav-count hidden" id="messageUnreadCount">0</b></button>
           <button class="nav-item" type="button" data-view="settings" id="settingsNavItem"><span>设置</span></button>
         </nav>
 
@@ -199,10 +199,6 @@
                 <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>绑定邮箱</h2><p>修改邮箱需要验证新邮箱，验证成功后立即更新绑定。</p></div><span class="settings-state" id="clientEmailState">已验证</span></div>
                 <div class="settings-card-value"><div><span>当前邮箱</span><strong id="clientEmailDisplay">等待读取</strong></div><button class="primary-button" id="openClientEmailModal" type="button">修改邮箱</button></div>
               </section>
-              <section class="panel config-panel client-feedback-panel">
-                <div class="settings-card-header"><div><span class="settings-icon">✦</span><h2>体验反馈</h2><p>告诉管理员你的使用体验、建议或遇到的问题。</p></div><span class="settings-state">用户反馈</span></div>
-                <div class="settings-card-value"><div><span>反馈入口</span><strong>你的意见会直接发送给管理员</strong></div><button class="primary-button" id="openFeedbackModal" type="button">提交反馈</button></div>
-              </section>
               <section class="panel config-panel admin-password-panel">
                 <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>管理员账号</h2><p>当前账号只读，密码可在安全弹窗中修改。</p></div><span class="settings-state" id="adminPasswordState">安全登录</span></div>
                 <div class="settings-card-value"><div><span>管理员账号</span><strong id="adminAccountDisplay">-</strong></div><button class="primary-button" id="openPasswordModal" type="button">修改密码</button></div>
@@ -242,7 +238,47 @@
             <div class="node-grid" id="proxyNodeGrid"><div class="empty-state">请先配置节点订阅</div></div>
           </section>
         </section>
-        <section class="view" id="feedbackView" data-title="用户反馈"><section class="panel users-panel"><div class="panel-header"><div><h2>用户反馈</h2><p>查看并处理客户端提交的体验反馈。</p></div><button class="secondary-button" id="refreshFeedback" type="button">刷新</button></div><div class="table-wrap users-table-wrap"><table class="users-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div></section></section>
+        <section class="view" id="messagesView" data-title="消息处理">
+          <div class="message-toolbar">
+            <div class="segmented-control" role="tablist" aria-label="消息类型">
+              <button class="active" type="button" data-message-tab="feedback">反馈</button>
+              <button type="button" data-message-tab="notifications">通知</button>
+            </div>
+            <button class="secondary-button" id="refreshMessages" type="button">刷新</button>
+          </div>
+
+          <div class="client-message-center">
+            <section class="message-panel" data-message-panel="feedback">
+              <div class="message-panel-header"><div><h2>我的反馈</h2><p>提交使用问题，并在这里查看管理员的处理状态和回复。</p></div><button class="primary-button" id="openFeedbackModal" type="button">提交反馈</button></div>
+              <div class="message-list" id="clientFeedbackList"></div>
+            </section>
+            <section class="message-panel hidden" data-message-panel="notifications">
+              <div class="message-panel-header"><div><h2>通知</h2><p>管理员发送给你的服务通知和处理消息。</p></div></div>
+              <div class="message-list" id="clientNotificationList"></div>
+            </section>
+          </div>
+
+          <div class="admin-message-center">
+            <section class="panel users-panel" data-message-panel="feedback">
+              <div class="panel-header"><div><h2>反馈处理</h2><p>处理状态和管理员回复保存后会立即展示给用户。</p></div></div>
+              <div class="table-wrap users-table-wrap"><table class="users-table message-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>管理员回复</th><th>处理状态</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div>
+            </section>
+            <section class="message-admin-grid hidden" data-message-panel="notifications">
+              <form class="panel notification-compose" id="adminNotificationForm">
+                <div class="panel-header"><div><h2>发送通知</h2><p>选择一位或多位用户后发送站内通知。</p></div></div>
+                <label class="field"><span>通知标题</span><input id="notificationTitle" maxlength="120" required /></label>
+                <label class="field"><span>通知内容</span><textarea id="notificationContent" maxlength="5000" required></textarea></label>
+                <div class="recipient-header"><strong>接收用户</strong><label><input id="selectAllNotificationUsers" type="checkbox" /> 全选</label></div>
+                <div class="recipient-list" id="notificationRecipients"></div>
+                <div class="modal-actions"><span class="muted" id="notificationRecipientState">请选择用户</span><button class="primary-button" id="sendNotificationButton" type="submit">发送通知</button></div>
+              </form>
+              <section class="panel notification-history">
+                <div class="panel-header"><div><h2>发送记录</h2><p>查看通知送达对象和阅读状态。</p></div></div>
+                <div class="message-list" id="adminNotificationList"></div>
+              </section>
+            </section>
+          </div>
+        </section>
 
         <section class="view" id="submitView" data-title="提交任务">
           <form class="submit-layout" id="taskForm">
@@ -919,6 +955,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=20260720-email-toggle-51"></script>
+    <script src="/admin/assets/app.js?v=20260721-message-center-50"></script>
   </body>
 </html>

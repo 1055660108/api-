@@ -67,8 +67,46 @@ class MemoryPostgres:
             raise FileNotFoundError(task_id)
         self.tasks[task_id][part] = dict(payload)
 
+    def claim_task(self, task_id: str, worker_id: str, owner_token_hash: str, concurrency_limit: int | None, claimed_at: str) -> bool:
+        with self.lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return False
+            meta = task["meta"]
+            if meta.get("status") != "pending" or meta.get("cancel_requested"):
+                return False
+            if owner_token_hash and concurrency_limit is not None:
+                active = sum(
+                    item["meta"].get("owner_token_hash") == owner_token_hash
+                    and item["meta"].get("status") in {"running", "submitted"}
+                    for item in self.tasks.values()
+                )
+                if active >= concurrency_limit:
+                    return False
+            meta.update(
+                status="running",
+                worker_id=worker_id,
+                started_at=claimed_at,
+                claimed_at=claimed_at,
+                attempt=max(0, int(meta.get("attempt") or 0)) + 1,
+                error="",
+                execution_miss_count=0,
+                updated_at=claimed_at,
+            )
+            return True
+
     def list_task_ids(self) -> list[str]:
         return list(self.tasks)
+
+    def list_task_metas(self, owner_token_hash: str | None = None) -> list[tuple[str, dict]]:
+        return [
+            (task_id, dict(task["meta"]))
+            for task_id, task in self.tasks.items()
+            if owner_token_hash is None or task["meta"].get("owner_token_hash") == owner_token_hash
+        ]
+
+    def count_tasks(self, status: str | None = None) -> int:
+        return sum(status is None or task["meta"].get("status") == status for task in self.tasks.values())
 
     def delete_task(self, task_id: str) -> None:
         self.tasks.pop(task_id, None)
@@ -107,7 +145,10 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
             patch.object(postgres, "read_task_part", self.backend.read_task_part),
             patch.object(postgres, "write_task_part", self.backend.write_task_part),
             patch.object(postgres, "mutate_task_part", self.backend.mutate_task_part),
+            patch.object(postgres, "claim_task", self.backend.claim_task),
             patch.object(postgres, "list_task_ids", self.backend.list_task_ids),
+            patch.object(postgres, "list_task_metas", self.backend.list_task_metas),
+            patch.object(postgres, "count_tasks", self.backend.count_tasks),
             patch.object(postgres, "delete_task", self.backend.delete_task),
             patch.object(postgres, "read_document", self.backend.read_document),
             patch.object(postgres, "write_document", self.backend.write_document),

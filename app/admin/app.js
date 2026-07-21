@@ -43,10 +43,22 @@ const els = {
   submitPointsBalance: document.getElementById("submitPointsBalance"),
   submitCostText: document.getElementById("submitCostText"),
   usersNavItem: document.getElementById("usersNavItem"),
-  feedbackNavItem: document.getElementById("feedbackNavItem"),
-  feedbackView: document.getElementById("feedbackView"),
+  messagesNavItem: document.getElementById("messagesNavItem"),
+  messagesNavLabel: document.getElementById("messagesNavLabel"),
+  messagesView: document.getElementById("messagesView"),
+  messageUnreadCount: document.getElementById("messageUnreadCount"),
   feedbackTableBody: document.getElementById("feedbackTableBody"),
-  refreshFeedback: document.getElementById("refreshFeedback"),
+  refreshMessages: document.getElementById("refreshMessages"),
+  clientFeedbackList: document.getElementById("clientFeedbackList"),
+  clientNotificationList: document.getElementById("clientNotificationList"),
+  adminNotificationForm: document.getElementById("adminNotificationForm"),
+  notificationTitle: document.getElementById("notificationTitle"),
+  notificationContent: document.getElementById("notificationContent"),
+  notificationRecipients: document.getElementById("notificationRecipients"),
+  selectAllNotificationUsers: document.getElementById("selectAllNotificationUsers"),
+  notificationRecipientState: document.getElementById("notificationRecipientState"),
+  sendNotificationButton: document.getElementById("sendNotificationButton"),
+  adminNotificationList: document.getElementById("adminNotificationList"),
   openFeedbackModal: document.getElementById("openFeedbackModal"),
   feedbackModal: document.getElementById("feedbackModal"),
   closeFeedbackModal: document.getElementById("closeFeedbackModal"),
@@ -352,6 +364,9 @@ const state = {
   taskSearchTimer: 0,
   accountSearchTimer: 0,
   taskRenderSignature: "",
+  messageTab: "feedback",
+  notificationUsers: [],
+  selectedNotificationUserIds: new Set(),
 };
 
 const MAX_IMAGE_COUNT = 9;
@@ -760,6 +775,9 @@ function startAutoRefresh() {
         if (activeView === "dashboardView" || activeView === "tasksView") jobs.push(refreshTasks({ quiet: true, keepPage: true }));
         if (portal === "admin" && activeView === "accountsView") jobs.push(refreshAccounts({ quiet: true }));
         if (portal === "admin" && activeView === "usersView") jobs.push(loadUsers());
+        const editingMessage = activeView === "messagesView" && Boolean(document.activeElement?.closest("#messagesView input, #messagesView textarea, #messagesView select"));
+        if (activeView === "messagesView" && !editingMessage) jobs.push(loadMessageCenter({ quiet: true }));
+        if (portal === "client" && activeView !== "messagesView") jobs.push(loadClientNotifications());
         await Promise.allSettled(jobs);
         updateDashboardMetrics();
       } catch (error) {
@@ -821,8 +839,8 @@ function applyAccessScope(data = {}) {
   if (els.proxyConfigPanel) els.proxyConfigPanel.classList.toggle("hidden", isClient);
   if (els.proxyNodesNavItem) els.proxyNodesNavItem.classList.toggle("hidden", isClient);
   if (els.proxyNodesView) els.proxyNodesView.classList.toggle("hidden", isClient);
-  if (els.feedbackNavItem) els.feedbackNavItem.classList.toggle("hidden", isClient);
-  if (els.feedbackView) els.feedbackView.classList.toggle("hidden", isClient);
+  if (els.messagesNavLabel) els.messagesNavLabel.textContent = isClient ? "消息中心" : "消息处理";
+  if (els.messagesView) els.messagesView.dataset.title = isClient ? "消息中心" : "消息处理";
   if (els.quotaNavItem) {
     els.quotaNavItem.classList.toggle("hidden", isClient);
     els.quotaNavItem.setAttribute("aria-hidden", isClient ? "true" : "false");
@@ -972,21 +990,96 @@ function switchView(name) {
   if (name === "videos") renderVideoLibrary();
   if (name === "prompts") renderPrompts();
   if (name === "users") loadUsers();
-  if (name === "feedback" && portal === "admin") loadFeedback();
+  if (name === "messages") loadMessageCenter();
   if (name === "points") loadPointPackages();
   if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadPlatforms(), loadAdminPointPackages()]);
   if (name === "proxy-nodes" && portal === "admin") loadProxyNodes();
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
 
+const FEEDBACK_STATUS_LABELS = { pending: "待处理", reviewing: "处理中", resolved: "已解决", closed: "已关闭" };
+
+function setMessageTab(tab) {
+  state.messageTab = tab === "notifications" ? "notifications" : "feedback";
+  document.querySelectorAll("[data-message-tab]").forEach((button) => button.classList.toggle("active", button.dataset.messageTab === state.messageTab));
+  document.querySelectorAll("[data-message-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.messagePanel !== state.messageTab));
+}
+
+async function loadClientFeedback() {
+  if (portal !== "client" || !els.clientFeedbackList) return;
+  const data = await apiFetch("/feedback");
+  const rows = Array.isArray(data.feedback) ? data.feedback : [];
+  els.clientFeedbackList.innerHTML = rows.length ? rows.map((item) => `
+    <article class="message-card">
+      <div class="message-card-head"><div><strong>${escapeHtml(item.category || "其他")}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><span class="message-status ${escapeHtml(item.status || "pending")}">${escapeHtml(FEEDBACK_STATUS_LABELS[item.status] || item.status || "待处理")}</span></div>
+      <p>${escapeHtml(item.content || "")}</p>
+      <div class="admin-reply ${item.admin_note ? "" : "empty"}"><span>管理员回复</span><p>${escapeHtml(item.admin_note || "暂未回复")}</p></div>
+    </article>`).join("") : '<div class="empty-state">还没有提交过反馈</div>';
+}
+
+async function loadClientNotifications() {
+  if (portal !== "client" || !els.clientNotificationList) return;
+  const data = await apiFetch("/notifications");
+  const rows = Array.isArray(data.notifications) ? data.notifications : [];
+  const unread = Number(data.unread || 0);
+  if (els.messageUnreadCount) {
+    els.messageUnreadCount.textContent = String(unread);
+    els.messageUnreadCount.classList.toggle("hidden", unread <= 0);
+  }
+  els.clientNotificationList.innerHTML = rows.length ? rows.map((item) => `
+    <article class="message-card notification-card ${item.read_at ? "read" : "unread"}">
+      <div class="message-card-head"><div><strong>${escapeHtml(item.title || "通知")}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div>${item.read_at ? '<span class="message-status resolved">已读</span>' : `<button class="text-button" type="button" data-read-notification="${escapeHtml(item.id)}">标为已读</button>`}</div>
+      <p>${escapeHtml(item.content || "")}</p>
+    </article>`).join("") : '<div class="empty-state">暂无通知</div>';
+}
+
 async function loadFeedback() {
   if (portal !== "admin" || !els.feedbackTableBody) return;
+  const data = await apiFetch("/admin/feedback?page=1&page_size=100");
+  const rows = Array.isArray(data.feedback) ? data.feedback : [];
+  els.feedbackTableBody.innerHTML = rows.length ? rows.map((item) => `<tr>
+    <td><strong>${escapeHtml(item.username || "未知用户")}</strong><br><small>${escapeHtml(formatTime(item.created_at))}</small></td>
+    <td>${escapeHtml(item.category || "其他")}</td>
+    <td><div class="feedback-content">${escapeHtml(item.content || "")}</div></td>
+    <td><textarea class="feedback-reply-input" data-feedback-note="${escapeHtml(item.id)}" maxlength="5000" placeholder="输入回复内容">${escapeHtml(item.admin_note || "")}</textarea></td>
+    <td><div class="feedback-status-actions"><select data-feedback-status="${escapeHtml(item.id)}"><option value="pending" ${item.status === "pending" ? "selected" : ""}>待处理</option><option value="reviewing" ${item.status === "reviewing" ? "selected" : ""}>处理中</option><option value="resolved" ${item.status === "resolved" ? "selected" : ""}>已解决</option><option value="closed" ${item.status === "closed" ? "selected" : ""}>已关闭</option></select><button class="primary-button compact-button" type="button" data-save-feedback="${escapeHtml(item.id)}">保存</button></div></td>
+  </tr>`).join("") : '<tr><td colspan="5"><div class="empty-state">暂无用户反馈</div></td></tr>';
+}
+
+async function saveFeedbackRecord(feedbackId) {
+  const status = els.feedbackTableBody?.querySelector(`[data-feedback-status="${CSS.escape(feedbackId)}"]`)?.value || "pending";
+  const adminNote = els.feedbackTableBody?.querySelector(`[data-feedback-note="${CSS.escape(feedbackId)}"]`)?.value.trim() || "";
+  await apiFetch(`/admin/feedback/${encodeURIComponent(feedbackId)}`, { method: "PATCH", body: { status, admin_note: adminNote } });
+}
+
+function updateNotificationRecipientState() {
+  const count = state.selectedNotificationUserIds.size;
+  if (els.notificationRecipientState) els.notificationRecipientState.textContent = count ? `已选择 ${count} 位用户` : "请选择用户";
+  if (els.selectAllNotificationUsers) els.selectAllNotificationUsers.checked = Boolean(state.notificationUsers.length) && count === state.notificationUsers.length;
+}
+
+async function loadNotificationRecipients() {
+  if (portal !== "admin" || !els.notificationRecipients) return;
+  const data = await apiFetch("/admin/notification-recipients");
+  state.notificationUsers = Array.isArray(data.users) ? data.users : [];
+  state.selectedNotificationUserIds = new Set(Array.from(state.selectedNotificationUserIds).filter((id) => state.notificationUsers.some((item) => item.id === id)));
+  els.notificationRecipients.innerHTML = state.notificationUsers.length ? state.notificationUsers.map((item) => `<label class="recipient-option"><input type="checkbox" value="${escapeHtml(item.id)}" data-notification-user ${state.selectedNotificationUserIds.has(item.id) ? "checked" : ""} /><span><strong>${escapeHtml(item.username)}</strong><small>${escapeHtml(item.email || (item.enabled ? "未绑定邮箱" : "账号已停用"))}</small></span></label>`).join("") : '<div class="empty-state">暂无注册用户</div>';
+  updateNotificationRecipientState();
+}
+
+async function loadAdminNotifications() {
+  if (portal !== "admin" || !els.adminNotificationList) return;
+  const data = await apiFetch("/admin/notifications?limit=200");
+  const rows = Array.isArray(data.notifications) ? data.notifications : [];
+  els.adminNotificationList.innerHTML = rows.length ? rows.map((item) => `<article class="message-card compact"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><span class="message-status ${item.read_at ? "resolved" : "pending"}">${item.read_at ? "已读" : "未读"}</span></div><p>${escapeHtml(item.content)}</p><small>接收用户：${escapeHtml(item.username || item.user_id)}</small></article>`).join("") : '<div class="empty-state">暂无发送记录</div>';
+}
+
+async function loadMessageCenter(options = {}) {
   try {
-    const data = await apiFetch("/admin/feedback?page=1&page_size=100");
-    const rows = Array.isArray(data.feedback) ? data.feedback : [];
-    els.feedbackTableBody.innerHTML = rows.length ? rows.map((item) => `<tr><td>${escapeHtml(item.username || "未知用户")}</td><td>${escapeHtml(item.category || "其他")}</td><td><div class="feedback-content">${escapeHtml(item.content || "")}</div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(item.status || "pending")}</td><td><select data-feedback-status="${escapeHtml(item.id)}"><option value="pending" ${item.status === "pending" ? "selected" : ""}>待处理</option><option value="reviewing" ${item.status === "reviewing" ? "selected" : ""}>处理中</option><option value="resolved" ${item.status === "resolved" ? "selected" : ""}>已解决</option><option value="closed" ${item.status === "closed" ? "selected" : ""}>已关闭</option></select></td></tr>`).join("") : '<tr><td colspan="6"><div class="empty-state">暂无用户反馈</div></td></tr>';
+    if (portal === "client") await Promise.all([loadClientFeedback(), loadClientNotifications()]);
+    else await Promise.all([loadFeedback(), loadNotificationRecipients(), loadAdminNotifications()]);
   } catch (error) {
-    toast(`反馈读取失败：${error.message}`, "error");
+    if (!options.quiet) toast(`消息读取失败：${error.message}`, "error");
   }
 }
 
@@ -998,10 +1091,30 @@ async function submitFeedback(event) {
     els.feedbackForm.reset();
     closeSettingsModal(els.feedbackModal);
     toast("反馈已提交，感谢你的建议");
+    setMessageTab("feedback");
+    await loadClientFeedback();
   } catch (error) {
     toast(`提交失败：${error.message}`, "error");
   } finally {
     setBusy(els.submitFeedbackButton, false);
+  }
+}
+
+async function submitAdminNotification(event) {
+  event.preventDefault();
+  const userIds = Array.from(state.selectedNotificationUserIds);
+  if (!userIds.length) return toast("请至少选择一位用户", "error");
+  setBusy(els.sendNotificationButton, true, "发送中");
+  try {
+    const data = await apiFetch("/admin/notifications", { method: "POST", body: { user_ids: userIds, title: els.notificationTitle.value.trim(), content: els.notificationContent.value.trim() } });
+    toast(`通知已发送给 ${data.recipient_count || userIds.length} 位用户`);
+    els.adminNotificationForm.reset();
+    state.selectedNotificationUserIds.clear();
+    await Promise.all([loadNotificationRecipients(), loadAdminNotifications()]);
+  } catch (error) {
+    toast(`通知发送失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.sendNotificationButton, false);
   }
 }
 
@@ -1679,6 +1792,7 @@ async function refreshDashboard() {
     await refreshHealth();
     const jobs = [refreshTasks({ quiet: true }), loadPlatforms()];
     if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }));
+    if (portal === "client") jobs.push(loadClientNotifications());
     const results = await Promise.allSettled(jobs);
     const rejected = results.find((item) => item.status === "rejected");
     if (rejected) throw rejected.reason;
@@ -2506,17 +2620,55 @@ function bindEvents() {
   els.clientPasswordForm?.addEventListener("submit", changeClientPassword);
   els.clientEmailForm?.addEventListener("submit", changeClientEmail);
   els.feedbackForm?.addEventListener("submit", submitFeedback);
-  els.refreshFeedback?.addEventListener("click", loadFeedback);
+  els.adminNotificationForm?.addEventListener("submit", submitAdminNotification);
+  els.refreshMessages?.addEventListener("click", () => loadMessageCenter());
   els.feedbackTableBody?.addEventListener("change", async (event) => {
     const select = event.target.closest("[data-feedback-status]");
     if (!select) return;
     try {
-      await apiFetch(`/admin/feedback/${encodeURIComponent(select.dataset.feedbackStatus)}`, { method: "PATCH", body: { status: select.value } });
+      await saveFeedbackRecord(select.dataset.feedbackStatus);
       toast("反馈状态已更新");
     } catch (error) {
       toast(`状态更新失败：${error.message}`, "error");
       await loadFeedback();
     }
+  });
+  els.feedbackTableBody?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-save-feedback]");
+    if (!button) return;
+    setBusy(button, true, "保存中");
+    try {
+      await saveFeedbackRecord(button.dataset.saveFeedback);
+      toast("处理状态和回复已保存");
+      await loadFeedback();
+    } catch (error) {
+      toast(`反馈保存失败：${error.message}`, "error");
+    } finally {
+      setBusy(button, false);
+    }
+  });
+  els.clientNotificationList?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-read-notification]");
+    if (!button) return;
+    try {
+      await apiFetch(`/notifications/${encodeURIComponent(button.dataset.readNotification)}/read`, { method: "PATCH" });
+      await loadClientNotifications();
+    } catch (error) {
+      toast(`通知状态更新失败：${error.message}`, "error");
+    }
+  });
+  document.querySelectorAll("[data-message-tab]").forEach((button) => button.addEventListener("click", () => setMessageTab(button.dataset.messageTab)));
+  els.notificationRecipients?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-notification-user]");
+    if (!checkbox) return;
+    if (checkbox.checked) state.selectedNotificationUserIds.add(checkbox.value);
+    else state.selectedNotificationUserIds.delete(checkbox.value);
+    updateNotificationRecipientState();
+  });
+  els.selectAllNotificationUsers?.addEventListener("change", () => {
+    state.selectedNotificationUserIds = new Set(els.selectAllNotificationUsers.checked ? state.notificationUsers.map((item) => item.id) : []);
+    els.notificationRecipients?.querySelectorAll("[data-notification-user]").forEach((checkbox) => { checkbox.checked = els.selectAllNotificationUsers.checked; });
+    updateNotificationRecipientState();
   });
   els.packageForm?.addEventListener("submit", createPointPackage);
   const setClientMode = (register) => {

@@ -82,8 +82,9 @@ const els = {
   pointCardTotalState: document.getElementById("pointCardTotalState"),
   pointCardSelectedState: document.getElementById("pointCardSelectedState"),
   selectAllPointCards: document.getElementById("selectAllPointCards"),
-  pointCardDeleteMode: document.getElementById("pointCardDeleteMode"),
   deletePointCards: document.getElementById("deletePointCards"),
+  deleteUnusedPointCards: document.getElementById("deleteUnusedPointCards"),
+  deleteRedeemedPointCards: document.getElementById("deleteRedeemedPointCards"),
   pointCardTableBody: document.getElementById("pointCardTableBody"),
   submitFreeRemaining: document.getElementById("submitFreeRemaining"),
   submitPointsBalance: document.getElementById("submitPointsBalance"),
@@ -1532,7 +1533,23 @@ async function loadPurchaseHistory() {
   if (portal !== "client" || !els.purchaseHistoryList) return;
   const data = await apiFetch("/points/transactions?page=1&page_size=100");
   const rows = (data.transactions || []).filter((item) => Number(item.amount_units || 0) > 0 && ["redeem", "admin_credit"].includes(item.kind));
-  els.purchaseHistoryList.innerHTML = rows.length ? rows.map((item) => `<article class="purchase-history-row"><div><strong>${escapeHtml(item.title || "积分充值")}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><div class="purchase-history-amount"><strong>+${escapeHtml(item.amount)}</strong><span>余额 ${item.balance == null ? "-" : escapeHtml(item.balance)}</span></div></article>`).join("") : '<div class="empty-state">暂无购买记录</div>';
+  els.purchaseHistoryList.innerHTML = rows.length ? rows.map((item) => `<article class="purchase-history-row"><div><strong>${escapeHtml(item.kind === "redeem" ? "积分充值" : item.title || "积分充值")}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><div class="purchase-history-amount"><strong>+${escapeHtml(item.amount)}</strong><span>余额 ${item.balance == null ? "-" : escapeHtml(item.balance)}</span></div></article>`).join("") : '<div class="empty-state">暂无购买记录</div>';
+}
+
+function membershipTierNumber(item) {
+  const prices = Array.from(new Set(state.memberships.map((entry) => Number(entry.points_cost || 0)))).sort((left, right) => left - right);
+  const price = Number(item?.points_cost || 0);
+  const rank = Math.max(0, prices.indexOf(price));
+  if (prices.length <= 1) return 1;
+  return Math.min(6, Math.max(1, Math.round((rank / (prices.length - 1)) * 5) + 1));
+}
+
+function updateSidebarMembershipStyle() {
+  if (!els.sidebarMembershipName) return;
+  els.sidebarMembershipName.classList.remove("membership-tier-1", "membership-tier-2", "membership-tier-3", "membership-tier-4", "membership-tier-5", "membership-tier-6");
+  if (!state.membership) return;
+  const current = state.memberships.find((item) => String(item.id || "") === String(state.membership.package_id || "") || String(item.name || "") === String(state.membership.name || ""));
+  els.sidebarMembershipName.classList.add(`membership-tier-${membershipTierNumber(current || state.membership)}`);
 }
 
 async function refreshPurchaseHistory() {
@@ -1551,7 +1568,8 @@ async function loadMemberships() {
   const data = await apiFetch("/memberships");
   state.memberships = [...(data.packages || [])];
   const highestPrice = Math.max(0, ...state.memberships.map((item) => Number(item.points_cost || 0)));
-  els.membershipList.innerHTML = state.memberships.length ? state.memberships.map((item) => `<article class="membership-item${Number(item.points_cost || 0) === highestPrice ? " membership-item-highest" : ""}"><div><span>${escapeHtml(item.duration_days)} 天${Number(item.points_cost || 0) === highestPrice ? " · 最高等级" : ""}</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || "")}</p><div class="membership-benefits"><span>并发数 ${escapeHtml(item.concurrency)}</span><span>赠送 ${escapeHtml(item.bonus_free_uses)} 次视频额度</span>${Number(item.task_discount_points || 0) > 0 ? `<span>积分减免 ${escapeHtml(item.task_discount_points)} 积分</span>` : ""}</div></div><div class="membership-price"><strong>${escapeHtml(item.points_cost)} 积分</strong><button class="primary-button" type="button" data-membership-id="${escapeHtml(item.id)}" data-membership-name="${escapeHtml(item.name)}" data-membership-cost="${escapeHtml(item.points_cost)}">积分购买</button></div></article>`).join("") : '<div class="empty-state">暂无可用会员套餐</div>';
+  els.membershipList.innerHTML = state.memberships.length ? state.memberships.map((item) => { const tier = membershipTierNumber(item); return `<article class="membership-item membership-tier-${tier}${Number(item.points_cost || 0) === highestPrice ? " membership-item-highest" : ""}"><div><span>${escapeHtml(item.duration_days)} 天${Number(item.points_cost || 0) === highestPrice ? " · 最高等级" : ""}</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || "")}</p><div class="membership-benefits"><span>并发数 ${escapeHtml(item.concurrency)}</span><span>赠送 ${escapeHtml(item.bonus_free_uses)} 次视频额度</span>${Number(item.task_discount_points || 0) > 0 ? `<span>积分减免 ${escapeHtml(item.task_discount_points)} 积分</span>` : ""}</div></div><div class="membership-price"><strong>${escapeHtml(item.points_cost)} 积分</strong><button class="primary-button" type="button" data-membership-id="${escapeHtml(item.id)}" data-membership-name="${escapeHtml(item.name)}" data-membership-cost="${escapeHtml(item.points_cost)}">积分购买</button></div></article>`; }).join("") : '<div class="empty-state">暂无可用会员套餐</div>';
+  updateSidebarMembershipStyle();
   updateMembershipPurchaseButtons();
 }
 
@@ -1608,6 +1626,7 @@ function membershipRemainingText() {
 function updateMembershipRemaining() {
   const text = membershipRemainingText();
   if (els.sidebarMembershipName && els.sidebarMembershipName.textContent !== text) els.sidebarMembershipName.textContent = text;
+  updateSidebarMembershipStyle();
 }
 
 async function purchaseMembership(button) {
@@ -1630,7 +1649,7 @@ async function purchaseMembership(button) {
 async function loadTransactions() {
   if (portal !== "client" || !els.transactionTableBody) return;
   const data = await apiFetch("/points/transactions?page=1&page_size=100");
-  const labels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "卡密兑换", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
+  const labels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "积分充值", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
   const taskKinds = new Set(["consume", "video_quota_consume", "refund", "video_quota_refund"]);
   els.transactionTableBody.innerHTML = (data.transactions || []).length ? data.transactions.map((item) => {
     const detailLines = String(item.detail || "").split("\n").filter((line) => line && !line.startsWith("任务 ID："));
@@ -1642,7 +1661,8 @@ async function loadTransactions() {
     const quotaText = quotaChange === 0 ? "-" : `${quotaChange > 0 ? "+" : ""}${quotaChange}`;
     const pointClass = pointChange > 0 ? "credit" : pointChange < 0 ? "debit" : "neutral";
     const quotaClass = quotaChange > 0 ? "credit" : quotaChange < 0 ? "debit" : "neutral";
-    return `<tr><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(labels[item.kind] || item.title || "账户变动")}</td><td><div class="ledger-description"><strong>${escapeHtml(item.title || "账户变动")}</strong>${taskReference}${detail}</div></td><td><strong class="ledger-amount ${pointClass}">${escapeHtml(pointsText)}</strong></td><td><strong class="ledger-amount ${quotaClass}">${escapeHtml(quotaText)}</strong></td><td><div class="ledger-balance"><span>积分 <strong>${item.balance == null ? "-" : escapeHtml(item.balance)}</strong></span><span>视频额度 <strong>${item.video_quota_balance == null ? "-" : escapeHtml(item.video_quota_balance)}</strong></span></div></td></tr>`;
+    const transactionTitle = item.kind === "redeem" ? "积分充值" : item.title || "账户变动";
+    return `<tr><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(labels[item.kind] || transactionTitle)}</td><td><div class="ledger-description"><strong>${escapeHtml(transactionTitle)}</strong>${taskReference}${detail}</div></td><td><strong class="ledger-amount ${pointClass}">${escapeHtml(pointsText)}</strong></td><td><strong class="ledger-amount ${quotaClass}">${escapeHtml(quotaText)}</strong></td><td><div class="ledger-balance"><span>积分 <strong>${item.balance == null ? "-" : escapeHtml(item.balance)}</strong></span><span>视频额度 <strong>${item.video_quota_balance == null ? "-" : escapeHtml(item.video_quota_balance)}</strong></span></div></td></tr>`;
   }).join("") : '<tr><td colspan="6"><div class="empty-state">暂无消费明细</div></td></tr>';
 }
 
@@ -1701,13 +1721,14 @@ async function refreshPointCards() {
   }
 }
 
-async function deletePointCardRecords() {
-  const mode = els.pointCardDeleteMode?.value || "selected";
+async function deletePointCardRecords(event) {
+  const trigger = event?.currentTarget || els.deletePointCards;
+  const mode = trigger?.dataset.pointCardDeleteMode || "selected";
   const selectedIds = Array.from(state.selectedPointCardIds);
   if (mode === "selected" && !selectedIds.length) return toast("请先勾选要删除的卡密", "error");
   const labels = { selected: `勾选的 ${selectedIds.length} 条卡密`, unused: "全部未使用卡密", redeemed: "全部已兑换卡密" };
   if (!window.confirm(`确认删除${labels[mode] || "所选卡密"}？删除后无法恢复。`)) return;
-  setBusy(els.deletePointCards, true, "删除中");
+  setBusy(trigger, true, "删除中");
   try {
     const body = mode === "selected" ? { ids: selectedIds } : { status: mode };
     const data = await apiFetch("/admin/point-cards/delete", { method: "POST", body });
@@ -1717,7 +1738,7 @@ async function deletePointCardRecords() {
   } catch (error) {
     toast(`卡密删除失败：${error.message}`, "error");
   } finally {
-    setBusy(els.deletePointCards, false);
+    setBusy(trigger, false);
   }
 }
 
@@ -2639,7 +2660,7 @@ function renderVideoLibrary() {
     return !hidden && getTaskStatus(task).url && (!Number.isFinite(completedAt) || completedAt >= cutoff);
   }).map((task) => ({ task, status: getTaskStatus(task) }));
   if (!videos.length) {
-    els.videoLibrary.innerHTML = `<div class="empty-state">暂无已完成视频</div>`;
+    els.videoLibrary.innerHTML = `<div class="empty-state video-empty-state">暂无已完成视频</div>`;
     if (els.selectAllVideos) els.selectAllVideos.checked = false;
     if (els.deleteSelectedVideos) els.deleteSelectedVideos.disabled = true;
     return;
@@ -2652,7 +2673,7 @@ function renderVideoLibrary() {
       <span>${escapeHtml(task.model || "")}</span>
       <span>用户：${escapeHtml(task.owner_name || state.userName || "当前用户")}</span>
       <time>生成完成：${escapeHtml(formatTime(task.finished_at || task.updated_at))}</time>
-      <div class="row-actions"><button class="secondary-button" type="button" data-action="download-video" data-id="${escapeHtml(task.id)}">下载视频</button><button class="danger-button" type="button" data-action="delete-video" data-id="${escapeHtml(task.id)}">从本端隐藏</button></div>
+      <div class="row-actions"><button class="secondary-button" type="button" data-action="download-video" data-id="${escapeHtml(task.id)}">下载视频</button><button class="danger-button" type="button" data-action="delete-video" data-id="${escapeHtml(task.id)}">删除</button></div>
     </article>`).join("");
   const ids = videos.map(({ task }) => task.id);
   if (els.selectAllVideos) els.selectAllVideos.checked = ids.length > 0 && ids.every((id) => state.selectedVideoIds.has(id));
@@ -2662,7 +2683,7 @@ function renderVideoLibrary() {
 async function deleteVideoTasks(ids) {
   const uniqueIds = Array.from(new Set(ids));
   if (!uniqueIds.length) return;
-  if (!window.confirm(`确认从当前入口隐藏选中的 ${uniqueIds.length} 个视频？任务记录和另一端展示不会被删除。`)) return;
+  if (!window.confirm("确认删除视频？")) return;
   let deleted = 0;
   for (const id of uniqueIds) {
     try {
@@ -2672,14 +2693,14 @@ async function deleteVideoTasks(ids) {
       state.selectedVideoIds.delete(id);
       deleted += 1;
     } catch (error) {
-      toast(`${shortId(id)} 隐藏失败：${error.message}`, "error");
+      toast(`${shortId(id)} 删除失败：${error.message}`, "error");
     }
   }
   saveSessionResults();
   renderTaskTable();
   renderVideoLibrary();
   updateDashboardMetrics();
-  if (deleted) toast(`已从当前入口隐藏 ${deleted} 个视频`);
+  if (deleted) toast(`已删除 ${deleted} 个视频`);
 }
 
 function pageTempTokens() {
@@ -3327,6 +3348,8 @@ function bindEvents() {
   els.refreshPointCards?.addEventListener("click", refreshPointCards);
   els.exportPointCards?.addEventListener("click", exportPointCardsCsv);
   els.deletePointCards?.addEventListener("click", deletePointCardRecords);
+  els.deleteUnusedPointCards?.addEventListener("click", deletePointCardRecords);
+  els.deleteRedeemedPointCards?.addEventListener("click", deletePointCardRecords);
   els.pointCardTableBody?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-copy-point-card]");
     if (button) copyText(button.dataset.copyPointCard, "卡密");

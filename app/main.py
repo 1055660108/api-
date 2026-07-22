@@ -579,7 +579,7 @@ async def points_redeem(request: Request, access: Annotated[AccessContext, Depen
             str(user.get("id") or ""),
             "redeem",
             int(card.get("points_units") or 0),
-            "卡密兑换",
+            "积分充值",
             balance_units=int(balance.get("credit_units") or 0),
             video_quota_balance=int(balance.get("free_remaining") or 0),
             reference_id=str(card.get("id") or ""),

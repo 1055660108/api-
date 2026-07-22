@@ -314,8 +314,9 @@ class AdminUITests(unittest.TestCase):
         for element_id in (
             "toggleSidebar",
             "selectAllPointCards",
-            "pointCardDeleteMode",
             "deletePointCards",
+            "deleteUnusedPointCards",
+            "deleteRedeemedPointCards",
             "openNotificationHistory",
             "notificationHistoryModal",
             "openAnnouncementHistory",
@@ -339,6 +340,16 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('body[data-portal="client"] .admin-credential-field', self.html)
         self.assertIn('max_effective_workers: maxEffectiveWorkers', self.javascript)
         self.assertIn('Number(item.task_discount_points || 0) > 0', self.javascript)
+        self.assertNotIn('id="pointCardDeleteMode"', self.html)
+        self.assertIn('data-point-card-delete-mode="unused"', self.html)
+        self.assertIn('data-point-card-delete-mode="redeemed"', self.html)
+        self.assertIn('if (!window.confirm("确认删除视频？")) return;', self.javascript)
+        self.assertNotIn("从本端隐藏", self.javascript)
+        self.assertNotIn('<span class="eyebrow">视频任务</span>', self.html)
+        self.assertIn('item.kind === "redeem" ? "积分充值"', self.javascript)
+        self.assertIn("membershipTierNumber", self.javascript)
+        self.assertIn(".video-empty-state", styles)
+        self.assertIn("scrollbar-color: #c8cdd1 #f5f6f7", styles)
         self.assertNotIn('data-user-concurrency=', self.javascript)
         self.assertIn("updateMembershipRemaining", self.javascript)
         self.assertIn('return `${state.membership.name} · 剩余 ${parts.join(" ")}`', self.javascript)

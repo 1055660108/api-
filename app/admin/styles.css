@@ -5868,3 +5868,172 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
   .message-history-modal { padding: 18px; }
   .message-history-list { margin: 0 -18px; }
 }
+
+/* 1.3.5 membership hierarchy, bottom sidebar control and table scrolling. */
+.sidebar-version {
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.sidebar-version strong { margin-left: 0; }
+
+.sidebar-client-identity {
+  gap: 6px;
+  padding: 10px;
+  background: #1d2127;
+  border: 1px solid #30363e;
+  border-radius: 7px;
+}
+
+.sidebar-client-identity strong {
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.sidebar-client-identity span {
+  min-height: 24px;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 5px;
+  line-height: 1.35;
+}
+
+.sidebar-footer { gap: 8px; }
+.sidebar-footer .sidebar-collapse {
+  align-self: stretch;
+  width: 100%;
+  height: 36px;
+  margin: 0;
+}
+
+@media (min-width: 821px) {
+  .app-shell.sidebar-collapsed .sidebar-footer {
+    display: grid;
+    gap: 8px;
+    margin-top: auto;
+  }
+  .app-shell.sidebar-collapsed .sidebar-footer .sidebar-collapse { align-self: stretch; }
+  .app-shell.sidebar-collapsed .sidebar-status { justify-content: center; padding: 10px 0; }
+  .app-shell.sidebar-collapsed #sidebarStatusText { display: none; }
+}
+
+body[data-portal="client"][data-view="points"] .commerce-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.membership-item {
+  position: relative;
+  border-top: 3px solid var(--membership-accent, #64748b);
+  background: var(--membership-surface, #fff);
+  box-shadow: 0 5px 16px rgba(15, 23, 42, .035);
+}
+
+.membership-item h3 { color: var(--membership-accent, var(--ink)); }
+.membership-item .membership-benefits span {
+  color: var(--membership-accent, #475569);
+  background: var(--membership-soft, #f1f5f9);
+}
+.membership-item .primary-button {
+  background: var(--membership-accent, var(--brand-dark));
+  border-color: var(--membership-accent, var(--brand-dark));
+}
+.membership-tier-1 { --membership-accent: #64748b; --membership-soft: #f1f5f9; --membership-surface: #fff; }
+.membership-tier-2 { --membership-accent: #2563a6; --membership-soft: #eaf2fb; --membership-surface: #fbfdff; }
+.membership-tier-3 { --membership-accent: #0f766e; --membership-soft: #e5f5f2; --membership-surface: #fbfefd; }
+.membership-tier-4 { --membership-accent: #6d4bb8; --membership-soft: #f1edfa; --membership-surface: #fdfcff; }
+.membership-tier-5 { --membership-accent: #a16207; --membership-soft: #fff5d9; --membership-surface: #fffefa; }
+.membership-tier-6 { --membership-accent: #8a6116; --membership-soft: #f7edcf; --membership-surface: #fffdf7; border-color: #b99a58; box-shadow: 0 8px 24px rgba(96, 65, 10, .1); }
+.membership-tier-6 h3,
+.membership-tier-6 .membership-price strong { color: #6f4b0d; }
+
+.sidebar-client-identity .membership-tier-1 { color: #d9e2e9; background: #2e3942; border-color: #46545f; }
+.sidebar-client-identity .membership-tier-2 { color: #d9ecff; background: #173a5d; border-color: #285f91; }
+.sidebar-client-identity .membership-tier-3 { color: #d7fff8; background: #134f4a; border-color: #23776f; }
+.sidebar-client-identity .membership-tier-4 { color: #eee6ff; background: #3d2c63; border-color: #6b51a4; }
+.sidebar-client-identity .membership-tier-5 { color: #fff0bf; background: #594415; border-color: #937225; }
+.sidebar-client-identity .membership-tier-6 { color: #fff1bc; background: #4a350c; border-color: #b18b35; box-shadow: inset 0 0 0 1px rgba(255, 221, 132, .08); }
+
+.video-empty-state {
+  display: grid;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 220px;
+  padding: 0;
+  place-items: center;
+}
+
+.account-quota-summary {
+  min-width: max-content;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.point-card-delete-controls { flex-wrap: wrap; justify-content: flex-end; }
+.point-card-delete-controls .secondary-button { min-height: 38px; }
+
+.table-wrap {
+  scrollbar-width: thin;
+  scrollbar-color: #c8cdd1 #f5f6f7;
+}
+.table-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
+.table-wrap::-webkit-scrollbar-track { background: #f5f6f7; }
+.table-wrap::-webkit-scrollbar-thumb {
+  background: #c8cdd1;
+  border: 2px solid #f5f6f7;
+  border-radius: 8px;
+}
+.table-wrap::-webkit-scrollbar-thumb:hover { background: #adb4b9; }
+.table-wrap::-webkit-scrollbar-corner { background: #f5f6f7; }
+
+@media (min-width: 821px) {
+  body[data-view="point-cards"] .main,
+  body[data-view="tasks"] .main,
+  body[data-view="quota"] .main,
+  body[data-view="users"] .main,
+  body[data-view="transactions"] .main { overflow: hidden; }
+
+  body[data-view="point-cards"] #point-cardsView.active,
+  body[data-view="tasks"] #tasksView.active,
+  body[data-view="quota"] #quotaView.active,
+  body[data-view="users"] #usersView.active,
+  body[data-view="transactions"] #transactionsView.active {
+    height: calc(100vh - 142px);
+    min-height: 0;
+  }
+
+  #point-cardsView.active > .panel,
+  #tasksView.active > .panel,
+  #quotaView.active > .panel,
+  #usersView.active > .panel,
+  #transactionsView.active > .panel {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  #point-cardsView.active .table-wrap,
+  #tasksView.active .table-wrap,
+  #quotaView.active .table-wrap,
+  #usersView.active .table-wrap,
+  #transactionsView.active .table-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none !important;
+    overflow: auto;
+    scrollbar-gutter: stable;
+  }
+}
+
+@media (max-width: 760px) {
+  .account-quota-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    min-width: 0;
+  }
+  .account-quota-summary span { justify-content: center; padding: 0 8px; }
+  .point-card-delete-controls { width: 100%; justify-content: stretch; }
+  .point-card-delete-controls button { flex: 1 1 130px; }
+}

@@ -9,8 +9,8 @@
       body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.3.4" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.3.4" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.3.5" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.3.5" />
   </head>
   <body>
     <script>
@@ -22,7 +22,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.4" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.5" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -84,14 +84,13 @@
     <div class="app-shell hidden" id="appShell">
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.4" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.5" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
           </div>
         </div>
         <div class="sidebar-version"><span>当前版本</span><strong id="sidebarVersion">--</strong></div>
-        <button class="sidebar-collapse" id="toggleSidebar" type="button" aria-label="收起侧栏" title="收起侧栏"><i data-lucide="panel-left-close" aria-hidden="true"></i></button>
 
         <nav class="nav" aria-label="主导航" id="mainNav">
           <button class="nav-item active" type="button" data-view="dashboard">
@@ -140,6 +139,7 @@
         </nav>
 
         <div class="sidebar-footer">
+          <button class="sidebar-collapse" id="toggleSidebar" type="button" aria-label="收起侧栏" title="收起侧栏"><i data-lucide="panel-left-close" aria-hidden="true"></i></button>
           <div class="sidebar-status">
             <span class="status-dot" id="sidebarStatusDot"></span>
             <span id="sidebarStatusText">未连接</span>
@@ -219,7 +219,7 @@
               <div class="point-card-filters"><input id="pointCardSearch" type="search" aria-label="搜索卡密" placeholder="搜索兑换码、用户名或备注" /><select id="pointCardTypeFilter" aria-label="卡密类型"><option value="all">全部类型</option><option value="points">积分卡密</option></select><select id="pointCardStatusFilter" aria-label="卡密状态"><option value="all">全部状态</option><option value="unused">未使用</option><option value="redeemed">已兑换</option></select></div>
               <div class="point-card-actions"><button class="secondary-button icon-text-button" id="refreshPointCards" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新</button><button class="secondary-button icon-text-button" id="exportPointCards" type="button"><i data-lucide="download" aria-hidden="true"></i>导出</button></div>
             </div>
-            <div class="point-card-bulkbar"><div class="point-card-bulk-selection"><label class="table-checkbox"><input id="selectAllPointCards" type="checkbox" /><span>选择本页</span></label></div><div class="point-card-delete-controls"><select id="pointCardDeleteMode" aria-label="删除范围"><option value="selected">删除勾选记录</option><option value="unused">删除全部未使用</option><option value="redeemed">删除全部已兑换</option></select><button class="danger-button icon-text-button" id="deletePointCards" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>删除</button></div></div>
+            <div class="point-card-bulkbar"><div class="point-card-bulk-selection"><label class="table-checkbox"><input id="selectAllPointCards" type="checkbox" /><span>选择本页</span></label></div><div class="point-card-delete-controls"><button class="danger-button icon-text-button" id="deletePointCards" type="button" data-point-card-delete-mode="selected"><i data-lucide="trash-2" aria-hidden="true"></i>删除所选</button><button class="secondary-button" id="deleteUnusedPointCards" type="button" data-point-card-delete-mode="unused">清理未使用</button><button class="secondary-button" id="deleteRedeemedPointCards" type="button" data-point-card-delete-mode="redeemed">清理已兑换</button></div></div>
             <div class="table-wrap point-card-table-wrap"><table class="users-table point-card-table"><thead><tr><th class="point-card-check-col"><span class="sr-only">选择</span></th><th>兑换码</th><th>类型</th><th>面值</th><th>状态</th><th>使用者</th><th>使用时间</th><th>备注</th></tr></thead><tbody id="pointCardTableBody"></tbody></table></div>
           </section>
         </section>
@@ -341,7 +341,7 @@
             <section class="submit-balance" id="submitBalance" aria-label="生成额度"><div class="balance-item free"><span>视频额度</span><strong><b id="submitFreeRemaining">0</b> 次</strong></div><div class="balance-divider"></div><div class="balance-item"><span>可用积分</span><strong id="submitPointsBalance">0</strong></div><div class="balance-cost" id="submitCostText">本次使用视频额度</div></section>
             <section class="submit-composer" aria-label="提交任务">
               <div class="composer-heading">
-                <div><span class="eyebrow">视频任务</span><h2>新建生成任务</h2></div>
+                <div><h2>新建生成任务</h2></div>
               </div>
               <div class="composer-main">
                 <div class="image-list" id="imageList"></div>
@@ -912,11 +912,11 @@
     </div>
     <div class="modal-backdrop hidden" id="redeemModal" aria-hidden="true">
       <section class="modal-panel redeem-modal-panel" role="dialog" aria-modal="true" aria-labelledby="redeemModalTitle">
-        <div class="modal-header"><div><h2 id="redeemModalTitle">兑换积分</h2></div><button class="modal-close" id="closeRedeemModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="redeemModalTitle">积分充值</h2></div><button class="modal-close" id="closeRedeemModal" type="button" aria-label="关闭">×</button></div>
         <div class="redeem-modal-content">
           <form class="redeem-dialog-form" id="redeemForm">
             <label class="field"><span>兑换码</span><input id="redeemCode" autocomplete="off" maxlength="32" placeholder="HS-XXXX-XXXX-XXXX-XXXX" required /></label>
-            <button class="primary-button" id="redeemButton" type="submit">立即兑换</button>
+            <button class="primary-button" id="redeemButton" type="submit">立即充值</button>
           </form>
           <section class="purchase-history-section" aria-labelledby="purchaseHistoryTitle">
             <div class="purchase-history-header"><h3 id="purchaseHistoryTitle">购买记录</h3><button class="text-button" id="refreshPurchaseHistory" type="button">刷新</button></div>
@@ -1075,6 +1075,6 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.3.4"></script>
+    <script src="/admin/assets/app.js?v=1.3.5"></script>
   </body>
 </html>

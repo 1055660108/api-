@@ -207,6 +207,7 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(len(transactions), 2)
         redeemed_transaction = next(item for item in transactions if item["kind"] == "redeem")
         self.assertEqual(redeemed_transaction["amount"], 12.5)
+        self.assertEqual(redeemed_transaction["title"], "积分充值")
         self.assertEqual(redeemed_transaction["video_quota_balance"], 1)
         registration_credit = next(item for item in transactions if item["kind"] == "video_quota_credit")
         self.assertEqual(registration_credit["video_quota_change"], 1)

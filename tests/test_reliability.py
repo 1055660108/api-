@@ -163,6 +163,22 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(delay.call_args.args[0], task["id"])
         self.assertAlmostEqual(delay.call_args.args[1], available_at.timestamp(), delta=0.1)
 
+    def test_submitted_retries_are_forced_back_into_selected_queue(self) -> None:
+        for retry_function in (store.retry_submitted_task, store.retry_timed_out_submitted_task):
+            with self.subTest(retry_function=retry_function.__name__):
+                task = self.create_task()
+                store.mark_running(task["id"], "worker-retry")
+                store.mark_submitted(task["id"])
+                queue = unittest.mock.Mock()
+                queue.requeue.return_value = True
+                with patch("app.task_queue.get_task_queue", return_value=queue):
+                    self.assertEqual(retry_function(task["id"], "结果超时", delay_seconds=10), 1)
+                queued_at = queue.requeue.call_args.args[1]
+                self.assertEqual(queue.requeue.call_args.args[0], task["id"])
+                self.assertIsInstance(queued_at, datetime)
+                self.assertGreater(queued_at, datetime.now(timezone.utc))
+                self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_PENDING)
+
     def test_corrupt_task_json_is_not_overwritten(self) -> None:
         task = self.create_task()
         result_path = store.result_path(task["id"])

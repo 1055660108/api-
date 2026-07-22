@@ -1348,7 +1348,7 @@ async function submitAdminAnnouncement(event) {
   try {
     await apiFetch("/admin/announcements", { method: "POST", body: { title: els.announcementTitle.value.trim(), content: els.announcementContent.value.trim(), level: els.announcementLevel.value, lock_screen: els.announcementLockScreen.checked } });
     els.adminAnnouncementForm.reset();
-    els.announcementLockField.classList.add("hidden");
+    setAnnouncementComposerLevel("large");
     await loadAdminAnnouncements();
     toast("公告已发布");
   } catch (error) {
@@ -1356,6 +1356,19 @@ async function submitAdminAnnouncement(event) {
   } finally {
     setBusy(els.publishAnnouncementButton, false);
   }
+}
+
+function setAnnouncementComposerLevel(level) {
+  const selected = ["small", "large", "emergency"].includes(level) ? level : "large";
+  if (els.announcementLevel) els.announcementLevel.value = selected;
+  document.querySelectorAll("[data-announcement-level]").forEach((button) => {
+    const active = button.dataset.announcementLevel === selected;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-checked", String(active));
+  });
+  const emergency = selected === "emergency";
+  els.announcementLockField?.classList.toggle("hidden", !emergency);
+  if (!emergency && els.announcementLockScreen) els.announcementLockScreen.checked = false;
 }
 
 async function loadMessageCenter(options = {}) {
@@ -1515,7 +1528,7 @@ function membershipRemainingText() {
 }
 
 function updateMembershipRemaining() {
-  const text = state.membership?.expires_at ? `${state.membership.name} 至 ${formatTime(state.membership.expires_at)}` : "普通用户";
+  const text = membershipRemainingText();
   if (els.sidebarMembershipName && els.sidebarMembershipName.textContent !== text) els.sidebarMembershipName.textContent = text;
 }
 
@@ -1895,9 +1908,14 @@ async function loadProxyNodes(refresh = false) {
   if (portal !== "admin") return;
   setBusy(els.refreshProxyNodes, true, "刷新中");
   try {
-    let data = await apiFetch(`/config/proxy-nodes${refresh ? "?refresh=true" : ""}`);
+    let data = await apiFetch(`/config/proxy-nodes${refresh ? "?refresh=true" : ""}`, { timeout: refresh ? 60000 : 20000 });
+    let latencyError = null;
     if (refresh && Array.isArray(data.nodes) && data.nodes.length) {
-      data = { ...data, ...(await apiFetch("/config/proxy-nodes/latency", { method: "POST" })) };
+      try {
+        data = { ...data, ...(await apiFetch("/config/proxy-nodes/latency", { method: "POST", timeout: 90000 })) };
+      } catch (error) {
+        latencyError = error;
+      }
     }
     state.proxyNodes = Array.isArray(data.nodes) ? data.nodes : [];
     state.proxyEnabled = Boolean(data.enabled);
@@ -1906,7 +1924,8 @@ async function loadProxyNodes(refresh = false) {
     if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
     if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
     renderProxyNodes();
-    if (els.proxyNodesState) els.proxyNodesState.textContent = refresh ? "延迟已更新" : "已读取";
+    if (els.proxyNodesState) els.proxyNodesState.textContent = latencyError ? "节点已更新，延迟未完成" : refresh ? "延迟已更新" : "已读取";
+    if (latencyError) toast(`节点列表已更新，部分延迟检测失败：${latencyError.message}`, "error");
   } catch (error) {
     if (els.proxyNodesState) els.proxyNodesState.textContent = "读取失败";
     if (refresh || error.message !== "proxy subscription is not configured") toast(proxySubscriptionError(error), "error");
@@ -3202,11 +3221,9 @@ function bindEvents() {
   els.confirmAnnouncementModal?.addEventListener("click", () => closeActiveAnnouncement().catch((error) => toast(`公告状态更新失败：${error.message}`, "error")));
   els.closeAnnouncementModal?.addEventListener("click", () => closeActiveAnnouncement().catch((error) => toast(`公告状态更新失败：${error.message}`, "error")));
   els.closeEmergencyAnnouncement?.addEventListener("click", () => closeActiveAnnouncement().catch((error) => toast(`公告状态更新失败：${error.message}`, "error")));
-  els.announcementLevel?.addEventListener("change", () => {
-    const emergency = els.announcementLevel.value === "emergency";
-    els.announcementLockField.classList.toggle("hidden", !emergency);
-    if (!emergency) els.announcementLockScreen.checked = false;
-  });
+  document.querySelectorAll("[data-announcement-level]").forEach((button) => button.addEventListener("click", () => {
+    setAnnouncementComposerLevel(button.dataset.announcementLevel);
+  }));
   els.membershipForm?.addEventListener("submit", createMembership);
   els.refreshMessages?.addEventListener("click", refreshMessageCenter);
   els.feedbackTableBody?.addEventListener("change", async (event) => {

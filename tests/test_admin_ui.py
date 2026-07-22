@@ -47,6 +47,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('node.country === state.proxyCountry', self.javascript)
         for status in ('"不可用"', '"已过期"', '"未检测"'):
             self.assertIn(status, self.javascript)
+        self.assertIn('timeout: refresh ? 60000 : 20000', self.javascript)
+        self.assertIn('timeout: 90000', self.javascript)
+        self.assertIn('节点已更新，延迟未完成', self.javascript)
 
     def test_release_version_is_displayed_in_sidebar_and_admin_update_panel(self) -> None:
         self.assertIn('id="sidebarVersion"', self.html)
@@ -227,6 +230,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("视频额度变动", self.html)
         self.assertIn('video_quota_consume: "额度使用"', self.javascript)
         self.assertIn('item.video_quota_change', self.javascript)
+        self.assertIn('data-announcement-level="small"', self.html)
+        self.assertIn('data-announcement-level="large"', self.html)
+        self.assertIn('data-announcement-level="emergency"', self.html)
+        self.assertIn('setAnnouncementComposerLevel(button.dataset.announcementLevel)', self.javascript)
         self.assertIn('els.refreshTransactions?.addEventListener("click", refreshTransactions)', self.javascript)
         self.assertIn('els.refreshPointCards?.addEventListener("click", refreshPointCards)', self.javascript)
         self.assertIn('toast("消费明细已刷新")', self.javascript)
@@ -236,6 +243,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("height: 108px", styles)
         self.assertIn("overflow-wrap: anywhere", styles)
         self.assertNotIn(".ledger-task-id { width: fit-content", styles)
+        self.assertIn("#feedbackModal .feedback-modal-panel", styles)
+        self.assertIn(".announcement-level-picker", styles)
+        self.assertIn(".ledger-table .ledger-detail-col { width: 28%; }", styles)
 
     def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
         for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "积分账号", "当前积分"):
@@ -251,6 +261,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('data-delete-announcement', self.javascript)
         self.assertNotIn('data-user-concurrency=', self.javascript)
         self.assertIn("updateMembershipRemaining", self.javascript)
+        self.assertIn('return `${state.membership.name} · 剩余 ${parts.join(" ")}`', self.javascript)
+        self.assertIn("const text = membershipRemainingText();", self.javascript)
+        self.assertNotIn('`${state.membership.name} 至 ${formatTime(state.membership.expires_at)}`', self.javascript)
         self.assertIn("document.hidden", self.javascript)
         self.assertIn("30000", self.javascript)
         self.assertIn('apiFetch("/auth/access-state")', self.javascript)

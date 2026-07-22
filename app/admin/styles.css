@@ -3662,6 +3662,120 @@ body[data-portal="admin"] .client-billing-panel {
   text-align: left;
 }
 
+/* Final control polish for operational views. */
+
+#feedbackModal .feedback-modal-panel {
+  width: min(calc(100vw - 40px), 720px);
+  padding: 28px 30px;
+  gap: 18px;
+  border-radius: 8px;
+}
+
+#feedbackModal .modal-header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+#feedbackModal #feedbackContent {
+  min-height: 220px;
+  resize: vertical;
+}
+
+#feedbackModal .modal-actions {
+  padding-top: 4px;
+}
+
+.announcement-level-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.announcement-level-picker button {
+  display: grid;
+  gap: 4px;
+  min-height: 68px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: #f7f9fa;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-align: left;
+}
+
+.announcement-level-picker button:hover {
+  border-color: #9fc7c2;
+  background: #f2f8f7;
+}
+
+.announcement-level-picker button.active {
+  color: #075e57;
+  background: #e8f5f3;
+  border-color: #4d9b92;
+  box-shadow: inset 0 0 0 1px #4d9b92;
+}
+
+.announcement-level-picker strong {
+  font-size: 14px;
+}
+
+.announcement-level-picker small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.node-selection-panel .node-controls {
+  grid-template-columns: repeat(3, minmax(180px, 1fr)) auto;
+  gap: 14px;
+  padding: 18px;
+  background: #f7f9fa;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.node-selection-panel .node-controls .field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.node-selection-panel .node-controls .field > span {
+  color: #34434b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.node-selection-panel .node-controls select {
+  width: 100%;
+  height: 40px;
+  padding: 0 34px 0 11px;
+  color: var(--ink);
+  background-color: #fff;
+  border: 1px solid #c7d3d9;
+  border-radius: 6px;
+}
+
+.node-selection-panel #proxyNodesState {
+  align-self: end;
+  min-width: 132px;
+  min-height: 40px;
+  justify-content: center;
+  white-space: normal;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .announcement-level-picker,
+  .node-selection-panel .node-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .node-selection-panel #proxyNodesState {
+    justify-self: stretch;
+  }
+}
+
 /* Stable consumption ledger rows */
 .ledger-table-wrap {
   overflow-x: auto;
@@ -5272,22 +5386,55 @@ body[data-portal="client"] .metric-card {
 #tasksView .task-table {
   display: table !important;
   width: 100%;
-  min-width: 900px;
+  min-width: 1040px;
   table-layout: fixed;
 }
 
-#tasksView .task-table .task-col { width: 23%; }
-#tasksView .task-table .owner-col { width: 12%; }
-#tasksView .task-table .status-col { width: 11%; }
-#tasksView .task-table .result-col { width: 26%; }
+#tasksView .task-table .task-col { width: 25%; }
+#tasksView .task-table .owner-col { width: 10%; }
+#tasksView .task-table .status-col { width: 10%; }
+#tasksView .task-table .result-col { width: 24%; }
 #tasksView .task-table .video-col { width: 10%; }
-#tasksView .task-table .action-col { width: 18%; }
+#tasksView .task-table .action-col { width: 21%; }
 
 #tasksView .task-table th,
 #tasksView .task-table td {
   box-sizing: border-box;
-  padding: 12px;
+  height: 96px;
+  padding: 12px 14px;
   vertical-align: middle;
+}
+
+#tasksView .task-table th {
+  height: 44px;
+}
+
+#tasksView .table-wrap {
+  scrollbar-gutter: stable;
+}
+
+#tasksView .task-id,
+#tasksView .task-prompt-row,
+#tasksView .result-text-button,
+#tasksView .task-status-stack,
+#tasksView .url-cell {
+  width: 100%;
+}
+
+#tasksView .task-prompt-row {
+  grid-template-columns: minmax(0, 1fr) 48px;
+}
+
+#tasksView .task-copy-prompt {
+  width: 48px;
+}
+
+#tasksView .row-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(64px, 1fr));
+  width: 100%;
+  max-width: 260px;
+  margin: 0 auto;
 }
 
 #tasksView .task-table th:nth-child(2),
@@ -5307,3 +5454,11 @@ body[data-portal="client"] .metric-card {
 #tasksView .task-table td:nth-child(4) {
   text-align: left;
 }
+
+/* Keep ledger financial columns stable after the legacy layout rules. */
+.ledger-table .ledger-time-col { width: 14%; }
+.ledger-table .ledger-type-col { width: 10%; }
+.ledger-table .ledger-detail-col { width: 28%; }
+.ledger-table .ledger-points-col { width: 13%; }
+.ledger-table .ledger-quota-col { width: 16%; }
+.ledger-table .ledger-balance-col { width: 19%; }

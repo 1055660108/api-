@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.2.4" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.4-2" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.4-5" />
   </head>
   <body>
     <script>
@@ -322,7 +322,7 @@
                 <div class="message-list" id="adminNotificationList"></div>
               </section>
             </section>
-            <section class="message-admin-grid hidden" data-message-panel="announcements"><form class="panel notification-compose" id="adminAnnouncementForm"><div class="panel-header"><div><h2>发布公告</h2><p>按影响范围选择公告展示方式。</p></div></div><label class="field"><span>公告类型</span><select id="announcementLevel"><option value="small">小公告（右下角显示 8 秒）</option><option value="large" selected>大公告（登录弹窗）</option><option value="emergency">紧急公告（全屏）</option></select></label><label class="field"><span>公告标题</span><input id="announcementTitle" maxlength="120" required /></label><label class="field"><span>公告内容</span><textarea id="announcementContent" maxlength="5000" required></textarea></label><label class="toggle-field announcement-lock-field hidden" id="announcementLockField"><input id="announcementLockScreen" type="checkbox" /><span>锁定所有用户界面，管理员停用公告后解除</span></label><div class="modal-actions"><button class="primary-button" id="publishAnnouncementButton" type="submit">发布公告</button></div></form><section class="panel notification-history"><div class="panel-header"><div><h2>公告记录</h2><p>可调整紧急公告锁屏状态或停用公告。</p></div></div><div class="message-list" id="adminAnnouncementList"></div></section></section>
+            <section class="message-admin-grid hidden" data-message-panel="announcements"><form class="panel notification-compose" id="adminAnnouncementForm"><div class="panel-header"><div><h2>发布公告</h2><p>按影响范围选择公告展示方式。</p></div></div><div class="field"><span>公告类型</span><input id="announcementLevel" type="hidden" value="large" /><div class="announcement-level-picker" role="radiogroup" aria-label="公告类型"><button type="button" data-announcement-level="small" role="radio" aria-checked="false"><strong>小公告</strong><small>右下角显示 8 秒</small></button><button class="active" type="button" data-announcement-level="large" role="radio" aria-checked="true"><strong>大公告</strong><small>登录后弹窗显示</small></button><button type="button" data-announcement-level="emergency" role="radio" aria-checked="false"><strong>紧急公告</strong><small>全屏维护通知</small></button></div></div><label class="field"><span>公告标题</span><input id="announcementTitle" maxlength="120" required /></label><label class="field"><span>公告内容</span><textarea id="announcementContent" maxlength="5000" required></textarea></label><label class="toggle-field announcement-lock-field hidden" id="announcementLockField"><input id="announcementLockScreen" type="checkbox" /><span>锁定所有用户界面，管理员停用公告后解除</span></label><div class="modal-actions"><button class="primary-button" id="publishAnnouncementButton" type="submit">发布公告</button></div></form><section class="panel notification-history"><div class="panel-header"><div><h2>公告记录</h2><p>可调整紧急公告锁屏状态或停用公告。</p></div></div><div class="message-list" id="adminAnnouncementList"></div></section></section>
           </div>
         </section>
 
@@ -890,7 +890,7 @@
       </form>
     </div>
     <div class="modal-backdrop hidden" id="feedbackModal" aria-hidden="true">
-      <form class="modal-panel security-modal" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
+      <form class="modal-panel security-modal feedback-modal-panel" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
         <div class="modal-header"><div><span class="modal-eyebrow">用户反馈</span><h2 id="feedbackModalTitle">体验反馈</h2></div><button class="modal-close" id="closeFeedbackModal" type="button" aria-label="关闭">×</button></div>
         <label class="field"><span>反馈类型</span><select id="feedbackCategory"><option>体验建议</option><option>问题反馈</option><option>其他</option></select></label>
         <label class="field"><span>反馈内容</span><textarea id="feedbackContent" minlength="2" maxlength="5000" required placeholder="请描述你的使用体验或遇到的问题"></textarea></label>
@@ -1032,6 +1032,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.2.4-2"></script>
+    <script src="/admin/assets/app.js?v=1.2.4-5"></script>
   </body>
 </html>

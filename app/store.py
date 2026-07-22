@@ -589,6 +589,16 @@ def record_retry(task_id: str, reason: str = "") -> int:
         return count
 
 
+def requeue_pending_task(task_id: str) -> bool:
+    meta = get_meta(task_id)
+    if str(meta.get("status") or "") != STATUS_PENDING or bool(meta.get("cancel_requested")):
+        return False
+    from .task_queue import get_task_queue
+
+    available_at = parse_time(str(meta.get("next_attempt_at") or ""))
+    return get_task_queue().requeue(task_id, available_at)
+
+
 def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_RETRIES, delay_seconds: int = 45) -> int:
     max_retries = max(1, min(MAX_TASK_RETRIES, int(max_retries)))
     with task_lock(task_id):
@@ -606,7 +616,10 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
                 meta["updated_at"] = utc_now()
                 return count
 
-            return postgres.mutate_task_part(task_id, "meta", mutate)
+            count = postgres.mutate_task_part(task_id, "meta", mutate)
+            if count <= max_retries:
+                requeue_pending_task(task_id)
+            return count
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_SUBMITTED:
             return max(0, int(meta.get("retry_count") or 0))
@@ -619,6 +632,8 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
         meta["updated_at"] = utc_now()
         _write_storage_json(meta_path(task_id), meta)
+        if count <= max_retries:
+            requeue_pending_task(task_id)
         return count
 
 
@@ -641,7 +656,10 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
                 meta["updated_at"] = utc_now()
                 return count
 
-            return postgres.mutate_task_part(task_id, "meta", mutate)
+            count = postgres.mutate_task_part(task_id, "meta", mutate)
+            if count <= max_retries:
+                requeue_pending_task(task_id)
+            return count
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_SUBMITTED or bool(meta.get("cancel_requested")):
             return max(0, int(meta.get("result_timeout_retry_count") or 0))
@@ -656,6 +674,8 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
         meta["updated_at"] = utc_now()
         _write_storage_json(meta_path(task_id), meta)
+        if count <= max_retries:
+            requeue_pending_task(task_id)
         return count
 
 

@@ -19,6 +19,9 @@ class FileTaskQueue:
     def enqueue(self, task_id: str, available_at: datetime | None = None) -> bool:
         return True
 
+    def requeue(self, task_id: str, available_at: datetime | None = None) -> bool:
+        return True
+
     def claim(self, worker_id: str, claimed_ids: set[str], active_counts: dict[str, int], concurrency_limits: dict[str, int]) -> str | None:
         from .store import claim_next_pending
 
@@ -71,6 +74,36 @@ class RedisTaskQueue:
         return 1
         """
         return bool(self.client.eval(script, 3, self.known, self.delayed, self.ready, task_id, score, time.time()))
+
+    def requeue(self, task_id: str, available_at: datetime | None = None) -> bool:
+        score = available_at.timestamp() if available_at else 0
+        script = """
+        redis.call('LREM', KEYS[1], 0, ARGV[1])
+        redis.call('LREM', KEYS[2], 0, ARGV[1])
+        redis.call('ZREM', KEYS[3], ARGV[1])
+        redis.call('ZREM', KEYS[4], ARGV[1])
+        redis.call('HDEL', KEYS[5], ARGV[1])
+        redis.call('SADD', KEYS[6], ARGV[1])
+        if tonumber(ARGV[2]) > tonumber(ARGV[3]) then
+          redis.call('ZADD', KEYS[3], ARGV[2], ARGV[1])
+        else
+          redis.call('LPUSH', KEYS[1], ARGV[1])
+        end
+        return 1
+        """
+        return bool(self.client.eval(
+            script,
+            6,
+            self.ready,
+            self.processing,
+            self.delayed,
+            self.leases,
+            self.owners,
+            self.known,
+            task_id,
+            score,
+            time.time(),
+        ))
 
     def _promote(self) -> int:
         now = time.time()

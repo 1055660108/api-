@@ -294,6 +294,21 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('data-delete-feedback', self.javascript)
         self.assertIn('data-delete-notification', self.javascript)
         self.assertIn('data-delete-announcement', self.javascript)
+
+    def test_client_copy_and_redeem_modal_match_133_contract(self) -> None:
+        for element_id in ("openRedeemModal", "redeemModal", "redeemForm", "purchaseHistoryList", "refreshPurchaseHistory"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertNotIn("高级会员优先生效，暂停的低级会员不会消耗剩余天数。", self.html)
+        self.assertNotIn('<label class="field search-field">\n                <span>搜索</span>', self.html)
+        self.assertNotIn("管理员发送给你的服务通知和处理消息。", self.html)
+        self.assertNotIn("查看管理员发布的平台公告。", self.html)
+        self.assertIn("暂无反馈", self.javascript)
+        self.assertIn('isClient ? "用户设置" : "设置"', self.javascript)
+        self.assertIn("async function loadPurchaseHistory()", self.javascript)
+        self.assertIn('["redeem", "admin_credit"]', self.javascript)
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertNotIn('body[data-portal="client"][data-view="points"] .page-header {\n  display: none;', styles)
+        self.assertIn(".redeem-modal-panel", styles)
         self.assertNotIn('data-user-concurrency=', self.javascript)
         self.assertIn("updateMembershipRemaining", self.javascript)
         self.assertIn('return `${state.membership.name} · 剩余 ${parts.join(" ")}`', self.javascript)

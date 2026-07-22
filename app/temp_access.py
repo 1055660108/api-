@@ -95,6 +95,16 @@ def _write_data(data: dict[str, Any]) -> None:
     tmp.replace(TEMP_TOKENS_PATH)
 
 
+def _read_token_entry(token_hash: str) -> dict[str, Any] | None:
+    normalized_hash = str(token_hash or "").strip().lower()
+    if not normalized_hash:
+        return None
+    if postgres.enabled():
+        return postgres.read_temp_token(normalized_hash)
+    entry = _read_data()["tokens"].get(normalized_hash)
+    return dict(entry) if isinstance(entry, dict) else None
+
+
 def _public_token(token_hash: str, entry: dict[str, Any]) -> dict[str, Any]:
     limit = max(0, int(entry.get("limit") or TEMP_TOKEN_LIMIT))
     used = max(0, int(entry.get("used") or 0))
@@ -208,10 +218,7 @@ def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency:
     token_hash = str(token_hash or "").strip().lower()
     with _LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> dict[str, Any]:
-                entry = (data.get("tokens") or {}).get(token_hash)
-                if not isinstance(entry, dict):
-                    raise KeyError("token not found")
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
                 if limit is not None:
                     entry["limit"] = max(1, min(100000, int(limit)))
                 if concurrency is not None:
@@ -225,7 +232,7 @@ def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency:
                 entry["updated_at"] = _now()
                 return _public_token(token_hash, entry)
 
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            return postgres.mutate_temp_token(token_hash, mutate)
         data = _read_data()
         entry = data["tokens"].get(token_hash)
         if not isinstance(entry, dict):
@@ -250,10 +257,7 @@ def deduct_temp_points(token_hash: str, free_limit: int, amount: object) -> dict
     units = points_to_units(amount)
     with _LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> dict[str, Any]:
-                entry = (data.get("tokens") or {}).get(token_hash)
-                if not isinstance(entry, dict):
-                    raise KeyError("token not found")
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
                 _migrate_entry(entry, free_limit)
                 if int(entry.get("credit_units") or 0) < units:
                     raise ValueError("用户积分不足")
@@ -262,7 +266,7 @@ def deduct_temp_points(token_hash: str, free_limit: int, amount: object) -> dict
                 entry["updated_at"] = _now()
                 return _public_token(token_hash, entry)
 
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            return postgres.mutate_temp_token(token_hash, mutate)
         data = _read_data()
         entry = data["tokens"].get(token_hash)
         if not isinstance(entry, dict):
@@ -295,13 +299,7 @@ def purchase_temp_membership(token_hash: str, free_limit: int, points_cost: obje
             return _public_token(token_hash, entry)
 
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> dict[str, Any]:
-                entry = (data.get("tokens") or {}).get(token_hash)
-                if not isinstance(entry, dict):
-                    raise KeyError("token not found")
-                return apply(entry)
-
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            return postgres.mutate_temp_token(token_hash, apply)
         data = _read_data()
         entry = data["tokens"].get(token_hash)
         if not isinstance(entry, dict):
@@ -324,13 +322,7 @@ def delete_temp_token(token_hash: str) -> bool:
     token_hash = str(token_hash or "").strip().lower()
     with _LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> bool:
-                tokens = data.setdefault("tokens", {})
-                existed = token_hash in tokens
-                tokens.pop(token_hash, None)
-                return existed
-
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            return postgres.delete_temp_token(token_hash)
         data = _read_data()
         existed = token_hash in data["tokens"]
         data["tokens"].pop(token_hash, None)
@@ -342,23 +334,12 @@ def rotate_temp_token(token_hash: str) -> dict[str, Any]:
     token_hash = str(token_hash or "").strip().lower()
     with _LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> dict[str, Any]:
-                tokens = data.setdefault("tokens", {})
-                entry = tokens.get(token_hash)
-                if not isinstance(entry, dict):
-                    raise KeyError("token not found")
-                while True:
-                    token = f"tmp_{secrets.token_urlsafe(24)}"
-                    new_hash = hash_token(token)
-                    if new_hash not in tokens:
-                        break
-                replacement = dict(entry)
-                replacement.update(token=token, updated_at=_now())
-                tokens[new_hash] = replacement
-                tokens.pop(token_hash, None)
-                return _public_token(new_hash, replacement)
-
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            while True:
+                token = f"tmp_{secrets.token_urlsafe(24)}"
+                new_hash = hash_token(token)
+                replacement = postgres.rotate_temp_token(token_hash, new_hash, token, _now())
+                if replacement is not None:
+                    return _public_token(new_hash, replacement)
         data = _read_data()
         entry = data["tokens"].get(token_hash)
         if not isinstance(entry, dict):
@@ -381,8 +362,7 @@ def get_temp_context(token: str) -> AccessContext | None:
     if not token:
         return None
     token_hash = hash_token(token)
-    data = _read_data()
-    entry = data["tokens"].get(token_hash)
+    entry = _read_token_entry(token_hash)
     if not isinstance(entry, dict):
         return None
     limit = max(0, int(entry.get("limit") or TEMP_TOKEN_LIMIT))
@@ -404,12 +384,12 @@ def get_temp_context(token: str) -> AccessContext | None:
 
 def get_temp_context_by_hash(token_hash: str) -> AccessContext | None:
     normalized_hash = str(token_hash or "").strip().lower()
-    entry = _read_data()["tokens"].get(normalized_hash)
+    entry = _read_token_entry(normalized_hash)
     return get_temp_context_from_entry(normalized_hash, entry) if isinstance(entry, dict) else None
 
 
 def get_temp_reservation(token_hash: str, task_id: str) -> dict[str, Any]:
-    entry = _read_data()["tokens"].get(str(token_hash or "").strip().lower())
+    entry = _read_token_entry(token_hash)
     if not isinstance(entry, dict):
         return {}
     reservation = entry.get("reservations", {}).get(str(task_id or ""))
@@ -437,20 +417,40 @@ def _sync_legacy_fields(entry: dict[str, Any]) -> None:
     entry["used"] = 0
 
 
+def _prune_reservations(entry: dict[str, Any], max_closed: int = 1000) -> None:
+    reservations = entry.get("reservations")
+    if not isinstance(reservations, dict) or len(reservations) <= max_closed:
+        return
+    active: dict[str, Any] = {}
+    closed: list[tuple[str, dict[str, Any]]] = []
+    for task_id, reservation in reservations.items():
+        if not isinstance(reservation, dict):
+            continue
+        if str(reservation.get("status") or "reserved") == "reserved":
+            active[str(task_id)] = reservation
+        else:
+            closed.append((str(task_id), reservation))
+    closed.sort(
+        key=lambda item: str(item[1].get("refunded_at") or item[1].get("created_at") or ""),
+        reverse=True,
+    )
+    entry["reservations"] = {**active, **dict(closed[:max_closed])}
+
+
 def migrate_temp_token(token_hash: str, free_limit: int) -> bool:
     with _LOCK:
         normalized_hash = str(token_hash or "").strip().lower()
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> bool:
-                entry = (data.get("tokens") or {}).get(normalized_hash)
-                if not isinstance(entry, dict):
-                    return False
+            def mutate(entry: dict[str, Any]) -> bool:
                 changed = _migrate_entry(entry, free_limit)
                 if changed:
                     entry["updated_at"] = _now()
                 return changed
 
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            try:
+                return postgres.mutate_temp_token(normalized_hash, mutate)
+            except KeyError:
+                return False
         data = _read_data()
         entry = data["tokens"].get(normalized_hash)
         if not isinstance(entry, dict):
@@ -468,17 +468,14 @@ def add_temp_credit_units(token_hash: str, units: int) -> dict[str, Any]:
     with _LOCK:
         normalized_hash = str(token_hash or "").strip().lower()
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> dict[str, Any]:
-                entry = (data.get("tokens") or {}).get(normalized_hash)
-                if not isinstance(entry, dict):
-                    raise KeyError("token not found")
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
                 _migrate_entry(entry, 0)
                 entry["credit_units"] = int(entry.get("credit_units") or 0) + int(units)
                 _sync_legacy_fields(entry)
                 entry["updated_at"] = _now()
                 return _public_token(normalized_hash, entry)
 
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            return postgres.mutate_temp_token(normalized_hash, mutate)
         data = _read_data()
         entry = data["tokens"].get(normalized_hash)
         if not isinstance(entry, dict):
@@ -496,10 +493,7 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
         return access
     with _LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> AccessContext:
-                entry = (data.get("tokens") or {}).get(access.token_hash)
-                if not isinstance(entry, dict):
-                    raise QuotaExceeded("temporary token is invalid")
+            def mutate(entry: dict[str, Any]) -> AccessContext:
                 _migrate_entry(entry, access.free_remaining)
                 reservations = entry.setdefault("reservations", {})
                 if task_id and isinstance(reservations.get(task_id), dict):
@@ -521,11 +515,15 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
                     entry["credit_units"] = int(entry.get("credit_units") or 0) - charged_units
                 if task_id:
                     reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "user_id": str(user_id or ""), "created_at": _now()}
+                _prune_reservations(entry)
                 _sync_legacy_fields(entry)
                 entry["updated_at"] = _now()
                 return get_temp_context_from_entry(access.token_hash, entry)
 
-            return postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            try:
+                return postgres.mutate_temp_token(access.token_hash, mutate)
+            except KeyError as exc:
+                raise QuotaExceeded("temporary token is invalid") from exc
         data = _read_data()
         entry = data["tokens"].get(access.token_hash)
         if not isinstance(entry, dict):
@@ -551,6 +549,7 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
             entry["credit_units"] = int(entry.get("credit_units") or 0) - charged_units
         if task_id:
             reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "user_id": str(user_id or ""), "created_at": _now()}
+        _prune_reservations(entry)
         _sync_legacy_fields(entry)
         entry["updated_at"] = _now()
         _write_data(data)
@@ -601,10 +600,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
     refunded_transaction: dict[str, Any] = {}
     with _LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> bool:
-                entry = (data.get("tokens") or {}).get(token_hash)
-                if not isinstance(entry, dict):
-                    return False
+            def mutate(entry: dict[str, Any]) -> bool:
                 if int(entry.get("billing_version") or 0) >= 2 and refund_id:
                     reservation = entry.setdefault("reservations", {}).get(refund_id)
                     if not isinstance(reservation, dict) or reservation.get("status") != "reserved":
@@ -629,6 +625,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                         })
                     reservation["status"] = "refunded"
                     reservation["refunded_at"] = _now()
+                    _prune_reservations(entry)
                     _sync_legacy_fields(entry)
                 else:
                     refunded = [str(item) for item in entry.get("quota_refund_ids") or [] if item]
@@ -641,7 +638,10 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                 entry["updated_at"] = _now()
                 return True
 
-            refunded = postgres.mutate_document("temp_tokens", {"tokens": {}}, mutate)
+            try:
+                refunded = postgres.mutate_temp_token(token_hash, mutate)
+            except KeyError:
+                refunded = False
             if refunded:
                 _record_reservation_refund(refunded_transaction, refund_id)
             return refunded
@@ -673,6 +673,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                 })
             reservation["status"] = "refunded"
             reservation["refunded_at"] = _now()
+            _prune_reservations(entry)
             _sync_legacy_fields(entry)
         else:
             refunded = [str(item) for item in entry.get("quota_refund_ids") or [] if item]

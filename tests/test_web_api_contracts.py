@@ -357,6 +357,17 @@ class WebAPIContractTests(unittest.TestCase):
             for model in platform["all_models"]:
                 self.assertEqual(set(model), {"name", "enabled", "cost"})
 
+    def test_global_worker_configuration_accepts_999_and_rejects_1000(self) -> None:
+        headers = {"X-API-Token": self.admin_token}
+        accepted = self.client.post("/config/workers", headers=headers, json={"browser_workers": 999})
+        self.assertEqual(accepted.status_code, 200)
+        payload = accepted.json()
+        self.assertEqual(payload["browser_workers"], 999)
+        self.assertLessEqual(payload["effective_browser_workers"], payload["capacity_limit"])
+        rejected = self.client.post("/config/workers", headers=headers, json={"browser_workers": 1000})
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(config.load_settings().browser_workers, 999)
+
     def test_proxy_node_apis_list_measure_select_and_switch(self) -> None:
         self.client.post(
             "/config/proxy-api",

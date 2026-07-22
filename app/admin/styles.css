@@ -4906,10 +4906,6 @@ textarea:focus-visible {
   border-bottom: 1px solid var(--line);
 }
 
-body[data-portal="client"][data-view="points"] .page-header {
-  display: none;
-}
-
 body[data-portal="client"][data-view="points"] .commerce-header {
   padding-top: 0;
 }
@@ -4943,6 +4939,7 @@ body[data-portal="client"][data-view="points"] .commerce-header {
 
 .purchase-balance strong { color: var(--ink); font-size: 30px; line-height: 1; }
 .purchase-balance span { color: var(--muted); font-size: 12px; }
+.commerce-actions { display: flex; align-items: center; justify-content: flex-end; gap: 16px; }
 .purchase-options { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 18px 0 0; }
 
 .purchase-options button.purchase-package {
@@ -5025,6 +5022,49 @@ body[data-portal="client"][data-view="points"] .commerce-header {
 .redeem-panel { align-content: start; }
 .redeem-heading { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .section-index { color: var(--brand-dark); font-size: 11px; font-weight: 700; }
+
+.redeem-modal-panel {
+  width: min(100%, 760px);
+  max-height: min(86vh, 720px);
+  overflow: hidden;
+}
+
+.redeem-modal-content {
+  display: grid;
+  gap: 22px;
+  min-height: 0;
+}
+
+.redeem-dialog-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.purchase-history-section {
+  min-height: 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.purchase-history-header,
+.purchase-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.purchase-history-header { margin-bottom: 10px; }
+.purchase-history-header h3 { margin: 0; font-size: 15px; }
+.purchase-history-list { display: grid; gap: 0; max-height: 330px; overflow-y: auto; }
+.purchase-history-row { min-height: 64px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.purchase-history-row:last-child { border-bottom: 0; }
+.purchase-history-row > div { display: grid; gap: 4px; min-width: 0; }
+.purchase-history-row span { color: var(--muted); font-size: 12px; }
+.purchase-history-amount { flex: 0 0 auto; text-align: right; }
+.purchase-history-amount strong { color: var(--ok); font-size: 16px; }
 
 .point-card-workspace { padding: 0; border-radius: 8px; }
 .point-card-header { padding: 20px; border-bottom: 1px solid var(--line); }
@@ -5514,4 +5554,17 @@ body[data-portal="client"] .metric-card {
   .panel-action-header .toolbar-actions {
     width: auto;
   }
+
+  .commerce-header,
+  .commerce-actions,
+  .redeem-dialog-form {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .commerce-header,
+  .commerce-actions { flex-direction: column; }
+  .commerce-actions { width: 100%; }
+  .commerce-actions > button { width: 100%; }
+  .purchase-balance { align-self: flex-end; }
 }

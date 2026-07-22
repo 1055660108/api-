@@ -245,6 +245,8 @@ docker compose up -d api worker
 
 脚本默认同时检测 `DOLA_DATA_DIR/.service-running` 和 `.worker-health.json` 停机标记；确认残留标记对应的进程已停止时才可传 `--force`。数据库 schema 同时保存在 `schema/001_postgresql.sql`，应用启动时也会幂等初始化。
 
+从 `1.3.2` 开始，应用启动时会将旧 `dola_documents` 中的账号、临时 Token、用户和消费明细自动迁移到按行存储的 `dola_accounts`、`dola_temp_tokens`、`dola_users` 与 `dola_point_transactions`。旧文档不会在升级时删除，便于核对和回滚；生产更新前仍应先备份 PostgreSQL 数据库。
+
 ## 配置文件
 
 服务器运行配置默认保存在：
@@ -359,7 +361,7 @@ curl -H "X-API-Token: $API_TOKEN" http://SERVER_IP:8088/config/workers
 
 ### POST /config/workers
 
-修改并发数量，范围 1 - 100。
+修改全局调度并发，配置范围 1 - 999；实际有效并发仍受 `DOLA_MAX_EFFECTIVE_WORKERS` 和内存保护限制。
 
 请求示例：
 

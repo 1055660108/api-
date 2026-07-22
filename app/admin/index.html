@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.3.0" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.3.0" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.3.3" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.3.3" />
   </head>
   <body>
     <script>
@@ -17,7 +17,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.0" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.3" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -79,7 +79,7 @@
     <div class="app-shell hidden" id="appShell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.0" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.3" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -154,7 +154,7 @@
               <span class="metric-label">并发</span>
               <strong id="metricWorkers">-</strong>
               <div class="metric-note-row">
-                <span class="metric-note">服务配置</span>
+                <span class="metric-note" id="metricWorkersNote">有效 / 配置</span>
                 <button class="text-button metric-edit-button" id="editWorkers" type="button">修改</button>
               </div>
             </div>
@@ -185,21 +185,12 @@
         <section class="view" id="pointsView" data-title="购买积分">
           <div class="commerce-header">
             <div><h2>积分套餐</h2></div>
-            <div class="purchase-balance"><span>可用积分</span><strong id="pointsBalance">0</strong></div>
+            <div class="commerce-actions"><div class="purchase-balance"><span>可用积分</span><strong id="pointsBalance">0</strong></div><button class="primary-button" id="openRedeemModal" type="button">兑换积分</button></div>
           </div>
-          <div class="commerce-grid">
-            <section class="panel purchase-panel">
-              <div class="purchase-options" id="purchaseOptions"></div>
-            </section>
-            <form class="panel redeem-panel" id="redeemForm">
-              <div class="redeem-heading"><span class="section-index">卡密兑换</span><h2>兑换积分</h2></div>
-              <label class="field"><span>兑换码</span><input id="redeemCode" autocomplete="off" maxlength="32" placeholder="HS-XXXX-XXXX-XXXX-XXXX" required /></label>
-              <button class="primary-button" id="redeemButton" type="submit">立即兑换</button>
-            </form>
-          </div>
+          <section class="panel purchase-panel"><div class="purchase-options" id="purchaseOptions"></div></section>
         </section>
 
-        <section class="view" id="membershipView" data-title="会员订阅"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>高级会员优先生效，暂停的低级会员不会消耗剩余天数。</p></div><div class="membership-current"><span class="settings-state" id="membershipCurrentState">当前无会员</span><button class="secondary-button hidden" id="membershipDetailsButton" type="button">详情</button></div></div><div class="membership-grid" id="membershipList"></div></section></section>
+        <section class="view" id="membershipView" data-title="会员订阅"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2></div><div class="membership-current"><span class="settings-state" id="membershipCurrentState">当前无会员</span><button class="secondary-button hidden" id="membershipDetailsButton" type="button">详情</button></div></div><div class="membership-grid" id="membershipList"></div></section></section>
 
         <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header panel-action-header"><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap ledger-table-wrap"><table class="users-table ledger-table"><colgroup><col class="ledger-time-col"><col class="ledger-type-col"><col class="ledger-detail-col"><col class="ledger-points-col"><col class="ledger-quota-col"><col class="ledger-balance-col"></colgroup><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>视频额度变动</th><th>当前余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
 
@@ -296,10 +287,10 @@
               <div class="message-list" id="clientFeedbackList"></div>
             </section>
             <section class="message-panel hidden" data-message-panel="notifications">
-              <div class="message-panel-header"><div><h2>通知</h2><p>管理员发送给你的服务通知和处理消息。</p></div></div>
+              <div class="message-panel-header"><div><h2>通知</h2></div></div>
               <div class="message-list" id="clientNotificationList"></div>
             </section>
-            <section class="message-panel hidden" data-message-panel="announcements"><div class="message-panel-header"><div><h2>平台公告</h2><p>查看管理员发布的平台公告。</p></div></div><div class="message-list" id="clientAnnouncementList"></div></section>
+            <section class="message-panel hidden" data-message-panel="announcements"><div class="message-panel-header"><div><h2>平台公告</h2></div></div><div class="message-list" id="clientAnnouncementList"></div></section>
           </div>
 
           <div class="admin-message-center message-workspace">
@@ -406,8 +397,7 @@
                 </div>
               </div>
               <label class="field search-field">
-                <span>搜索</span>
-                <input id="taskSearch" type="search" placeholder="任务 ID、状态、文本" />
+                <input id="taskSearch" type="search" aria-label="搜索任务" placeholder="任务 ID、状态、文本" />
               </label>
               <div class="task-table-actions">
                 <div class="pager">
@@ -672,7 +662,7 @@
                     <span class="method post">POST</span>
                     <code>/config/workers</code>
                   </div>
-                  <p>修改全局 worker 并发数量。JSON 示例：<code>{"browser_workers":4}</code>，范围 1 - 100；单条 Token 并发在额度控制表内单独设置。</p>
+                  <p>修改全局 worker 调度上限。JSON 示例：<code>{"browser_workers":32}</code>，范围 1 - 999；实际有效并发同时受服务器安全上限和内存保护控制。</p>
                   <div class="api-example">
                     <span>请求示例</span>
                     <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":4}' http://SERVER_IP:8088/config/workers</code>
@@ -838,7 +828,7 @@
         </div>
         <label class="field">
           <span>并发数量</span>
-          <input id="workersInput" type="number" min="1" max="100" step="1" />
+          <input id="workersInput" type="number" min="1" max="999" step="1" />
         </label>
         <div class="modal-actions">
           <span class="sr-only" id="workersModalState"></span>
@@ -894,6 +884,22 @@
         <label class="field"><span>联系方式（可选）</span><input id="feedbackContact" maxlength="254" placeholder="邮箱或其他联系方式" /></label>
         <div class="modal-actions"><button class="secondary-button" id="cancelFeedbackModal" type="button">取消</button><button class="primary-button" id="submitFeedbackButton" type="submit">提交反馈</button></div>
       </form>
+    </div>
+    <div class="modal-backdrop hidden" id="redeemModal" aria-hidden="true">
+      <section class="modal-panel redeem-modal-panel" role="dialog" aria-modal="true" aria-labelledby="redeemModalTitle">
+        <div class="modal-header"><div><h2 id="redeemModalTitle">兑换积分</h2></div><button class="modal-close" id="closeRedeemModal" type="button" aria-label="关闭">×</button></div>
+        <div class="redeem-modal-content">
+          <form class="redeem-dialog-form" id="redeemForm">
+            <label class="field"><span>兑换码</span><input id="redeemCode" autocomplete="off" maxlength="32" placeholder="HS-XXXX-XXXX-XXXX-XXXX" required /></label>
+            <button class="primary-button" id="redeemButton" type="submit">立即兑换</button>
+          </form>
+          <section class="purchase-history-section" aria-labelledby="purchaseHistoryTitle">
+            <div class="purchase-history-header"><h3 id="purchaseHistoryTitle">购买记录</h3><button class="text-button" id="refreshPurchaseHistory" type="button">刷新</button></div>
+            <div class="purchase-history-list" id="purchaseHistoryList"><div class="empty-state">暂无购买记录</div></div>
+          </section>
+        </div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelRedeemModal" type="button">关闭</button></div>
+      </section>
     </div>
     <div class="modal-backdrop hidden" id="proxyModal" aria-hidden="true">
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="proxyModalTitle">
@@ -1029,6 +1035,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.3.0"></script>
+    <script src="/admin/assets/app.js?v=1.3.3"></script>
   </body>
 </html>

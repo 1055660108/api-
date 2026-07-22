@@ -65,6 +65,7 @@ from .store import (
     mark_failed,
     migrate_task_owner,
     list_tasks,
+    list_tasks_page,
     set_task_video_hidden,
     set_task_hidden,
     set_task_images,
@@ -388,7 +389,7 @@ def _health_payload(access: AccessContext) -> dict:
 
 
 def _client_access_payload(access: AccessContext) -> dict:
-    balance = user_balance_by_token_hash(access.token_hash, list_temp_tokens())
+    balance = user_balance_by_token_hash(access.token_hash)
     try:
         user_name = str(user_identity_by_token_hash(access.token_hash).get("username") or "")
     except KeyError:
@@ -1573,14 +1574,20 @@ async def update_workers_config(
         workers = int(raw_workers)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="browser_workers must be an integer")
-    if workers < 1 or workers > 100:
-        raise HTTPException(status_code=400, detail="browser_workers must be between 1 and 100")
+    if workers < 1 or workers > 999:
+        raise HTTPException(status_code=400, detail="browser_workers must be between 1 and 999")
     try:
         update_config({"browser_workers": workers})
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     settings = load_settings()
-    return {"ok": True, "browser_workers": settings.browser_workers}
+    effective_workers, resources = adaptive_worker_limit(settings.browser_workers)
+    return {
+        "ok": True,
+        "browser_workers": settings.browser_workers,
+        "effective_browser_workers": effective_workers,
+        "capacity_limit": resources["capacity_limit"],
+    }
 
 
 @app.get("/accounts", dependencies=[Depends(require_admin)])
@@ -1981,7 +1988,7 @@ async def submit_task(
             raise
         response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency}
         if reserved_access and reserved_access.is_temp:
-            balance = user_balance_by_token_hash(reserved_access.token_hash, list_temp_tokens())
+            balance = user_balance_by_token_hash(reserved_access.token_hash)
             response["quota"] = {
                 "limit": reserved_access.limit,
                 "used": reserved_access.used,
@@ -2008,54 +2015,39 @@ async def all_tasks(
     assert list_sem is not None
     async with list_sem:
         owner = access.token_hash if access.is_temp else None
-        tasks = await asyncio.to_thread(
-            lambda: list_tasks(owner_token_hash=owner, owner_remarks=temp_token_remarks())
-        )
-        if access.is_temp:
-            tasks = [item for item in tasks if not item.get("task_hidden_for_client")]
-            tasks = [_client_task(item) for item in tasks]
-        else:
-            tasks = [item for item in tasks if not item.get("task_hidden_for_admin")]
         if page is None and page_size is None and q is None and status is None and platform is None:
-            return {"tasks": tasks}
-        selected_status = str(status or "").strip().lower()
-        selected_platform = str(platform or "").strip().lower()
-        keyword = str(q or "").strip().lower()
-        filtered = [
-            item for item in tasks
-            if (not selected_status or selected_status == "all" or str(item.get("status") or "").lower() == selected_status)
-            and (not selected_platform or selected_platform == "all" or str(item.get("platform") or "").lower() == selected_platform)
-            and (
-                not keyword
-                or any(
-                    keyword in str(value or "").lower()
-                    for value in (
-                        item.get("id"), item.get("prompt"), item.get("prompt_preview"), item.get("status"),
-                        item.get("error"), item.get("owner_name"), item.get("model"), item.get("platform"),
-                        item.get("created_at"), item.get("updated_at"),
-                    )
-                )
+            tasks = await asyncio.to_thread(
+                lambda: list_tasks(owner_token_hash=owner, owner_remarks=temp_token_remarks())
             )
-        ]
+            if access.is_temp:
+                tasks = [item for item in tasks if not item.get("task_hidden_for_client")]
+                tasks = [_client_task(item) for item in tasks]
+            else:
+                tasks = [item for item in tasks if not item.get("task_hidden_for_admin")]
+            return {"tasks": tasks}
         effective_page_size = page_size or 50
-        total = len(filtered)
-        total_pages = max(1, (total + effective_page_size - 1) // effective_page_size)
-        current_page = min(page or 1, total_pages)
-        start = (current_page - 1) * effective_page_size
+        result = await asyncio.to_thread(
+            lambda: list_tasks_page(
+                owner_token_hash=owner,
+                owner_remarks=temp_token_remarks(),
+                audience="client" if access.is_temp else "admin",
+                page=page or 1,
+                page_size=effective_page_size,
+                keyword=str(q or "").strip(),
+                status=str(status or "").strip().lower(),
+                platform=str(platform or "").strip().lower(),
+            )
+        )
+        tasks = result["items"]
+        if access.is_temp:
+            tasks = [_client_task(item) for item in tasks]
         return {
-            "tasks": filtered[start:start + effective_page_size],
-            "total": total,
-            "page": current_page,
-            "page_size": effective_page_size,
-            "total_pages": total_pages,
-            "stats": {
-                "total": len(tasks),
-                "pending": sum(str(item.get("status") or "") == "pending" for item in tasks),
-                "running": sum(str(item.get("status") or "") in {"running", "submitted"} for item in tasks),
-                "success": sum(str(item.get("status") or "") == "success" for item in tasks),
-                "failed": sum(str(item.get("status") or "") in {"failed", "canceled"} for item in tasks),
-                "completed_today": sum(item.get("completed_today") is True for item in tasks),
-            },
+            "tasks": tasks,
+            "total": result["total"],
+            "page": result["page"],
+            "page_size": result["page_size"],
+            "total_pages": result["total_pages"],
+            "stats": result["stats"],
         }
 
 

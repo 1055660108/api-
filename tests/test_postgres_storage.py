@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
-from app import accounts, package_catalog, postgres, store, temp_access, users
+from app import accounts, package_catalog, point_transactions, postgres, store, temp_access, users
 from scripts import storage_migrate
 
 
@@ -128,6 +128,118 @@ class MemoryPostgres:
             self.documents[name] = payload
             return result
 
+    def mutate_account(self, account_id: str, mutator):
+        with self.lock:
+            for account in self.documents.get("accounts", {}).get("accounts", []):
+                if str(account.get("id") or "") == str(account_id):
+                    return mutator(account)
+        raise KeyError("account not found")
+
+    def read_temp_token(self, token_hash: str):
+        with self.lock:
+            entry = self.documents.get("temp_tokens", {}).get("tokens", {}).get(str(token_hash))
+            return deepcopy(entry) if isinstance(entry, dict) else None
+
+    def mutate_temp_token(self, token_hash: str, mutator):
+        with self.lock:
+            entry = self.documents.get("temp_tokens", {}).get("tokens", {}).get(str(token_hash))
+            if not isinstance(entry, dict):
+                raise KeyError("token not found")
+            return mutator(entry)
+
+    def delete_temp_token(self, token_hash: str) -> bool:
+        with self.lock:
+            tokens = self.documents.get("temp_tokens", {}).get("tokens", {})
+            return tokens.pop(str(token_hash), None) is not None
+
+    def rotate_temp_token(self, token_hash: str, new_hash: str, token: str, updated_at: str):
+        with self.lock:
+            tokens = self.documents.get("temp_tokens", {}).get("tokens", {})
+            entry = tokens.get(str(token_hash))
+            if not isinstance(entry, dict):
+                raise KeyError("token not found")
+            if str(new_hash) in tokens:
+                return None
+            replacement = deepcopy(entry)
+            replacement.update(token=str(token), updated_at=str(updated_at))
+            tokens[str(new_hash)] = replacement
+            tokens.pop(str(token_hash), None)
+            return replacement
+
+    def read_user(self, field: str, value: str):
+        normalized = str(value or "")
+        with self.lock:
+            for key, entry in self.documents.get("users", {}).get("users", {}).items():
+                if field == "username_key" and str(key).casefold() == normalized.casefold():
+                    return str(key), deepcopy(entry)
+                if field == "email" and str(entry.get("email") or "").casefold() == normalized.casefold():
+                    return str(key), deepcopy(entry)
+                if field in {"id", "token_hash"} and str(entry.get(field) or "") == normalized:
+                    return str(key), deepcopy(entry)
+        return None
+
+    def mutate_user(self, field: str, value: str, mutator):
+        normalized = str(value or "")
+        with self.lock:
+            for key, entry in self.documents.get("users", {}).get("users", {}).items():
+                matches = (
+                    (field == "username_key" and str(key).casefold() == normalized.casefold())
+                    or (field == "email" and str(entry.get("email") or "").casefold() == normalized.casefold())
+                    or (field in {"id", "token_hash"} and str(entry.get(field) or "") == normalized)
+                )
+                if matches:
+                    return mutator(entry)
+        raise KeyError("user not found")
+
+    def insert_user(self, username_key: str, entry: dict) -> None:
+        with self.lock:
+            users_data = self.documents.setdefault("users", {"users": {}})["users"]
+            key = str(username_key).casefold()
+            email = str(entry.get("email") or "").casefold()
+            if key in users_data:
+                raise ValueError("username already exists")
+            if email and any(str(item.get("email") or "").casefold() == email for item in users_data.values()):
+                raise ValueError("email already exists")
+            users_data[key] = deepcopy(entry)
+
+    def delete_user(self, field: str, value: str):
+        normalized = str(value or "")
+        with self.lock:
+            users_data = self.documents.get("users", {}).get("users", {})
+            for key, entry in list(users_data.items()):
+                if field in {"id", "token_hash"} and str(entry.get(field) or "") == normalized:
+                    return users_data.pop(key)
+                if field == "username_key" and str(key).casefold() == normalized.casefold():
+                    return users_data.pop(key)
+        return None
+
+    def insert_point_transaction(self, entry: dict) -> None:
+        with self.lock:
+            self.documents.setdefault("point_transactions", {"transactions": []})["transactions"].append(deepcopy(entry))
+
+    def query_point_transactions(self, user_id: str, page: int, page_size: int) -> dict:
+        with self.lock:
+            rows = [
+                deepcopy(item)
+                for item in self.documents.get("point_transactions", {}).get("transactions", [])
+                if str(item.get("user_id") or "") == str(user_id)
+            ]
+        rows.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")), reverse=True)
+        total = len(rows)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        current_page = min(max(1, page), total_pages)
+        start = (current_page - 1) * page_size
+        return {"transactions": rows[start:start + page_size], "total": total, "page": current_page, "page_size": page_size, "total_pages": total_pages}
+
+    def claim_available_account(self, platform: str, excluded_ids: set[str], today: str, now: str, mutator):
+        with self.lock:
+            rows = self.documents.get("accounts", {}).get("accounts", [])
+            selected = accounts._select_account(rows, excluded_ids, platform)
+            if selected is None:
+                return None
+            account = next(item for item in rows if str(item.get("id") or "") == selected["id"])
+            return mutator(account)
+
     def clear_all(self) -> None:
         self.tasks.clear()
         self.documents.clear()
@@ -155,6 +267,18 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
             patch.object(postgres, "read_document", self.backend.read_document),
             patch.object(postgres, "write_document", self.backend.write_document),
             patch.object(postgres, "mutate_document", self.backend.mutate_document),
+            patch.object(postgres, "mutate_account", self.backend.mutate_account),
+            patch.object(postgres, "claim_available_account", self.backend.claim_available_account),
+            patch.object(postgres, "read_temp_token", self.backend.read_temp_token),
+            patch.object(postgres, "mutate_temp_token", self.backend.mutate_temp_token),
+            patch.object(postgres, "delete_temp_token", self.backend.delete_temp_token),
+            patch.object(postgres, "rotate_temp_token", self.backend.rotate_temp_token),
+            patch.object(postgres, "read_user", self.backend.read_user),
+            patch.object(postgres, "mutate_user", self.backend.mutate_user),
+            patch.object(postgres, "insert_user", self.backend.insert_user),
+            patch.object(postgres, "delete_user", self.backend.delete_user),
+            patch.object(postgres, "insert_point_transaction", self.backend.insert_point_transaction),
+            patch.object(postgres, "query_point_transactions", self.backend.query_point_transactions),
             patch.object(postgres, "clear_all", self.backend.clear_all),
             patch.object(store, "TASKS_DIR", self.root / "tasks"),
             patch.object(store, "runtime_path", return_value=self.root / "runtime.json"),
@@ -189,6 +313,60 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
         self.assertEqual(temp_access.list_temp_tokens(), [])
         self.assertEqual(users.list_users([]), [])
         self.assertEqual(package_catalog.list_packages(), [])
+
+    def test_user_and_token_hot_paths_address_single_rows(self) -> None:
+        token_hash = "token-owner"
+        self.backend.documents["temp_tokens"] = {
+            "tokens": {token_hash: {"token": "tmp-secret", "billing_version": 2, "free_remaining": 1, "credit_units": 10, "concurrency": 3, "reservations": {}}}
+        }
+        self.backend.documents["users"] = {
+            "users": {"owner": {"id": "user-1", "username": "Owner", "token_hash": token_hash, "enabled": True, "free_limit": 1, "created_at": "2026-01-01T00:00:00+00:00"}}
+        }
+        identity = users.user_identity_by_token_hash(token_hash)
+        self.assertEqual(identity, {"id": "user-1", "username": "Owner", "email": ""})
+        access = temp_access.get_temp_context_by_hash(token_hash)
+        reserved = temp_access.reserve_temp_quota(access, "task-1", 10, "user-1")
+        self.assertEqual(reserved.credit_units, 10)
+        self.assertEqual(reserved.free_remaining, 0)
+        self.assertTrue(temp_access.refund_temp_quota_hash(token_hash, "task-1"))
+        restored = temp_access.get_temp_context_by_hash(token_hash)
+        self.assertEqual(restored.free_remaining, 1)
+        self.assertFalse(temp_access.refund_temp_quota_hash(token_hash, "task-1"))
+
+    def test_postgres_mode_registration_and_login_use_row_storage(self) -> None:
+        self.backend.documents["temp_tokens"] = {"tokens": {}}
+        self.backend.documents["users"] = {"users": {}}
+        registered = users.register_user("row_user", "ClientPassword123", "row@example.com")
+        logged_in = users.login_user("row@example.com", "ClientPassword123")
+        self.assertEqual(logged_in, registered)
+        stored = self.backend.documents["users"]["users"]["row_user"]
+        self.assertEqual(stored["last_login_at"], stored["last_seen_at"])
+        self.assertEqual(len(self.backend.documents["temp_tokens"]["tokens"]), 1)
+
+    def test_point_transactions_are_inserted_and_paginated_by_user(self) -> None:
+        self.backend.documents["point_transactions"] = {"transactions": []}
+        for index in range(3):
+            point_transactions.record_transaction("user-1", "task", -10, f"task {index}", reference_id=f"task-{index}")
+        point_transactions.record_transaction("user-2", "task", -10, "other")
+        first = point_transactions.list_transactions("user-1", page=1, page_size=2)
+        second = point_transactions.list_transactions("user-1", page=2, page_size=2)
+        self.assertEqual((first["total"], first["total_pages"]), (3, 2))
+        self.assertEqual(len(first["transactions"]), 2)
+        self.assertEqual(len(second["transactions"]), 1)
+
+    def test_schema_migrates_accounts_and_indexes_result_polling(self) -> None:
+        schema = postgres.SCHEMA_SQL
+        self.assertIn("CREATE TABLE IF NOT EXISTS dola_accounts", schema)
+        self.assertIn("jsonb_array_elements", schema)
+        self.assertIn("INSERT INTO dola_schema_version(version) VALUES (2)", schema)
+        self.assertIn("dola_tasks_owner_created_idx", schema)
+        self.assertIn("dola_tasks_status_poll_idx", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS dola_temp_tokens", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS dola_users", schema)
+        self.assertIn("jsonb_each", schema)
+        self.assertIn("INSERT INTO dola_schema_version(version) VALUES (3)", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS dola_point_transactions", schema)
+        self.assertIn("dola_point_transactions_user_created_idx", schema)
 
     def test_task_status_claim_is_atomic_across_process_facades(self) -> None:
         task = store.create_task("并发领取", "9:16")

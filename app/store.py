@@ -726,7 +726,20 @@ def mark_success(task_id: str) -> None:
 
 
 def mark_submitted(task_id: str) -> None:
-    update_meta_if(task_id, {STATUS_RUNNING}, status=STATUS_SUBMITTED, worker_id="", submitted_at=utc_now(), finished_at="", error="等待生成结果", result_watch_miss_count=0, submit_phase="submitted")
+    submitted_at = utc_now()
+    next_result_poll_at = (datetime.now(timezone.utc) + timedelta(seconds=45)).isoformat()
+    update_meta_if(
+        task_id,
+        {STATUS_RUNNING},
+        status=STATUS_SUBMITTED,
+        worker_id="",
+        submitted_at=submitted_at,
+        next_result_poll_at=next_result_poll_at,
+        finished_at="",
+        error="等待生成结果",
+        result_watch_miss_count=0,
+        submit_phase="submitted",
+    )
 
 
 def save_result(
@@ -928,6 +941,39 @@ def task_image_paths(task_id: str) -> list[Path]:
     return sorted([p for p in root.iterdir() if p.is_file()])
 
 
+def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str]) -> dict[str, Any]:
+    prompt = str(meta.get("prompt") or "")
+    owner = str(meta.get("owner_token_hash") or "")
+    return {
+        "id": task_id,
+        "prompt": prompt,
+        "prompt_preview": prompt[:15],
+        "platform": str(meta.get("platform") or DEFAULT_PLATFORM),
+        "model": str(meta.get("model") or ""),
+        "created_at": str(meta.get("created_at") or ""),
+        "updated_at": str(meta.get("updated_at") or ""),
+        "idempotency_hash": str(meta.get("idempotency_hash") or ""),
+        "request_fingerprint": str(meta.get("request_fingerprint") or ""),
+        "request_route": str(meta.get("request_route") or ""),
+        "finished_at": str(meta.get("finished_at") or ""),
+        "completed_today": is_local_today(str(meta.get("finished_at") or "")),
+        "status": str(meta.get("status") or ""),
+        "retry_count": int(meta.get("retry_count") or 0),
+        "queued_at": str(meta.get("queued_at") or meta.get("created_at") or ""),
+        "claimed_at": str(meta.get("claimed_at") or ""),
+        "attempt": int(meta.get("attempt") or 0),
+        "worker_id": str(meta.get("worker_id") or ""),
+        "image_count": int(meta.get("image_count") or 0),
+        "error": str(meta.get("error") or ""),
+        "owner_token_hash": owner,
+        "owner_name": remarks.get(owner, "") if owner else "管理员",
+        "video_hidden_for_admin": bool(meta.get("video_hidden_for_admin", False)),
+        "video_hidden_for_client": bool(meta.get("video_hidden_for_client", False)),
+        "task_hidden_for_admin": bool(meta.get("task_hidden_for_admin", False)),
+        "task_hidden_for_client": bool(meta.get("task_hidden_for_client", False)),
+    }
+
+
 def list_tasks(owner_token_hash: str | None = None, owner_remarks: dict[str, str] | None = None) -> list[dict[str, Any]]:
     ensure_storage()
     items: list[dict[str, Any]] = []
@@ -948,38 +994,7 @@ def list_tasks(owner_token_hash: str | None = None, owner_remarks: dict[str, str
             meta = get_meta(task_id)
         if owner_token_hash is not None and str(meta.get("owner_token_hash") or "") != owner_token_hash:
             continue
-        prompt = str(meta.get("prompt") or "")
-        owner = str(meta.get("owner_token_hash") or "")
-        items.append(
-            {
-                "id": task_id,
-                "prompt": prompt,
-                "prompt_preview": prompt[:15],
-                "platform": str(meta.get("platform") or DEFAULT_PLATFORM),
-                "model": str(meta.get("model") or ""),
-                "created_at": str(meta.get("created_at") or ""),
-                "updated_at": str(meta.get("updated_at") or ""),
-                "idempotency_hash": str(meta.get("idempotency_hash") or ""),
-                "request_fingerprint": str(meta.get("request_fingerprint") or ""),
-                "request_route": str(meta.get("request_route") or ""),
-                "finished_at": str(meta.get("finished_at") or ""),
-                "completed_today": is_local_today(str(meta.get("finished_at") or "")),
-                "status": str(meta.get("status") or ""),
-                "retry_count": int(meta.get("retry_count") or 0),
-                "queued_at": str(meta.get("queued_at") or meta.get("created_at") or ""),
-                "claimed_at": str(meta.get("claimed_at") or ""),
-                "attempt": int(meta.get("attempt") or 0),
-                "worker_id": str(meta.get("worker_id") or ""),
-                "image_count": int(meta.get("image_count") or 0),
-                "error": str(meta.get("error") or ""),
-                "owner_token_hash": owner,
-                "owner_name": remarks.get(owner, "") if owner else "管理员",
-                "video_hidden_for_admin": bool(meta.get("video_hidden_for_admin", False)),
-                "video_hidden_for_client": bool(meta.get("video_hidden_for_client", False)),
-                "task_hidden_for_admin": bool(meta.get("task_hidden_for_admin", False)),
-                "task_hidden_for_client": bool(meta.get("task_hidden_for_client", False)),
-            }
-        )
+        items.append(_task_list_item(task_id, meta, remarks))
     items.sort(
         key=lambda item: (
             str(item.get("created_at") or ""),
@@ -988,6 +1003,108 @@ def list_tasks(owner_token_hash: str | None = None, owner_remarks: dict[str, str
         reverse=True,
     )
     return items
+
+
+def list_tasks_page(
+    *,
+    owner_token_hash: str | None,
+    owner_remarks: dict[str, str] | None,
+    audience: str,
+    page: int,
+    page_size: int,
+    keyword: str = "",
+    status: str = "",
+    platform: str = "",
+) -> dict[str, Any]:
+    ensure_storage()
+    remarks = owner_remarks or {}
+    if postgres.enabled() and hasattr(postgres, "query_task_page"):
+        matching_owners = [owner for owner, name in remarks.items() if keyword and keyword.casefold() in str(name).casefold()]
+        result = postgres.query_task_page(
+            owner_token_hash=owner_token_hash,
+            audience=audience,
+            page=page,
+            page_size=page_size,
+            keyword=keyword,
+            status=status,
+            platform=platform,
+            matching_owner_hashes=matching_owners,
+        )
+        items: list[dict[str, Any]] = []
+        for task_id, stored_meta in result["items"]:
+            if not TASK_ID_RE.fullmatch(task_id):
+                continue
+            meta = dict(stored_meta)
+            if is_task_expired(meta):
+                expire_task_if_timeout(task_id)
+                meta = get_meta(task_id)
+            items.append(_task_list_item(task_id, meta, remarks))
+        return {**result, "items": items}
+
+    tasks = list_tasks(owner_token_hash=owner_token_hash, owner_remarks=remarks)
+    hidden_key = f"task_hidden_for_{audience}"
+    tasks = [item for item in tasks if not item.get(hidden_key)]
+    selected_status = str(status or "").strip().lower()
+    selected_platform = str(platform or "").strip().lower()
+    normalized_keyword = str(keyword or "").strip().lower()
+    filtered = [
+        item for item in tasks
+        if (not selected_status or selected_status == "all" or str(item.get("status") or "").lower() == selected_status)
+        and (not selected_platform or selected_platform == "all" or str(item.get("platform") or "").lower() == selected_platform)
+        and (
+            not normalized_keyword
+            or any(
+                normalized_keyword in str(value or "").lower()
+                for value in (
+                    item.get("id"), item.get("prompt"), item.get("prompt_preview"), item.get("status"),
+                    item.get("error"), item.get("owner_name"), item.get("model"), item.get("platform"),
+                    item.get("created_at"), item.get("updated_at"),
+                )
+            )
+        )
+    ]
+    total = len(filtered)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    current_page = min(max(1, page), total_pages)
+    start = (current_page - 1) * page_size
+    return {
+        "items": filtered[start:start + page_size],
+        "total": total,
+        "page": current_page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "stats": {
+            "total": len(tasks),
+            "pending": sum(str(item.get("status") or "") == STATUS_PENDING for item in tasks),
+            "running": sum(str(item.get("status") or "") in {STATUS_RUNNING, STATUS_SUBMITTED} for item in tasks),
+            "success": sum(str(item.get("status") or "") == STATUS_SUCCESS for item in tasks),
+            "failed": sum(str(item.get("status") or "") in {STATUS_FAILED, STATUS_CANCELED} for item in tasks),
+            "completed_today": sum(item.get("completed_today") is True for item in tasks),
+        },
+    }
+
+
+def list_task_metas_by_statuses(statuses: set[str], *, platform: str | None = None, due_before: str | None = None, limit: int | None = None) -> list[tuple[str, dict[str, Any]]]:
+    ensure_storage()
+    if postgres.enabled() and hasattr(postgres, "list_task_metas_by_statuses"):
+        return postgres.list_task_metas_by_statuses(statuses, platform=platform, due_before=due_before, limit=limit)
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for item in list_tasks():
+        if str(item.get("status") or "") not in statuses:
+            continue
+        if platform and str(item.get("platform") or DEFAULT_PLATFORM) != platform:
+            continue
+        task_id = str(item.get("id") or "")
+        try:
+            meta = get_meta(task_id)
+        except (FileNotFoundError, CorruptJSONError):
+            continue
+        next_poll_at = str(meta.get("next_result_poll_at") or meta.get("submitted_at") or meta.get("updated_at") or "")
+        if due_before and next_poll_at > due_before:
+            continue
+        rows.append((task_id, meta))
+    rows.sort(key=lambda row: (str(row[1].get("next_result_poll_at") or row[1].get("submitted_at") or row[1].get("updated_at") or ""), row[0]))
+    return rows[:max(1, int(limit))] if limit is not None else rows
 
 
 def delete_task(task_id: str) -> None:
@@ -1079,7 +1196,16 @@ def reset_running_tasks() -> None:
                 or result.get("qianwen_remote_task_ids")
             )
             if submitted:
-                update_meta_if(task_id, {STATUS_RUNNING}, status=STATUS_SUBMITTED, worker_id="", submitted_at=str(meta.get("submitted_at") or utc_now()), finished_at="", error="等待生成结果")
+                update_meta_if(
+                    task_id,
+                    {STATUS_RUNNING},
+                    status=STATUS_SUBMITTED,
+                    worker_id="",
+                    submitted_at=str(meta.get("submitted_at") or utc_now()),
+                    next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=15)).isoformat(),
+                    finished_at="",
+                    error="等待生成结果",
+                )
             else:
                 mark_pending(task_id, "service restarted")
 

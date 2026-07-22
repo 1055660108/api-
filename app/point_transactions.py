@@ -74,6 +74,9 @@ def record_transaction(
         "created_at": _now(),
     }
     with _LOCK:
+        if postgres.enabled():
+            postgres.insert_point_transaction(entry)
+            return dict(entry)
         data = _read()
         data["transactions"].append(entry)
         data["transactions"] = data["transactions"][-10000:]
@@ -82,10 +85,12 @@ def record_transaction(
 
 
 def list_transactions(user_id: str, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+    page_size = max(1, min(100, int(page_size)))
+    if postgres.enabled():
+        return postgres.query_point_transactions(str(user_id or ""), page, page_size)
     with _LOCK:
         rows = [dict(item) for item in _read()["transactions"] if isinstance(item, dict) and str(item.get("user_id") or "") == str(user_id or "")]
     rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-    page_size = max(1, min(100, int(page_size)))
     total = len(rows)
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, int(page)), total_pages)

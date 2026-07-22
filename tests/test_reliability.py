@@ -338,6 +338,75 @@ class ReliabilityTests(unittest.TestCase):
         refund_owner.assert_not_called()
         self.assertNotIn("account_id", store.load_result(task["id"]))
 
+    def test_mark_submitted_defers_first_result_poll(self) -> None:
+        task = self.create_task("owner")
+        store.mark_running(task["id"], "worker-1")
+        before = datetime.now(timezone.utc)
+        store.mark_submitted(task["id"])
+        meta = store.get_meta(task["id"])
+        next_poll = datetime.fromisoformat(meta["next_result_poll_at"])
+        self.assertEqual(meta["status"], store.STATUS_SUBMITTED)
+        self.assertGreaterEqual(next_poll, before + timedelta(seconds=40))
+        self.assertLessEqual(next_poll, datetime.now(timezone.utc) + timedelta(seconds=50))
+
+    def test_result_polling_is_parallel_and_respects_concurrency_limit(self) -> None:
+        tasks = [self.create_task("owner") for _ in range(8)]
+        for index, task in enumerate(tasks):
+            store.mark_running(task["id"], f"worker-{index}")
+            store.mark_submitted(task["id"])
+        manager = WorkerManager()
+        active = 0
+        peak = 0
+
+        async def query_with_latency(task_id: str) -> dict:
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return {"code": "0", "text": "generating", "url": ""}
+
+        async def exercise() -> None:
+            manager._result_poll_semaphore = asyncio.Semaphore(3)
+            with patch.object(manager, "_pace_result_poll", new=AsyncMock()), patch(
+                "app.worker.query_task", side_effect=query_with_latency
+            ):
+                await manager._watch_unfinished_success_tasks([task["id"] for task in tasks])
+
+        asyncio.run(exercise())
+        self.assertEqual(peak, 3)
+        for task in tasks:
+            meta = store.get_meta(task["id"])
+            self.assertEqual(meta["result_watch_miss_count"], 1)
+            self.assertGreater(datetime.fromisoformat(meta["next_result_poll_at"]), datetime.now(timezone.utc))
+
+    def test_worker_reuses_token_concurrency_limits_for_one_second(self) -> None:
+        manager = WorkerManager()
+
+        async def exercise() -> None:
+            with patch("app.worker.temp_token_concurrency_limits", return_value={"owner": 3}) as load_limits:
+                self.assertEqual(manager._owner_concurrency_limits(), {"owner": 3})
+                self.assertEqual(manager._owner_concurrency_limits(), {"owner": 3})
+                load_limits.assert_called_once_with()
+                manager._token_concurrency_refreshed_at -= 2
+                self.assertEqual(manager._owner_concurrency_limits(), {"owner": 3})
+                self.assertEqual(load_limits.call_count, 2)
+
+        asyncio.run(exercise())
+
+    def test_reservation_pruning_keeps_active_and_recent_closed_entries(self) -> None:
+        entry = {
+            "reservations": {
+                **{f"closed-{index}": {"status": "refunded", "created_at": f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00"} for index in range(1100)},
+                "active-1": {"status": "reserved", "created_at": "2026-01-02T00:00:00+00:00"},
+                "active-2": {"status": "reserved", "created_at": "2026-01-02T00:00:01+00:00"},
+            }
+        }
+        temp_access._prune_reservations(entry, max_closed=1000)
+        self.assertEqual(len(entry["reservations"]), 1002)
+        self.assertIn("active-1", entry["reservations"])
+        self.assertIn("active-2", entry["reservations"])
+
     def test_result_timeout_does_not_requeue_after_cancel_request(self) -> None:
         task = self.create_task("owner")
         store.mark_running(task["id"], "worker-1")

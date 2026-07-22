@@ -11,7 +11,7 @@ from typing import Any
 
 from .billing import nonnegative_points_to_units, points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
-from .temp_access import add_temp_credit_units, create_temp_tokens, deduct_temp_points, delete_temp_token, hash_token, list_temp_tokens, migrate_temp_token, purchase_temp_membership, rotate_temp_token, update_temp_token
+from .temp_access import add_temp_credit_units, create_temp_tokens, deduct_temp_points, delete_temp_token, get_temp_context_by_hash, hash_token, list_temp_tokens, migrate_temp_token, purchase_temp_membership, rotate_temp_token, update_temp_token
 from . import postgres
 
 
@@ -220,6 +220,22 @@ def _write(data: dict[str, Any]) -> None:
     tmp.replace(USERS_PATH)
 
 
+def _read_user_entry(field: str, value: str) -> tuple[str, dict[str, Any]] | None:
+    if postgres.enabled():
+        return postgres.read_user(field, value)
+    normalized = str(value or "")
+    for key, entry in _read()["users"].items():
+        if not isinstance(entry, dict):
+            continue
+        if field == "username_key" and str(key).casefold() == normalized.casefold():
+            return str(key), entry
+        if field == "email" and str(entry.get("email") or "").casefold() == normalized.casefold():
+            return str(key), entry
+        if field in {"id", "token_hash"} and str(entry.get(field) or "") == normalized:
+            return str(key), entry
+    return None
+
+
 def _password_hash(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 310000).hex()
 
@@ -233,11 +249,17 @@ def register_user(username: str, password: str, email: str = "") -> dict[str, An
     key = username.casefold()
     normalized_email = str(email or "").strip().lower()
     with _LOCK:
-        data = _read()
-        if key in data["users"]:
-            raise ValueError("用户名已存在")
-        if normalized_email and any(str(item.get("email") or "").casefold() == normalized_email.casefold() for item in data["users"].values()):
-            raise ValueError("邮箱已注册")
+        data = None if postgres.enabled() else _read()
+        if postgres.enabled():
+            if _read_user_entry("username_key", key):
+                raise ValueError("用户名已存在")
+            if normalized_email and _read_user_entry("email", normalized_email):
+                raise ValueError("邮箱已注册")
+        else:
+            if key in data["users"]:
+                raise ValueError("用户名已存在")
+            if normalized_email and any(str(item.get("email") or "").casefold() == normalized_email.casefold() for item in data["users"].values()):
+                raise ValueError("邮箱已注册")
         token_entry = create_temp_tokens(1, 1, concurrency=1, task_retention_days=7, remark=username)[0]
         salt = secrets.token_bytes(16)
         now = _now()
@@ -259,28 +281,26 @@ def register_user(username: str, password: str, email: str = "") -> dict[str, An
             "last_seen_at": now,
             "enabled": True,
         }
-        data["users"][key] = entry
-        _write(data)
+        if postgres.enabled():
+            try:
+                postgres.insert_user(key, entry)
+            except ValueError as exc:
+                delete_temp_token(token_entry["id"])
+                if "email" in str(exc):
+                    raise ValueError("邮箱已注册") from exc
+                raise ValueError("用户名已存在") from exc
+        else:
+            data["users"][key] = entry
+            _write(data)
         return {"username": username, "token": entry["token"]}
 
 
 def login_user(identifier: str, password: str) -> dict[str, Any] | None:
     value = str(identifier or "").strip().casefold()
     with _LOCK:
-        data = _read()
-        candidate = next(
-            (
-                (key, item)
-                for key, item in data["users"].items()
-                if isinstance(item, dict)
-                and value
-                and value in {
-                    str(item.get("username") or "").casefold(),
-                    str(item.get("email") or "").casefold(),
-                }
-            ),
-            None,
-        )
+        candidate = _read_user_entry("username_key", value) if value else None
+        if candidate is None and value:
+            candidate = _read_user_entry("email", value)
         if candidate is None or not candidate[1].get("enabled", True):
             return None
         key, entry = candidate
@@ -293,6 +313,18 @@ def login_user(identifier: str, password: str) -> dict[str, Any] | None:
     if not hmac.compare_digest(_password_hash(password, salt), expected_hash):
         return None
     with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> dict[str, Any] | None:
+                if not entry.get("enabled", True):
+                    return None
+                if str(entry.get("password_salt") or "") != salt_hex or not hmac.compare_digest(str(entry.get("password_hash") or ""), expected_hash):
+                    return None
+                now = _now()
+                entry["last_login_at"] = now
+                entry["last_seen_at"] = now
+                return {"username": entry["username"], "token": entry["token"]}
+
+            return postgres.mutate_user("username_key", key, mutate)
         data = _read()
         entry = data["users"].get(key)
         if not isinstance(entry, dict) or not entry.get("enabled", True):
@@ -309,6 +341,10 @@ def login_user(identifier: str, password: str) -> dict[str, Any] | None:
 def has_verified_enabled_email(email: str) -> bool:
     normalized_email = str(email or "").strip().lower()
     with _LOCK:
+        if postgres.enabled():
+            candidate = _read_user_entry("email", normalized_email)
+            entry = candidate[1] if candidate else None
+            return bool(entry and entry.get("email_verified_at") and entry.get("enabled", True))
         return any(
             isinstance(item, dict)
             and str(item.get("email") or "").strip().lower() == normalized_email
@@ -323,6 +359,26 @@ def reset_user_password_by_email(email: str, new_password: str) -> dict[str, Any
     if len(new_password) < 8 or len(new_password) > 128:
         raise ValueError("密码长度需为8-128位")
     with _LOCK:
+        if postgres.enabled():
+            replacement_salt = secrets.token_bytes(16)
+
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
+                if not entry.get("email_verified_at") or not entry.get("enabled", True):
+                    raise KeyError(normalized_email)
+                old_token_hash = str(entry.get("token_hash") or "")
+                token = rotate_temp_token(old_token_hash)
+                now = _now()
+                entry.update(
+                    password_salt=replacement_salt.hex(),
+                    password_hash=_password_hash(new_password, replacement_salt),
+                    token_hash=token["id"],
+                    token=token["token"],
+                    last_seen_at=now,
+                    updated_at=now,
+                )
+                return {"username": entry["username"], "token": entry["token"], "_old_token_hash": old_token_hash}
+
+            return postgres.mutate_user("email", normalized_email, mutate)
         data = _read()
         entry = next(
             (
@@ -354,6 +410,29 @@ def change_user_password_by_token_hash(token_hash: str, current_password: str, n
     if len(new_password) < 8 or len(new_password) > 128:
         raise ValueError("密码长度需为8-128位")
     with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
+                if not entry.get("enabled", True):
+                    raise KeyError(token_hash)
+                salt = bytes.fromhex(str(entry.get("password_salt") or ""))
+                if not hmac.compare_digest(_password_hash(current_password, salt), str(entry.get("password_hash") or "")):
+                    raise ValueError("当前密码错误")
+                if hmac.compare_digest(current_password, new_password):
+                    raise ValueError("新密码不能与当前密码相同")
+                replacement_salt = secrets.token_bytes(16)
+                token = rotate_temp_token(token_hash)
+                now = _now()
+                entry.update(
+                    password_salt=replacement_salt.hex(),
+                    password_hash=_password_hash(new_password, replacement_salt),
+                    token_hash=token["id"],
+                    token=token["token"],
+                    last_seen_at=now,
+                    updated_at=now,
+                )
+                return {"username": entry["username"], "token": entry["token"]}
+
+            return postgres.mutate_user("token_hash", token_hash, mutate)
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not entry or not entry.get("enabled", True):
@@ -377,6 +456,20 @@ def change_user_password_by_token_hash(token_hash: str, current_password: str, n
 
 def user_profile_by_token_hash(token_hash: str) -> dict[str, Any]:
     with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
+                if not entry.get("enabled", True):
+                    raise KeyError(token_hash)
+                membership, _ = _sync_membership_state(entry)
+                return {
+                    "username": str(entry.get("username") or ""),
+                    "email": str(entry.get("email") or ""),
+                    "email_verified_at": str(entry.get("email_verified_at") or ""),
+                    "membership": dict(membership) if membership else None,
+                    "memberships": _public_memberships(entry),
+                }
+
+            return postgres.mutate_user("token_hash", token_hash, mutate)
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not entry or not entry.get("enabled", True):
@@ -395,7 +488,8 @@ def user_profile_by_token_hash(token_hash: str) -> dict[str, Any]:
 
 def user_identity_by_token_hash(token_hash: str) -> dict[str, Any]:
     with _LOCK:
-        entry = next((item for item in _read()["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
+        candidate = _read_user_entry("token_hash", token_hash)
+        entry = candidate[1] if candidate else None
         if not entry or not entry.get("enabled", True):
             raise KeyError(token_hash)
         return {"id": str(entry.get("id") or ""), "username": str(entry.get("username") or ""), "email": str(entry.get("email") or "")}
@@ -404,6 +498,19 @@ def user_identity_by_token_hash(token_hash: str) -> dict[str, Any]:
 def change_user_email_by_token_hash(token_hash: str, email: str) -> dict[str, Any]:
     normalized_email = str(email or "").strip().lower()
     with _LOCK:
+        if postgres.enabled():
+            existing = _read_user_entry("email", normalized_email) if normalized_email else None
+            if existing and str(existing[1].get("token_hash") or "") != str(token_hash or ""):
+                raise ValueError("邮箱已被其他账号绑定")
+
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
+                if not entry.get("enabled", True):
+                    raise KeyError(token_hash)
+                now = _now()
+                entry.update(email=normalized_email, email_verified_at=now, updated_at=now)
+                return {"email": normalized_email, "email_verified_at": now}
+
+            return postgres.mutate_user("token_hash", token_hash, mutate)
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not entry or not entry.get("enabled", True):
@@ -421,6 +528,19 @@ def change_user_email_by_token_hash(token_hash: str, email: str) -> dict[str, An
 def touch_user_by_token(token: str) -> None:
     token_hash = hash_token(token)
     with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> None:
+                now = datetime.now(timezone.utc)
+                last_seen = _parse_datetime(entry.get("last_seen_at"))
+                if last_seen and (now - last_seen).total_seconds() < 60:
+                    return
+                entry["last_seen_at"] = now.isoformat()
+
+            try:
+                postgres.mutate_user("token_hash", token_hash, mutate)
+            except KeyError:
+                pass
+            return
         data = _read()
         for entry in data["users"].values():
             if str(entry.get("token_hash") or "") == token_hash:
@@ -435,6 +555,9 @@ def touch_user_by_token(token: str) -> None:
 
 def user_token_is_enabled(token_hash: str) -> bool:
     with _LOCK:
+        if postgres.enabled():
+            candidate = _read_user_entry("token_hash", token_hash)
+            return bool(candidate[1].get("enabled", True)) if candidate else True
         for entry in _read()["users"].values():
             if str(entry.get("token_hash") or "") == str(token_hash or ""):
                 return bool(entry.get("enabled", True))
@@ -476,11 +599,18 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return sorted(rows, key=lambda item: item["created_at"], reverse=True)
 
 
-def user_balance_by_token_hash(token_hash: str, temp_entries: list[dict[str, Any]]) -> dict[str, int | float]:
+def user_balance_by_token_hash(token_hash: str, temp_entries: list[dict[str, Any]] | None = None) -> dict[str, int | float]:
+    if temp_entries is None:
+        temp_entries = [] if postgres.enabled() else list_temp_tokens()
     quota = {str(item.get("id") or ""): item for item in temp_entries}
     q = quota.get(str(token_hash or ""), {})
+    if postgres.enabled():
+        context = get_temp_context_by_hash(token_hash)
+        if context:
+            q = {"free_remaining": context.free_remaining, "credit_units": context.credit_units, "used": context.used, "limit": context.limit}
     with _LOCK:
-        entry = next((item for item in _read()["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), {})
+        candidate = _read_user_entry("token_hash", token_hash)
+        entry = candidate[1] if candidate else {}
     free_limit = max(1, int(entry.get("free_limit") or 3))
     migrated = int(q.get("credit_units") or 0) > 0 or "free_remaining" in q
     used = max(0, int(q.get("used") or 0))
@@ -515,6 +645,19 @@ def repair_registered_user_tokens() -> int:
 def add_user_points(user_id: str, amount: object, temp_entries: list[dict[str, Any]]) -> dict[str, int | float]:
     purchased_units = points_to_units(amount)
     with _LOCK:
+        if postgres.enabled():
+            candidate = _read_user_entry("id", user_id)
+            if not candidate:
+                raise KeyError(user_id)
+            add_temp_credit_units(str(candidate[1].get("token_hash") or ""), purchased_units)
+
+            def mutate(entry: dict[str, Any]) -> dict[str, int | float]:
+                entry["points_purchased_units"] = int(entry.get("points_purchased_units") or int(entry.get("points_purchased") or 0) * 10) + purchased_units
+                entry["points_purchased"] = units_to_points(entry["points_purchased_units"])
+                entry["updated_at"] = _now()
+                return {"purchased": units_to_points(purchased_units), "credited": units_to_points(purchased_units)}
+
+            return postgres.mutate_user("id", user_id, mutate)
         data = _read()
         entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
         if not entry:
@@ -529,6 +672,13 @@ def add_user_points(user_id: str, amount: object, temp_entries: list[dict[str, A
 def deduct_user_points(user_id: str, amount: object) -> None:
     points_to_units(amount)
     with _LOCK:
+        if postgres.enabled():
+            candidate = _read_user_entry("id", user_id)
+            if not candidate:
+                raise KeyError(user_id)
+            entry = candidate[1]
+            deduct_temp_points(str(entry.get("token_hash") or ""), max(1, int(entry.get("free_limit") or 1)), amount)
+            return
         data = _read()
         entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
         if not entry:
@@ -539,62 +689,93 @@ def deduct_user_points(user_id: str, amount: object) -> None:
 def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     with _LOCK:
+        def apply(entry: dict[str, Any], token_concurrency: int) -> dict[str, Any]:
+            token_hash = str(entry.get("token_hash") or "")
+            base_concurrency = max(1, int(entry.get("base_concurrency") or token_concurrency or 1))
+            _reconcile_membership_concurrency(entry)
+            _sync_membership_state(entry, now)
+            package_id = str(package.get("id") or "")
+            active_records = [item for item in entry.get("memberships") or [] if isinstance(item, dict) and item.get("status") != "expired" and _membership_remaining_seconds(item, now) > 0]
+            if any(str(item.get("package_id") or "") == package_id for item in active_records):
+                raise ValueError("当前会员有效期内，该会员套餐只能购买一次")
+            from .membership_catalog import list_memberships
+
+            catalog = list_memberships()
+            highest_price = max((points_to_units(item.get("points_cost")) for item in catalog), default=0)
+            if active_records and max((_membership_rank(item)[0] for item in active_records), default=0) >= highest_price > 0:
+                raise ValueError("最高级会员有效期内不能购买其他会员套餐")
+            membership_concurrency = max(1, min(100, int(package.get("concurrency") or 1)))
+            balance = purchase_temp_membership(
+                token_hash,
+                max(1, int(entry.get("free_limit") or 1)),
+                package.get("points_cost"),
+                int(package.get("bonus_free_uses") or 0),
+                membership_concurrency,
+            )
+            entry.setdefault("memberships", []).append({
+                "id": secrets.token_hex(8),
+                "package_id": package_id,
+                "name": str(package.get("name") or "会员"),
+                "points_cost": package.get("points_cost", 0),
+                "duration_days": int(package.get("duration_days") or 1),
+                "remaining_seconds": int(package.get("duration_days") or 1) * 86400,
+                "status": "paused",
+                "activated_at": "",
+                "concurrency": membership_concurrency,
+                "bonus_free_uses": int(package.get("bonus_free_uses") or 0),
+                "task_discount_points": package.get("task_discount_points", 0.1),
+                "purchased_at": now.isoformat(),
+            })
+            entry["membership_concurrency_mode"] = _MEMBERSHIP_CONCURRENCY_MODE
+            entry["base_concurrency"] = base_concurrency
+            membership, _ = _sync_membership_state(entry, now)
+            effective_concurrency = int((membership or {}).get("effective_concurrency") or base_concurrency)
+            update_temp_token(token_hash, concurrency=effective_concurrency)
+            entry["effective_concurrency"] = effective_concurrency
+            entry["updated_at"] = _now()
+            balance["concurrency"] = effective_concurrency
+            return {"membership": dict(membership) if membership else None, "memberships": _public_memberships(entry, now), "balance": balance}
+
+        if postgres.enabled():
+            candidate = _read_user_entry("id", user_id)
+            if not candidate:
+                raise KeyError(user_id)
+            context = get_temp_context_by_hash(str(candidate[1].get("token_hash") or ""))
+            return postgres.mutate_user("id", user_id, lambda entry: apply(entry, context.concurrency if context else 1))
         data = _read()
         entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
         if not isinstance(entry, dict):
             raise KeyError(user_id)
         token_hash = str(entry.get("token_hash") or "")
         token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == token_hash), {})
-        base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
-        _reconcile_membership_concurrency(entry)
-        current_membership, _ = _sync_membership_state(entry, now)
-        package_id = str(package.get("id") or "")
-        active_records = [item for item in entry.get("memberships") or [] if isinstance(item, dict) and item.get("status") != "expired" and _membership_remaining_seconds(item, now) > 0]
-        if any(str(item.get("package_id") or "") == package_id for item in active_records):
-            raise ValueError("当前会员有效期内，该会员套餐只能购买一次")
-        from .membership_catalog import list_memberships
-
-        catalog = list_memberships()
-        highest_price = max((points_to_units(item.get("points_cost")) for item in catalog), default=0)
-        if active_records and max((_membership_rank(item)[0] for item in active_records), default=0) >= highest_price > 0:
-            raise ValueError("最高级会员有效期内不能购买其他会员套餐")
-        membership_concurrency = max(1, min(100, int(package.get("concurrency") or 1)))
-        effective_concurrency = membership_concurrency
-        balance = purchase_temp_membership(
-            token_hash,
-            max(1, int(entry.get("free_limit") or 1)),
-            package.get("points_cost"),
-            int(package.get("bonus_free_uses") or 0),
-            effective_concurrency,
-        )
-        entry.setdefault("memberships", []).append({
-            "id": secrets.token_hex(8),
-            "package_id": package_id,
-            "name": str(package.get("name") or "会员"),
-            "points_cost": package.get("points_cost", 0),
-            "duration_days": int(package.get("duration_days") or 1),
-            "remaining_seconds": int(package.get("duration_days") or 1) * 86400,
-            "status": "paused",
-            "activated_at": "",
-            "concurrency": membership_concurrency,
-            "bonus_free_uses": int(package.get("bonus_free_uses") or 0),
-            "task_discount_points": package.get("task_discount_points", 0.1),
-            "purchased_at": now.isoformat(),
-        })
-        entry["membership_concurrency_mode"] = _MEMBERSHIP_CONCURRENCY_MODE
-        entry["base_concurrency"] = base_concurrency
-        membership, _ = _sync_membership_state(entry, now)
-        effective_concurrency = int((membership or {}).get("effective_concurrency") or base_concurrency)
-        update_temp_token(token_hash, concurrency=effective_concurrency)
-        entry["effective_concurrency"] = effective_concurrency
-        entry["updated_at"] = _now()
+        result = apply(entry, max(1, int(token.get("concurrency") or 1)))
         _write(data)
-        balance["concurrency"] = effective_concurrency
-        return {"membership": dict(membership) if membership else None, "memberships": _public_memberships(entry, now), "balance": balance}
+        return result
 
 
 def sync_user_membership_by_token_hash(token_hash: str) -> bool:
     with _LOCK:
+        if postgres.enabled():
+            context = get_temp_context_by_hash(token_hash)
+
+            def mutate(entry: dict[str, Any]) -> bool:
+                concurrency_migrated = _reconcile_membership_concurrency(entry)
+                active, membership_changed = _sync_membership_state(entry)
+                token_concurrency = max(1, int(context.concurrency if context else 1))
+                base_concurrency = max(1, int(entry.get("base_concurrency") or token_concurrency))
+                effective_concurrency = _membership_concurrency(active) if active else base_concurrency
+                if not concurrency_migrated and not membership_changed and int(entry.get("effective_concurrency") or 0) == effective_concurrency and token_concurrency == effective_concurrency and entry.get("base_concurrency"):
+                    return False
+                update_temp_token(str(token_hash or ""), concurrency=effective_concurrency)
+                entry["effective_concurrency"] = effective_concurrency
+                entry["base_concurrency"] = base_concurrency
+                entry["updated_at"] = _now()
+                return True
+
+            try:
+                return postgres.mutate_user("token_hash", token_hash, mutate)
+            except KeyError:
+                return False
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not isinstance(entry, dict):
@@ -617,6 +798,21 @@ def sync_user_membership_by_token_hash(token_hash: str) -> bool:
 
 def membership_task_discount_units_by_token_hash(token_hash: str) -> int:
     with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> int:
+                active, _ = _sync_membership_state(entry)
+                if not active:
+                    return 0
+                try:
+                    raw_discount = active.get("task_discount_points")
+                    return nonnegative_points_to_units(0.1 if raw_discount is None else raw_discount)
+                except ValueError:
+                    return 0
+
+            try:
+                return postgres.mutate_user("token_hash", token_hash, mutate)
+            except KeyError:
+                return 0
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not isinstance(entry, dict):
@@ -635,6 +831,15 @@ def membership_task_discount_units_by_token_hash(token_hash: str) -> int:
 
 def rotate_user_token_by_hash(token_hash: str) -> dict[str, Any]:
     with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> dict[str, Any]:
+                if not entry.get("enabled", True):
+                    raise KeyError(token_hash)
+                token = rotate_temp_token(token_hash)
+                entry.update(token_hash=token["id"], token=token["token"], last_seen_at=_now(), updated_at=_now())
+                return {"username": entry["username"], "token": entry["token"]}
+
+            return postgres.mutate_user("token_hash", token_hash, mutate)
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not entry or not entry.get("enabled", True):
@@ -649,6 +854,13 @@ def rotate_user_token_by_hash(token_hash: str) -> dict[str, Any]:
 
 def set_user_enabled(user_id: str, enabled: bool) -> None:
     with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> None:
+                entry["enabled"] = bool(enabled)
+                entry["updated_at"] = _now()
+
+            postgres.mutate_user("id", user_id, mutate)
+            return
         data = _read()
         entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
         if not entry:
@@ -660,6 +872,9 @@ def set_user_enabled(user_id: str, enabled: bool) -> None:
 
 def set_user_concurrency(user_id: str, concurrency: int) -> None:
     with _LOCK:
+        if postgres.enabled():
+            postgres.mutate_user("id", user_id, lambda entry: _set_effective_concurrency(entry, concurrency))
+            return
         data = _read()
         entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
         if not entry:
@@ -690,6 +905,11 @@ def _set_effective_concurrency(entry: dict[str, Any], concurrency: int) -> int:
 
 def set_user_concurrency_by_token_hash(token_hash: str, concurrency: int) -> int | None:
     with _LOCK:
+        if postgres.enabled():
+            try:
+                return postgres.mutate_user("token_hash", token_hash, lambda entry: _set_effective_concurrency(entry, concurrency))
+            except KeyError:
+                return None
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not isinstance(entry, dict):
@@ -701,6 +921,12 @@ def set_user_concurrency_by_token_hash(token_hash: str, concurrency: int) -> int
 
 def delete_user(user_id: str) -> None:
     with _LOCK:
+        if postgres.enabled():
+            entry = postgres.delete_user("id", user_id)
+            if not entry:
+                raise KeyError(user_id)
+            delete_temp_token(str(entry.get("token_hash") or ""))
+            return
         data = _read()
         key = next((name for name, item in data["users"].items() if item.get("id") == user_id), None)
         if key is None:

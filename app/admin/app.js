@@ -42,9 +42,15 @@ const els = {
   refreshClientToken: document.getElementById("refreshClientToken"),
   pointsBalance: document.getElementById("pointsBalance"),
   purchaseOptions: document.getElementById("purchaseOptions"),
+  openRedeemModal: document.getElementById("openRedeemModal"),
+  redeemModal: document.getElementById("redeemModal"),
+  closeRedeemModal: document.getElementById("closeRedeemModal"),
+  cancelRedeemModal: document.getElementById("cancelRedeemModal"),
   redeemForm: document.getElementById("redeemForm"),
   redeemCode: document.getElementById("redeemCode"),
   redeemButton: document.getElementById("redeemButton"),
+  refreshPurchaseHistory: document.getElementById("refreshPurchaseHistory"),
+  purchaseHistoryList: document.getElementById("purchaseHistoryList"),
   membershipList: document.getElementById("membershipList"),
   membershipCurrentState: document.getElementById("membershipCurrentState"),
   membershipDetailsButton: document.getElementById("membershipDetailsButton"),
@@ -187,6 +193,7 @@ const els = {
   metricService: document.getElementById("metricService"),
   metricServiceNote: document.getElementById("metricServiceNote"),
   metricWorkers: document.getElementById("metricWorkers"),
+  metricWorkersNote: document.getElementById("metricWorkersNote"),
   editWorkers: document.getElementById("editWorkers"),
   metricTaskTotal: document.getElementById("metricTaskTotal"),
   metricPending: document.getElementById("metricPending"),
@@ -1033,6 +1040,8 @@ function applyAccessScope(data = {}) {
   if (els.proxyNodesView) els.proxyNodesView.classList.toggle("hidden", isClient);
   if (els.messagesNavLabel) els.messagesNavLabel.textContent = isClient ? "消息中心" : "消息处理";
   if (els.messagesView) els.messagesView.dataset.title = isClient ? "消息中心" : "消息处理";
+  if (els.settingsNavItem) els.settingsNavItem.querySelector("span").textContent = isClient ? "用户设置" : "设置";
+  if (els.settingsView) els.settingsView.dataset.title = isClient ? "用户设置" : "设置";
   if (els.quotaNavItem) {
     els.quotaNavItem.classList.toggle("hidden", isClient);
     els.quotaNavItem.setAttribute("aria-hidden", isClient ? "true" : "false");
@@ -1217,7 +1226,7 @@ async function loadClientFeedback() {
       <div class="message-card-head"><div><strong>${escapeHtml(item.category || "其他")}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><span class="message-status ${escapeHtml(item.status || "pending")}">${escapeHtml(FEEDBACK_STATUS_LABELS[item.status] || item.status || "待处理")}</span></div>
       <p>${escapeHtml(item.content || "")}</p>
       <div class="admin-reply ${item.admin_note ? "" : "empty"}"><span>管理员回复</span><p>${escapeHtml(item.admin_note || "暂未回复")}</p></div>
-    </article>`).join("") : '<div class="empty-state">还没有提交过反馈</div>';
+    </article>`).join("") : '<div class="empty-state">暂无反馈</div>';
 }
 
 async function loadClientNotifications() {
@@ -1468,11 +1477,30 @@ async function redeemPoints(event) {
     const data = await apiFetch("/points/redeem", { method: "POST", body: { code: els.redeemCode.value.trim() } });
     els.redeemForm.reset();
     await refreshHealth();
+    await loadPurchaseHistory();
     toast(`已兑换 ${data.points} 积分`);
   } catch (error) {
     toast(`兑换失败：${error.message}`, "error");
   } finally {
     setBusy(els.redeemButton, false);
+  }
+}
+
+async function loadPurchaseHistory() {
+  if (portal !== "client" || !els.purchaseHistoryList) return;
+  const data = await apiFetch("/points/transactions?page=1&page_size=100");
+  const rows = (data.transactions || []).filter((item) => Number(item.amount_units || 0) > 0 && ["redeem", "admin_credit"].includes(item.kind));
+  els.purchaseHistoryList.innerHTML = rows.length ? rows.map((item) => `<article class="purchase-history-row"><div><strong>${escapeHtml(item.title || "积分充值")}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><div class="purchase-history-amount"><strong>+${escapeHtml(item.amount)}</strong><span>余额 ${item.balance == null ? "-" : escapeHtml(item.balance)}</span></div></article>`).join("") : '<div class="empty-state">暂无购买记录</div>';
+}
+
+async function refreshPurchaseHistory() {
+  setBusy(els.refreshPurchaseHistory, true, "刷新中");
+  try {
+    await loadPurchaseHistory();
+  } catch (error) {
+    toast(`购买记录读取失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.refreshPurchaseHistory, false);
   }
 }
 
@@ -1852,7 +1880,10 @@ function updateDashboardMetrics() {
 async function refreshHealth() {
   const data = await apiFetch("/health");
   state.activeIds = Array.isArray(data.active) ? data.active : [];
-  els.metricWorkers.textContent = String(data.browser_workers ?? "-");
+  const configuredWorkers = Number(data.browser_workers ?? 0);
+  const effectiveWorkers = Number(data.components?.resources?.effective_workers ?? configuredWorkers);
+  els.metricWorkers.textContent = configuredWorkers ? `${effectiveWorkers} / ${configuredWorkers}` : "-";
+  if (els.metricWorkersNote) els.metricWorkersNote.textContent = "有效 / 配置";
   applyAccessScope(data);
   setServiceState(true);
   updateDashboardMetrics();
@@ -2233,9 +2264,9 @@ function closeVideoModal() {
 
 async function saveWorkersConfig() {
   const workers = Number.parseInt(els.workersInput.value, 10);
-  if (!Number.isInteger(workers) || workers < 1 || workers > 100) {
-    els.workersModalState.textContent = "请输入 1 - 100";
-    toast("并发数量范围是 1 - 100", "error");
+  if (!Number.isInteger(workers) || workers < 1 || workers > 999) {
+    els.workersModalState.textContent = "请输入 1 - 999";
+    toast("全局并发范围是 1 - 999", "error");
     return;
   }
   setBusy(els.saveWorkers, true, "保存中");
@@ -2244,8 +2275,10 @@ async function saveWorkersConfig() {
       method: "POST",
       body: { browser_workers: workers },
     });
-    els.metricWorkers.textContent = String(data.browser_workers ?? workers);
-    els.workersModalState.textContent = "已保存";
+    const configured = Number(data.browser_workers ?? workers);
+    const effective = Number(data.effective_browser_workers ?? configured);
+    els.metricWorkers.textContent = `${effective} / ${configured}`;
+    els.workersModalState.textContent = `已保存，当前有效并发 ${effective}`;
     toast("并发配置已更新");
     closeWorkersModal();
     await refreshHealth();
@@ -3202,6 +3235,7 @@ function bindEvents() {
   els.adminNotificationForm?.addEventListener("submit", submitAdminNotification);
   els.adminAnnouncementForm?.addEventListener("submit", submitAdminAnnouncement);
   els.redeemForm?.addEventListener("submit", redeemPoints);
+  els.refreshPurchaseHistory?.addEventListener("click", refreshPurchaseHistory);
   els.refreshTransactions?.addEventListener("click", refreshTransactions);
   els.pointCardForm?.addEventListener("submit", generatePointCards);
   els.refreshPointCards?.addEventListener("click", refreshPointCards);
@@ -3523,6 +3557,14 @@ function bindEvents() {
     openSettingsModal(els.clientEmailModal, els.changeEmailLocal);
   });
   els.openFeedbackModal?.addEventListener("click", () => openSettingsModal(els.feedbackModal, els.feedbackContent));
+  els.openRedeemModal?.addEventListener("click", async () => {
+    openSettingsModal(els.redeemModal, els.redeemCode);
+    try {
+      await loadPurchaseHistory();
+    } catch (error) {
+      toast(`购买记录读取失败：${error.message}`, "error");
+    }
+  });
   els.openProxyModal?.addEventListener("click", async () => {
     try {
       await loadProxyConfig();
@@ -3577,7 +3619,7 @@ function bindEvents() {
       toast(`会员套餐读取失败：${error.message}`, "error");
     }
   });
-  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal]].forEach(([modal, closeButton, cancelButton]) => {
+  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal]].forEach(([modal, closeButton, cancelButton]) => {
     if (closeButton) closeButton.onclick = (event) => {
       event.preventDefault();
       closeSettingsModal(modal);

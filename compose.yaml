@@ -19,13 +19,17 @@ x-app-environment: &app-environment
   DOLA_MEMORY_HIGH_RATIO: ${DOLA_MEMORY_HIGH_RATIO:-0.80}
   DOLA_MEMORY_CRITICAL_RATIO: ${DOLA_MEMORY_CRITICAL_RATIO:-0.92}
   DOLA_MINIMUM_WORKERS: ${DOLA_MINIMUM_WORKERS:-1}
-  DOLA_MAX_EFFECTIVE_WORKERS: ${DOLA_MAX_EFFECTIVE_WORKERS:-8}
+  DOLA_MAX_EFFECTIVE_WORKERS: ${DOLA_MAX_EFFECTIVE_WORKERS:-32}
+  DOLA_RESULT_POLL_CONCURRENCY: ${DOLA_RESULT_POLL_CONCURRENCY:-16}
+  DOLA_RESULT_POLL_RATE_PER_SECOND: ${DOLA_RESULT_POLL_RATE_PER_SECOND:-8}
+  DOLA_RESULT_POLL_BATCH_SIZE: ${DOLA_RESULT_POLL_BATCH_SIZE:-256}
+  DOLA_RESULT_POLL_INTERVAL_SECONDS: ${DOLA_RESULT_POLL_INTERVAL_SECONDS:-20}
   DOLA_UPDATE_CONTROLLER_SOCKET: /run/dola-update/controller.sock
 
 x-app-base: &app-base
   build:
     context: .
-  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.3.0}
+  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.3.3}
   init: true
   restart: unless-stopped
   environment: *app-environment
@@ -71,7 +75,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${DOLA_WORKER_MEMORY_LIMIT:-4G}
+          memory: ${DOLA_WORKER_MEMORY_LIMIT:-10G}
 
   redis:
     image: redis:7.4-alpine

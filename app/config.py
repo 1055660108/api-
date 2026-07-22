@@ -62,7 +62,7 @@ def _read_mem_gb() -> float:
 
 
 def recommended_browser_workers() -> int:
-    return 100
+    return 32
 
 
 def default_config() -> dict[str, Any]:
@@ -317,7 +317,7 @@ def load_settings() -> Settings:
         admin_password_hash=str(data.get("admin_password_hash") or ""),
         host=str(data.get("host") or "0.0.0.0"),
         port=int(data.get("port") or 8088),
-        browser_workers=max(1, min(100, int(data.get("browser_workers") or 100))),
+        browser_workers=max(1, min(999, int(data.get("browser_workers") or recommended_browser_workers()))),
         browser_executable_path=str(data.get("browser_executable_path") or "").strip(),
         headless=_as_bool(data.get("headless"), True),
         task_timeout_seconds=max(30, int(data.get("task_timeout_seconds") or 180)),

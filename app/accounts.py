@@ -729,26 +729,21 @@ def _select_account(accounts: list[dict[str, Any]], exclude_ids: set[str] | None
 def claim_account_for_worker(worker_id: str, task_id: str, exclude_ids: set[str] | None = None, platform: str = DEFAULT_PLATFORM) -> dict[str, Any] | None:
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> dict[str, Any] | None:
-                accounts = data.get("accounts")
-                if not isinstance(accounts, list):
-                    accounts = []
-                    data["accounts"] = accounts
-                selected = _select_account(accounts, exclude_ids, platform)
-                if not selected:
-                    return None
+            def mutate(account: dict[str, Any]) -> dict[str, Any]:
+                selected = _select_account([account], platform=platform)
+                if selected is None:
+                    raise RuntimeError("selected account became unavailable")
                 now = utc_now()
                 charge_id = f"{task_id}:{secrets.token_hex(8)}"
-                for account in accounts:
-                    if str(account.get("id") or "") == selected["id"]:
-                        charges = _initialize_quota_ledger(account)
-                        charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "status": "charged", "charged_at": now})
-                        account.update(last_used_worker_id=str(worker_id or ""), last_used_at=now, current_task_id=str(task_id or ""), current_worker_id=str(worker_id or ""), current_started_at=now, current_quota_charge_id=charge_id, quota_charges=charges, quota_used=_reconciled_quota_used(account), updated_at=now)
-                        selected["quota_charge_id"] = charge_id
-                        return selected
-                return None
+                charges = _initialize_quota_ledger(account)
+                charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "status": "charged", "charged_at": now})
+                account.update(last_used_worker_id=str(worker_id or ""), last_used_at=now, current_task_id=str(task_id or ""), current_worker_id=str(worker_id or ""), current_started_at=now, current_quota_charge_id=charge_id, quota_charges=charges, quota_used=_reconciled_quota_used(account), updated_at=now)
+                selected["quota_charge_id"] = charge_id
+                return selected
 
-            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            return postgres.claim_available_account(
+                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate
+            )
         data = _read_data()
         selected = _select_account(data["accounts"], exclude_ids, platform)
         if not selected:
@@ -839,31 +834,30 @@ def refund_account_quota(account_id: str, refund_id: str = "") -> bool:
         return False
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
-            def mutate(data: dict[str, Any]) -> bool:
-                for account in data.get("accounts") or []:
-                    if str(account.get("id") or "") != str(account_id):
-                        continue
-                    if bool(account.get("quota_ledger_initialized")):
-                        for charge in _quota_charges(account):
-                            if str(charge.get("charge_id") or "") != str(refund_id or "") or str(charge.get("status") or "charged") != "charged":
-                                continue
-                            charge.update(status="refunded", refunded_at=utc_now())
-                            account["quota_used"] = _reconciled_quota_used(account)
-                            account["updated_at"] = utc_now()
-                            return True
-                        return False
-                    refunded = [str(item) for item in account.get("quota_refund_ids") or [] if item]
-                    if refund_id and refund_id in refunded:
-                        return False
-                    account["quota_used"] = max(0, int(account.get("quota_used") or 0) - 1)
-                    if refund_id:
-                        refunded.append(refund_id)
-                        account["quota_refund_ids"] = refunded[-1000:]
-                    account["updated_at"] = utc_now()
-                    return True
-                return False
+            def mutate(account: dict[str, Any]) -> bool:
+                if bool(account.get("quota_ledger_initialized")):
+                    for charge in _quota_charges(account):
+                        if str(charge.get("charge_id") or "") != str(refund_id or "") or str(charge.get("status") or "charged") != "charged":
+                            continue
+                        charge.update(status="refunded", refunded_at=utc_now())
+                        account["quota_used"] = _reconciled_quota_used(account)
+                        account["updated_at"] = utc_now()
+                        return True
+                    return False
+                refunded = [str(item) for item in account.get("quota_refund_ids") or [] if item]
+                if refund_id and refund_id in refunded:
+                    return False
+                account["quota_used"] = max(0, int(account.get("quota_used") or 0) - 1)
+                if refund_id:
+                    refunded.append(refund_id)
+                    account["quota_refund_ids"] = refunded[-1000:]
+                account["updated_at"] = utc_now()
+                return True
 
-            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            try:
+                return postgres.mutate_account(account_id, mutate)
+            except KeyError:
+                return False
         data = _read_data()
         for account in data["accounts"]:
             if str(account.get("id") or "") == str(account_id):
@@ -1021,7 +1015,10 @@ def settle_account_quota(account_id: str, charge_id: str) -> bool:
             return False
 
         if postgres.enabled():
-            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            try:
+                return postgres.mutate_account(account_id, lambda account: mutate({"accounts": [account]}))
+            except KeyError:
+                return False
         data = _read_data()
         settled = mutate(data)
         if settled:
@@ -1064,7 +1061,10 @@ def exhaust_timed_out_account(account_id: str, charge_id: str = "") -> bool:
             return False
 
         if postgres.enabled():
-            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            try:
+                return postgres.mutate_account(account_id, lambda account: mutate({"accounts": [account]}))
+            except KeyError:
+                return False
         data = _read_data()
         exhausted = mutate(data)
         if exhausted:
@@ -1093,7 +1093,10 @@ def exhaust_account_quota(account_id: str, charge_id: str = "") -> bool:
                         return True
                 return False
 
-            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            try:
+                return postgres.mutate_account(account_id, lambda account: mutate({"accounts": [account]}))
+            except KeyError:
+                return False
         data = _read_data()
         for account in data["accounts"]:
             if str(account.get("id") or "") == str(account_id):
@@ -1128,7 +1131,10 @@ def clear_account_current_task(account_id: str, task_id: str = "") -> None:
                     account.update(current_task_id="", current_worker_id="", current_started_at="", current_quota_charge_id="", updated_at=utc_now())
                     return
 
-            postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            try:
+                postgres.mutate_account(account_id, lambda account: mutate({"accounts": [account]}))
+            except KeyError:
+                pass
             return
         data = _read_data()
         for account in data["accounts"]:

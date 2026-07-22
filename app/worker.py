@@ -22,7 +22,7 @@ from .store import (
     has_pending_tasks,
     expire_task_if_timeout,
     is_task_canceled,
-    list_tasks,
+    list_task_metas_by_statuses,
     load_result,
     mark_account_refund_once,
     mark_failed,
@@ -50,9 +50,22 @@ from .temp_access import temp_token_concurrency_limits
 DOLA_SUBMIT_INTERVAL_SECONDS = 5.0
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
-SUCCESS_WATCH_GRACE_SECONDS = 120
 RESULT_WATCH_DEADLINE_MINUTES = 8
 RETRY_ACCOUNT_WAIT_MINUTES = 5
+
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(os.environ.get(name) or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+RESULT_POLL_CONCURRENCY = _bounded_env_int("DOLA_RESULT_POLL_CONCURRENCY", 16, 1, 64)
+RESULT_POLL_RATE_PER_SECOND = _bounded_env_int("DOLA_RESULT_POLL_RATE_PER_SECOND", 8, 1, 32)
+RESULT_POLL_BATCH_SIZE = _bounded_env_int("DOLA_RESULT_POLL_BATCH_SIZE", 256, RESULT_POLL_CONCURRENCY, 2000)
+RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_SECONDS", 20, 10, 120)
+RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -85,6 +98,12 @@ class WorkerManager:
         self._claim_lock = asyncio.Lock()
         self._dola_submit_lock = asyncio.Lock()
         self._last_dola_submit_at = 0.0
+        self._result_poll_semaphore = asyncio.Semaphore(RESULT_POLL_CONCURRENCY)
+        self._result_poll_pace_lock = asyncio.Lock()
+        self._last_result_poll_at = 0.0
+        self._result_poll_active = 0
+        self._token_concurrency_limits: dict[str, int] = {}
+        self._token_concurrency_refreshed_at = 0.0
         self._claimed: set[str] = set()
         self._stopping = False
         self._worker_seq = 0
@@ -140,6 +159,9 @@ class WorkerManager:
             "worker_configured": configured,
             "worker_effective": effective,
             "claimed": len(self._claimed),
+            "result_poll_active": self._result_poll_active,
+            "result_poll_concurrency": RESULT_POLL_CONCURRENCY,
+            "result_poll_rate_per_second": RESULT_POLL_RATE_PER_SECOND,
             "restart_count": self._restart_count,
             "last_error": self._last_error,
             "resources": resource,
@@ -201,7 +223,7 @@ class WorkerManager:
 
     async def _watch_running_tasks(self) -> None:
         while not self._stopping:
-            await asyncio.sleep(60)
+            await asyncio.sleep(RESULT_WATCH_INTERVAL_SECONDS)
             try:
                 await self._watch_running_tasks_once()
             except asyncio.CancelledError:
@@ -211,18 +233,17 @@ class WorkerManager:
                 self._restart_count += 1
 
     async def _watch_running_tasks_once(self) -> None:
-        running_ids: list[str] = []
-        success_ids: list[str] = []
-        for item in list_tasks():
-            task_id = str(item.get("id") or "")
-            status = str(item.get("status") or "")
-            if task_id and status == "running":
-                running_ids.append(task_id)
-            if task_id and status == STATUS_SUBMITTED:
-                success_ids.append(task_id)
-        await self._watch_unfinished_success_tasks(success_ids)
+        due_before = datetime.now(timezone.utc).isoformat()
+        submitted_rows = list_task_metas_by_statuses(
+            {STATUS_SUBMITTED},
+            platform="dola",
+            due_before=due_before,
+            limit=RESULT_POLL_BATCH_SIZE,
+        )
+        await self._watch_unfinished_success_tasks([task_id for task_id, _ in submitted_rows])
         if queue_backend() == "redis":
             return
+        running_ids = [task_id for task_id, _ in list_task_metas_by_statuses({"running"})]
         for task_id in running_ids:
             with suppress(FileNotFoundError):
                 meta = get_meta(task_id)
@@ -246,12 +267,29 @@ class WorkerManager:
         set_active_tasks(self._claimed)
 
     async def _watch_unfinished_success_tasks(self, task_ids: list[str]) -> None:
-        for task_id in task_ids:
-            with suppress(FileNotFoundError):
+        if not task_ids:
+            return
+        await asyncio.gather(*(self._watch_unfinished_success_task(task_id) for task_id in task_ids))
+
+    async def _pace_result_poll(self) -> None:
+        interval = 1.0 / RESULT_POLL_RATE_PER_SECOND
+        async with self._result_poll_pace_lock:
+            now = asyncio.get_running_loop().time()
+            delay = interval - (now - self._last_result_poll_at)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last_result_poll_at = asyncio.get_running_loop().time()
+
+    async def _watch_unfinished_success_task(self, task_id: str) -> None:
+        async with self._result_poll_semaphore:
+            self._result_poll_active += 1
+            try:
                 result = load_result(task_id)
                 if result.get("decoded_main_url"):
-                    continue
+                    return
                 meta = get_meta(task_id)
+                if str(meta.get("status") or "") != STATUS_SUBMITTED or str(meta.get("platform") or "dola") != "dola":
+                    return
                 submitted_at = self._parse_utc(str(meta.get("submitted_at") or meta.get("updated_at") or ""))
                 if submitted_at and datetime.now(timezone.utc) - submitted_at >= timedelta(minutes=RESULT_WATCH_DEADLINE_MINUTES):
                     account_id = str(result.get("account_id") or "")
@@ -264,20 +302,28 @@ class WorkerManager:
                         retry_count = retry_timed_out_submitted_task(task_id, "生成超过8分钟，正在重试", max_retries=MAX_TASK_RETRIES)
                         if retry_count <= MAX_TASK_RETRIES:
                             clear_transient_result(task_id)
-                            continue
+                            return
                     mark_failed(task_id, "生成超过8分钟，两次重试后仍未返回结果")
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
-                    continue
-                finished_at = self._parse_utc(str(meta.get("finished_at") or meta.get("updated_at") or ""))
-                if finished_at and datetime.now(timezone.utc) - finished_at < timedelta(seconds=SUCCESS_WATCH_GRACE_SECONDS):
-                    continue
+                    return
+                await self._pace_result_poll()
                 outcome = await query_task(task_id)
                 if str(outcome.get("code") or "") == "2":
-                    continue
-                text = str(outcome.get("text") or "")
-                if text and text not in {"没有文本", GENERATING_TEXT}:
-                    continue
-                record_result_watch_miss(task_id)
+                    return
+                current = get_meta(task_id)
+                if str(current.get("status") or "") != STATUS_SUBMITTED:
+                    return
+                miss_count = record_result_watch_miss(task_id)
+                jitter = secrets.randbelow(5001) / 1000
+                interval = min(45, RESULT_POLL_BASE_INTERVAL_SECONDS + max(0, miss_count - 1) * 5)
+                update_meta(
+                    task_id,
+                    next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=interval + jitter)).isoformat(),
+                )
+            except FileNotFoundError:
+                return
+            finally:
+                self._result_poll_active = max(0, self._result_poll_active - 1)
 
     def _parse_utc(self, value: str) -> datetime | None:
         try:
@@ -302,6 +348,13 @@ class WorkerManager:
         mark_pending(task_id, f"等待可用{platform}账号")
         return False
 
+    def _owner_concurrency_limits(self) -> dict[str, int]:
+        now = asyncio.get_running_loop().time()
+        if now - self._token_concurrency_refreshed_at >= 1.0:
+            self._token_concurrency_limits = temp_token_concurrency_limits()
+            self._token_concurrency_refreshed_at = now
+        return self._token_concurrency_limits
+
     async def _worker_loop(self, worker_id: str) -> None:
         while not self._stopping:
             async with self._claim_lock:
@@ -311,7 +364,7 @@ class WorkerManager:
                         owner = str(get_meta(claimed_id).get("owner_token_hash") or "")
                         if owner:
                             active_counts[owner] = active_counts.get(owner, 0) + 1
-                task_id = self._queue.claim(worker_id, self._claimed, active_counts, temp_token_concurrency_limits())
+                task_id = self._queue.claim(worker_id, self._claimed, active_counts, self._owner_concurrency_limits())
                 if task_id:
                     self._claimed.add(task_id)
                     self._worker_task_ids[worker_id] = task_id

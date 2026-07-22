@@ -173,7 +173,7 @@ class DolaQueryTests(unittest.TestCase):
     def test_policy_text_uses_client_message(self) -> None:
         self.assertEqual(query.POLICY_RETRY_TEXT, "你的输入可能包含违规内容请重试！")
 
-    def test_policy_result_immediately_finishes_task_as_failed(self) -> None:
+    def test_first_policy_result_retries_without_refunding_user(self) -> None:
         task_id = "0" * 32
         result_data = {
             "cookie_string": "sessionid=secret",
@@ -188,18 +188,58 @@ class DolaQueryTests(unittest.TestCase):
             query, "fetch_single_chain", new=AsyncMock(return_value=("", query.POLICY_RETRY_TEXT))
         ), patch.object(query, "save_result"), patch.object(
             query, "clear_account_current_task"
-        ) as clear_account, patch.object(query, "settle_account_quota") as settle_account, patch.object(
+        ) as clear_account, patch.object(query, "record_failed_account") as record_failed, patch.object(
+            query, "settle_account_quota"
+        ) as settle_account, patch.object(
             query, "mark_failed"
         ) as mark_failed, patch.object(query, "refund_temp_quota_once") as refund_temp, patch.object(
-            query, "retry_submitted_task"
-        ) as retry_task:
+            query, "retry_submitted_task", return_value=1
+        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result:
+            response = asyncio.run(query._query_task_once(task_id))
+        self.assertEqual(response, {"code": "1", "text": query.POLICY_RETRYING_TEXT, "url": ""})
+        clear_account.assert_called_once_with("account-1", task_id)
+        record_failed.assert_called_once_with(task_id, "account-1")
+        settle_account.assert_called_once_with("account-1", "charge-1")
+        retry_task.assert_called_once_with(task_id, query.POLICY_RETRYING_TEXT, max_retries=1, delay_seconds=10)
+        clear_result.assert_called_once_with(task_id)
+        mark_failed.assert_not_called()
+        refund_temp.assert_not_called()
+
+    def test_second_policy_result_finishes_task_and_refunds_user(self) -> None:
+        task_id = "0" * 32
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "conversation_id": "12345678901234567",
+            "account_id": "account-2",
+            "account_quota_charge_id": "charge-2",
+        }
+        meta = {
+            "status": query.STATUS_SUBMITTED,
+            "owner_token_hash": "owner-hash",
+            "retry_count": 1,
+        }
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=("", query.POLICY_RETRY_TEXT))
+        ), patch.object(query, "save_result"), patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(query, "record_failed_account") as record_failed, patch.object(
+            query, "settle_account_quota"
+        ) as settle_account, patch.object(query, "retry_submitted_task", return_value=2) as retry_task, patch.object(
+            query, "mark_failed"
+        ) as mark_failed, patch.object(query, "refund_temp_quota_once") as refund_temp, patch.object(
+            query, "clear_transient_result"
+        ) as clear_result:
             response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "0", "text": query.POLICY_RETRY_TEXT, "url": ""})
-        clear_account.assert_called_once_with("account-1", task_id)
-        settle_account.assert_called_once_with("account-1", "charge-1")
+        clear_account.assert_called_once_with("account-2", task_id)
+        record_failed.assert_called_once_with(task_id, "account-2")
+        settle_account.assert_called_once_with("account-2", "charge-2")
+        retry_task.assert_called_once_with(task_id, query.POLICY_RETRYING_TEXT, max_retries=1, delay_seconds=10)
         mark_failed.assert_called_once_with(task_id, query.POLICY_RETRY_TEXT)
         refund_temp.assert_called_once_with(task_id, "owner-hash")
-        retry_task.assert_not_called()
+        clear_result.assert_not_called()
 
     def test_reference_task_recovers_matching_recent_conversation(self) -> None:
         task_id = "0" * 32
@@ -236,17 +276,27 @@ class DolaQueryTests(unittest.TestCase):
             )
         )
 
-    def test_stale_pending_policy_task_is_reconciled_to_failed(self) -> None:
+    def test_pending_policy_retry_remains_in_progress(self) -> None:
         task_id = "0" * 32
-        meta = {"status": "pending", "owner_token_hash": "owner-hash", "error": query.POLICY_RETRY_TEXT}
+        meta = {"status": "pending", "owner_token_hash": "owner-hash", "error": query.POLICY_RETRYING_TEXT}
         with patch.object(query, "expire_task_if_timeout"), patch.object(
             query, "get_meta", return_value=meta
         ), patch.object(query, "mark_failed") as mark_failed, patch.object(
             query, "refund_temp_quota_once"
         ) as refund_temp:
             response = asyncio.run(query._query_task_once(task_id))
+        self.assertEqual(response, {"code": "1", "text": query.POLICY_RETRYING_TEXT, "url": ""})
+        mark_failed.assert_not_called()
+        refund_temp.assert_not_called()
+
+    def test_failed_policy_retry_is_terminal_and_refunded(self) -> None:
+        task_id = "0" * 32
+        meta = {"status": query.STATUS_FAILED, "owner_token_hash": "owner-hash", "error": query.POLICY_RETRY_TEXT}
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "refund_temp_quota_once") as refund_temp:
+            response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "0", "text": query.POLICY_RETRY_TEXT, "url": ""})
-        mark_failed.assert_called_once_with(task_id, query.POLICY_RETRY_TEXT)
         refund_temp.assert_called_once_with(task_id, "owner-hash")
 
     def test_quota_insufficient_exhausts_account_and_requeues_task(self) -> None:

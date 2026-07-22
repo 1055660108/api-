@@ -30,6 +30,7 @@ GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 
 RETRY_GENERATING_TEXT = "视频生成中请稍后..."
 SUCCESS_TEXT = "已成功"
 POLICY_RETRY_TEXT = "你的输入可能包含违规内容请重试！"
+POLICY_RETRYING_TEXT = "检测到内容异常，正在自动重试..."
 ACCOUNT_QUOTA_RETRY_TEXT = "当前账号额度不足，正在切换账号重试"
 
 
@@ -466,9 +467,12 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     if meta.get("status") not in {STATUS_SUBMITTED, STATUS_SUCCESS}:
         if meta.get("status") == STATUS_FAILED and str(meta.get("error") or "") in {"超时生成失败", "重试超过30分钟，生成失败"}:
             return {"code": "0", "text": str(meta.get("error") or "超时生成失败"), "url": ""}
-        if meta.get("status") in {"pending", STATUS_FAILED} and is_suspected_policy_false_positive(str(meta.get("error") or "")):
-            if meta.get("status") == "pending":
-                mark_failed(task_id, POLICY_RETRY_TEXT)
+        if meta.get("status") == "pending" and (
+            str(meta.get("error") or "") == POLICY_RETRYING_TEXT
+            or is_suspected_policy_false_positive(str(meta.get("error") or ""))
+        ):
+            return {"code": "1", "text": POLICY_RETRYING_TEXT, "url": ""}
+        if meta.get("status") == STATUS_FAILED and is_suspected_policy_false_positive(str(meta.get("error") or "")):
             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
             return {"code": "0", "text": POLICY_RETRY_TEXT, "url": ""}
         if int(meta.get("retry_count") or 0) > 0 and is_final_generation_failure(str(meta.get("error") or "")):
@@ -597,9 +601,14 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         if is_suspected_policy_false_positive(text):
             if account_id:
                 clear_account_current_task(account_id, task_id)
+                record_failed_account(task_id, account_id)
                 consume_failed_account_quota(task_id, meta, account_id, str(result.get("account_quota_charge_id") or ""))
-            meta = get_meta(task_id)
+            retry_count = retry_submitted_task(task_id, POLICY_RETRYING_TEXT, max_retries=1, delay_seconds=10)
+            if retry_count <= 1:
+                clear_transient_result(task_id)
+                return {"code": "1", "text": POLICY_RETRYING_TEXT, "url": ""}
             mark_failed(task_id, POLICY_RETRY_TEXT)
+            meta = get_meta(task_id)
             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
             return {"code": "0", "text": POLICY_RETRY_TEXT, "url": ""}
         if account_id:

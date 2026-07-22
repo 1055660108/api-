@@ -270,8 +270,21 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn("单任务减免", self.html + self.javascript)
 
     def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
-        for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "积分账号", "当前积分"):
+        for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "购买积分", "当前积分"):
             self.assertIn(text, self.html)
+        self.assertIn('<div><h2>积分套餐</h2></div>', self.html)
+        self.assertIn("panel-action-header", self.html)
+        for removed in (
+            "积分账号",
+            "购买套餐或使用卡密为当前账号充值。",
+            "购买后将在新页面完成支付。",
+            "记录积分与视频额度的增加、使用和退款。",
+            "提交使用问题，并在这里查看管理员的处理状态和回复。",
+            "选择视频后可批量删除对应任务记录",
+            "完善描述并选择生成参数",
+            "保存创作灵感，拖动排序，点击即可带入任务。",
+        ):
+            self.assertNotIn(removed, self.html)
         for removed in ("一处掌控所有生成任务", "可用于第三方软件调用，消耗同一积分余额，请妥善保管。", "账户概览", "系统运行概况"):
             self.assertNotIn(removed, self.html)
         self.assertIn("function newPromptId()", self.javascript)

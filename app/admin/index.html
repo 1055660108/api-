@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.2.6" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.6" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.3.0" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.3.0" />
   </head>
   <body>
     <script>
@@ -17,7 +17,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.6" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.0" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -79,7 +79,7 @@
     <div class="app-shell hidden" id="appShell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.6" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.0" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -114,7 +114,7 @@
           <button class="nav-item" type="button" data-view="prompts">
             <span>提示词库</span>
           </button>
-          <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>积分账号</span></button>
+          <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>购买积分</span></button>
           <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>会员订阅</span></button>
           <button class="nav-item" type="button" data-view="transactions" id="transactionsNavItem"><span>消费明细</span></button>
           <button class="nav-item" type="button" data-view="users" id="usersNavItem"><span>用户管理</span></button>
@@ -182,14 +182,13 @@
 
         </section>
 
-        <section class="view" id="pointsView" data-title="积分账号">
+        <section class="view" id="pointsView" data-title="购买积分">
           <div class="commerce-header">
-            <div><h2>积分账号</h2><p>购买套餐或使用卡密为当前账号充值。</p></div>
+            <div><h2>积分套餐</h2></div>
             <div class="purchase-balance"><span>可用积分</span><strong id="pointsBalance">0</strong></div>
           </div>
           <div class="commerce-grid">
             <section class="panel purchase-panel">
-              <div class="section-heading"><div><h2>积分套餐</h2><p>购买后将在新页面完成支付。</p></div></div>
               <div class="purchase-options" id="purchaseOptions"></div>
             </section>
             <form class="panel redeem-panel" id="redeemForm">
@@ -202,7 +201,7 @@
 
         <section class="view" id="membershipView" data-title="会员订阅"><section class="panel catalog-panel"><div class="panel-header"><div><h2>会员套餐</h2><p>高级会员优先生效，暂停的低级会员不会消耗剩余天数。</p></div><div class="membership-current"><span class="settings-state" id="membershipCurrentState">当前无会员</span><button class="secondary-button hidden" id="membershipDetailsButton" type="button">详情</button></div></div><div class="membership-grid" id="membershipList"></div></section></section>
 
-        <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header"><div><h2>消费明细</h2><p>记录积分与视频额度的增加、使用和退款。</p></div><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap ledger-table-wrap"><table class="users-table ledger-table"><colgroup><col class="ledger-time-col"><col class="ledger-type-col"><col class="ledger-detail-col"><col class="ledger-points-col"><col class="ledger-quota-col"><col class="ledger-balance-col"></colgroup><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>视频额度变动</th><th>当前余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
+        <section class="view" id="transactionsView" data-title="消费明细"><section class="panel ledger-panel"><div class="panel-header panel-action-header"><button class="secondary-button" id="refreshTransactions" type="button">刷新</button></div><div class="table-wrap ledger-table-wrap"><table class="users-table ledger-table"><colgroup><col class="ledger-time-col"><col class="ledger-type-col"><col class="ledger-detail-col"><col class="ledger-points-col"><col class="ledger-quota-col"><col class="ledger-balance-col"></colgroup><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>积分变动</th><th>视频额度变动</th><th>当前余额</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></section></section>
 
         <section class="view" id="point-cardsView" data-title="卡密积分">
           <section class="panel point-card-workspace">
@@ -293,7 +292,7 @@
 
           <div class="client-message-center">
             <section class="message-panel" data-message-panel="feedback">
-              <div class="message-panel-header"><div><h2>我的反馈</h2><p>提交使用问题，并在这里查看管理员的处理状态和回复。</p></div><button class="primary-button" id="openFeedbackModal" type="button">提交反馈</button></div>
+              <div class="message-panel-header panel-action-header"><button class="primary-button" id="openFeedbackModal" type="button">提交反馈</button></div>
               <div class="message-list" id="clientFeedbackList"></div>
             </section>
             <section class="message-panel hidden" data-message-panel="notifications">
@@ -332,7 +331,6 @@
             <section class="submit-composer" aria-label="提交任务">
               <div class="composer-heading">
                 <div><span class="eyebrow">视频任务</span><h2>新建生成任务</h2></div>
-                <span class="composer-hint">完善描述并选择生成参数</span>
               </div>
               <div class="composer-main">
                 <div class="image-list" id="imageList"></div>
@@ -381,8 +379,7 @@
 
         <section class="view" id="promptsView" data-title="提示词库">
           <section class="panel prompt-manager-panel">
-            <div class="panel-header prompt-manager-header">
-              <div><h2>常用提示词</h2><p>保存创作灵感，拖动排序，点击即可带入任务。</p></div>
+            <div class="panel-header prompt-manager-header panel-action-header">
               <button class="primary-button" id="addPromptButton" type="button">添加提示词</button>
             </div>
             <form class="prompt-editor hidden" id="promptEditor">
@@ -463,7 +460,7 @@
 
         <section class="view" id="videosView" data-title="我的视频">
           <section class="panel">
-            <div class="panel-header"><div><h2>我的视频</h2><p>选择视频后可批量删除对应任务记录</p></div><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
+            <div class="panel-header panel-action-header"><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
             <div class="video-library" id="videoLibrary"></div>
           </section>
         </section>
@@ -1032,6 +1029,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.2.6"></script>
+    <script src="/admin/assets/app.js?v=1.3.0"></script>
   </body>
 </html>

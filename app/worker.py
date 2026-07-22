@@ -51,7 +51,7 @@ DOLA_SUBMIT_INTERVAL_SECONDS = 5.0
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 1-3 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
 SUCCESS_WATCH_GRACE_SECONDS = 120
-RESULT_WATCH_DEADLINE_MINUTES = 10
+RESULT_WATCH_DEADLINE_MINUTES = 8
 RETRY_ACCOUNT_WAIT_MINUTES = 5
 
 
@@ -261,11 +261,11 @@ class WorkerManager:
                     if not bool(meta.get("cancel_requested")):
                         if account_id:
                             record_failed_account(task_id, account_id)
-                        retry_count = retry_timed_out_submitted_task(task_id, "生成超过10分钟，正在重试", max_retries=MAX_TASK_RETRIES)
+                        retry_count = retry_timed_out_submitted_task(task_id, "生成超过8分钟，正在重试", max_retries=MAX_TASK_RETRIES)
                         if retry_count <= MAX_TASK_RETRIES:
                             clear_transient_result(task_id)
                             continue
-                    mark_failed(task_id, "生成超过10分钟，两次重试后仍未返回结果")
+                    mark_failed(task_id, "生成超过8分钟，两次重试后仍未返回结果")
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     continue
                 finished_at = self._parse_utc(str(meta.get("finished_at") or meta.get("updated_at") or ""))

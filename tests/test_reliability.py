@@ -310,7 +310,7 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_running(task["id"], "worker-1")
         store.save_result(task["id"], extra={"account_id": "account1", "account_quota_charge_id": "charge1"})
         store.mark_submitted(task["id"])
-        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat())
+        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat())
         manager = WorkerManager()
         with patch("app.worker.clear_account_current_task") as clear_account, patch(
             "app.worker.exhaust_timed_out_account"
@@ -332,7 +332,7 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_running(task["id"], "worker-1")
         store.save_result(task["id"], extra={"account_id": "account1", "account_quota_charge_id": "charge1"})
         store.mark_submitted(task["id"])
-        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(), cancel_requested=True)
+        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat(), cancel_requested=True)
         manager = WorkerManager()
         with patch("app.worker.clear_account_current_task"), patch("app.worker.exhaust_timed_out_account") as exhaust_account, patch(
             "app.worker.refund_temp_quota_once"
@@ -351,7 +351,7 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_submitted(task["id"])
         store.update_meta(
             task["id"],
-            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(),
+            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat(),
             result_timeout_retry_count=1,
             failed_account_ids=["account1"],
         )
@@ -376,7 +376,7 @@ class ReliabilityTests(unittest.TestCase):
         store.mark_submitted(task["id"])
         store.update_meta(
             task["id"],
-            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat(),
+            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat(),
             retry_count=2,
             result_timeout_retry_count=2,
             failed_account_ids=["account1", "account2"],
@@ -390,7 +390,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["status"], store.STATUS_FAILED)
         self.assertEqual(meta["retry_count"], 3)
         self.assertEqual(meta["result_timeout_retry_count"], 3)
-        self.assertEqual(meta["error"], "生成超过10分钟，两次重试后仍未返回结果")
+        self.assertEqual(meta["error"], "生成超过8分钟，两次重试后仍未返回结果")
         refund_owner.assert_called_once_with(task["id"], "owner")
 
     def test_retry_wait_without_available_account_eventually_fails_and_refunds(self) -> None:

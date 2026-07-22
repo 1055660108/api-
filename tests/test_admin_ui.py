@@ -205,6 +205,9 @@ class AdminUITests(unittest.TestCase):
         worker = (Path(__file__).resolve().parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
         self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS = 5.0", worker)
         self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS -", worker)
+        self.assertIn("RESULT_WATCH_DEADLINE_MINUTES = 8", worker)
+        self.assertIn("生成超过8分钟，正在重试", worker)
+        self.assertIn(r"/生成超过\d+分钟", self.javascript)
 
     def test_message_center_replaces_settings_feedback_entry(self) -> None:
         self.assertIn('id="messagesNavItem"', self.html)
@@ -246,6 +249,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("#feedbackModal .feedback-modal-panel", styles)
         self.assertIn(".announcement-level-picker", styles)
         self.assertIn(".ledger-table .ledger-detail-col { width: 28%; }", styles)
+        self.assertIn("积分减免", self.html + self.javascript)
+        self.assertNotIn("单任务积分减免", self.html + self.javascript)
+        self.assertNotIn("单任务减免", self.html + self.javascript)
 
     def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
         for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "积分账号", "当前积分"):

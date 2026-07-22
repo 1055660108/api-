@@ -200,10 +200,31 @@ class AdminUITests(unittest.TestCase):
         self.assertEqual(self.html.count('class="brand-mark"'), 2)
         self.assertEqual(self.html.count('aria-label="HS"'), 2)
         self.assertIn('href="/admin/assets/hs-logo.png', self.html)
-        self.assertEqual(self.html.count('src="/admin/assets/hs-logo.png'), 2)
+        self.assertEqual(self.html.count('src="/admin/assets/hs-logo.png'), 3)
         self.assertNotIn('<div class="brand-mark">DF</div>', self.html)
         self.assertIn('value="1" placeholder="Dola 默认 1"', self.html)
         self.assertIn('platform === "dola" ? 1', self.javascript)
+
+    def test_client_ink_entry_flow_preserves_existing_auth_and_workspace(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        styles = (root / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        ink_script = (root / "app" / "admin" / "ink-bg.js").read_text(encoding="utf-8")
+        self.assertIn('id="clientInkCanvas"', self.html)
+        self.assertIn('id="clientWorkspaceInk"', self.html)
+        self.assertIn('id="openClientLogin"', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.0', self.html)
+        self.assertIn('data-client-stage="landing"', self.html)
+        self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
+        self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
+        self.assertIn('startClientLoginTransition()', self.javascript)
+        self.assertIn('clientEntryInk?.setMode(inkMode', self.javascript)
+        self.assertIn('clientWorkspaceInk?.setMode("workspace", true)', self.javascript)
+        self.assertIn('document.addEventListener("pointerdown", createClientInkSplash)', self.javascript)
+        self.assertIn('body[data-portal="client"] .client-entry-header', styles)
+        self.assertIn('body[data-portal="client"] .app-shell > .sidebar', styles)
+        self.assertIn('class HSInkBackground', ink_script)
+        self.assertIn('powerPreference: "high-performance"', ink_script)
+        self.assertIn('requestAnimationFrame(this.render)', ink_script)
 
     def test_user_action_buttons_use_aligned_grid(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")

@@ -8,6 +8,9 @@ const authPath = portal === "client" ? "/auth/client" : "/auth/admin";
 const els = {
   loginView: document.getElementById("loginView"),
   loginForm: document.getElementById("loginForm"),
+  openClientLogin: document.getElementById("openClientLogin"),
+  clientInkCanvas: document.getElementById("clientInkCanvas"),
+  clientWorkspaceInk: document.getElementById("clientWorkspaceInk"),
   loginToken: document.getElementById("loginToken"),
   loginButton: document.getElementById("loginButton"),
   loginState: document.getElementById("loginState"),
@@ -922,11 +925,57 @@ function setServiceState(ok, note) {
   els.metricServiceNote.textContent = note || (ok ? "API 可访问" : "检查 Token 或服务");
 }
 
+let clientEntryInk = null;
+let clientWorkspaceInk = null;
+let clientLoginTransitionTimer = 0;
+
+function initClientInkBackgrounds() {
+  if (portal !== "client" || typeof window.HSInkBackground !== "function") return;
+  if (!clientEntryInk && els.clientInkCanvas) clientEntryInk = new window.HSInkBackground(els.clientInkCanvas, { kind: "entry" });
+  if (!clientWorkspaceInk && els.clientWorkspaceInk) clientWorkspaceInk = new window.HSInkBackground(els.clientWorkspaceInk, { kind: "workspace" });
+}
+
+function setClientEntryStage(stage, options = {}) {
+  if (portal !== "client" || !els.loginView) return;
+  const nextStage = ["landing", "converging", "login"].includes(stage) ? stage : "landing";
+  els.loginView.dataset.clientStage = nextStage;
+  const inkMode = nextStage === "landing" ? "landing" : "login";
+  clientEntryInk?.setMode(inkMode, Boolean(options.immediate));
+}
+
+function startClientLoginTransition() {
+  if (portal !== "client" || els.loginView?.dataset.clientStage === "login") return;
+  window.clearTimeout(clientLoginTransitionTimer);
+  setClientEntryStage("converging");
+  const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1050;
+  clientLoginTransitionTimer = window.setTimeout(() => {
+    setClientEntryStage("login");
+    els.clientUsername?.focus({ preventScroll: true });
+  }, delay);
+}
+
+function createClientInkSplash(event) {
+  if (portal !== "client" || !event.target.closest("button:not(:disabled), .nav-item")) return;
+  const splash = document.createElement("span");
+  splash.className = "client-ink-splash";
+  splash.style.left = `${event.clientX}px`;
+  splash.style.top = `${event.clientY}px`;
+  document.body.appendChild(splash);
+  window.setTimeout(() => splash.remove(), 720);
+}
+
 function showLogin(message = "等待输入") {
   document.body.dataset.portal = portal;
   els.appShell.classList.add("hidden");
   els.loginView.classList.remove("hidden");
   els.loginState.textContent = message;
+  if (portal === "client") {
+    window.clearTimeout(clientLoginTransitionTimer);
+    const showLanding = ["等待输入", "等待进入", "已退出"].includes(message);
+    setClientEntryStage(showLanding ? "landing" : "login", { immediate: true });
+    clientEntryInk?.setActive(true);
+    clientWorkspaceInk?.setActive(false);
+  }
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
 }
 
@@ -941,6 +990,11 @@ function showApp() {
   document.body.dataset.portal = portal;
   els.loginView.classList.add("hidden");
   els.appShell.classList.remove("hidden");
+  if (portal === "client") {
+    clientEntryInk?.setActive(false);
+    clientWorkspaceInk?.setMode("workspace", true);
+    clientWorkspaceInk?.setActive(true);
+  }
   switchView("dashboard");
   startAutoRefresh();
   if (portal === "client") window.setTimeout(() => showNextUnseenAnnouncement().catch(() => {}), 250);
@@ -3503,8 +3557,13 @@ function bindEvents() {
     els.loginForm?.classList.toggle("register-mode", register);
     els.loginButton.textContent = register ? "注册并进入" : "登录";
   };
+  els.openClientLogin?.addEventListener("click", () => {
+    setClientMode(false);
+    startClientLoginTransition();
+  });
   els.clientLoginTab?.addEventListener("click", () => setClientMode(false));
   els.clientRegisterTab?.addEventListener("click", () => setClientMode(true));
+  if (portal === "client") document.addEventListener("pointerdown", createClientInkSplash);
   els.sendEmailCode?.addEventListener("click", async () => {
     if (!state.registrationEmailVerificationEnabled) return toast("邮箱注册验证未启用", "error");
     const email = selectedEmail(els.clientEmailLocal, els.clientEmailDomain);
@@ -4230,6 +4289,7 @@ async function init() {
   els.loginToken.value = savedToken;
 
   applyPortalText();
+  initClientInkBackgrounds();
   setSidebarCollapsed(localStorage.getItem("dola_sidebar_collapsed") === "1", false);
   if (portal === "client") {
     try {

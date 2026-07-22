@@ -102,6 +102,17 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(store.get_meta(canceled["id"])["status"], store.STATUS_PENDING)
         self.assertEqual(store.get_meta(limited["id"])["status"], store.STATUS_PENDING)
 
+    def test_queued_owner_task_starts_after_submitted_task_finishes(self) -> None:
+        submitted = self.create_task("owner")
+        queued = self.create_task("owner")
+        self.assertTrue(store.mark_running(submitted["id"], "worker-existing"))
+        store.mark_submitted(submitted["id"])
+        self.assertIsNone(store.claim_next_pending("worker-waiting", set(), {}, {"owner": 1}))
+        self.assertEqual(store.get_meta(queued["id"])["status"], store.STATUS_PENDING)
+        store.save_result(submitted["id"], extra={"decoded_main_url": "https://example.com/video.mp4"})
+        store.mark_success(submitted["id"])
+        self.assertEqual(store.claim_next_pending("worker-next", set(), {}, {"owner": 1}), queued["id"])
+
     def test_submission_barrier_prevents_cancel_refund_window(self) -> None:
         task = self.create_task("owner")
         self.assertTrue(store.mark_running(task["id"], "worker-1"))

@@ -54,7 +54,7 @@ class ResilienceUnitTests(unittest.TestCase):
         self.assertEqual(guard.snapshot("doubao")["state"], "closed")
 
     def test_adaptive_worker_limit_reacts_to_memory_pressure(self) -> None:
-        environment = {"DOLA_MEMORY_HIGH_RATIO": "0.80", "DOLA_MEMORY_CRITICAL_RATIO": "0.90", "DOLA_MINIMUM_WORKERS": "2"}
+        environment = {"DOLA_MEMORY_HIGH_RATIO": "0.80", "DOLA_MEMORY_CRITICAL_RATIO": "0.90", "DOLA_MINIMUM_WORKERS": "2", "DOLA_MAX_EFFECTIVE_WORKERS": "20"}
         with patch.dict(os.environ, environment), patch("app.resilience.memory_pressure", return_value=(0.95, 95, 100)):
             effective, snapshot = resilience.adaptive_worker_limit(12)
         self.assertEqual(effective, 2)
@@ -63,6 +63,13 @@ class ResilienceUnitTests(unittest.TestCase):
             effective, snapshot = resilience.adaptive_worker_limit(12)
         self.assertEqual(effective, 12)
         self.assertEqual(snapshot["level"], "normal")
+
+    def test_worker_limit_caps_low_pressure_browser_concurrency(self) -> None:
+        with patch.dict(os.environ, {"DOLA_MAX_EFFECTIVE_WORKERS": "8"}), patch("app.resilience.memory_pressure", return_value=(0.03, 128, 4096)):
+            effective, snapshot = resilience.adaptive_worker_limit(100)
+        self.assertEqual(effective, 8)
+        self.assertEqual(snapshot["configured_workers"], 100)
+        self.assertEqual(snapshot["capacity_limit"], 8)
 
     def test_queue_high_watermark_rejects_new_work(self) -> None:
         with patch.dict(os.environ, {"DOLA_QUEUE_HIGH_WATERMARK": "3"}):

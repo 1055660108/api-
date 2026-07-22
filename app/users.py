@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .billing import points_to_units, units_to_points
+from .billing import nonnegative_points_to_units, points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
 from .temp_access import add_temp_credit_units, create_temp_tokens, deduct_temp_points, delete_temp_token, hash_token, list_temp_tokens, migrate_temp_token, purchase_temp_membership, rotate_temp_token, update_temp_token
 from . import postgres
@@ -18,6 +18,7 @@ from . import postgres
 USERS_PATH = DATA_DIR / "users.json"
 _LOCK = threading.RLock()
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_\u4e00-\u9fff]{3,24}$")
+_MEMBERSHIP_CONCURRENCY_MODE = "package_total_v1"
 
 
 def _now() -> str:
@@ -63,7 +64,7 @@ def _normalize_membership_record(item: dict[str, Any]) -> dict[str, Any]:
         "purchased_at": str(item.get("purchased_at") or _now()),
         "concurrency": max(0, int(item.get("concurrency") or item.get("concurrency_bonus") or 0)),
         "bonus_free_uses": max(0, int(item.get("bonus_free_uses") or 0)),
-        "task_discount_points": item.get("task_discount_points", 0),
+        "task_discount_points": item.get("task_discount_points", 0.1),
     }
     if record["status"] not in {"active", "paused", "expired"}:
         record["status"] = "paused"
@@ -72,7 +73,8 @@ def _normalize_membership_record(item: dict[str, Any]) -> dict[str, Any]:
     except ValueError:
         record["points_cost"] = 0
     try:
-        record["task_discount_points"] = units_to_points(points_to_units(record["task_discount_points"] or 0.1))
+        raw_discount = record["task_discount_points"]
+        record["task_discount_points"] = units_to_points(nonnegative_points_to_units(0.1 if raw_discount is None else raw_discount))
     except ValueError:
         record["task_discount_points"] = 0
     return record
@@ -170,6 +172,25 @@ def _membership_concurrency(membership: dict[str, Any] | None) -> int:
     if not isinstance(membership, dict):
         return 1
     return max(1, min(100, int(membership.get("concurrency") or membership.get("concurrency_bonus") or 1)))
+
+
+def _reconcile_membership_concurrency(entry: dict[str, Any]) -> bool:
+    if entry.get("membership_concurrency_mode") == _MEMBERSHIP_CONCURRENCY_MODE:
+        return False
+    from .membership_catalog import list_memberships
+
+    packages = {str(item.get("id") or ""): item for item in list_memberships(include_disabled=True)}
+    for membership in entry.get("memberships") or []:
+        if not isinstance(membership, dict):
+            continue
+        package = packages.get(str(membership.get("package_id") or ""))
+        if not package:
+            continue
+        target = max(1, min(100, int(package.get("concurrency") or 1)))
+        if int(membership.get("concurrency") or 0) != target:
+            membership["concurrency"] = target
+    entry["membership_concurrency_mode"] = _MEMBERSHIP_CONCURRENCY_MODE
+    return True
 
 
 def _read() -> dict[str, Any]:
@@ -403,7 +424,11 @@ def touch_user_by_token(token: str) -> None:
         data = _read()
         for entry in data["users"].values():
             if str(entry.get("token_hash") or "") == token_hash:
-                entry["last_seen_at"] = _now()
+                now = datetime.now(timezone.utc)
+                last_seen = _parse_datetime(entry.get("last_seen_at"))
+                if last_seen and (now - last_seen).total_seconds() < 60:
+                    return
+                entry["last_seen_at"] = now.isoformat()
                 _write(data)
                 return
 
@@ -521,6 +546,7 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
         token_hash = str(entry.get("token_hash") or "")
         token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == token_hash), {})
         base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
+        _reconcile_membership_concurrency(entry)
         current_membership, _ = _sync_membership_state(entry, now)
         package_id = str(package.get("id") or "")
         active_records = [item for item in entry.get("memberships") or [] if isinstance(item, dict) and item.get("status") != "expired" and _membership_remaining_seconds(item, now) > 0]
@@ -555,6 +581,7 @@ def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str,
             "task_discount_points": package.get("task_discount_points", 0.1),
             "purchased_at": now.isoformat(),
         })
+        entry["membership_concurrency_mode"] = _MEMBERSHIP_CONCURRENCY_MODE
         entry["base_concurrency"] = base_concurrency
         membership, _ = _sync_membership_state(entry, now)
         effective_concurrency = int((membership or {}).get("effective_concurrency") or base_concurrency)
@@ -572,12 +599,13 @@ def sync_user_membership_by_token_hash(token_hash: str) -> bool:
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not isinstance(entry, dict):
             return False
+        concurrency_migrated = _reconcile_membership_concurrency(entry)
         active, membership_changed = _sync_membership_state(entry)
         token = next((item for item in list_temp_tokens() if str(item.get("id") or "") == str(token_hash or "")), {})
         base_concurrency = max(1, int(entry.get("base_concurrency") or token.get("concurrency") or 1))
         effective_concurrency = _membership_concurrency(active) if active else base_concurrency
         token_concurrency = max(1, int(token.get("concurrency") or 1))
-        if not membership_changed and int(entry.get("effective_concurrency") or 0) == effective_concurrency and token_concurrency == effective_concurrency and entry.get("base_concurrency"):
+        if not concurrency_migrated and not membership_changed and int(entry.get("effective_concurrency") or 0) == effective_concurrency and token_concurrency == effective_concurrency and entry.get("base_concurrency"):
             return False
         update_temp_token(str(token_hash or ""), concurrency=effective_concurrency)
         entry["effective_concurrency"] = effective_concurrency
@@ -599,7 +627,8 @@ def membership_task_discount_units_by_token_hash(token_hash: str) -> int:
         if not active:
             return 0
         try:
-            return points_to_units(active.get("task_discount_points") or 0.1)
+            raw_discount = active.get("task_discount_points")
+            return nonnegative_points_to_units(0.1 if raw_discount is None else raw_discount)
         except ValueError:
             return 0
 

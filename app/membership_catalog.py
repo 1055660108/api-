@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import postgres
-from .billing import points_to_units, units_to_points
+from .billing import nonnegative_points_to_units, points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
 
 
@@ -51,7 +51,7 @@ def _normalize(item: dict[str, Any]) -> dict[str, Any]:
     concurrency = int(item.get("concurrency") or 1)
     bonus_free_uses = int(item.get("bonus_free_uses") or 0)
     raw_task_discount = item.get("task_discount_points")
-    task_discount_points = units_to_points(points_to_units(0.1 if raw_task_discount is None else raw_task_discount))
+    task_discount_points = units_to_points(nonnegative_points_to_units(0.1 if raw_task_discount is None else raw_task_discount))
     if duration_days < 1 or duration_days > 3650:
         raise ValueError("会员积分或有效期无效")
     if concurrency < 1 or concurrency > 100:

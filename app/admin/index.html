@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.2.4" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.4-7" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.2.5" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.2.5" />
   </head>
   <body>
     <script>
@@ -17,7 +17,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.4" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.5" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -79,7 +79,7 @@
     <div class="app-shell hidden" id="appShell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.4" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.2.5" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -937,7 +937,7 @@
     <div class="modal-backdrop hidden" id="membershipModal" aria-hidden="true">
       <section class="modal-panel package-modal" role="dialog" aria-modal="true" aria-labelledby="membershipModalTitle">
         <div class="modal-header"><div><span class="modal-eyebrow">会员目录</span><h2 id="membershipModalTitle">管理会员套餐</h2><p>启用的套餐会展示在客户端。</p></div><button class="modal-close" id="closeMembershipModal" type="button" aria-label="关闭">×</button></div>
-        <form class="package-create-form membership-create-form" id="membershipForm"><label class="field"><span>套餐名称</span><input id="membershipName" maxlength="80" required /></label><label class="field"><span>所需积分</span><input id="membershipPrice" type="number" min="0.1" step="0.1" required /></label><label class="field"><span>有效天数</span><input id="membershipDuration" type="number" min="1" max="3650" value="30" required /></label><label class="field"><span>并发数</span><input id="membershipConcurrency" type="number" min="1" max="100" value="2" required /></label><label class="field"><span>积分减免</span><input id="membershipTaskDiscount" type="number" min="0.1" step="0.1" value="0.1" required /></label><label class="field"><span>赠送视频额度</span><input id="membershipBonus" type="number" min="0" value="0" required /></label><label class="field"><span>排序</span><input id="membershipSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createMembershipButton" type="submit">新增套餐</button><label class="field field-wide"><span>套餐说明</span><input id="membershipDescription" maxlength="500" /></label></form>
+        <form class="package-create-form membership-create-form" id="membershipForm"><label class="field"><span>套餐名称</span><input id="membershipName" maxlength="80" required /></label><label class="field"><span>所需积分</span><input id="membershipPrice" type="number" min="0.1" step="0.1" required /></label><label class="field"><span>有效天数</span><input id="membershipDuration" type="number" min="1" max="3650" value="30" required /></label><label class="field"><span>并发数</span><input id="membershipConcurrency" type="number" min="1" max="100" value="2" required /></label><label class="field"><span>积分减免</span><input id="membershipTaskDiscount" type="number" min="0" step="0.1" value="0" required /></label><label class="field"><span>赠送视频额度</span><input id="membershipBonus" type="number" min="0" value="0" required /></label><label class="field"><span>排序</span><input id="membershipSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createMembershipButton" type="submit">新增套餐</button><label class="field field-wide"><span>套餐说明</span><input id="membershipDescription" maxlength="500" /></label></form>
         <div class="package-list" id="membershipAdminList"></div>
         <div class="modal-actions"><button class="secondary-button" id="cancelMembershipModal" type="button">关闭</button></div>
       </section>
@@ -1032,6 +1032,6 @@
       </section>
     </div>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.2.4-7"></script>
+    <script src="/admin/assets/app.js?v=1.2.5"></script>
   </body>
 </html>

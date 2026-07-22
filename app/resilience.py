@@ -229,19 +229,21 @@ def memory_pressure() -> tuple[float, int, int]:
 def adaptive_worker_limit(configured: int) -> tuple[int, dict[str, Any]]:
     policy = load_policy()
     ratio, used, limit = memory_pressure()
-    minimum = min(configured, policy.minimum_workers)
+    capacity = _env_int("DOLA_MAX_EFFECTIVE_WORKERS", 8)
+    capped = min(configured, capacity)
+    minimum = min(capped, policy.minimum_workers)
     if ratio >= policy.memory_critical_ratio:
         effective = minimum
         level = "critical"
     elif ratio >= policy.memory_high_ratio:
         span = policy.memory_critical_ratio - policy.memory_high_ratio
         remaining = max(0.0, (policy.memory_critical_ratio - ratio) / span)
-        effective = max(minimum, math.floor(configured * max(0.25, remaining)))
+        effective = max(minimum, math.floor(capped * max(0.25, remaining)))
         level = "high"
     else:
-        effective = configured
+        effective = capped
         level = "normal"
-    return effective, {"level": level, "memory_ratio": round(ratio, 4), "memory_used_bytes": used, "memory_limit_bytes": limit, "configured_workers": configured, "effective_workers": effective}
+    return effective, {"level": level, "memory_ratio": round(ratio, 4), "memory_used_bytes": used, "memory_limit_bytes": limit, "configured_workers": configured, "capacity_limit": capacity, "effective_workers": effective}
 
 
 def queue_admission(queue_health: dict[str, Any]) -> Admission:

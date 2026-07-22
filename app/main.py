@@ -58,7 +58,6 @@ from .store import (
     fail_initializing_tasks,
     finalize_task_creation,
     find_or_create_task,
-    active_task_count_for_owner,
     load_result,
     delete_task,
     get_meta,
@@ -217,7 +216,7 @@ async def lifespan(app: FastAPI):
     reconcile_account_quotas()
     create_sem = asyncio.Semaphore(2)
     query_sem = asyncio.Semaphore(5)
-    list_sem = asyncio.Semaphore(1)
+    list_sem = asyncio.Semaphore(8)
     delete_sem = asyncio.Semaphore(1)
     quota_reset_task = asyncio.create_task(account_quota_reset_loop())
     task_cache_cleanup_task = asyncio.create_task(task_cache_cleanup_loop())
@@ -259,12 +258,17 @@ async def require_token(
     if configured and supplied == configured:
         return AccessContext(token_hash=hash_token(supplied), is_admin=True, is_temp=False)
     settings = load_settings()
-    temp_context = get_temp_context(supplied)
-    if temp_context:
-        if sync_user_membership_by_token_hash(temp_context.token_hash):
+    def resolve_temp_context() -> AccessContext | None:
+        temp_context = get_temp_context(supplied)
+        if temp_context and sync_user_membership_by_token_hash(temp_context.token_hash):
             temp_context = get_temp_context(supplied)
-    if temp_context and user_token_is_enabled(temp_context.token_hash):
-        touch_user_by_token(supplied)
+        if temp_context and user_token_is_enabled(temp_context.token_hash):
+            touch_user_by_token(supplied)
+            return temp_context
+        return None
+
+    temp_context = await asyncio.to_thread(resolve_temp_context)
+    if temp_context:
         return temp_context
     session_owner = session_username(request.cookies.get(SESSION_COOKIE_NAME, ""))
     if session_owner and hmac.compare_digest(session_owner, settings.admin_username):
@@ -303,11 +307,17 @@ async def require_openai_token(authorization: Annotated[str | None, Header()] = 
     configured = load_settings().api_token
     if configured and supplied == configured:
         return AccessContext(token_hash=hash_token(supplied), is_admin=True, is_temp=False)
-    context = get_temp_context(supplied)
-    if context and sync_user_membership_by_token_hash(context.token_hash):
+    def resolve_temp_context() -> AccessContext | None:
         context = get_temp_context(supplied)
-    if context and user_token_is_enabled(context.token_hash):
-        touch_user_by_token(supplied)
+        if context and sync_user_membership_by_token_hash(context.token_hash):
+            context = get_temp_context(supplied)
+        if context and user_token_is_enabled(context.token_hash):
+            touch_user_by_token(supplied)
+            return context
+        return None
+
+    context = await asyncio.to_thread(resolve_temp_context)
+    if context:
         return context
     raise OpenAIAPIError(401, "Invalid API key", "authentication_error", code="invalid_api_key")
 
@@ -472,12 +482,12 @@ def validate_task_platform_model(platform_value: str | None, model_value: str | 
 
 @app.get("/health", dependencies=[Depends(require_token)])
 async def health(access: Annotated[AccessContext, Depends(require_token)]):
-    return _health_payload(access)
+    return await asyncio.to_thread(_health_payload, access)
 
 
 @app.get("/auth/admin", dependencies=[Depends(require_admin)])
 async def admin_auth(access: Annotated[AccessContext, Depends(require_admin)]):
-    return _health_payload(access)
+    return await asyncio.to_thread(_health_payload, access)
 
 
 @app.post("/auth/admin/login")
@@ -530,12 +540,12 @@ async def admin_change_password(request: Request):
 
 @app.get("/auth/client", dependencies=[Depends(require_temp)])
 async def client_auth(access: Annotated[AccessContext, Depends(require_temp)]):
-    return _health_payload(access)
+    return await asyncio.to_thread(_health_payload, access)
 
 
 @app.get("/auth/access-state", dependencies=[Depends(require_temp)])
 async def client_access_state(access: Annotated[AccessContext, Depends(require_temp)]):
-    return _client_access_payload(access)
+    return await asyncio.to_thread(_client_access_payload, access)
 
 
 @app.patch("/auth/billing-priority", dependencies=[Depends(require_temp)])
@@ -857,7 +867,7 @@ async def client_change_password(request: Request, access: Annotated[AccessConte
 @app.get("/auth/profile", dependencies=[Depends(require_temp)])
 async def client_profile(access: Annotated[AccessContext, Depends(require_temp)]):
     try:
-        return user_profile_by_token_hash(access.token_hash)
+        return await asyncio.to_thread(user_profile_by_token_hash, access.token_hash)
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在或已停用")
 
@@ -1396,11 +1406,10 @@ async def openai_chat_completions(
             task_id = str(meta["id"])
             content = json.dumps({"task_id": task_id, "status": str(meta.get("status") or "submitted"), "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
             return {"id": f"chatcmpl-{task_id}", "object": "chat.completion", "created": int(time.time()), "model": payload.model, "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+        queued_for_concurrency = False
         if access.is_temp:
             access = get_temp_context_by_hash(access.token_hash) or access
-            active_count = active_task_count_for_owner(access.token_hash)
-            if active_count >= access.concurrency:
-                raise OpenAIAPIError(429, "并发数量不足，等待前方任务完成后继续执行！", "rate_limit_error", code="rate_limit_exceeded")
+            queued_for_concurrency = active_task_count_for_owner(access.token_hash) >= access.concurrency
         base_cost_units = model_cost_units(platform, model, task_type)
         discount_units = membership_task_discount_units_by_token_hash(access.token_hash) if access.is_temp else 0
         cost_units = max(1, base_cost_units - discount_units)
@@ -1439,7 +1448,7 @@ async def openai_chat_completions(
             delete_task(str(meta["id"]))
         raise OpenAIAPIError(500, "Failed to create task", "server_error", code="internal_error")
     task_id = str(meta["id"])
-    content = json.dumps({"task_id": task_id, "status": "submitted", "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
+    content = json.dumps({"task_id": task_id, "status": "pending", "queued_for_concurrency": queued_for_concurrency, "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
     return {
         "id": f"chatcmpl-{task_id}",
         "object": "chat.completion",
@@ -1920,11 +1929,10 @@ async def submit_task(
                 meta, created = create_task(prompt, ratio, owner_token_hash=access.token_hash if access.is_temp else "", platform=platform, model=model, task_type=task_type, enqueue=False), True
             if not created:
                 return {"id": meta["id"], "replayed": True}
+            queued_for_concurrency = False
             if access.is_temp:
                 access = get_temp_context_by_hash(access.token_hash) or access
-                active_count = active_task_count_for_owner(access.token_hash)
-                if active_count >= access.concurrency:
-                    raise HTTPException(status_code=429, detail="并发数量不足，等待前方任务完成后继续执行！")
+                queued_for_concurrency = active_task_count_for_owner(access.token_hash) >= access.concurrency
             base_cost_units = model_cost_units(platform, model, task_type)
             discount_units = membership_task_discount_units_by_token_hash(access.token_hash) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
@@ -1971,7 +1979,7 @@ async def submit_task(
                 refund_temp_quota_hash(reserved_access.token_hash, str(meta["id"]))
             delete_task(meta["id"])
             raise
-        response = {"id": meta["id"]}
+        response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency}
         if reserved_access and reserved_access.is_temp:
             balance = user_balance_by_token_hash(reserved_access.token_hash, list_temp_tokens())
             response["quota"] = {
@@ -2000,7 +2008,9 @@ async def all_tasks(
     assert list_sem is not None
     async with list_sem:
         owner = access.token_hash if access.is_temp else None
-        tasks = list_tasks(owner_token_hash=owner, owner_remarks=temp_token_remarks())
+        tasks = await asyncio.to_thread(
+            lambda: list_tasks(owner_token_hash=owner, owner_remarks=temp_token_remarks())
+        )
         if access.is_temp:
             tasks = [item for item in tasks if not item.get("task_hidden_for_client")]
             tasks = [_client_task(item) for item in tasks]

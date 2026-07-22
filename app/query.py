@@ -26,7 +26,7 @@ def _query_lock(task_id: str) -> asyncio.Lock:
 from .textfix import repair_text
 
 
-GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 1-3 分钟。"
+GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 RETRY_GENERATING_TEXT = "视频生成中请稍后..."
 SUCCESS_TEXT = "已成功"
 POLICY_RETRY_TEXT = "你的输入可能包含违规内容请重试！"

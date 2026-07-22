@@ -48,7 +48,7 @@ from .temp_access import temp_token_concurrency_limits
 
 
 DOLA_SUBMIT_INTERVAL_SECONDS = 5.0
-GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 1-3 分钟。"
+GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
 SUCCESS_WATCH_GRACE_SECONDS = 120
 RESULT_WATCH_DEADLINE_MINUTES = 8

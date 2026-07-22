@@ -24,6 +24,17 @@ def points_to_units(value: object) -> int:
     return int(units)
 
 
+def nonnegative_points_to_units(value: object) -> int:
+    try:
+        points = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError("积分格式无效")
+    units = points * POINT_SCALE
+    if points < 0 or units != units.to_integral_value():
+        raise ValueError("积分必须大于等于 0 且精确到 0.1")
+    return int(units)
+
+
 def units_to_points(units: int) -> int | float:
     value = max(0, int(units))
     return value // POINT_SCALE if value % POINT_SCALE == 0 else value / POINT_SCALE

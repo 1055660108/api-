@@ -427,6 +427,7 @@ const state = {
   autoRefreshing: false,
   refreshTimer: 0,
   accessRefreshTimer: 0,
+  accessRefreshing: false,
   countdownTimer: 0,
   nextQuotaResetAt: "",
   proxyNodes: [],
@@ -904,13 +905,16 @@ function showApp() {
 function startAutoRefresh() {
   if (portal === "client" && !state.accessRefreshTimer) {
     state.accessRefreshTimer = window.setInterval(async () => {
-      if (!state.apiToken || document.hidden || els.appShell.classList.contains("hidden") || state.submitting) return;
+      if (!state.apiToken || document.hidden || els.appShell.classList.contains("hidden") || state.submitting || state.accessRefreshing) return;
+      state.accessRefreshing = true;
       try {
         applyAccessScope(await apiFetch("/auth/access-state"));
       } catch (error) {
         if (error.status === 401 || error.status === 403) expireSession();
+      } finally {
+        state.accessRefreshing = false;
       }
-    }, 5000);
+    }, 15000);
   }
   if (!state.refreshTimer) {
     state.refreshTimer = window.setInterval(async () => {
@@ -971,14 +975,18 @@ function applyPortalText() {
 function updateBillingPreview() {
   const selectedPlatform = state.platforms.find((item) => item.id === state.platform);
   const modelCost = Number(selectedPlatform?.model_costs?.[state.model] ?? 1);
-  const usePoints = state.billingPriority === "points_first" && state.points >= modelCost;
+  const membershipDiscount = Math.max(0, Number(state.membership?.task_discount_points || 0));
+  const discountedCost = Math.max(0.1, Math.round((modelCost - membershipDiscount) * 10) / 10);
+  const usePoints = state.billingPriority === "points_first" && state.points >= discountedCost;
   if (els.submitCostText) {
-    els.submitCostText.textContent = usePoints || state.freeRemaining <= 0
-      ? `本次消耗 ${modelCost} 积分`
-      : "本次使用 1 次视频额度";
+    els.submitCostText.textContent = state.membership?.name
+      ? `${state.membership.name} · 减免后需 ${discountedCost} 积分`
+      : usePoints || state.freeRemaining <= 0
+        ? `本次消耗 ${discountedCost} 积分`
+        : "本次使用 1 次视频额度";
   }
   if (portal === "client" && els.submitTask && !state.submitting) {
-    els.submitTask.disabled = state.freeRemaining <= 0 && state.points < modelCost;
+    els.submitTask.disabled = state.freeRemaining <= 0 && state.points < discountedCost;
   }
 }
 
@@ -1700,6 +1708,7 @@ async function loadClientProfile() {
   renderMembershipDetails();
   updateMembershipRemaining();
   updateMembershipPurchaseButtons();
+  updateBillingPreview();
 }
 
 function selectedEmail(localInput, domainSelect) {
@@ -1775,7 +1784,7 @@ function renderAdminMemberships() {
   const enabledCount = state.memberships.filter((item) => item.enabled).length;
   if (els.membershipConfigDisplay) els.membershipConfigDisplay.textContent = `${enabledCount} 个启用 / ${state.memberships.length} 个套餐`;
   if (els.membershipConfigState) els.membershipConfigState.textContent = "已读取";
-  els.membershipAdminList.innerHTML = state.memberships.length ? state.memberships.map((item) => `<article class="package-item" data-membership-id="${escapeHtml(item.id)}"><div class="package-item-heading"><div><strong>${escapeHtml(item.name)}</strong><span class="chip ${item.enabled ? "success" : "failed"}">${item.enabled ? "已启用" : "已停用"}</span></div><span>${escapeHtml(item.points_cost)} 积分</span></div><div class="package-item-fields membership-item-fields"><label class="field"><span>名称</span><input data-membership-name value="${escapeHtml(item.name)}" maxlength="80"></label><label class="field"><span>所需积分</span><input data-membership-points type="number" min="0.1" step="0.1" value="${escapeHtml(item.points_cost)}"></label><label class="field"><span>天数</span><input data-membership-duration type="number" min="1" max="3650" value="${escapeHtml(item.duration_days)}"></label><label class="field"><span>并发数</span><input data-membership-concurrency type="number" min="1" max="100" value="${escapeHtml(item.concurrency)}"></label><label class="field"><span>积分减免</span><input data-membership-discount type="number" min="0.1" step="0.1" value="${escapeHtml(item.task_discount_points)}"></label><label class="field"><span>赠送额度</span><input data-membership-bonus type="number" min="0" value="${escapeHtml(item.bonus_free_uses)}"></label><label class="field"><span>排序</span><input data-membership-sort type="number" value="${escapeHtml(item.sort_order)}"></label><label class="field field-wide"><span>说明</span><input data-membership-description value="${escapeHtml(item.description || "")}" maxlength="500"></label></div><div class="package-item-actions"><button class="secondary-button" type="button" data-action="save-membership">保存</button><button class="${item.enabled ? "danger-button" : "primary-button"}" type="button" data-action="toggle-membership">${item.enabled ? "停用" : "启用"}</button></div></article>`).join("") : '<div class="empty-state">暂无会员套餐</div>';
+  els.membershipAdminList.innerHTML = state.memberships.length ? state.memberships.map((item) => `<article class="package-item" data-membership-id="${escapeHtml(item.id)}"><div class="package-item-heading"><div><strong>${escapeHtml(item.name)}</strong><span class="chip ${item.enabled ? "success" : "failed"}">${item.enabled ? "已启用" : "已停用"}</span></div><span>${escapeHtml(item.points_cost)} 积分</span></div><div class="package-item-fields membership-item-fields"><label class="field"><span>名称</span><input data-membership-name value="${escapeHtml(item.name)}" maxlength="80"></label><label class="field"><span>所需积分</span><input data-membership-points type="number" min="0.1" step="0.1" value="${escapeHtml(item.points_cost)}"></label><label class="field"><span>天数</span><input data-membership-duration type="number" min="1" max="3650" value="${escapeHtml(item.duration_days)}"></label><label class="field"><span>并发数</span><input data-membership-concurrency type="number" min="1" max="100" value="${escapeHtml(item.concurrency)}"></label><label class="field"><span>积分减免</span><input data-membership-discount type="number" min="0" step="0.1" value="${escapeHtml(item.task_discount_points)}"></label><label class="field"><span>赠送额度</span><input data-membership-bonus type="number" min="0" value="${escapeHtml(item.bonus_free_uses)}"></label><label class="field"><span>排序</span><input data-membership-sort type="number" value="${escapeHtml(item.sort_order)}"></label><label class="field field-wide"><span>说明</span><input data-membership-description value="${escapeHtml(item.description || "")}" maxlength="500"></label></div><div class="package-item-actions"><button class="secondary-button" type="button" data-action="save-membership">保存</button><button class="${item.enabled ? "danger-button" : "primary-button"}" type="button" data-action="toggle-membership">${item.enabled ? "停用" : "启用"}</button></div></article>`).join("") : '<div class="empty-state">暂无会员套餐</div>';
 }
 
 async function loadAdminMemberships() {
@@ -1793,7 +1802,7 @@ async function createMembership(event) {
     els.membershipForm.reset();
     els.membershipDuration.value = "30";
     els.membershipConcurrency.value = "2";
-    els.membershipTaskDiscount.value = "0.1";
+    els.membershipTaskDiscount.value = "0";
     els.membershipBonus.value = "0";
     els.membershipSortOrder.value = "0";
     await loadAdminMemberships();
@@ -2387,7 +2396,7 @@ async function refreshTasks(options = {}) {
     if (!options.quiet) toast(`任务列表读取失败：${error.message}`, "error");
     throw error;
   } finally {
-    if (!options.quiet && requestId === state.taskRefreshRequestId) setBusy(els.refreshTasks, false);
+    if (!options.quiet) setBusy(els.refreshTasks, false);
     if (requestId === state.taskRefreshRequestId) els.taskTableBody?.setAttribute("aria-busy", "false");
   }
 }
@@ -3120,7 +3129,9 @@ async function submitTask(event) {
     if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
     els.submitState.textContent = `已提交：${shortId(data.id)}`;
     const billingText = data.billing?.free_used ? "，已扣除 1 次视频额度" : Number(data.billing?.points_used || 0) > 0 ? `，已扣除 ${data.billing.points_used} 积分` : "";
-    toast(`任务已提交${billingText}：${data.id}`);
+    toast(data.queued_for_concurrency
+      ? `任务已排队${billingText}，空出并发后自动执行：${data.id}`
+      : `任务已提交${billingText}：${data.id}`);
     await refreshTasks({ quiet: true });
     resetSubmitForm({ force: true });
   } catch (error) {

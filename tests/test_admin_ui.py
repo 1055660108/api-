@@ -121,7 +121,18 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("const requestId = ++state.taskRefreshRequestId", self.javascript)
         self.assertIn("requestId !== state.taskRefreshRequestId", self.javascript)
         self.assertIn("state.tasks = tasks", self.javascript)
+        self.assertIn('if (!options.quiet) setBusy(els.refreshTasks, false);', self.javascript)
         self.assertNotIn("function compareTasks", self.javascript)
+
+    def test_membership_discount_allows_zero(self) -> None:
+        self.assertIn('id="membershipTaskDiscount" type="number" min="0" step="0.1" value="0"', self.html)
+        self.assertIn('data-membership-discount type="number" min="0" step="0.1"', self.javascript)
+
+    def test_submit_cost_shows_active_membership_discount_and_queue_state(self) -> None:
+        self.assertIn('`${state.membership.name} · 减免后需 ${discountedCost} 积分`', self.javascript)
+        self.assertIn('Math.max(0.1, Math.round((modelCost - membershipDiscount) * 10) / 10)', self.javascript)
+        self.assertIn('data.queued_for_concurrency', self.javascript)
+        self.assertIn('空出并发后自动执行', self.javascript)
 
     def test_task_and_account_tables_use_server_pagination(self) -> None:
         self.assertIn('const data = await apiFetch(`/tasks?${params}`)', self.javascript)
@@ -148,6 +159,11 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn("重试 ${retryCount}", self.javascript)
         self.assertIn("生成异常请重试！", self.javascript)
         self.assertNotIn('const rawStatus = String(task.status || "未知")', self.javascript)
+
+    def test_generation_wait_copy_uses_current_range(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        self.assertIn("预计等待 3~8 分钟", (root / "app" / "query.py").read_text(encoding="utf-8"))
+        self.assertIn("预计等待 3~8 分钟", (root / "app" / "worker.py").read_text(encoding="utf-8"))
 
     def test_task_batch_query_contract_batches_repaints_and_storage(self) -> None:
         self.assertIn("if (!options.deferRender) renderTaskTable()", self.javascript)
@@ -273,7 +289,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("document.hidden", self.javascript)
         self.assertIn("30000", self.javascript)
         self.assertIn('apiFetch("/auth/access-state")', self.javascript)
-        self.assertIn("5000", self.javascript)
+        self.assertIn("15000", self.javascript)
+        self.assertIn("state.accessRefreshing", self.javascript)
         self.assertIn("已扣除 ${data.billing.points_used} 积分", self.javascript)
         self.assertNotIn("创建新任务", self.html)
         self.assertNotIn("历史掩码", self.html + self.javascript)

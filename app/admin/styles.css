@@ -3872,6 +3872,18 @@ body[data-portal="admin"] .client-billing-panel {
   font-size: 13px;
 }
 
+.ledger-balance {
+  width: fit-content;
+  gap: 4px;
+}
+
+.ledger-balance span {
+  display: grid;
+  grid-template-columns: 48px max-content;
+  justify-content: start;
+  column-gap: 10px;
+}
+
 #tasksView .task-status-stack,
 #tasksView .url-cell {
   align-items: center;
@@ -4866,6 +4878,7 @@ textarea:focus-visible {
 .settings-state,
 .chip,
 .balance-cost { border-radius: 6px; }
+.balance-cost { max-width: min(56%, 420px); line-height: 1.4; overflow-wrap: anywhere; text-align: right; white-space: normal; }
 
 .dashboard-hero,
 .node-selection-panel,
@@ -5076,6 +5089,8 @@ body[data-portal="client"][data-view="points"] .commerce-header {
   .purchase-balance { justify-content: start; text-align: left; }
   .membership-current { align-items: flex-end; flex-direction: column; }
   .membership-detail-row dl { grid-template-columns: 1fr; gap: 10px; }
+  .submit-balance { flex-wrap: wrap; }
+  .balance-cost { width: 100%; max-width: none; margin-left: 0; text-align: left; }
 }
 
 /* 1.2.4 workspace refinements */

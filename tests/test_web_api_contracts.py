@@ -144,37 +144,55 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 409)
 
-    def test_concurrency_rejection_returns_429_without_leaving_initializing_task(self) -> None:
+    def test_concurrency_overflow_is_precharged_and_queued_until_capacity_is_free(self) -> None:
         registered = self.register("limited_client")
         owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 10)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
         existing = store.create_task("正在生成的任务", "9:16", owner_token_hash=owner_hash)
+        self.assertTrue(store.mark_running(existing["id"], "worker-existing"))
+        store.mark_submitted(existing["id"])
         response = self.client.post(
             "/tasks",
             headers={"X-API-Token": registered["token"]},
-            data={"prompt": "不应进入队列", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video"},
+            data={"prompt": "等待空闲并发", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video"},
         )
-        self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.json()["detail"], "并发数量不足，等待前方任务完成后继续执行！")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["queued_for_concurrency"])
+        self.assertFalse(response.json()["billing"]["free_used"])
+        self.assertEqual(response.json()["billing"]["points_used"], 1)
+        queued_id = response.json()["id"]
         tasks = store.list_tasks(owner_token_hash=owner_hash)
-        self.assertEqual([item["id"] for item in tasks], [existing["id"]])
+        self.assertEqual({item["id"] for item in tasks}, {existing["id"], queued_id})
+        self.assertEqual(store.get_meta(queued_id)["status"], store.STATUS_PENDING)
         self.assertNotIn("initializing", {item["status"] for item in tasks})
         access_state = self.client.get("/auth/access-state", headers={"X-API-Token": registered["token"]}).json()
         self.assertEqual(access_state["quota"]["free_remaining"], 1)
+        self.assertEqual(access_state["quota"]["points"], 0)
         self.assertEqual(access_state["token_concurrency"], 1)
+        canceled = self.client.delete(f"/tasks/{queued_id}", headers={"X-API-Token": registered["token"]})
+        self.assertEqual(canceled.status_code, 200)
+        self.assertTrue(canceled.json()["canceled"])
+        refunded = self.client.get("/auth/access-state", headers={"X-API-Token": registered["token"]}).json()
+        self.assertEqual(refunded["quota"]["free_remaining"], 1)
+        self.assertEqual(refunded["quota"]["points"], 1)
 
-    def test_openai_concurrency_rejection_keeps_error_shape_and_cleans_task(self) -> None:
+    def test_openai_concurrency_overflow_returns_a_pending_queued_task(self) -> None:
         registered = self.register("limited_openai_client")
         owner_hash = temp_access.hash_token(registered["token"])
         existing = store.create_task("正在生成的任务", "9:16", owner_token_hash=owner_hash)
+        self.assertTrue(store.mark_running(existing["id"], "worker-existing"))
+        store.mark_submitted(existing["id"])
         response = self.client.post(
             "/v1/chat/completions",
             headers={"Authorization": f"Bearer {registered['token']}"},
-            json={"model": "dola:Seedance 2.0", "messages": [{"role": "user", "content": "不应进入队列"}]},
+            json={"model": "dola:Seedance 2.0", "messages": [{"role": "user", "content": "等待空闲并发"}]},
         )
-        self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.json()["error"]["code"], "rate_limit_exceeded")
-        self.assertEqual(response.json()["error"]["message"], "并发数量不足，等待前方任务完成后继续执行！")
-        self.assertEqual([item["id"] for item in store.list_tasks(owner_token_hash=owner_hash)], [existing["id"]])
+        self.assertEqual(response.status_code, 200)
+        content = json.loads(response.json()["choices"][0]["message"]["content"])
+        self.assertEqual(content["status"], "pending")
+        self.assertTrue(content["queued_for_concurrency"])
+        self.assertEqual({item["id"] for item in store.list_tasks(owner_token_hash=owner_hash)}, {existing["id"], content["task_id"]})
 
     def test_query_parameter_token_is_not_accepted(self) -> None:
         registered = self.register("query_token_client")

@@ -36,6 +36,8 @@ const els = {
   clientTokenDisplay: document.getElementById("clientTokenDisplay"),
   clientAccountName: document.getElementById("clientAccountName"),
   dashboardPointsBalance: document.getElementById("dashboardPointsBalance"),
+  sidebar: document.getElementById("sidebar"),
+  toggleSidebar: document.getElementById("toggleSidebar"),
   sidebarMembershipName: document.getElementById("sidebarMembershipName"),
   sidebarVersion: document.getElementById("sidebarVersion"),
   copyClientToken: document.getElementById("copyClientToken"),
@@ -78,6 +80,10 @@ const els = {
   pointCardTypeFilter: document.getElementById("pointCardTypeFilter"),
   pointCardStatusFilter: document.getElementById("pointCardStatusFilter"),
   pointCardTotalState: document.getElementById("pointCardTotalState"),
+  pointCardSelectedState: document.getElementById("pointCardSelectedState"),
+  selectAllPointCards: document.getElementById("selectAllPointCards"),
+  pointCardDeleteMode: document.getElementById("pointCardDeleteMode"),
+  deletePointCards: document.getElementById("deletePointCards"),
   pointCardTableBody: document.getElementById("pointCardTableBody"),
   submitFreeRemaining: document.getElementById("submitFreeRemaining"),
   submitPointsBalance: document.getElementById("submitPointsBalance"),
@@ -99,6 +105,10 @@ const els = {
   selectAllNotificationUsers: document.getElementById("selectAllNotificationUsers"),
   notificationRecipientState: document.getElementById("notificationRecipientState"),
   sendNotificationButton: document.getElementById("sendNotificationButton"),
+  openNotificationHistory: document.getElementById("openNotificationHistory"),
+  notificationHistoryModal: document.getElementById("notificationHistoryModal"),
+  closeNotificationHistory: document.getElementById("closeNotificationHistory"),
+  cancelNotificationHistory: document.getElementById("cancelNotificationHistory"),
   adminNotificationList: document.getElementById("adminNotificationList"),
   clientAnnouncementList: document.getElementById("clientAnnouncementList"),
   adminAnnouncementForm: document.getElementById("adminAnnouncementForm"),
@@ -108,6 +118,10 @@ const els = {
   announcementLockField: document.getElementById("announcementLockField"),
   announcementLockScreen: document.getElementById("announcementLockScreen"),
   publishAnnouncementButton: document.getElementById("publishAnnouncementButton"),
+  openAnnouncementHistory: document.getElementById("openAnnouncementHistory"),
+  announcementHistoryModal: document.getElementById("announcementHistoryModal"),
+  closeAnnouncementHistory: document.getElementById("closeAnnouncementHistory"),
+  cancelAnnouncementHistory: document.getElementById("cancelAnnouncementHistory"),
   adminAnnouncementList: document.getElementById("adminAnnouncementList"),
   announcementModal: document.getElementById("announcementModal"),
   announcementModalTitle: document.getElementById("announcementModalTitle"),
@@ -369,6 +383,7 @@ const els = {
   quotaPageSize: document.getElementById("quotaPageSize"),
   workersModal: document.getElementById("workersModal"),
   workersInput: document.getElementById("workersInput"),
+  effectiveWorkersInput: document.getElementById("effectiveWorkersInput"),
   workersModalState: document.getElementById("workersModalState"),
   closeWorkersModal: document.getElementById("closeWorkersModal"),
   cancelWorkersModal: document.getElementById("cancelWorkersModal"),
@@ -455,6 +470,8 @@ const state = {
   freeRemaining: 0,
   points: 0,
   concurrency: 1,
+  configuredWorkers: 1,
+  maxEffectiveWorkers: 1,
   billingPriority: "video_first",
   version: "",
   selectedVideoIds: new Set(),
@@ -467,6 +484,7 @@ const state = {
   membershipHoldings: [],
   activeAnnouncement: null,
   pointCards: [],
+  selectedPointCardIds: new Set(),
   userSearch: "",
   announcementTimer: 0,
   taskRefreshRequestId: 0,
@@ -484,6 +502,22 @@ const PLATFORM_LABELS = { dola: "Dola", doubao: "豆包", qianwen: "千问" };
 
 function portalStorageKey(base) {
   return `${base}_${portal}`;
+}
+
+function setSidebarCollapsed(collapsed, persist = true) {
+  const active = Boolean(collapsed) && window.innerWidth > 820;
+  document.getElementById("appShell")?.classList.toggle("sidebar-collapsed", active);
+  if (els.toggleSidebar) {
+    els.toggleSidebar.setAttribute("aria-label", active ? "展开侧栏" : "收起侧栏");
+    els.toggleSidebar.title = active ? "展开侧栏" : "收起侧栏";
+    els.toggleSidebar.innerHTML = `<i data-lucide="${active ? "panel-left-open" : "panel-left-close"}" aria-hidden="true"></i>`;
+  }
+  document.querySelectorAll(".nav-item").forEach((button) => {
+    const label = button.querySelector("span")?.textContent?.trim() || "";
+    if (label) button.title = label;
+  });
+  window.lucide?.createIcons();
+  if (persist) localStorage.setItem("dola_sidebar_collapsed", active ? "1" : "0");
 }
 
 function promptStorageKey() {
@@ -714,12 +748,14 @@ function setBusy(button, busy, label) {
   if (!button) return;
   if (!button.dataset.idleText) {
     button.dataset.idleText = button.textContent;
+    button.dataset.idleHtml = button.innerHTML;
   }
   button.disabled = busy;
   if (button.classList.contains("submit-arrow-button")) {
     return;
   }
-  button.textContent = busy ? label : button.dataset.idleText;
+  if (busy) button.textContent = label;
+  else button.innerHTML = button.dataset.idleHtml || button.dataset.idleText;
 }
 
 function setSubmitControlsDisabled(disabled) {
@@ -964,8 +1000,10 @@ function applyPortalText() {
   document.title = portal === "client" ? "客户入口" : "管理面板";
   const dashboardLabel = portal === "client" ? "用户首页" : "总览";
   const dashboardNavLabel = document.querySelector('.nav-item[data-view="dashboard"] span');
+  const dashboardNav = document.querySelector('.nav-item[data-view="dashboard"]');
   const dashboardView = document.getElementById("dashboardView");
   if (dashboardNavLabel) dashboardNavLabel.textContent = dashboardLabel;
+  if (dashboardNav) dashboardNav.title = dashboardLabel;
   if (dashboardView) dashboardView.dataset.title = dashboardLabel;
   if (els.viewTitle) els.viewTitle.textContent = dashboardLabel;
   if (els.clientEntryUrl) els.clientEntryUrl.value = getClientEntryUrl();
@@ -1039,8 +1077,12 @@ function applyAccessScope(data = {}) {
   if (els.proxyNodesNavItem) els.proxyNodesNavItem.classList.toggle("hidden", isClient);
   if (els.proxyNodesView) els.proxyNodesView.classList.toggle("hidden", isClient);
   if (els.messagesNavLabel) els.messagesNavLabel.textContent = isClient ? "消息中心" : "消息处理";
+  if (els.messagesNavItem) els.messagesNavItem.title = isClient ? "消息中心" : "消息处理";
   if (els.messagesView) els.messagesView.dataset.title = isClient ? "消息中心" : "消息处理";
-  if (els.settingsNavItem) els.settingsNavItem.querySelector("span").textContent = isClient ? "用户设置" : "设置";
+  if (els.settingsNavItem) {
+    els.settingsNavItem.querySelector("span").textContent = isClient ? "用户设置" : "设置";
+    els.settingsNavItem.title = isClient ? "用户设置" : "设置";
+  }
   if (els.settingsView) els.settingsView.dataset.title = isClient ? "用户设置" : "设置";
   if (els.quotaNavItem) {
     els.quotaNavItem.classList.toggle("hidden", isClient);
@@ -1284,7 +1326,7 @@ async function loadAdminNotifications() {
   if (portal !== "admin" || !els.adminNotificationList) return;
   const data = await apiFetch("/admin/notifications?limit=200");
   const rows = Array.isArray(data.notifications) ? data.notifications : [];
-  els.adminNotificationList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-message-row" data-notification-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><div class="message-row-actions"><span class="message-status ${item.read_at ? "resolved" : "pending"}">${item.read_at ? "已读" : "未读"}</span><button class="danger-button compact-button" type="button" data-delete-notification>删除</button></div></div><p>${escapeHtml(item.content)}</p><small>接收用户：${escapeHtml(item.username || item.user_id)}</small></article>`).join("") : '<div class="empty-state">暂无发送记录</div>';
+  els.adminNotificationList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-message-row" data-notification-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span></div><div class="message-row-actions"><span class="message-status ${item.read_at ? "resolved" : "pending"}">${item.read_at ? "已读" : "未读"}</span><button class="danger-button compact-button" type="button" data-delete-notification>删除</button></div></div><p>${escapeHtml(item.content)}</p><div class="message-history-meta"><span>接收用户</span><strong>${escapeHtml(item.username || item.user_id)}</strong></div></article>`).join("") : '<div class="empty-state">暂无发送记录</div>';
 }
 
 async function loadClientAnnouncements() {
@@ -1301,7 +1343,7 @@ async function loadAdminAnnouncements() {
   const data = await apiFetch("/admin/announcements");
   const rows = Array.isArray(data.announcements) ? data.announcements : [];
   const levelLabels = { small: "小公告", large: "大公告", emergency: "紧急公告" };
-  els.adminAnnouncementList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-message-row" data-announcement-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(levelLabels[item.level] || "大公告")} · ${escapeHtml(formatTime(item.created_at))}</span></div><div class="announcement-actions">${item.level === "emergency" && item.enabled ? `<button class="secondary-button compact-button" type="button" data-toggle-announcement-lock data-locked="${Boolean(item.lock_screen)}">${item.lock_screen ? "解除锁屏" : "启用锁屏"}</button>` : ""}<button class="secondary-button compact-button" type="button" data-toggle-announcement data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button compact-button" type="button" data-delete-announcement>删除</button></div></div><p>${escapeHtml(item.content)}</p></article>`).join("") : '<div class="empty-state">暂无公告</div>';
+  els.adminAnnouncementList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-message-row" data-announcement-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(levelLabels[item.level] || "大公告")} · ${escapeHtml(formatTime(item.created_at))}</span></div><div class="announcement-actions"><span class="message-status ${item.enabled ? "resolved" : "closed"}">${item.enabled ? "启用中" : "已停用"}</span>${item.level === "emergency" && item.enabled ? `<button class="secondary-button compact-button" type="button" data-toggle-announcement-lock data-locked="${Boolean(item.lock_screen)}">${item.lock_screen ? "解除锁屏" : "启用锁屏"}</button>` : ""}<button class="secondary-button compact-button" type="button" data-toggle-announcement data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button compact-button" type="button" data-delete-announcement>删除</button></div></div><p>${escapeHtml(item.content)}</p>${item.level === "emergency" ? `<div class="message-history-meta"><span>界面锁定</span><strong>${item.lock_screen ? "已开启" : "未开启"}</strong></div>` : ""}</article>`).join("") : '<div class="empty-state">暂无公告</div>';
 }
 
 async function showNextUnseenAnnouncement() {
@@ -1509,7 +1551,7 @@ async function loadMemberships() {
   const data = await apiFetch("/memberships");
   state.memberships = [...(data.packages || [])];
   const highestPrice = Math.max(0, ...state.memberships.map((item) => Number(item.points_cost || 0)));
-  els.membershipList.innerHTML = state.memberships.length ? state.memberships.map((item) => `<article class="membership-item${Number(item.points_cost || 0) === highestPrice ? " membership-item-highest" : ""}"><div><span>${escapeHtml(item.duration_days)} 天${Number(item.points_cost || 0) === highestPrice ? " · 最高等级" : ""}</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || "")}</p><div class="membership-benefits"><span>并发数 ${escapeHtml(item.concurrency)}</span><span>赠送 ${escapeHtml(item.bonus_free_uses)} 次视频额度</span><span>积分减免 ${escapeHtml(item.task_discount_points)} 积分</span></div></div><div class="membership-price"><strong>${escapeHtml(item.points_cost)} 积分</strong><button class="primary-button" type="button" data-membership-id="${escapeHtml(item.id)}" data-membership-name="${escapeHtml(item.name)}" data-membership-cost="${escapeHtml(item.points_cost)}">积分购买</button></div></article>`).join("") : '<div class="empty-state">暂无可用会员套餐</div>';
+  els.membershipList.innerHTML = state.memberships.length ? state.memberships.map((item) => `<article class="membership-item${Number(item.points_cost || 0) === highestPrice ? " membership-item-highest" : ""}"><div><span>${escapeHtml(item.duration_days)} 天${Number(item.points_cost || 0) === highestPrice ? " · 最高等级" : ""}</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description || "")}</p><div class="membership-benefits"><span>并发数 ${escapeHtml(item.concurrency)}</span><span>赠送 ${escapeHtml(item.bonus_free_uses)} 次视频额度</span>${Number(item.task_discount_points || 0) > 0 ? `<span>积分减免 ${escapeHtml(item.task_discount_points)} 积分</span>` : ""}</div></div><div class="membership-price"><strong>${escapeHtml(item.points_cost)} 积分</strong><button class="primary-button" type="button" data-membership-id="${escapeHtml(item.id)}" data-membership-name="${escapeHtml(item.name)}" data-membership-cost="${escapeHtml(item.points_cost)}">积分购买</button></div></article>`).join("") : '<div class="empty-state">暂无可用会员套餐</div>';
   updateMembershipPurchaseButtons();
 }
 
@@ -1545,7 +1587,7 @@ function membershipDurationLabel(seconds) {
 function renderMembershipDetails() {
   const labels = { active: "使用中", paused: "已暂停", expired: "已到期" };
   if (!els.membershipDetailsList) return;
-  els.membershipDetailsList.innerHTML = state.membershipHoldings.length ? state.membershipHoldings.map((item) => `<article class="membership-detail-row"><div><strong>${escapeHtml(item.name || "会员")}</strong><span class="chip ${item.status === "active" ? "success" : item.status === "expired" ? "failed" : ""}">${escapeHtml(labels[item.status] || "已暂停")}</span></div><dl><div><dt>剩余时间</dt><dd>${escapeHtml(membershipDurationLabel(item.remaining_seconds))}</dd></div><div><dt>购买时间</dt><dd>${escapeHtml(formatTime(item.purchased_at))}</dd></div><div><dt>会员权益</dt><dd>并发 ${escapeHtml(item.concurrency)} · 积分减免 ${escapeHtml(item.task_discount_points)} 积分</dd></div></dl></article>`).join("") : '<div class="empty-state">暂无会员购买记录</div>';
+  els.membershipDetailsList.innerHTML = state.membershipHoldings.length ? state.membershipHoldings.map((item) => `<article class="membership-detail-row"><div><strong>${escapeHtml(item.name || "会员")}</strong><span class="chip ${item.status === "active" ? "success" : item.status === "expired" ? "failed" : ""}">${escapeHtml(labels[item.status] || "已暂停")}</span></div><dl><div><dt>剩余时间</dt><dd>${escapeHtml(membershipDurationLabel(item.remaining_seconds))}</dd></div><div><dt>购买时间</dt><dd>${escapeHtml(formatTime(item.purchased_at))}</dd></div><div><dt>会员权益</dt><dd>并发 ${escapeHtml(item.concurrency)}${Number(item.task_discount_points || 0) > 0 ? ` · 积分减免 ${escapeHtml(item.task_discount_points)} 积分` : ""}</dd></div></dl></article>`).join("") : '<div class="empty-state">暂无会员购买记录</div>';
 }
 
 function membershipRemainingText() {
@@ -1616,6 +1658,16 @@ async function refreshTransactions() {
   }
 }
 
+function updatePointCardSelection() {
+  const visibleIds = state.pointCards.map((item) => String(item.id || "")).filter(Boolean);
+  const selectedVisible = visibleIds.filter((id) => state.selectedPointCardIds.has(id));
+  if (els.pointCardSelectedState) els.pointCardSelectedState.textContent = `已选择 ${selectedVisible.length} 条`;
+  if (els.selectAllPointCards) {
+    els.selectAllPointCards.checked = Boolean(visibleIds.length) && selectedVisible.length === visibleIds.length;
+    els.selectAllPointCards.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visibleIds.length;
+  }
+}
+
 async function loadPointCards() {
   if (portal !== "admin" || !els.pointCardTableBody) return;
   const params = new URLSearchParams({ limit: "2000" });
@@ -1625,12 +1677,16 @@ async function loadPointCards() {
   if (status !== "all") params.set("status", status);
   const data = await apiFetch(`/admin/point-cards?${params}`);
   state.pointCards = Array.isArray(data.cards) ? data.cards : [];
+  const availableIds = new Set(state.pointCards.map((item) => String(item.id || "")));
+  state.selectedPointCardIds = new Set(Array.from(state.selectedPointCardIds).filter((id) => availableIds.has(id)));
   if (els.pointCardTotalState) els.pointCardTotalState.textContent = `共 ${state.pointCards.length} 条记录`;
   els.pointCardTableBody.innerHTML = state.pointCards.length ? state.pointCards.map((item) => {
     const code = item.code || "";
     const copyButton = `<button type="button" class="icon-button card-copy-button" data-copy-point-card="${escapeHtml(code)}" title="复制完整卡密">复制</button>`;
-    return `<tr><td><div class="point-card-code"><code title="${escapeHtml(code)}">${escapeHtml(code)}</code>${copyButton}</div></td><td><span class="card-type-chip">积分卡密</span></td><td>${escapeHtml(item.points)} 积分</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_username || "-")}</td><td>${item.redeemed_at ? escapeHtml(formatTime(item.redeemed_at)) : "-"}</td><td>永久有效</td><td>${escapeHtml(item.note || "-")}</td></tr>`;
+    const checked = state.selectedPointCardIds.has(String(item.id || "")) ? "checked" : "";
+    return `<tr><td class="point-card-check-col"><input type="checkbox" aria-label="选择卡密 ${escapeHtml(code)}" data-point-card-select="${escapeHtml(item.id)}" ${checked} /></td><td><div class="point-card-code"><code title="${escapeHtml(code)}">${escapeHtml(code)}</code>${copyButton}</div></td><td><span class="card-type-chip">积分卡密</span></td><td>${escapeHtml(item.points)} 积分</td><td><span class="chip ${item.status === "unused" ? "success" : "failed"}">${item.status === "unused" ? "未使用" : "已兑换"}</span></td><td>${escapeHtml(item.redeemed_username || "-")}</td><td>${item.redeemed_at ? escapeHtml(formatTime(item.redeemed_at)) : "-"}</td><td>${escapeHtml(item.note || "-")}</td></tr>`;
   }).join("") : '<tr><td colspan="8"><div class="empty-state">暂无卡密记录</div></td></tr>';
+  updatePointCardSelection();
 }
 
 async function refreshPointCards() {
@@ -1642,6 +1698,26 @@ async function refreshPointCards() {
     toast(`卡密记录刷新失败：${error.message}`, "error");
   } finally {
     setBusy(els.refreshPointCards, false);
+  }
+}
+
+async function deletePointCardRecords() {
+  const mode = els.pointCardDeleteMode?.value || "selected";
+  const selectedIds = Array.from(state.selectedPointCardIds);
+  if (mode === "selected" && !selectedIds.length) return toast("请先勾选要删除的卡密", "error");
+  const labels = { selected: `勾选的 ${selectedIds.length} 条卡密`, unused: "全部未使用卡密", redeemed: "全部已兑换卡密" };
+  if (!window.confirm(`确认删除${labels[mode] || "所选卡密"}？删除后无法恢复。`)) return;
+  setBusy(els.deletePointCards, true, "删除中");
+  try {
+    const body = mode === "selected" ? { ids: selectedIds } : { status: mode };
+    const data = await apiFetch("/admin/point-cards/delete", { method: "POST", body });
+    state.selectedPointCardIds.clear();
+    await loadPointCards();
+    toast(`已删除 ${Number(data.deleted || 0)} 条卡密`);
+  } catch (error) {
+    toast(`卡密删除失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.deletePointCards, false);
   }
 }
 
@@ -1882,6 +1958,8 @@ async function refreshHealth() {
   state.activeIds = Array.isArray(data.active) ? data.active : [];
   const configuredWorkers = Number(data.browser_workers ?? 0);
   const effectiveWorkers = Number(data.components?.resources?.effective_workers ?? configuredWorkers);
+  state.configuredWorkers = configuredWorkers || 1;
+  state.maxEffectiveWorkers = Number(data.components?.resources?.capacity_limit ?? configuredWorkers ?? 1);
   els.metricWorkers.textContent = configuredWorkers ? `${effectiveWorkers} / ${configuredWorkers}` : "-";
   if (els.metricWorkersNote) els.metricWorkersNote.textContent = "有效 / 配置";
   applyAccessScope(data);
@@ -2199,8 +2277,8 @@ async function importAccount(event) {
 }
 
 function openWorkersModal() {
-  const current = Number.parseInt(els.metricWorkers.textContent, 10);
-  els.workersInput.value = Number.isFinite(current) ? String(current) : "1";
+  els.workersInput.value = String(Math.max(1, Number(state.configuredWorkers || 1)));
+  els.effectiveWorkersInput.value = String(Math.max(1, Number(state.maxEffectiveWorkers || state.configuredWorkers || 1)));
   els.workersModalState.textContent = "";
   els.workersModal.classList.remove("hidden");
   els.workersModal.setAttribute("aria-hidden", "false");
@@ -2264,19 +2342,27 @@ function closeVideoModal() {
 
 async function saveWorkersConfig() {
   const workers = Number.parseInt(els.workersInput.value, 10);
+  const maxEffectiveWorkers = Number.parseInt(els.effectiveWorkersInput.value, 10);
   if (!Number.isInteger(workers) || workers < 1 || workers > 999) {
     els.workersModalState.textContent = "请输入 1 - 999";
     toast("全局并发范围是 1 - 999", "error");
+    return;
+  }
+  if (!Number.isInteger(maxEffectiveWorkers) || maxEffectiveWorkers < 1 || maxEffectiveWorkers > 999) {
+    els.workersModalState.textContent = "请输入 1 - 999";
+    toast("真实有效并发上限范围是 1 - 999", "error");
     return;
   }
   setBusy(els.saveWorkers, true, "保存中");
   try {
     const data = await apiFetch("/config/workers", {
       method: "POST",
-      body: { browser_workers: workers },
+      body: { browser_workers: workers, max_effective_workers: maxEffectiveWorkers },
     });
     const configured = Number(data.browser_workers ?? workers);
     const effective = Number(data.effective_browser_workers ?? configured);
+    state.configuredWorkers = configured;
+    state.maxEffectiveWorkers = Number(data.max_effective_workers ?? data.capacity_limit ?? maxEffectiveWorkers);
     els.metricWorkers.textContent = `${effective} / ${configured}`;
     els.workersModalState.textContent = `已保存，当前有效并发 ${effective}`;
     toast("并发配置已更新");
@@ -3240,9 +3326,27 @@ function bindEvents() {
   els.pointCardForm?.addEventListener("submit", generatePointCards);
   els.refreshPointCards?.addEventListener("click", refreshPointCards);
   els.exportPointCards?.addEventListener("click", exportPointCardsCsv);
+  els.deletePointCards?.addEventListener("click", deletePointCardRecords);
   els.pointCardTableBody?.addEventListener("click", (event) => {
     const button = event.target.closest("[data-copy-point-card]");
     if (button) copyText(button.dataset.copyPointCard, "卡密");
+  });
+  els.pointCardTableBody?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-point-card-select]");
+    if (!checkbox) return;
+    if (checkbox.checked) state.selectedPointCardIds.add(checkbox.dataset.pointCardSelect);
+    else state.selectedPointCardIds.delete(checkbox.dataset.pointCardSelect);
+    updatePointCardSelection();
+  });
+  els.selectAllPointCards?.addEventListener("change", () => {
+    state.pointCards.forEach((item) => {
+      const id = String(item.id || "");
+      if (!id) return;
+      if (els.selectAllPointCards.checked) state.selectedPointCardIds.add(id);
+      else state.selectedPointCardIds.delete(id);
+    });
+    els.pointCardTableBody?.querySelectorAll("[data-point-card-select]").forEach((checkbox) => { checkbox.checked = els.selectAllPointCards.checked; });
+    updatePointCardSelection();
   });
   els.pointCardSearch?.addEventListener("input", () => {
     window.clearTimeout(state.pointCardSearchTimer);
@@ -3565,6 +3669,22 @@ function bindEvents() {
       toast(`购买记录读取失败：${error.message}`, "error");
     }
   });
+  els.openNotificationHistory?.addEventListener("click", async () => {
+    openSettingsModal(els.notificationHistoryModal, els.closeNotificationHistory);
+    try {
+      await loadAdminNotifications();
+    } catch (error) {
+      toast(`通知记录读取失败：${error.message}`, "error");
+    }
+  });
+  els.openAnnouncementHistory?.addEventListener("click", async () => {
+    openSettingsModal(els.announcementHistoryModal, els.closeAnnouncementHistory);
+    try {
+      await loadAdminAnnouncements();
+    } catch (error) {
+      toast(`公告记录读取失败：${error.message}`, "error");
+    }
+  });
   els.openProxyModal?.addEventListener("click", async () => {
     try {
       await loadProxyConfig();
@@ -3619,7 +3739,7 @@ function bindEvents() {
       toast(`会员套餐读取失败：${error.message}`, "error");
     }
   });
-  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal]].forEach(([modal, closeButton, cancelButton]) => {
+  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.notificationHistoryModal, els.closeNotificationHistory, els.cancelNotificationHistory], [els.announcementHistoryModal, els.closeAnnouncementHistory, els.cancelAnnouncementHistory], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal]].forEach(([modal, closeButton, cancelButton]) => {
     if (closeButton) closeButton.onclick = (event) => {
       event.preventDefault();
       closeSettingsModal(modal);
@@ -3747,6 +3867,10 @@ function bindEvents() {
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.view));
   });
+  els.toggleSidebar?.addEventListener("click", () => {
+    const collapsed = !document.getElementById("appShell")?.classList.contains("sidebar-collapsed");
+    setSidebarCollapsed(collapsed);
+  });
 
   els.refreshTasks.addEventListener("click", () => refreshTasks());
   els.queryVisibleTasks.addEventListener("click", queryVisibleTasks);
@@ -3864,6 +3988,10 @@ function bindEvents() {
     if (event.target === els.videoModal) closeVideoModal();
   });
   els.workersInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveWorkersConfig();
+    if (event.key === "Escape") closeWorkersModal();
+  });
+  els.effectiveWorkersInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveWorkersConfig();
     if (event.key === "Escape") closeWorkersModal();
   });
@@ -4079,6 +4207,7 @@ async function init() {
   els.loginToken.value = savedToken;
 
   applyPortalText();
+  setSidebarCollapsed(localStorage.getItem("dola_sidebar_collapsed") === "1", false);
   if (portal === "client") {
     try {
       await loadEmailDomains();

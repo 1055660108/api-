@@ -145,8 +145,9 @@ class WorkerManager:
         set_active_tasks([])
 
     def health_snapshot(self) -> dict:
-        configured = load_settings().browser_workers
-        effective, resource = adaptive_worker_limit(configured)
+        settings = load_settings()
+        configured = settings.browser_workers
+        effective, resource = adaptive_worker_limit(configured, settings.max_effective_workers)
         supervisor_alive = bool(self._supervisor and not self._supervisor.done())
         watchdog_alive = bool(self._watchdog and not self._watchdog.done())
         worker_alive = sum(1 for task in self._workers.values() if not task.done())
@@ -196,8 +197,9 @@ class WorkerManager:
                             if error:
                                 self._last_error = str(error)[:500]
                         self._workers.pop(worker_id, None)
-                configured = load_settings().browser_workers
-                effective, self._resource_snapshot = adaptive_worker_limit(configured)
+                settings = load_settings()
+                configured = settings.browser_workers
+                effective, self._resource_snapshot = adaptive_worker_limit(configured, settings.max_effective_workers)
                 self._queue.heartbeat({task_id: worker_id for worker_id, task_id in self._worker_task_ids.items()})
                 demand = len(self._claimed)
                 with suppress(Exception):

@@ -4,8 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>管理面板</title>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.3.3" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.3.3" />
+    <style id="criticalPortalStyles">
+      .hidden,.view:not(.active){display:none!important}
+      body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel{display:none!important}
+      body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
+    </style>
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.3.4" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.3.4" />
   </head>
   <body>
     <script>
@@ -17,7 +22,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.3" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.4" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -77,54 +82,64 @@
     </section>
 
     <div class="app-shell hidden" id="appShell">
-      <aside class="sidebar">
+      <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.3" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.3.4" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
           </div>
         </div>
+        <div class="sidebar-version"><span>当前版本</span><strong id="sidebarVersion">--</strong></div>
+        <button class="sidebar-collapse" id="toggleSidebar" type="button" aria-label="收起侧栏" title="收起侧栏"><i data-lucide="panel-left-close" aria-hidden="true"></i></button>
 
         <nav class="nav" aria-label="主导航" id="mainNav">
           <button class="nav-item active" type="button" data-view="dashboard">
+            <i class="nav-icon" data-lucide="layout-dashboard" aria-hidden="true"></i>
             <span>用户首页</span>
           </button>
           <button class="nav-item" type="button" data-view="submit">
+            <i class="nav-icon" data-lucide="square-plus" aria-hidden="true"></i>
             <span>提交任务</span>
           </button>
           <button class="nav-item" type="button" data-view="tasks">
+            <i class="nav-icon" data-lucide="list-video" aria-hidden="true"></i>
             <span>任务管理</span>
           </button>
           <button class="nav-item" type="button" data-view="proxy-nodes" id="proxyNodesNavItem">
+            <i class="nav-icon" data-lucide="network" aria-hidden="true"></i>
             <span>节点选择</span>
           </button>
           <button class="nav-item" type="button" data-view="quota" id="quotaNavItem">
+            <i class="nav-icon" data-lucide="gauge" aria-hidden="true"></i>
             <span>额度控制</span>
           </button>
           <button class="nav-item" type="button" data-view="accounts" id="accountsNavItem">
+            <i class="nav-icon" data-lucide="users-round" aria-hidden="true"></i>
             <span>账号列表</span>
           </button>
           <button class="nav-item" type="button" data-view="docs">
+            <i class="nav-icon" data-lucide="braces" aria-hidden="true"></i>
             <span>接口说明</span>
           </button>
           <button class="nav-item" type="button" data-view="videos" id="videosNavItem">
+            <i class="nav-icon" data-lucide="clapperboard" aria-hidden="true"></i>
             <span>我的视频</span>
           </button>
           <button class="nav-item" type="button" data-view="prompts">
+            <i class="nav-icon" data-lucide="notebook-pen" aria-hidden="true"></i>
             <span>提示词库</span>
           </button>
-          <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><span>购买积分</span></button>
-          <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><span>会员订阅</span></button>
-          <button class="nav-item" type="button" data-view="transactions" id="transactionsNavItem"><span>消费明细</span></button>
-          <button class="nav-item" type="button" data-view="users" id="usersNavItem"><span>用户管理</span></button>
-          <button class="nav-item" type="button" data-view="point-cards" id="pointCardsNavItem"><span>卡密积分</span></button>
-          <button class="nav-item" type="button" data-view="messages" id="messagesNavItem"><span id="messagesNavLabel">消息处理</span><b class="nav-count hidden" id="messageUnreadCount">0</b></button>
-          <button class="nav-item" type="button" data-view="settings" id="settingsNavItem"><span>设置</span></button>
+          <button class="nav-item" type="button" data-view="points" id="pointsNavItem"><i class="nav-icon" data-lucide="wallet-cards" aria-hidden="true"></i><span>购买积分</span></button>
+          <button class="nav-item" type="button" data-view="membership" id="membershipNavItem"><i class="nav-icon" data-lucide="badge-check" aria-hidden="true"></i><span>会员订阅</span></button>
+          <button class="nav-item" type="button" data-view="transactions" id="transactionsNavItem"><i class="nav-icon" data-lucide="receipt-text" aria-hidden="true"></i><span>消费明细</span></button>
+          <button class="nav-item" type="button" data-view="users" id="usersNavItem"><i class="nav-icon" data-lucide="user-cog" aria-hidden="true"></i><span>用户管理</span></button>
+          <button class="nav-item" type="button" data-view="point-cards" id="pointCardsNavItem"><i class="nav-icon" data-lucide="ticket-check" aria-hidden="true"></i><span>卡密积分</span></button>
+          <button class="nav-item" type="button" data-view="messages" id="messagesNavItem"><i class="nav-icon" data-lucide="messages-square" aria-hidden="true"></i><span id="messagesNavLabel">消息处理</span><b class="nav-count hidden" id="messageUnreadCount">0</b></button>
+          <button class="nav-item" type="button" data-view="settings" id="settingsNavItem"><i class="nav-icon" data-lucide="settings" aria-hidden="true"></i><span>设置</span></button>
         </nav>
 
         <div class="sidebar-footer">
-          <div class="sidebar-version">当前版本 <strong id="sidebarVersion">--</strong></div>
           <div class="sidebar-status">
             <span class="status-dot" id="sidebarStatusDot"></span>
             <span id="sidebarStatusText">未连接</span>
@@ -197,14 +212,15 @@
         <section class="view" id="point-cardsView" data-title="卡密积分">
           <section class="panel point-card-workspace">
             <div class="point-card-header">
-              <div><h2>积分卡密</h2><p>生成、查询和导出用户兑换记录。</p></div>
-              <div class="point-card-header-meta"><div class="point-card-summary"><span id="pointCardTotalState">共 0 条记录</span></div><button class="primary-button" id="openPointCardModal" type="button">生成卡密</button></div>
+              <div><h2>积分卡密</h2><p>管理可兑换积分的卡密及使用状态。</p></div>
+              <div class="point-card-header-meta"><div class="point-card-summary"><span id="pointCardTotalState">共 0 条记录</span><span id="pointCardSelectedState">已选择 0 条</span></div><button class="primary-button" id="openPointCardModal" type="button"><i data-lucide="plus" aria-hidden="true"></i>生成卡密</button></div>
             </div>
             <div class="point-card-toolbar">
-              <div class="point-card-filters"><input id="pointCardSearch" type="search" placeholder="搜索兑换码、用户名或备注" /><select id="pointCardTypeFilter"><option value="all">全部类型</option><option value="points">积分卡密</option></select><select id="pointCardStatusFilter"><option value="all">全部状态</option><option value="unused">未使用</option><option value="redeemed">已兑换</option></select></div>
-              <div class="point-card-actions"><button class="secondary-button" id="refreshPointCards" type="button">刷新</button><button class="secondary-button" id="exportPointCards" type="button">导出 CSV</button></div>
+              <div class="point-card-filters"><input id="pointCardSearch" type="search" aria-label="搜索卡密" placeholder="搜索兑换码、用户名或备注" /><select id="pointCardTypeFilter" aria-label="卡密类型"><option value="all">全部类型</option><option value="points">积分卡密</option></select><select id="pointCardStatusFilter" aria-label="卡密状态"><option value="all">全部状态</option><option value="unused">未使用</option><option value="redeemed">已兑换</option></select></div>
+              <div class="point-card-actions"><button class="secondary-button icon-text-button" id="refreshPointCards" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新</button><button class="secondary-button icon-text-button" id="exportPointCards" type="button"><i data-lucide="download" aria-hidden="true"></i>导出</button></div>
             </div>
-            <div class="table-wrap point-card-table-wrap"><table class="users-table point-card-table"><thead><tr><th>兑换码</th><th>类型</th><th>面值</th><th>状态</th><th>使用者</th><th>使用时间</th><th>过期时间</th><th>备注</th></tr></thead><tbody id="pointCardTableBody"></tbody></table></div>
+            <div class="point-card-bulkbar"><div class="point-card-bulk-selection"><label class="table-checkbox"><input id="selectAllPointCards" type="checkbox" /><span>选择本页</span></label></div><div class="point-card-delete-controls"><select id="pointCardDeleteMode" aria-label="删除范围"><option value="selected">删除勾选记录</option><option value="unused">删除全部未使用</option><option value="redeemed">删除全部已兑换</option></select><button class="danger-button icon-text-button" id="deletePointCards" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>删除</button></div></div>
+            <div class="table-wrap point-card-table-wrap"><table class="users-table point-card-table"><thead><tr><th class="point-card-check-col"><span class="sr-only">选择</span></th><th>兑换码</th><th>类型</th><th>面值</th><th>状态</th><th>使用者</th><th>使用时间</th><th>备注</th></tr></thead><tbody id="pointCardTableBody"></tbody></table></div>
           </section>
         </section>
 
@@ -298,21 +314,25 @@
               <div class="panel-header"><div><h2>反馈处理</h2><p>处理状态和管理员回复保存后会立即展示给用户。</p></div></div>
               <div class="table-wrap users-table-wrap"><table class="users-table message-table"><thead><tr><th>用户</th><th>类型</th><th>反馈内容</th><th>管理员回复</th><th>处理状态</th><th>操作</th></tr></thead><tbody id="feedbackTableBody"></tbody></table></div>
             </section>
-            <section class="message-admin-grid hidden" data-message-panel="notifications">
-              <form class="panel notification-compose" id="adminNotificationForm">
-                <div class="panel-header"><div><h2>发送通知</h2><p>选择一位或多位用户后发送站内通知。</p></div></div>
-                <label class="field"><span>通知标题</span><input id="notificationTitle" maxlength="120" required /></label>
-                <label class="field"><span>通知内容</span><textarea id="notificationContent" maxlength="5000" required></textarea></label>
-                <div class="recipient-header"><strong>接收用户</strong><label><input id="selectAllNotificationUsers" type="checkbox" /> 全选</label></div>
-                <div class="recipient-list" id="notificationRecipients"></div>
-                <div class="modal-actions"><span class="muted" id="notificationRecipientState">请选择用户</span><button class="primary-button" id="sendNotificationButton" type="submit">发送通知</button></div>
+            <section class="message-admin-pane hidden" data-message-panel="notifications">
+              <form class="panel notification-compose notification-compose-wide" id="adminNotificationForm">
+                <div class="panel-header message-compose-header"><div><h2>发送通知</h2><p>向一位或多位用户发送站内消息。</p></div><button class="secondary-button icon-text-button" id="openNotificationHistory" type="button"><i data-lucide="history" aria-hidden="true"></i>发送记录</button></div>
+                <div class="notification-compose-layout">
+                  <div class="notification-content-fields"><label class="field"><span>通知标题</span><input id="notificationTitle" maxlength="120" required /></label><label class="field"><span>通知内容</span><textarea id="notificationContent" maxlength="5000" required></textarea></label></div>
+                  <section class="recipient-panel" aria-labelledby="recipientPanelTitle"><div class="recipient-header"><strong id="recipientPanelTitle">接收用户</strong><label class="compact-check"><input id="selectAllNotificationUsers" type="checkbox" />全选</label></div><div class="recipient-list" id="notificationRecipients"></div></section>
+                </div>
+                <div class="message-submit-row"><span class="muted" id="notificationRecipientState">请选择用户</span><button class="primary-button icon-text-button" id="sendNotificationButton" type="submit"><i data-lucide="send" aria-hidden="true"></i>发送通知</button></div>
               </form>
-              <section class="panel notification-history">
-                <div class="panel-header"><div><h2>发送记录</h2><p>查看通知送达对象和阅读状态。</p></div></div>
-                <div class="message-list" id="adminNotificationList"></div>
-              </section>
             </section>
-            <section class="message-admin-grid hidden" data-message-panel="announcements"><form class="panel notification-compose" id="adminAnnouncementForm"><div class="panel-header"><div><h2>发布公告</h2><p>按影响范围选择公告展示方式。</p></div></div><div class="field"><span>公告类型</span><input id="announcementLevel" type="hidden" value="large" /><div class="announcement-level-picker" role="radiogroup" aria-label="公告类型"><button type="button" data-announcement-level="small" role="radio" aria-checked="false"><strong>小公告</strong><small>右下角显示 8 秒</small></button><button class="active" type="button" data-announcement-level="large" role="radio" aria-checked="true"><strong>大公告</strong><small>登录后弹窗显示</small></button><button type="button" data-announcement-level="emergency" role="radio" aria-checked="false"><strong>紧急公告</strong><small>全屏维护通知</small></button></div></div><label class="field"><span>公告标题</span><input id="announcementTitle" maxlength="120" required /></label><label class="field"><span>公告内容</span><textarea id="announcementContent" maxlength="5000" required></textarea></label><label class="toggle-field announcement-lock-field hidden" id="announcementLockField"><input id="announcementLockScreen" type="checkbox" /><span>锁定所有用户界面，管理员停用公告后解除</span></label><div class="modal-actions"><button class="primary-button" id="publishAnnouncementButton" type="submit">发布公告</button></div></form><section class="panel notification-history"><div class="panel-header"><div><h2>公告记录</h2><p>可调整紧急公告锁屏状态或停用公告。</p></div></div><div class="message-list" id="adminAnnouncementList"></div></section></section>
+            <section class="message-admin-pane hidden" data-message-panel="announcements">
+              <form class="panel notification-compose announcement-compose" id="adminAnnouncementForm">
+                <div class="panel-header message-compose-header"><div><h2>发布公告</h2><p>按影响范围选择公告展示方式。</p></div><button class="secondary-button icon-text-button" id="openAnnouncementHistory" type="button"><i data-lucide="history" aria-hidden="true"></i>公告记录</button></div>
+                <div class="field"><span>公告类型</span><input id="announcementLevel" type="hidden" value="large" /><div class="announcement-level-picker" role="radiogroup" aria-label="公告类型"><button type="button" data-announcement-level="small" role="radio" aria-checked="false"><i data-lucide="message-square" aria-hidden="true"></i><span><strong>小公告</strong><small>右下角显示 8 秒</small></span></button><button class="active" type="button" data-announcement-level="large" role="radio" aria-checked="true"><i data-lucide="panel-top-open" aria-hidden="true"></i><span><strong>大公告</strong><small>登录后弹窗显示</small></span></button><button type="button" data-announcement-level="emergency" role="radio" aria-checked="false"><i data-lucide="triangle-alert" aria-hidden="true"></i><span><strong>紧急公告</strong><small>全屏维护通知</small></span></button></div></div>
+                <div class="announcement-content-grid"><label class="field"><span>公告标题</span><input id="announcementTitle" maxlength="120" required /></label><label class="field announcement-content-field"><span>公告内容</span><textarea id="announcementContent" maxlength="5000" required></textarea></label></div>
+                <label class="announcement-lock-control hidden" id="announcementLockField"><input id="announcementLockScreen" type="checkbox" /><span class="switch-track" aria-hidden="true"><span></span></span><span class="announcement-lock-copy"><strong>锁定所有用户界面</strong><small>仅用于维护或重要更新，停用公告后自动解除</small></span></label>
+                <div class="message-submit-row"><span class="muted">公告发布后立即生效</span><button class="primary-button icon-text-button" id="publishAnnouncementButton" type="submit"><i data-lucide="megaphone" aria-hidden="true"></i>发布公告</button></div>
+              </form>
+            </section>
           </div>
         </section>
 
@@ -654,7 +674,7 @@
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"browser_workers":4}</code>
+                    <code>{"browser_workers":100,"max_effective_workers":32,"effective_browser_workers":32,"capacity_limit":32}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -662,14 +682,14 @@
                     <span class="method post">POST</span>
                     <code>/config/workers</code>
                   </div>
-                  <p>修改全局 worker 调度上限。JSON 示例：<code>{"browser_workers":32}</code>，范围 1 - 999；实际有效并发同时受服务器安全上限和内存保护控制。</p>
+                  <p>分别修改配置并发和真实有效并发上限，范围均为 1 - 999；内存压力过高时系统仍会自动降载。</p>
                   <div class="api-example">
                     <span>请求示例</span>
-                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":4}' http://SERVER_IP:8088/config/workers</code>
+                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":100,"max_effective_workers":32}' http://SERVER_IP:8088/config/workers</code>
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"ok":true,"browser_workers":4}</code>
+                    <code>{"ok":true,"browser_workers":100,"max_effective_workers":32,"effective_browser_workers":32}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -827,9 +847,14 @@
           <button class="modal-close" id="closeWorkersModal" type="button" aria-label="关闭">×</button>
         </div>
         <label class="field">
-          <span>并发数量</span>
+          <span>配置并发</span>
           <input id="workersInput" type="number" min="1" max="999" step="1" />
         </label>
+        <label class="field">
+          <span>真实有效并发上限</span>
+          <input id="effectiveWorkersInput" type="number" min="1" max="999" step="1" />
+        </label>
+        <p class="worker-limit-note">实际并发不会超过以上两项中的较小值，内存压力过高时系统仍会自动降载。</p>
         <div class="modal-actions">
           <span class="sr-only" id="workersModalState"></span>
           <button class="primary-button" id="saveWorkers" type="button">保存</button>
@@ -901,6 +926,20 @@
         <div class="modal-actions"><button class="secondary-button" id="cancelRedeemModal" type="button">关闭</button></div>
       </section>
     </div>
+    <div class="modal-backdrop hidden" id="notificationHistoryModal" aria-hidden="true">
+      <section class="modal-panel message-history-modal" role="dialog" aria-modal="true" aria-labelledby="notificationHistoryTitle">
+        <div class="modal-header"><div><h2 id="notificationHistoryTitle">通知发送记录</h2><p>查看接收用户及阅读状态。</p></div><button class="modal-close" id="closeNotificationHistory" type="button" aria-label="关闭">×</button></div>
+        <div class="message-history-list message-list" id="adminNotificationList"></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelNotificationHistory" type="button">关闭</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="announcementHistoryModal" aria-hidden="true">
+      <section class="modal-panel message-history-modal" role="dialog" aria-modal="true" aria-labelledby="announcementHistoryTitle">
+        <div class="modal-header"><div><h2 id="announcementHistoryTitle">公告记录</h2><p>管理公告状态、锁屏状态及历史记录。</p></div><button class="modal-close" id="closeAnnouncementHistory" type="button" aria-label="关闭">×</button></div>
+        <div class="message-history-list message-list" id="adminAnnouncementList"></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelAnnouncementHistory" type="button">关闭</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="proxyModal" aria-hidden="true">
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="proxyModalTitle">
         <div class="modal-header"><h2 id="proxyModalTitle">编辑网络代理</h2><button class="modal-close" id="closeProxyModal" type="button" aria-label="关闭">×</button></div>
@@ -956,7 +995,7 @@
       <section class="modal-panel announcement-modal-panel" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle"><div class="announcement-modal-accent" aria-hidden="true"></div><div class="modal-header"><div><span class="modal-eyebrow">平台公告</span><h2 id="announcementModalTitle"></h2></div><button class="modal-close" id="closeAnnouncementModal" type="button" aria-label="关闭">×</button></div><div class="announcement-modal-content" id="announcementModalContent"></div><div class="announcement-modal-footer"><span>HS 服务通知</span><button class="primary-button" id="confirmAnnouncementModal" type="button">确认</button></div></section>
     </div>
     <div class="modal-backdrop hidden" id="pointCardModal" aria-hidden="true">
-      <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><div><span class="modal-eyebrow">卡密积分</span><h2 id="pointCardModalTitle">生成兑换码</h2><p>完整兑换码会保存到卡密列表，可随时复制或导出。</p></div><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
+      <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><h2 id="pointCardModalTitle">生成兑换码</h2><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
     </div>
     <div class="modal-backdrop hidden" id="promptPickerModal" aria-hidden="true">
       <section class="modal-panel prompt-picker-modal" role="dialog" aria-modal="true" aria-labelledby="promptPickerTitle">
@@ -1034,7 +1073,8 @@
         </div>
       </section>
     </div>
+    <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/app.js?v=1.3.3"></script>
+    <script src="/admin/assets/app.js?v=1.3.4"></script>
   </body>
 </html>

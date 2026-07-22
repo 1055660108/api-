@@ -54,6 +54,15 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()
 
+    def test_registration_rejects_case_insensitive_duplicate_username(self) -> None:
+        self.register("UniqueUser")
+        duplicate = self.client.post(
+            "/auth/register",
+            json={"username": "uniqueuser", "password": "password123", "confirm_password": "password123"},
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(duplicate.json()["detail"], "用户名已存在")
+
     def test_client_password_change_rotates_token_and_login_password(self) -> None:
         registered = self.register()
         old_token = registered["token"]
@@ -222,6 +231,25 @@ class ClientFeatureTests(unittest.TestCase):
         remaining = point_cards.list_cards()
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]["code"], current["code"])
+
+    def test_admin_can_delete_selected_or_status_grouped_point_cards(self) -> None:
+        user = self.register("card_delete_user")
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        cards = self.client.post("/admin/point-cards", json={"points": 8, "count": 3}).json()["cards"]
+        redeemed = self.client.post("/points/redeem", headers={"X-API-Token": user["token"]}, json={"code": cards[0]["code"]})
+        self.assertEqual(redeemed.status_code, 200)
+
+        deleted_redeemed = self.client.post("/admin/point-cards/delete", json={"status": "redeemed"})
+        self.assertEqual(deleted_redeemed.status_code, 200)
+        self.assertEqual(deleted_redeemed.json()["deleted"], 1)
+
+        deleted_selected = self.client.post("/admin/point-cards/delete", json={"ids": [cards[1]["id"]]})
+        self.assertEqual(deleted_selected.status_code, 200, deleted_selected.text)
+        self.assertEqual(deleted_selected.json()["deleted"], 1)
+        self.assertEqual([item["id"] for item in self.client.get("/admin/point-cards").json()["cards"]], [cards[2]["id"]])
+
+        rejected_empty = self.client.post("/admin/point-cards/delete", json={})
+        self.assertEqual(rejected_empty.status_code, 400)
 
     def test_announcements_are_seen_per_user(self) -> None:
         first = self.register("announcement_one")

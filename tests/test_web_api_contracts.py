@@ -347,7 +347,7 @@ class WebAPIContractTests(unittest.TestCase):
         workers = self.client.get("/config/workers").json()
         proxy = self.client.get("/config/proxy-api").json()
         platforms = self.client.get("/config/platforms").json()
-        self.assertEqual(set(workers), {"browser_workers"})
+        self.assertEqual(set(workers), {"browser_workers", "max_effective_workers", "effective_browser_workers", "capacity_limit"})
         self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_enabled", "proxy_auto_select", "proxy_selected_node"})
         self.assertNotIn("proxy_subscription_url", proxy)
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
@@ -359,14 +359,19 @@ class WebAPIContractTests(unittest.TestCase):
 
     def test_global_worker_configuration_accepts_999_and_rejects_1000(self) -> None:
         headers = {"X-API-Token": self.admin_token}
-        accepted = self.client.post("/config/workers", headers=headers, json={"browser_workers": 999})
+        accepted = self.client.post("/config/workers", headers=headers, json={"browser_workers": 999, "max_effective_workers": 200})
         self.assertEqual(accepted.status_code, 200)
         payload = accepted.json()
         self.assertEqual(payload["browser_workers"], 999)
+        self.assertEqual(payload["max_effective_workers"], 200)
+        self.assertEqual(payload["capacity_limit"], 200)
         self.assertLessEqual(payload["effective_browser_workers"], payload["capacity_limit"])
         rejected = self.client.post("/config/workers", headers=headers, json={"browser_workers": 1000})
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(config.load_settings().browser_workers, 999)
+        rejected_capacity = self.client.post("/config/workers", headers=headers, json={"browser_workers": 100, "max_effective_workers": 1000})
+        self.assertEqual(rejected_capacity.status_code, 400)
+        self.assertEqual(config.load_settings().max_effective_workers, 200)
 
     def test_proxy_node_apis_list_measure_select_and_switch(self) -> None:
         self.client.post(

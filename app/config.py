@@ -65,6 +65,14 @@ def recommended_browser_workers() -> int:
     return 32
 
 
+def default_max_effective_workers() -> int:
+    try:
+        value = int(os.environ.get("DOLA_MAX_EFFECTIVE_WORKERS", "32"))
+    except (TypeError, ValueError):
+        value = 32
+    return max(1, min(999, value))
+
+
 def default_config() -> dict[str, Any]:
     return {
         "api_token": "",
@@ -73,6 +81,7 @@ def default_config() -> dict[str, Any]:
         "host": "0.0.0.0",
         "port": 8088,
         "browser_workers": recommended_browser_workers(),
+        "max_effective_workers": default_max_effective_workers(),
         "browser_executable_path": "",
         "headless": True,
         "task_timeout_seconds": 180,
@@ -229,6 +238,7 @@ class Settings:
     host: str
     port: int
     browser_workers: int
+    max_effective_workers: int
     browser_executable_path: str
     headless: bool
     task_timeout_seconds: int
@@ -318,6 +328,7 @@ def load_settings() -> Settings:
         host=str(data.get("host") or "0.0.0.0"),
         port=int(data.get("port") or 8088),
         browser_workers=max(1, min(999, int(data.get("browser_workers") or recommended_browser_workers()))),
+        max_effective_workers=max(1, min(999, int(data.get("max_effective_workers") or default_max_effective_workers()))),
         browser_executable_path=str(data.get("browser_executable_path") or "").strip(),
         headless=_as_bool(data.get("headless"), True),
         task_timeout_seconds=max(30, int(data.get("task_timeout_seconds") or 180)),

@@ -309,6 +309,36 @@ class AdminUITests(unittest.TestCase):
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertNotIn('body[data-portal="client"][data-view="points"] .page-header {\n  display: none;', styles)
         self.assertIn(".redeem-modal-panel", styles)
+
+    def test_sidebar_cards_and_message_history_match_134_contract(self) -> None:
+        for element_id in (
+            "toggleSidebar",
+            "selectAllPointCards",
+            "pointCardDeleteMode",
+            "deletePointCards",
+            "openNotificationHistory",
+            "notificationHistoryModal",
+            "openAnnouncementHistory",
+            "announcementHistoryModal",
+            "effectiveWorkersInput",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertGreaterEqual(self.html.count('class="nav-icon" data-lucide='), 16)
+        self.assertIn('/admin/assets/lucide.min.js?v=', self.html)
+        self.assertIn('apiFetch("/admin/point-cards/delete"', self.javascript)
+        self.assertIn('data-point-card-select=', self.javascript)
+        self.assertIn('localStorage.setItem("dola_sidebar_collapsed"', self.javascript)
+        self.assertNotIn("完整兑换码会保存到卡密列表，可随时复制或导出。", self.html)
+        self.assertNotIn('<span class="modal-eyebrow">卡密积分</span>', self.html)
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('body[data-portal="client"][data-view="points"] .page-header { display: none; }', styles)
+        self.assertIn(".app-shell.sidebar-collapsed", styles)
+        self.assertIn(".announcement-lock-control", styles)
+        self.assertIn('id="criticalPortalStyles"', self.html)
+        self.assertIn('body[data-portal="client"] #pointCardsNavItem', self.html)
+        self.assertIn('body[data-portal="client"] .admin-credential-field', self.html)
+        self.assertIn('max_effective_workers: maxEffectiveWorkers', self.javascript)
+        self.assertIn('Number(item.task_discount_points || 0) > 0', self.javascript)
         self.assertNotIn('data-user-concurrency=', self.javascript)
         self.assertIn("updateMembershipRemaining", self.javascript)
         self.assertIn('return `${state.membership.name} · 剩余 ${parts.join(" ")}`', self.javascript)

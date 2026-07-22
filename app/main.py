@@ -47,7 +47,7 @@ from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
 from .package_catalog import create_package, disable_package, list_packages, update_package
 from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, get_membership, list_memberships, update_membership
-from .point_cards import generate_cards, list_cards, purge_legacy_cards, redeem_card
+from .point_cards import delete_cards, generate_cards, list_cards, purge_legacy_cards, redeem_card
 from .point_transactions import list_transactions, record_transaction
 from .store import (
     active_task_ids,
@@ -355,7 +355,7 @@ def _health_payload(access: AccessContext) -> dict:
 
     queue_health = get_task_queue().health()
     platform_guard = PlatformGuard(getattr(get_task_queue(), "client", None))
-    _, resource_health = adaptive_worker_limit(settings.browser_workers)
+    _, resource_health = adaptive_worker_limit(settings.browser_workers, settings.max_effective_workers)
     browser_error = ""
     try:
         browser_path = resolve_browser_executable(settings.browser_executable_path)
@@ -691,6 +691,24 @@ async def admin_generate_point_cards(request: Request):
         cards = generate_cards(payload.get("points"), int(payload.get("count") or 1), payload.get("note", ""))
         return {"ok": True, "cards": cards, "count": len(cards)}
     except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/admin/point-cards/delete", dependencies=[Depends(require_admin)])
+async def admin_delete_point_cards(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="请求内容无效")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="请求内容必须为对象")
+    card_ids = payload.get("ids") or []
+    if not isinstance(card_ids, list):
+        raise HTTPException(status_code=400, detail="卡密 ID 必须为列表")
+    try:
+        deleted = delete_cards(card_ids, payload.get("status", ""))
+        return {"ok": True, "deleted": deleted}
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -1321,7 +1339,13 @@ async def registration_email_config():
 @app.get("/config/workers", dependencies=[Depends(require_token)])
 async def workers_config():
     settings = load_settings()
-    return {"browser_workers": settings.browser_workers}
+    effective_workers, resources = adaptive_worker_limit(settings.browser_workers, settings.max_effective_workers)
+    return {
+        "browser_workers": settings.browser_workers,
+        "max_effective_workers": settings.max_effective_workers,
+        "effective_browser_workers": effective_workers,
+        "capacity_limit": resources["capacity_limit"],
+    }
 
 
 @app.get("/config/platforms", dependencies=[Depends(require_token)])
@@ -1568,6 +1592,7 @@ async def update_workers_config(
         raise HTTPException(status_code=403, detail="forbidden")
     payload = await _request_payload(request)
     raw_workers = payload.get("browser_workers") or payload.get("workers") or browser_workers
+    raw_capacity = payload.get("max_effective_workers") or payload.get("capacity_limit")
     if raw_workers is None:
         raise HTTPException(status_code=400, detail="browser_workers is required")
     try:
@@ -1577,14 +1602,21 @@ async def update_workers_config(
     if workers < 1 or workers > 999:
         raise HTTPException(status_code=400, detail="browser_workers must be between 1 and 999")
     try:
-        update_config({"browser_workers": workers})
+        capacity = int(raw_capacity) if raw_capacity is not None else load_settings().max_effective_workers
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="max_effective_workers must be an integer")
+    if capacity < 1 or capacity > 999:
+        raise HTTPException(status_code=400, detail="max_effective_workers must be between 1 and 999")
+    try:
+        update_config({"browser_workers": workers, "max_effective_workers": capacity})
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     settings = load_settings()
-    effective_workers, resources = adaptive_worker_limit(settings.browser_workers)
+    effective_workers, resources = adaptive_worker_limit(settings.browser_workers, settings.max_effective_workers)
     return {
         "ok": True,
         "browser_workers": settings.browser_workers,
+        "max_effective_workers": settings.max_effective_workers,
         "effective_browser_workers": effective_workers,
         "capacity_limit": resources["capacity_limit"],
     }

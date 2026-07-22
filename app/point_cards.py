@@ -93,6 +93,33 @@ def list_cards(limit: int = 500) -> list[dict[str, Any]]:
     return rows[:max(1, min(2000, int(limit)))]
 
 
+def delete_cards(card_ids: list[str] | None = None, status: str = "") -> int:
+    selected_ids = {str(card_id or "").strip() for card_id in (card_ids or []) if str(card_id or "").strip()}
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status and normalized_status not in {"unused", "redeemed"}:
+        raise ValueError("卡密状态无效")
+    if not selected_ids and not normalized_status:
+        raise ValueError("请选择要删除的卡密")
+
+    with _LOCK:
+        data = _read()
+        cards = data["cards"]
+        deleted_keys = [
+            key
+            for key, record in cards.items()
+            if isinstance(record, dict)
+            and (
+                str(record.get("id") or "") in selected_ids
+                or (normalized_status and str(record.get("status") or "") == normalized_status)
+            )
+        ]
+        for key in deleted_keys:
+            cards.pop(key, None)
+        if deleted_keys:
+            _write(data)
+    return len(deleted_keys)
+
+
 def purge_legacy_cards() -> int:
     """Remove card records created before full redemption codes were persisted."""
     with _LOCK:

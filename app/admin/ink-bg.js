@@ -40,7 +40,7 @@
       float value = 0.0;
       float amplitude = 0.52;
       mat2 rotation = mat2(0.82, -0.57, 0.57, 0.82);
-      for (int i = 0; i < 5; i++) {
+      for (int i = 0; i < 4; i++) {
         value += amplitude * noise(p);
         p = rotation * p * 2.03 + 9.17;
         amplitude *= 0.5;
@@ -55,27 +55,30 @@
       float radius = length(point);
       float time = uTime * 0.105;
 
-      float bend = sin(angle * 3.0 + time * 1.7) * 0.12 + fbm(point * 2.2 + time) * 0.22;
+      float bend = sin(angle * 3.0 + time * 1.55) * 0.11 + noise(point * 2.0 + time) * 0.2;
       float cosine = cos(bend);
       float sine = sin(bend);
       vec2 swirl = mat2(cosine, -sine, sine, cosine) * point;
       float contourScale = mix(0.14, 1.0, smoothstep(0.045, 0.22, uSize));
       float contour = (
-        fbm(vec2(angle * 1.8, time * 0.95)) * 0.032 +
+        noise(vec2(angle * 1.8, time * 0.95)) * 0.032 +
         sin(angle * 7.0 - time) * 0.007
       ) * contourScale;
       float sphere = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
 
-      float cloud = fbm(swirl * 5.1 + vec2(time, -time * 0.7));
-      float folds = fbm(swirl * 10.2 - vec2(time * 1.2, time * 0.45));
-      float ring = sin(radius * 40.0 - cloud * 6.0 + time * 1.7) * 0.5 + 0.5;
-      float pigment = smoothstep(0.16, 0.92, cloud * 0.79 + folds * 0.35 + ring * 0.1);
-      vec3 wash = vec3(0.49, 0.52, 0.50);
-      vec3 ink = vec3(0.035, 0.043, 0.045);
+      float detailScale = mix(23.0, 5.4, smoothstep(0.05, 0.24, uSize));
+      float cloud = fbm(swirl * detailScale + vec2(time, -time * 0.66));
+      float folds = noise(swirl * detailScale * 1.92 - vec2(time * 1.1, time * 0.4));
+      float vein = abs(noise(swirl * detailScale * 2.7 + vec2(-time * 0.42, time * 0.28)) - 0.5) * 2.0;
+      float ring = sin(radius / max(uSize, 0.04) * 18.0 - cloud * 7.0 + time * 1.45) * 0.5 + 0.5;
+      float pigment = smoothstep(0.2, 0.8, cloud * 0.7 + folds * 0.34 + ring * 0.1);
+      pigment = clamp(pigment + smoothstep(0.56, 0.88, vein) * 0.22, 0.0, 1.0);
+      vec3 wash = vec3(0.94, 0.945, 0.94);
+      vec3 ink = vec3(0.008, 0.011, 0.012);
       vec3 color = mix(wash, ink, pigment);
-      color = mix(color, ink, smoothstep(0.46, 0.9, cloud) * 0.3);
+      color = mix(color, ink, smoothstep(0.5, 0.9, cloud) * 0.5);
       float grain = hash(gl_FragCoord.xy);
-      float alpha = sphere * (0.23 + pigment * 0.70 + grain * 0.018) * uStrength;
+      float alpha = sphere * (0.48 + pigment * 0.5 + grain * 0.012) * uStrength;
       gl_FragColor = vec4(color, alpha);
     }
   `;
@@ -125,6 +128,7 @@
       this.startedAt = performance.now();
       this.lastWidth = 0;
       this.lastHeight = 0;
+      this.needsResize = true;
       this.frame = 0;
 
       try {
@@ -142,7 +146,7 @@
         this.cacheLocations();
         this.gl.enable(this.gl.BLEND);
         this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
-        this.resizeObserver = new ResizeObserver(() => this.resize());
+        this.resizeObserver = new ResizeObserver(() => { this.needsResize = true; });
         this.resizeObserver.observe(canvas.parentElement || canvas);
         this.setMode(this.mode, true);
         this.render = this.render.bind(this);
@@ -183,7 +187,7 @@
       const { width, height } = this.dimensions();
       if (width < 2 || height < 2) return false;
       const compact = width < 720;
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, compact ? 1.45 : 1.8);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, compact ? 1.35 : 1.65);
       const renderWidth = Math.max(1, Math.round(width * pixelRatio));
       const renderHeight = Math.max(1, Math.round(height * pixelRatio));
       if (this.canvas.width !== renderWidth || this.canvas.height !== renderHeight) {
@@ -193,6 +197,7 @@
       }
       this.lastWidth = width;
       this.lastHeight = height;
+      this.needsResize = false;
       this.updateTargets(this.mode, false);
       return true;
     }
@@ -207,7 +212,7 @@
         this.targetSize = Math.min(0.315, aspect * 0.43);
         this.targetStrength = 1;
       } else if (mode === "login") {
-        this.targetCenter = [0.5, compact ? 0.76 : 0.77];
+        this.targetCenter = [0.5, compact ? 0.78 : 0.8];
         this.targetSize = Math.min(0.052, aspect * 0.105);
         this.targetStrength = 0.94;
       } else {
@@ -229,12 +234,13 @@
 
     setActive(active) {
       this.active = Boolean(active);
+      if (this.active) this.needsResize = true;
     }
 
     render(now) {
       this.frame = requestAnimationFrame(this.render);
-      if (!this.active || document.hidden || !this.gl || !this.canvas.isConnected || getComputedStyle(this.canvas).display === "none") return;
-      if (!this.resize()) return;
+      if (!this.active || document.hidden || !this.gl || !this.canvas.isConnected) return;
+      if (this.needsResize && !this.resize()) return;
       const ease = this.reducedMotion ? 1 : 0.075;
       this.center[0] += (this.targetCenter[0] - this.center[0]) * ease;
       this.center[1] += (this.targetCenter[1] - this.center[1]) * ease;
@@ -242,8 +248,18 @@
       this.strength += (this.targetStrength - this.strength) * ease;
 
       const gl = this.gl;
+      gl.disable(gl.SCISSOR_TEST);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
+      const radiusPixels = Math.ceil((this.size + 0.075) * this.canvas.height);
+      const centerX = Math.round(this.center[0] * this.canvas.width);
+      const centerY = Math.round(this.center[1] * this.canvas.height);
+      const left = Math.max(0, centerX - radiusPixels);
+      const bottom = Math.max(0, centerY - radiusPixels);
+      const right = Math.min(this.canvas.width, centerX + radiusPixels);
+      const top = Math.min(this.canvas.height, centerY + radiusPixels);
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(left, bottom, Math.max(1, right - left), Math.max(1, top - bottom));
       gl.useProgram(this.program);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.enableVertexAttribArray(this.locations.position);
@@ -254,6 +270,7 @@
       gl.uniform1f(this.locations.size, this.size);
       gl.uniform1f(this.locations.strength, this.strength);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.disable(gl.SCISSOR_TEST);
     }
   }
 

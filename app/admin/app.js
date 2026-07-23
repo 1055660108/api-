@@ -9,8 +9,10 @@ const els = {
   loginView: document.getElementById("loginView"),
   loginForm: document.getElementById("loginForm"),
   openClientLogin: document.getElementById("openClientLogin"),
+  returnClientLanding: document.getElementById("returnClientLanding"),
   clientInkCanvas: document.getElementById("clientInkCanvas"),
   clientWorkspaceInk: document.getElementById("clientWorkspaceInk"),
+  loginHeadingTitle: document.getElementById("loginHeadingTitle"),
   loginToken: document.getElementById("loginToken"),
   loginButton: document.getElementById("loginButton"),
   loginState: document.getElementById("loginState"),
@@ -930,7 +932,7 @@ let clientWorkspaceInk = null;
 let clientLoginTransitionTimer = 0;
 
 function initClientInkBackgrounds() {
-  if (portal !== "client" || typeof window.HSInkBackground !== "function") return;
+  if (typeof window.HSInkBackground !== "function") return;
   if (!clientEntryInk && els.clientInkCanvas) clientEntryInk = new window.HSInkBackground(els.clientInkCanvas, { kind: "entry" });
   if (!clientWorkspaceInk && els.clientWorkspaceInk) clientWorkspaceInk = new window.HSInkBackground(els.clientWorkspaceInk, { kind: "workspace" });
 }
@@ -955,7 +957,7 @@ function startClientLoginTransition() {
 }
 
 function createClientInkSplash(event) {
-  if (portal !== "client" || !event.target.closest("button:not(:disabled), .nav-item")) return;
+  if (!event.target.closest("button:not(:disabled), .nav-item")) return;
   const splash = document.createElement("span");
   splash.className = "client-ink-splash";
   splash.style.left = `${event.clientX}px`;
@@ -975,6 +977,10 @@ function showLogin(message = "等待输入") {
     setClientEntryStage(showLanding ? "landing" : "login", { immediate: true });
     clientEntryInk?.setActive(true);
     clientWorkspaceInk?.setActive(false);
+  } else {
+    clientEntryInk?.setMode("login", true);
+    clientEntryInk?.setActive(true);
+    clientWorkspaceInk?.setActive(false);
   }
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
 }
@@ -990,11 +996,9 @@ function showApp() {
   document.body.dataset.portal = portal;
   els.loginView.classList.add("hidden");
   els.appShell.classList.remove("hidden");
-  if (portal === "client") {
-    clientEntryInk?.setActive(false);
-    clientWorkspaceInk?.setMode("workspace", true);
-    clientWorkspaceInk?.setActive(true);
-  }
+  clientEntryInk?.setActive(false);
+  clientWorkspaceInk?.setMode("workspace", true);
+  clientWorkspaceInk?.setActive(true);
   switchView("dashboard");
   startAutoRefresh();
   if (portal === "client") window.setTimeout(() => showNextUnseenAnnouncement().catch(() => {}), 250);
@@ -3555,15 +3559,21 @@ function bindEvents() {
     els.clientRegisterTab?.classList.toggle("active", register);
     document.querySelectorAll(".client-register-only").forEach((item) => item.classList.toggle("hidden", !register || (item.classList.contains("registration-code-row") || item.querySelector("#clientEmailLocal")) && !state.registrationEmailVerificationEnabled));
     els.loginForm?.classList.toggle("register-mode", register);
+    if (portal === "client" && els.loginHeadingTitle) els.loginHeadingTitle.textContent = register ? "注册" : "登录";
     els.loginButton.textContent = register ? "注册并进入" : "登录";
   };
   els.openClientLogin?.addEventListener("click", () => {
     setClientMode(false);
     startClientLoginTransition();
   });
+  els.returnClientLanding?.addEventListener("click", () => {
+    setClientMode(false);
+    window.clearTimeout(clientLoginTransitionTimer);
+    setClientEntryStage("landing");
+  });
   els.clientLoginTab?.addEventListener("click", () => setClientMode(false));
   els.clientRegisterTab?.addEventListener("click", () => setClientMode(true));
-  if (portal === "client") document.addEventListener("pointerdown", createClientInkSplash);
+  document.addEventListener("pointerdown", createClientInkSplash);
   els.sendEmailCode?.addEventListener("click", async () => {
     if (!state.registrationEmailVerificationEnabled) return toast("邮箱注册验证未启用", "error");
     const email = selectedEmail(els.clientEmailLocal, els.clientEmailDomain);

@@ -6038,7 +6038,7 @@ body[data-portal="client"][data-view="points"] .commerce-header {
   .point-card-delete-controls button { flex: 1 1 130px; }
 }
 
-/* 1.4.0 client ink interface. Admin layout and behavior remain unchanged. */
+/* 1.4.1 shared ink interface with isolated client entry states. */
 .client-entry-home,
 .client-ink-canvas,
 .client-workspace-ink { display: none; }
@@ -6092,6 +6092,23 @@ body[data-portal="client"] .client-entry-logo {
   box-shadow: 0 10px 30px rgba(20, 31, 29, .09);
 }
 
+body[data-portal="client"] .client-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+body[data-portal="client"] #returnClientLanding {
+  display: none;
+  width: auto;
+  min-width: 76px;
+  min-height: 40px;
+  color: #31443f;
+  background: rgba(255, 255, 255, .76);
+  border-color: rgba(49, 68, 63, .2);
+}
+
 body[data-portal="client"] #openClientLogin {
   min-width: 82px;
   min-height: 40px;
@@ -6102,9 +6119,53 @@ body[data-portal="client"] #openClientLogin {
 }
 
 body[data-portal="client"] #loginView:not([data-client-stage="landing"]) #openClientLogin {
-  visibility: hidden;
+  display: none;
+}
+
+body[data-portal="client"] #loginView:not([data-client-stage="landing"]) #returnClientLanding {
+  display: inline-flex;
+}
+
+body[data-portal="client"] .client-entry-copy {
+  position: absolute;
+  top: 25%;
+  left: clamp(56px, 8vw, 154px);
+  display: grid;
+  gap: 10px;
+  max-width: 390px;
   opacity: 0;
-  pointer-events: none;
+  filter: blur(12px);
+  transform: translateY(18px);
+  animation: clientInkCopyReveal 2.1s cubic-bezier(.16, 1, .3, 1) .45s forwards;
+}
+
+body[data-portal="client"] .client-entry-copy span {
+  color: transparent;
+  background-image: linear-gradient(100deg, #111817 4%, #87908d 42%, #18201e 78%, #66706d 100%);
+  background-size: 190% 100%;
+  background-position: 100% 50%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  font-size: clamp(26px, 2.45vw, 46px);
+  font-weight: 500;
+  line-height: 1.25;
+  text-shadow: 0 12px 35px rgba(27, 38, 35, .08);
+  animation: clientInkTextFlow 7s ease-in-out infinite alternate;
+}
+
+body[data-portal="client"] .client-entry-copy span:last-child {
+  margin-left: 1.3em;
+  animation-delay: -2s;
+}
+
+body[data-portal="client"] #loginView:not([data-client-stage="landing"]) .client-entry-copy { display: none; }
+
+@keyframes clientInkCopyReveal {
+  to { opacity: 1; filter: none; transform: none; }
+}
+
+@keyframes clientInkTextFlow {
+  to { background-position: 0 50%; }
 }
 
 body[data-portal="client"] .login-panel {
@@ -6115,7 +6176,7 @@ body[data-portal="client"] .login-panel {
   gap: 16px;
   background: rgba(255, 255, 255, .78);
   border: 1px solid rgba(52, 62, 58, .16);
-  border-radius: 8px;
+  border-radius: 18px;
   box-shadow: 0 26px 80px rgba(23, 31, 29, .11);
   backdrop-filter: blur(18px) saturate(112%);
   opacity: 0;
@@ -6172,42 +6233,56 @@ body[data-portal="client"] #loginButton {
   width: 100%;
   min-height: 42px;
   color: #fff;
-  background: #171b1a;
-  border-color: #171b1a;
+  background: #12a594;
+  border-color: #12a594;
+  box-shadow: 0 9px 22px rgba(18, 165, 148, .18);
 }
 
 body[data-portal="client"] #loginState { display: none; }
-body[data-portal="client"] #forgotPasswordButton { justify-self: end; padding: 0; }
+body[data-portal="client"] #forgotPasswordButton { justify-self: end; padding: 0; color: #ef6575; }
 
 body[data-portal="client"] .client-auth-tabs {
-  display: block;
-  padding: 0;
+  position: absolute;
+  right: 0;
+  bottom: -48px;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 0;
   background: transparent;
   border: 0;
 }
 
 body[data-portal="client"] .client-auth-tabs button {
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 12px;
-  color: #355e57;
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  color: #ef6575;
   background: transparent;
-  border: 1px solid rgba(53, 94, 87, .24);
-  border-radius: 6px;
+  border: 0;
+  border-radius: 0;
   box-shadow: none;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 body[data-portal="client"] .client-auth-tabs button:hover {
-  color: #173c36;
-  background: rgba(80, 125, 116, .08);
+  color: #d54558;
+  background: transparent;
 }
 
+body[data-portal="client"] .client-auth-tabs > span { color: #66726d; }
+
 body[data-portal="client"] .login-panel:not(.register-mode) #clientLoginTab,
-body[data-portal="client"] .login-panel.register-mode #clientRegisterTab { display: none; }
+body[data-portal="client"] .login-panel:not(.register-mode) .client-login-prompt,
+body[data-portal="client"] .login-panel.register-mode #clientRegisterTab,
+body[data-portal="client"] .login-panel.register-mode .client-register-prompt { display: none; }
 
 body[data-portal="client"] .login-panel:not(.register-mode) #clientRegisterTab,
-body[data-portal="client"] .login-panel.register-mode #clientLoginTab { display: block; }
+body[data-portal="client"] .login-panel:not(.register-mode) .client-register-prompt,
+body[data-portal="client"] .login-panel.register-mode #clientLoginTab,
+body[data-portal="client"] .login-panel.register-mode .client-login-prompt { display: inline; }
 
 body[data-portal="client"] .client-workspace-ink {
   position: fixed;
@@ -6363,6 +6438,16 @@ body[data-portal="client"] .icon-button:hover { color: #173c35; background: rgba
   body[data-portal="client"] .client-entry-logo { width: 42px; height: 42px; }
   body[data-portal="client"] #openClientLogin { min-width: 72px; min-height: 38px; }
   body[data-portal="client"] #openClientLogin { width: auto; }
+  body[data-portal="client"] #returnClientLanding { min-width: 68px; min-height: 38px; }
+  body[data-portal="client"] .client-entry-copy {
+    top: 17%;
+    right: 18px;
+    left: 18px;
+    justify-items: center;
+    gap: 6px;
+  }
+  body[data-portal="client"] .client-entry-copy span { font-size: clamp(22px, 7vw, 30px); }
+  body[data-portal="client"] .client-entry-copy span:last-child { margin-left: 2.1em; }
   body[data-portal="client"] .login-panel {
     margin-top: 210px;
     padding: 24px 26px;
@@ -6376,4 +6461,213 @@ body[data-portal="client"] .icon-button:hover { color: #173c35; background: rgba
   body[data-portal="client"] .email-address-row select,
   body[data-portal="client"] .registration-code-row button { width: 100%; }
   body[data-portal="client"] .app-shell { background-size: 10px 10px; }
+}
+
+/* Shared paper-and-ink styling for the client and administrator workspaces. */
+body[data-portal="admin"] .login-screen {
+  display: block;
+  min-height: 100vh;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #fff;
+}
+
+body[data-portal="admin"] .login-light-field { display: none; }
+body[data-portal="admin"] .client-ink-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+body[data-portal="admin"] .client-entry-home {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  display: block;
+  pointer-events: none;
+}
+
+body[data-portal="admin"] .client-entry-header {
+  display: flex;
+  height: 82px;
+  padding: 18px clamp(20px, 4vw, 64px);
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, .78);
+  border: 0;
+  backdrop-filter: blur(14px);
+}
+
+body[data-portal="admin"] .client-entry-logo {
+  display: block;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(20, 31, 29, .09);
+}
+
+body[data-portal="admin"] .client-entry-actions,
+body[data-portal="admin"] .client-entry-copy { display: none; }
+
+body[data-portal="admin"] .login-panel {
+  z-index: 3;
+  width: min(calc(100% - 32px), 430px);
+  margin: clamp(190px, 30vh, 280px) auto 42px;
+  padding: 30px 32px;
+  gap: 16px;
+  background: rgba(255, 255, 255, .82);
+  border: 1px solid rgba(52, 62, 58, .16);
+  border-radius: 18px;
+  box-shadow: 0 26px 80px rgba(23, 31, 29, .11);
+  backdrop-filter: blur(18px) saturate(112%);
+}
+
+body[data-portal="admin"] .login-panel::before,
+body[data-portal="admin"] .login-brand { display: none; }
+body[data-portal="admin"] .login-heading { text-align: center; }
+body[data-portal="admin"] .login-heading h1 { margin: 2px 0 0; font-size: 27px; letter-spacing: 0; }
+body[data-portal="admin"] .login-panel .field { gap: 7px; }
+body[data-portal="admin"] .login-panel input { min-height: 42px; background: rgba(255, 255, 255, .84); border-color: rgba(60, 70, 66, .18); }
+body[data-portal="admin"] .login-actions { grid-template-columns: 1fr; text-align: center; }
+body[data-portal="admin"] #loginButton { width: 100%; min-height: 42px; }
+
+body[data-portal] .client-workspace-ink {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+body[data-portal] .app-shell {
+  position: relative;
+  isolation: isolate;
+  background-color: #fff;
+  background-image: radial-gradient(circle at center, rgba(35, 48, 43, .055) 0 1px, transparent 1px);
+  background-size: 12px 12px;
+}
+
+body[data-portal] .app-shell > .sidebar,
+body[data-portal] .app-shell > .main { position: relative; z-index: 1; }
+
+body[data-portal] .sidebar {
+  color: #26312e;
+  background: rgba(255, 255, 255, .91);
+  border-right: 1px solid rgba(50, 63, 58, .18);
+  backdrop-filter: blur(18px);
+}
+
+body[data-portal] .sidebar .brand-mark {
+  background: #fff;
+  border: 1px solid rgba(53, 65, 61, .16);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(26, 42, 37, .08);
+}
+
+body[data-portal] .sidebar-version,
+body[data-portal] .sidebar-version strong { color: #68736e; }
+body[data-portal] .nav-item { color: #68736e; border-color: transparent; }
+body[data-portal] .nav-item:hover {
+  color: #1c2d28;
+  background: rgba(55, 89, 79, .065);
+  border-color: rgba(55, 89, 79, .08);
+}
+body[data-portal] .nav-item.active {
+  color: #132722;
+  background: rgba(55, 89, 79, .095);
+  border-color: rgba(55, 89, 79, .13);
+  box-shadow: inset 2px 0 #497d73;
+}
+
+body[data-portal] .sidebar-status {
+  color: #52615b;
+  background: rgba(255, 255, 255, .68);
+  border: 1px solid rgba(57, 74, 68, .12);
+}
+body[data-portal] .sidebar-collapse { color: #4f5f59; background: rgba(255, 255, 255, .66); border-color: rgba(57, 74, 68, .16); }
+body[data-portal] .sidebar-collapse:hover { color: #173c35; background: rgba(67, 112, 101, .1); }
+
+body[data-portal] .main {
+  background: rgba(255, 255, 255, .76);
+  backdrop-filter: blur(8px);
+}
+
+body[data-portal] .page-header { border-bottom-color: rgba(55, 67, 63, .2); }
+body[data-portal] .panel,
+body[data-portal] .metric-card,
+body[data-portal] .submit-composer,
+body[data-portal] .settings-stack .config-panel,
+body[data-portal] .package-item,
+body[data-portal] .node-controls,
+body[data-portal] .proxy-node-card {
+  background: rgba(255, 255, 255, .84);
+  border-color: rgba(54, 68, 63, .17);
+  box-shadow: 0 5px 20px rgba(27, 43, 38, .045);
+  backdrop-filter: blur(10px);
+}
+
+body[data-portal] .primary-button {
+  color: #fff;
+  background: #18211f;
+  border-color: #18211f;
+}
+body[data-portal] .primary-button:hover { color: #fff; background: #29443e; border-color: #29443e; }
+body[data-portal] .secondary-button,
+body[data-portal] .icon-button {
+  color: #34443f;
+  background: rgba(255, 255, 255, .78);
+  border-color: rgba(54, 68, 63, .2);
+}
+body[data-portal] .secondary-button:hover,
+body[data-portal] .icon-button:hover { color: #173c35; background: rgba(66, 113, 102, .08); }
+
+body[data-portal="client"] #loginButton,
+body[data-portal="client"] #loginButton:hover {
+  color: #fff;
+  background: #12a594;
+  border-color: #12a594;
+}
+
+body[data-portal="client"] .sidebar-client-identity {
+  background: rgba(255, 255, 255, .72);
+  border-color: rgba(57, 74, 68, .16);
+}
+
+body[data-portal="client"] .sidebar-client-identity strong { color: #1e2926; }
+body[data-portal="client"] .sidebar-client-identity span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: none;
+}
+body[data-portal="client"] .sidebar-client-identity span::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+}
+
+body[data-portal="client"] .sidebar-client-identity .membership-tier-1 { color: #52616a; background: #eef2f3; border-color: #d6dde0; }
+body[data-portal="client"] .sidebar-client-identity .membership-tier-2 { color: #25618c; background: #eaf3fa; border-color: #bfd7e8; }
+body[data-portal="client"] .sidebar-client-identity .membership-tier-3 { color: #177568; background: #e7f5f2; border-color: #b9ddd6; }
+body[data-portal="client"] .sidebar-client-identity .membership-tier-4 { color: #7050a3; background: #f2edf8; border-color: #d8caeb; }
+body[data-portal="client"] .sidebar-client-identity .membership-tier-5 { color: #9b690f; background: #fff6df; border-color: #ead7a7; }
+body[data-portal="client"] .sidebar-client-identity .membership-tier-6 { color: #77500b; background: #fff3ce; border-color: #d8b85f; box-shadow: inset 0 0 0 1px rgba(142, 103, 18, .08), 0 4px 14px rgba(112, 79, 10, .08); }
+
+@media (max-width: 700px) {
+  body[data-portal="admin"] .client-entry-header { height: 68px; padding: 12px 16px; }
+  body[data-portal="admin"] .client-entry-logo { width: 42px; height: 42px; }
+  body[data-portal="admin"] .login-panel { margin-top: 210px; padding: 24px 26px; }
+  body[data-portal] .app-shell { background-size: 10px 10px; }
 }

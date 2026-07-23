@@ -78,13 +78,13 @@
       cloud += sin(dot(flowPoint, vec2(-36.0, 29.0)) + time * 0.84) * 0.055;
       cloud += cos(dot(flowPoint, vec2(41.0, -18.0)) - time * 0.62) * 0.035;
       cloud += (noise(flowPoint * 18.0 + vec2(time * 0.3, -time * 0.2)) - 0.5) * 0.08;
-      float pigment = smoothstep(0.12, 0.88, cloud);
-      vec3 wash = vec3(0.94, 0.945, 0.94);
+      float pigment = smoothstep(0.08, 0.82, cloud);
+      vec3 wash = vec3(0.74, 0.75, 0.745);
       vec3 ink = vec3(0.008, 0.011, 0.012);
       vec3 color = mix(wash, ink, pigment);
       color = mix(color, ink, smoothstep(0.5, 0.9, cloud) * 0.5);
       float grain = hash(gl_FragCoord.xy);
-      float alpha = sphere * (0.48 + pigment * 0.5 + grain * 0.012) * uStrength;
+      float alpha = sphere * (0.64 + pigment * 0.34 + grain * 0.012) * uStrength;
       gl_FragColor = vec4(color, alpha);
     }
   `;

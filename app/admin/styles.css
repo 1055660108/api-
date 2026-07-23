@@ -6240,6 +6240,7 @@ body[data-portal="client"] #loginButton {
 
 body[data-portal="client"] #loginState { display: none; }
 body[data-portal="client"] #forgotPasswordButton { justify-self: end; padding: 0; color: #ef6575; }
+body[data-portal="client"] .login-panel.register-mode .client-login-only { display: none !important; }
 
 body[data-portal="client"] .client-auth-tabs {
   position: absolute;
@@ -6861,6 +6862,17 @@ body[data-portal] .nav-item.active { background: rgba(24, 29, 27, .075); border-
 body[data-portal] .nav-item:hover .nav-icon,
 body[data-portal] .nav-item.active .nav-icon { color: #171a19; }
 body[data-portal] .settings-icon { color: #171a19; background: #eef0ef; }
+body[data-portal] .ratio-options button:hover,
+body[data-portal] .ratio-options button.active {
+  color: #171a19;
+  background: #ecefed;
+}
+body[data-portal] .billing-priority-control label:has(input:checked) {
+  border-color: #202423;
+  background: #eef0ef;
+  box-shadow: inset 0 0 0 1px #202423;
+}
+body[data-portal] .billing-priority-control input { accent-color: #171a19; }
 body[data-portal] button:focus-visible,
 body[data-portal] a:focus-visible { outline: 2px solid #202423; outline-offset: 2px; }
 body[data-portal] .announcement-lock-control > input:focus-visible + .switch-track { outline-color: #202423; }
@@ -6927,6 +6939,11 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .sidebar-client-identity { contain: paint; isolation: isolate; backface-visibility: hidden; }
 
 @media (min-width: 821px) {
+  .app-shell.sidebar-content-hidden .sidebar-client-identity,
+  .app-shell.sidebar-transitioning.sidebar-content-hidden .sidebar-client-identity {
+    display: none !important;
+    visibility: hidden !important;
+  }
   .app-shell.sidebar-collapsed .sidebar-client-identity { display: none !important; visibility: hidden; }
   .app-shell.sidebar-collapsed .sidebar-logout { justify-content: center; padding: 0; }
   .app-shell.sidebar-collapsed .sidebar-logout span { display: none; }

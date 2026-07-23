@@ -217,7 +217,7 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn('思维正在展开', self.html)
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.2', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.3', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -240,6 +240,14 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('powerPreference: "high-performance"', ink_script)
         self.assertIn('requestAnimationFrame(this.render)', ink_script)
         self.assertIn('gl.enable(gl.SCISSOR_TEST)', ink_script)
+        self.assertIn('vec3 wash = vec3(0.74, 0.75, 0.745)', ink_script)
+        self.assertIn('const count = compact ? 28 : 46', self.javascript)
+        self.assertIn('.login-panel.register-mode .client-login-only', styles)
+        self.assertNotIn('保存后系统将签发新 Token，并迁移当前账号的历史任务归属。', self.html)
+        self.assertIn('.ratio-options button.active', styles)
+        self.assertIn('.billing-priority-control input { accent-color: #171a19; }', styles)
+        self.assertIn('sidebar-content-hidden', self.javascript)
+        self.assertIn('.app-shell.sidebar-content-hidden .sidebar-client-identity', styles)
 
     def test_user_action_buttons_use_aligned_grid(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")

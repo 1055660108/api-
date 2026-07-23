@@ -521,7 +521,29 @@ function portalStorageKey(base) {
 
 function setSidebarCollapsed(collapsed, persist = true) {
   const active = Boolean(collapsed) && window.innerWidth > 820;
-  document.getElementById("appShell")?.classList.toggle("sidebar-collapsed", active);
+  const shell = document.getElementById("appShell");
+  window.clearTimeout(sidebarTransitionTimer);
+  window.cancelAnimationFrame(sidebarTransitionFrame);
+
+  const animate = Boolean(shell) && persist && !shell.classList.contains("hidden");
+  if (!animate) {
+    shell?.classList.toggle("sidebar-collapsed", active);
+    shell?.classList.remove("sidebar-transitioning", "sidebar-content-hidden");
+  } else if (active) {
+    shell.classList.add("sidebar-transitioning", "sidebar-content-hidden");
+    sidebarTransitionFrame = window.requestAnimationFrame(() => {
+      shell.classList.add("sidebar-collapsed");
+      sidebarTransitionTimer = window.setTimeout(() => {
+        shell.classList.remove("sidebar-transitioning", "sidebar-content-hidden");
+      }, 220);
+    });
+  } else {
+    shell.classList.add("sidebar-transitioning", "sidebar-content-hidden");
+    shell.classList.remove("sidebar-collapsed");
+    sidebarTransitionTimer = window.setTimeout(() => {
+      shell.classList.remove("sidebar-transitioning", "sidebar-content-hidden");
+    }, 220);
+  }
   if (els.toggleSidebar) {
     els.toggleSidebar.setAttribute("aria-label", active ? "展开侧栏" : "收起侧栏");
     els.toggleSidebar.title = active ? "展开侧栏" : "收起侧栏";
@@ -939,6 +961,8 @@ function setServiceState(ok, note) {
 let clientEntryInk = null;
 let clientWorkspaceInk = null;
 let clientLoginTransitionTimer = 0;
+let sidebarTransitionTimer = 0;
+let sidebarTransitionFrame = 0;
 
 function initClientInkBackgrounds() {
   if (typeof window.HSInkBackground !== "function") return;
@@ -950,23 +974,23 @@ function initClientInkBackgrounds() {
 function rerollClientInkSplatters() {
   if (portal !== "client" || !els.clientInkSplatters) return;
   const compact = window.innerWidth < 720;
-  const count = compact ? 14 : 22;
+  const count = compact ? 28 : 46;
   const centerY = compact ? 55 : 52;
   const fragment = document.createDocumentFragment();
   for (let index = 0; index < count; index += 1) {
     const mark = document.createElement("span");
-    const wash = index < (compact ? 3 : 5);
+    const wash = index < (compact ? 6 : 9);
     const angle = Math.random() * Math.PI * 2;
-    const distance = 7 + Math.pow(Math.random(), 0.72) * (compact ? 29 : 34);
-    const horizontal = Math.cos(angle) * distance * (compact ? 0.82 : 1);
-    const vertical = Math.sin(angle) * distance * (compact ? 0.78 : 0.62);
-    const size = wash ? 68 + Math.random() * 86 : 3 + Math.random() * 13;
+    const distance = 6 + Math.pow(Math.random(), 0.7) * (compact ? 38 : 46);
+    const horizontal = Math.cos(angle) * distance * (compact ? 0.88 : 1);
+    const vertical = Math.sin(angle) * distance * (compact ? 0.76 : 0.7);
+    const size = wash ? 96 + Math.random() * (compact ? 112 : 144) : 4 + Math.random() * 18;
     mark.className = wash ? "client-ink-mark is-wash" : "client-ink-mark";
     mark.style.left = `${50 + horizontal}%`;
     mark.style.top = `${centerY + vertical}%`;
     mark.style.width = `${size}px`;
     mark.style.height = `${size * (wash ? 0.16 + Math.random() * 0.2 : 0.55 + Math.random() * 0.72)}px`;
-    mark.style.opacity = `${wash ? 0.025 + Math.random() * 0.045 : 0.08 + Math.random() * 0.18}`;
+    mark.style.opacity = `${wash ? 0.055 + Math.random() * 0.06 : 0.12 + Math.random() * 0.22}`;
     mark.style.rotate = `${Math.round((angle * 180) / Math.PI + (Math.random() - 0.5) * 28)}deg`;
     mark.style.animationDelay = `${Math.round(Math.random() * 260)}ms`;
     mark.style.borderRadius = `${35 + Math.random() * 30}% ${36 + Math.random() * 35}% ${34 + Math.random() * 33}% ${38 + Math.random() * 30}%`;

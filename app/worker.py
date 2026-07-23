@@ -47,7 +47,6 @@ from .temp_access import refund_temp_quota_hash
 from .temp_access import temp_token_concurrency_limits
 
 
-DOLA_SUBMIT_INTERVAL_SECONDS = 5.0
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
 RESULT_WATCH_DEADLINE_MINUTES = 8
@@ -416,7 +415,8 @@ class WorkerManager:
                 else:
                     runner = DolaFetchAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), account=account)
                     async with self._dola_submit_lock:
-                        delay = DOLA_SUBMIT_INTERVAL_SECONDS - (asyncio.get_running_loop().time() - self._last_dola_submit_at)
+                        submit_interval = load_settings().dola_submit_interval_seconds
+                        delay = submit_interval - (asyncio.get_running_loop().time() - self._last_dola_submit_at)
                         if delay > 0:
                             await asyncio.sleep(delay)
                         self._last_dola_submit_at = asyncio.get_running_loop().time()

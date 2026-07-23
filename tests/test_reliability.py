@@ -85,6 +85,29 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(store.get_meta(submitted["id"])["status"], store.STATUS_SUBMITTED)
         self.assertEqual(store.get_meta(pending["id"])["status"], store.STATUS_PENDING)
 
+    def test_expired_video_cleanup_uses_owner_retention_without_touching_active_or_fresh_tasks(self) -> None:
+        expired = self.create_task("owner")
+        self.assertTrue(store.mark_running(expired["id"], "worker-expired"))
+        store.save_result(expired["id"], extra={"decoded_main_url": "https://example.com/expired.mp4"})
+        store.mark_success(expired["id"])
+        old_time = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        expired_meta = store.get_meta(expired["id"])
+        expired_meta.update(finished_at=old_time, updated_at=old_time, created_at=old_time)
+        store.meta_path(expired["id"]).write_text(json.dumps(expired_meta), encoding="utf-8")
+
+        fresh = self.create_task("owner")
+        self.assertTrue(store.mark_running(fresh["id"], "worker-fresh"))
+        store.save_result(fresh["id"], extra={"decoded_main_url": "https://example.com/fresh.mp4"})
+        store.mark_success(fresh["id"])
+        active = self.create_task("owner")
+
+        result = store.cleanup_expired_task_cache(7, owner_retention_days={"owner": 1})
+        self.assertEqual(result["deleted"], 1)
+        self.assertFalse(store.task_exists(expired["id"]))
+        self.assertTrue(store.task_exists(fresh["id"]))
+        self.assertTrue(store.task_exists(active["id"]))
+        self.assertIn(active["id"], result["skipped"])
+
     def test_claim_requires_pending_status_owner_capacity_and_no_cancel(self) -> None:
         canceled = self.create_task("owner")
         store.mark_cancel_requested(canceled["id"])

@@ -213,10 +213,11 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientWorkspaceInk"', self.html)
         self.assertIn('id="openClientLogin"', self.html)
         self.assertIn('id="returnClientLanding"', self.html)
-        self.assertIn('灵感正在聚合，', self.html)
-        self.assertIn('思维正在展开', self.html)
+        self.assertNotIn('灵感正在聚合，', self.html)
+        self.assertNotIn('思维正在展开', self.html)
+        self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.1', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.2', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -224,6 +225,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('els.loginHeadingTitle.textContent = register ? "注册" : "登录"', self.javascript)
         self.assertIn('startClientLoginTransition()', self.javascript)
         self.assertIn('els.returnClientLanding?.addEventListener("click"', self.javascript)
+        self.assertIn('clientEntryInk?.randomize?.()', self.javascript)
+        self.assertIn('id="logoutConfirmModal"', self.html)
+        self.assertIn('openLogoutConfirmation()', self.javascript)
+        self.assertIn('jobs.push(loadClientNotifications(), loadMemberships(), loadClientProfile())', self.javascript)
         self.assertIn('clientEntryInk?.setMode(inkMode', self.javascript)
         self.assertIn('clientWorkspaceInk?.setMode("workspace", true)', self.javascript)
         self.assertIn('document.addEventListener("pointerdown", createClientInkSplash)', self.javascript)
@@ -250,11 +255,19 @@ class AdminUITests(unittest.TestCase):
 
     def test_dola_submit_interval_is_conservative(self) -> None:
         worker = (Path(__file__).resolve().parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
-        self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS = 5.0", worker)
-        self.assertIn("DOLA_SUBMIT_INTERVAL_SECONDS -", worker)
+        self.assertIn("submit_interval = load_settings().dola_submit_interval_seconds", worker)
+        self.assertIn("delay = submit_interval -", worker)
+        self.assertIn('id="dolaSubmitInterval" type="number" min="1" max="5" step="0.1"', self.html)
+        self.assertIn('apiFetch("/config/runtime"', self.javascript)
         self.assertIn("RESULT_WATCH_DEADLINE_MINUTES = 8", worker)
         self.assertIn("生成超过8分钟，正在重试", worker)
         self.assertIn(r"/生成超过\d+分钟", self.javascript)
+
+    def test_requested_security_and_node_copy_is_simplified(self) -> None:
+        self.assertNotIn('<span class="modal-eyebrow">账号安全</span><h2 id="clientPasswordModalTitle">', self.html)
+        self.assertNotIn('<span class="modal-eyebrow">账号安全</span><h2 id="clientEmailModalTitle">', self.html)
+        self.assertIn("修改密码后API Token自动重置。", self.html)
+        self.assertNotIn("Dola 网络出口", self.html)
 
     def test_message_center_replaces_settings_feedback_entry(self) -> None:
         self.assertIn('id="messagesNavItem"', self.html)

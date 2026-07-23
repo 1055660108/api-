@@ -6,11 +6,11 @@
     <title>管理面板</title>
     <style id="criticalPortalStyles">
       .hidden,.view:not(.active){display:none!important}
-      body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel{display:none!important}
+      body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.1" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.1" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.2" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.2" />
   </head>
   <body>
     <script>
@@ -19,21 +19,21 @@
     <section class="login-screen" id="loginView" data-client-stage="landing">
       <canvas class="client-ink-canvas" id="clientInkCanvas" aria-hidden="true"></canvas>
       <div class="client-entry-home" aria-hidden="false">
+        <div class="client-ink-splatters" id="clientInkSplatters" aria-hidden="true"></div>
         <header class="client-entry-header">
-          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.1" alt="HS" />
+          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.2" alt="HS" />
           <div class="client-entry-actions">
             <button class="secondary-button" id="returnClientLanding" type="button">返回</button>
             <button class="primary-button" id="openClientLogin" type="button">登录</button>
           </div>
         </header>
-        <div class="client-entry-copy" aria-hidden="true"><span>灵感正在聚合，</span><span>思维正在展开</span></div>
       </div>
       <div class="login-light-field" aria-hidden="true">
         <span></span><span></span><span></span>
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.1" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.2" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -42,13 +42,13 @@
         </div>
 
         <label class="field client-credential-field">
-          <span>账号或邮箱</span><input id="clientUsername" autocomplete="username" placeholder="用户名或绑定邮箱" />
+          <span>账号</span><input id="clientUsername" autocomplete="username" placeholder="请输入账号" />
         </label>
         <label class="field client-credential-field">
-          <span>密码</span><input id="clientPassword" type="password" autocomplete="current-password" />
+          <span>密码</span><input id="clientPassword" type="password" autocomplete="current-password" placeholder="请输入密码" />
         </label>
         <label class="field client-credential-field client-register-only hidden">
-          <span>确认密码</span><input id="clientConfirmPassword" type="password" autocomplete="new-password" />
+          <span>确认密码</span><input id="clientConfirmPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码" />
         </label>
         <label class="field client-credential-field client-register-only hidden">
           <span>邮箱</span><div class="email-address-row"><input id="clientEmailLocal" autocomplete="email" placeholder="邮箱账号" /><select id="clientEmailDomain" aria-label="邮箱后缀"></select></div>
@@ -97,7 +97,7 @@
       <canvas class="client-workspace-ink" id="clientWorkspaceInk" aria-hidden="true"></canvas>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.1" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.2" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -152,6 +152,7 @@
         </nav>
 
         <div class="sidebar-footer">
+          <button class="sidebar-logout" id="dashboardLogoutButton" type="button" aria-label="退出登录" title="退出登录"><i data-lucide="log-out" aria-hidden="true"></i><span>退出登录</span></button>
           <button class="sidebar-collapse" id="toggleSidebar" type="button" aria-label="收起侧栏" title="收起侧栏"><i data-lucide="panel-left-close" aria-hidden="true"></i></button>
           <div class="sidebar-status">
             <span class="status-dot" id="sidebarStatusDot"></span>
@@ -171,7 +172,6 @@
             <section class="panel home-points-card"><div><span>当前积分</span><strong id="dashboardPointsBalance">0</strong></div></section>
             <section class="panel client-token-card"><div><span>API Token</span><strong>访问凭证</strong></div><div class="token-display"><input id="clientTokenDisplay" readonly /><button class="secondary-button" id="copyClientToken" type="button">复制</button><button class="secondary-button" id="refreshClientToken" type="button">刷新</button></div></section>
           </div>
-          <div class="dashboard-actions"><button class="secondary-button dashboard-logout" id="dashboardLogoutButton" type="button">退出登录</button></div>
           <div class="metric-grid">
             <div class="metric-card">
               <span class="metric-label">服务</span>
@@ -243,7 +243,7 @@
           <div class="settings-layout" id="settingsContent">
             <div class="settings-stack">
               <section class="panel config-panel client-password-panel">
-                <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>账号安全</h2><p>修改密码后自动轮换 API Token，旧 Token 立即失效。</p></div><span class="settings-state" id="clientPasswordState">安全登录</span></div>
+                <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>账号安全</h2><p>修改密码后API Token自动重置。</p></div><span class="settings-state" id="clientPasswordState">安全登录</span></div>
                 <div class="settings-card-value"><div><span>当前账号</span><strong id="clientSettingsAccount">当前用户</strong></div><button class="primary-button" id="openClientPasswordModal" type="button">修改密码</button></div>
               </section>
               <section class="panel config-panel client-email-panel">
@@ -273,6 +273,10 @@
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>生成模型</h2><p>控制各平台可选模型及默认模型列表。</p></div><span class="settings-state" id="modelConfigState">自动同步</span></div>
                 <div class="settings-card-value"><div><span>已启用模型</span><strong id="modelConfigDisplay">等待读取</strong></div><button class="primary-button" id="openModelModal" type="button">编辑模型</button></div>
               </section>
+              <section class="panel config-panel" id="runtimeConfigPanel">
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="timer" aria-hidden="true"></i></span><h2>任务提交间隔</h2><p>控制 Dola 任务依次提交的最小时间间隔。</p></div><span class="settings-state" id="runtimeConfigState">等待读取</span></div>
+                <form class="runtime-config-form" id="runtimeConfigForm"><label class="field"><span>间隔秒数</span><input id="dolaSubmitInterval" type="number" min="1" max="5" step="0.1" value="5" /></label><button class="primary-button" id="saveRuntimeConfig" type="submit">保存间隔</button></form>
+              </section>
               <section class="panel config-panel" id="packageConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◫</span><h2>积分套餐</h2><p>新增、调整、上架或停用客户端展示的积分套餐。</p></div><span class="settings-state" id="packageConfigState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>套餐目录</span><strong id="packageConfigDisplay">等待读取</strong></div><button class="primary-button" id="openPackageModal" type="button">管理套餐</button></div>
@@ -287,7 +291,7 @@
         <section class="view" id="proxy-nodesView" data-title="节点选择">
           <section class="panel node-selection-panel">
             <div class="panel-header">
-              <div><span class="eyebrow">Dola 网络出口</span><h2>节点选择</h2><p>通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。</p></div>
+              <div><h2>节点选择</h2><p>通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。</p></div>
               <div class="node-toolbar"><button class="secondary-button" id="openProxyModalFromNodes" type="button">配置订阅</button><button class="secondary-button" id="refreshProxyNodes" type="button">刷新延迟</button></div>
             </div>
             <div class="node-controls">
@@ -887,7 +891,7 @@
     </div>
     <div class="modal-backdrop hidden" id="clientPasswordModal" aria-hidden="true">
       <form class="modal-panel security-modal" id="clientPasswordForm" role="dialog" aria-modal="true" aria-labelledby="clientPasswordModalTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">账号安全</span><h2 id="clientPasswordModalTitle">修改登录密码</h2></div><button class="modal-close" id="closeClientPasswordModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="clientPasswordModalTitle">修改登录密码</h2></div><button class="modal-close" id="closeClientPasswordModal" type="button" aria-label="关闭">×</button></div>
         <div class="security-notice">保存后系统将签发新 Token，并迁移当前账号的历史任务归属。</div>
         <label class="field"><span>当前密码</span><input id="currentClientPassword" type="password" autocomplete="current-password" required /></label>
         <label class="field"><span>新密码</span><input id="newClientPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
@@ -897,7 +901,7 @@
     </div>
     <div class="modal-backdrop hidden" id="clientEmailModal" aria-hidden="true">
       <form class="modal-panel security-modal" id="clientEmailForm" role="dialog" aria-modal="true" aria-labelledby="clientEmailModalTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">账号安全</span><h2 id="clientEmailModalTitle">修改绑定邮箱</h2></div><button class="modal-close" id="closeClientEmailModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="clientEmailModalTitle">修改绑定邮箱</h2></div><button class="modal-close" id="closeClientEmailModal" type="button" aria-label="关闭">×</button></div>
         <label class="field"><span>新邮箱</span><div class="email-address-row"><input id="changeEmailLocal" required placeholder="邮箱账号" /><select id="changeEmailDomain" aria-label="邮箱后缀"></select></div></label>
         <div class="registration-code-row"><input id="changeEmailCode" required inputmode="numeric" maxlength="6" placeholder="6位邮箱验证码" /><button class="secondary-button" id="sendChangeEmailCode" type="button">发送验证码</button></div>
         <div class="modal-actions"><button class="secondary-button" id="cancelClientEmailModal" type="button">取消</button><button class="primary-button" id="changeClientEmailButton" type="submit">确认修改</button></div>
@@ -916,12 +920,19 @@
     </div>
     <div class="modal-backdrop hidden" id="feedbackModal" aria-hidden="true">
       <form class="modal-panel security-modal feedback-modal-panel" id="feedbackForm" role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">用户反馈</span><h2 id="feedbackModalTitle">体验反馈</h2></div><button class="modal-close" id="closeFeedbackModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="feedbackModalTitle">体验反馈</h2></div><button class="modal-close" id="closeFeedbackModal" type="button" aria-label="关闭">×</button></div>
         <label class="field"><span>反馈类型</span><select id="feedbackCategory"><option>体验建议</option><option>问题反馈</option><option>其他</option></select></label>
         <label class="field"><span>反馈内容</span><textarea id="feedbackContent" minlength="2" maxlength="5000" required placeholder="请描述你的使用体验或遇到的问题"></textarea></label>
         <label class="field"><span>联系方式（可选）</span><input id="feedbackContact" maxlength="254" placeholder="邮箱或其他联系方式" /></label>
         <div class="modal-actions"><button class="secondary-button" id="cancelFeedbackModal" type="button">取消</button><button class="primary-button" id="submitFeedbackButton" type="submit">提交反馈</button></div>
       </form>
+    </div>
+    <div class="modal-backdrop hidden" id="logoutConfirmModal" aria-hidden="true">
+      <section class="modal-panel logout-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="logoutConfirmTitle">
+        <div class="logout-confirm-mark" aria-hidden="true"><i data-lucide="log-out"></i></div>
+        <div><h2 id="logoutConfirmTitle">退出登录</h2><p>确认退出当前账号？</p></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelLogoutButton" type="button">取消</button><button class="primary-button" id="confirmLogoutButton" type="button">确认退出</button></div>
+      </section>
     </div>
     <div class="modal-backdrop hidden" id="redeemModal" aria-hidden="true">
       <section class="modal-panel redeem-modal-panel" role="dialog" aria-modal="true" aria-labelledby="redeemModalTitle">
@@ -1088,7 +1099,7 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/ink-bg.js?v=1.4.1"></script>
-    <script src="/admin/assets/app.js?v=1.4.1"></script>
+    <script src="/admin/assets/ink-bg.js?v=1.4.2"></script>
+    <script src="/admin/assets/app.js?v=1.4.2"></script>
   </body>
 </html>

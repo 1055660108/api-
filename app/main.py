@@ -1348,6 +1348,26 @@ async def workers_config():
     }
 
 
+@app.get("/config/runtime", dependencies=[Depends(require_admin)])
+async def runtime_config():
+    settings = load_settings()
+    return {"dola_submit_interval_seconds": settings.dola_submit_interval_seconds}
+
+
+@app.post("/config/runtime", dependencies=[Depends(require_admin)])
+async def update_runtime_config(request: Request):
+    payload = await _request_payload(request)
+    try:
+        submit_interval = float(payload.get("dola_submit_interval_seconds"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="dola_submit_interval_seconds must be a number")
+    if submit_interval < 1 or submit_interval > 5:
+        raise HTTPException(status_code=400, detail="dola_submit_interval_seconds must be between 1 and 5")
+    submit_interval = round(submit_interval, 1)
+    update_config({"dola_submit_interval_seconds": submit_interval})
+    return {"ok": True, "dola_submit_interval_seconds": load_settings().dola_submit_interval_seconds}
+
+
 @app.get("/config/platforms", dependencies=[Depends(require_token)])
 async def platforms_config():
     settings = load_settings()

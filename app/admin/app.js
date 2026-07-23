@@ -11,6 +11,7 @@ const els = {
   openClientLogin: document.getElementById("openClientLogin"),
   returnClientLanding: document.getElementById("returnClientLanding"),
   clientInkCanvas: document.getElementById("clientInkCanvas"),
+  clientInkSplatters: document.getElementById("clientInkSplatters"),
   clientWorkspaceInk: document.getElementById("clientWorkspaceInk"),
   loginHeadingTitle: document.getElementById("loginHeadingTitle"),
   loginToken: document.getElementById("loginToken"),
@@ -170,6 +171,9 @@ const els = {
   logoutButton: document.getElementById("logoutButton"),
   dashboardLogoutButton: document.getElementById("dashboardLogoutButton"),
   settingsLogoutButton: document.getElementById("settingsLogoutButton"),
+  logoutConfirmModal: document.getElementById("logoutConfirmModal"),
+  cancelLogoutButton: document.getElementById("cancelLogoutButton"),
+  confirmLogoutButton: document.getElementById("confirmLogoutButton"),
   adminAccountDisplay: document.getElementById("adminAccountDisplay"),
   openPasswordModal: document.getElementById("openPasswordModal"),
   passwordModal: document.getElementById("passwordModal"),
@@ -308,6 +312,11 @@ const els = {
   registrationEmailSenderName: document.getElementById("registrationEmailSenderName"),
   registrationEmailCodeTtl: document.getElementById("registrationEmailCodeTtl"),
   saveEmailConfig: document.getElementById("saveEmailConfig"),
+  runtimeConfigPanel: document.getElementById("runtimeConfigPanel"),
+  runtimeConfigForm: document.getElementById("runtimeConfigForm"),
+  runtimeConfigState: document.getElementById("runtimeConfigState"),
+  dolaSubmitInterval: document.getElementById("dolaSubmitInterval"),
+  saveRuntimeConfig: document.getElementById("saveRuntimeConfig"),
   modelConfigPanel: document.getElementById("modelConfigPanel"),
   modelConfigDisplay: document.getElementById("modelConfigDisplay"),
   openModelModal: document.getElementById("openModelModal"),
@@ -935,6 +944,35 @@ function initClientInkBackgrounds() {
   if (typeof window.HSInkBackground !== "function") return;
   if (!clientEntryInk && els.clientInkCanvas) clientEntryInk = new window.HSInkBackground(els.clientInkCanvas, { kind: "entry" });
   if (!clientWorkspaceInk && els.clientWorkspaceInk) clientWorkspaceInk = new window.HSInkBackground(els.clientWorkspaceInk, { kind: "workspace" });
+  if (portal === "client" && !els.clientInkSplatters?.childElementCount) rerollClientInkSplatters();
+}
+
+function rerollClientInkSplatters() {
+  if (portal !== "client" || !els.clientInkSplatters) return;
+  const compact = window.innerWidth < 720;
+  const count = compact ? 14 : 22;
+  const centerY = compact ? 55 : 52;
+  const fragment = document.createDocumentFragment();
+  for (let index = 0; index < count; index += 1) {
+    const mark = document.createElement("span");
+    const wash = index < (compact ? 3 : 5);
+    const angle = Math.random() * Math.PI * 2;
+    const distance = 7 + Math.pow(Math.random(), 0.72) * (compact ? 29 : 34);
+    const horizontal = Math.cos(angle) * distance * (compact ? 0.82 : 1);
+    const vertical = Math.sin(angle) * distance * (compact ? 0.78 : 0.62);
+    const size = wash ? 68 + Math.random() * 86 : 3 + Math.random() * 13;
+    mark.className = wash ? "client-ink-mark is-wash" : "client-ink-mark";
+    mark.style.left = `${50 + horizontal}%`;
+    mark.style.top = `${centerY + vertical}%`;
+    mark.style.width = `${size}px`;
+    mark.style.height = `${size * (wash ? 0.16 + Math.random() * 0.2 : 0.55 + Math.random() * 0.72)}px`;
+    mark.style.opacity = `${wash ? 0.025 + Math.random() * 0.045 : 0.08 + Math.random() * 0.18}`;
+    mark.style.rotate = `${Math.round((angle * 180) / Math.PI + (Math.random() - 0.5) * 28)}deg`;
+    mark.style.animationDelay = `${Math.round(Math.random() * 260)}ms`;
+    mark.style.borderRadius = `${35 + Math.random() * 30}% ${36 + Math.random() * 35}% ${34 + Math.random() * 33}% ${38 + Math.random() * 30}%`;
+    fragment.appendChild(mark);
+  }
+  els.clientInkSplatters.replaceChildren(fragment);
 }
 
 function setClientEntryStage(stage, options = {}) {
@@ -942,6 +980,10 @@ function setClientEntryStage(stage, options = {}) {
   const nextStage = ["landing", "converging", "login"].includes(stage) ? stage : "landing";
   els.loginView.dataset.clientStage = nextStage;
   const inkMode = nextStage === "landing" ? "landing" : "login";
+  if (nextStage === "landing") {
+    rerollClientInkSplatters();
+    clientEntryInk?.randomize?.();
+  }
   clientEntryInk?.setMode(inkMode, Boolean(options.immediate));
 }
 
@@ -957,13 +999,24 @@ function startClientLoginTransition() {
 }
 
 function createClientInkSplash(event) {
-  if (!event.target.closest("button:not(:disabled), .nav-item")) return;
-  const splash = document.createElement("span");
-  splash.className = "client-ink-splash";
-  splash.style.left = `${event.clientX}px`;
-  splash.style.top = `${event.clientY}px`;
-  document.body.appendChild(splash);
-  window.setTimeout(() => splash.remove(), 720);
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  const interactive = Boolean(event.target.closest("button:not(:disabled), .nav-item, a, label"));
+  const count = interactive ? 3 + Math.floor(Math.random() * 3) : 1 + Math.floor(Math.random() * 3);
+  for (let index = 0; index < count; index += 1) {
+    const splash = document.createElement("span");
+    const angle = Math.random() * Math.PI * 2;
+    const distance = Math.random() * (interactive ? 13 : 9);
+    const size = 3 + Math.random() * (interactive ? 6 : 4);
+    splash.className = "client-ink-splash";
+    splash.style.left = `${event.clientX + Math.cos(angle) * distance}px`;
+    splash.style.top = `${event.clientY + Math.sin(angle) * distance}px`;
+    splash.style.width = `${size}px`;
+    splash.style.height = `${size * (0.72 + Math.random() * 0.55)}px`;
+    splash.style.opacity = `${0.28 + Math.random() * 0.34}`;
+    splash.style.animationDuration = `${430 + Math.round(Math.random() * 180)}ms`;
+    document.body.appendChild(splash);
+    window.setTimeout(() => splash.remove(), 650);
+  }
 }
 
 function showLogin(message = "等待输入") {
@@ -1070,7 +1123,7 @@ function applyPortalText() {
     node.textContent = portal === "client" ? "" : "管理面板";
   });
   const accountLabel = document.querySelector(".client-credential-field span");
-  if (accountLabel) accountLabel.textContent = portal === "client" ? "账号或邮箱" : "账号";
+  if (accountLabel) accountLabel.textContent = "账号";
   els.forgotPasswordButton?.classList.toggle("hidden", portal !== "client");
   if (els.adminUsername && !els.adminUsername.value) els.adminUsername.value = "1055660108";
   if (els.changeAdminUsername && !els.changeAdminUsername.value) els.changeAdminUsername.value = els.adminUsername?.value || "1055660108";
@@ -1130,7 +1183,7 @@ function applyAccessScope(data = {}) {
   updateBillingPreview();
   if (els.clientTokenDisplay && state.apiToken) els.clientTokenDisplay.value = state.apiToken;
   document.getElementById("mainNav")?.classList.toggle("client-nav-empty", isClient);
-  els.dashboardLogoutButton?.classList.toggle("hidden", !isClient);
+  els.dashboardLogoutButton?.classList.remove("hidden");
   if (els.editWorkers) els.editWorkers.classList.toggle("hidden", isClient);
   if (els.proxyConfigPanel) els.proxyConfigPanel.classList.toggle("hidden", isClient);
   if (els.proxyNodesNavItem) els.proxyNodesNavItem.classList.toggle("hidden", isClient);
@@ -1260,6 +1313,9 @@ async function logout() {
   }
   state.tasks = [];
   state.results = {};
+  state.membership = null;
+  state.memberships = [];
+  state.membershipHoldings = [];
   state.apiToken = "";
   localStorage.removeItem(portalStorageKey(TOKEN_KEY));
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
@@ -1270,6 +1326,17 @@ async function logout() {
   state.accessRefreshTimer = 0;
   state.countdownTimer = 0;
   showLogin("已退出");
+}
+
+function openLogoutConfirmation() {
+  els.logoutConfirmModal?.classList.remove("hidden");
+  els.logoutConfirmModal?.setAttribute("aria-hidden", "false");
+  window.setTimeout(() => els.cancelLogoutButton?.focus(), 0);
+}
+
+function closeLogoutConfirmation() {
+  els.logoutConfirmModal?.classList.add("hidden");
+  els.logoutConfirmModal?.setAttribute("aria-hidden", "true");
 }
 
 function switchView(name) {
@@ -1300,7 +1367,7 @@ function switchView(name) {
   if (name === "membership") Promise.allSettled([loadMemberships(), loadClientProfile()]);
   if (name === "transactions") loadTransactions();
   if (name === "point-cards") loadPointCards();
-  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships()]);
+  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadRuntimeConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships()]);
   if (name === "proxy-nodes" && portal === "admin") loadProxyNodes();
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
@@ -2233,6 +2300,32 @@ async function saveEmailConfig() {
   }
 }
 
+async function loadRuntimeConfig() {
+  if (portal !== "admin" || !els.dolaSubmitInterval) return null;
+  const data = await apiFetch("/config/runtime");
+  const interval = Math.max(1, Math.min(5, Number(data.dola_submit_interval_seconds || 5)));
+  els.dolaSubmitInterval.value = String(interval);
+  if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${interval} 秒`;
+  return data;
+}
+
+async function saveRuntimeConfig(event) {
+  event?.preventDefault();
+  const interval = Math.round(Number(els.dolaSubmitInterval?.value || 0) * 10) / 10;
+  if (!Number.isFinite(interval) || interval < 1 || interval > 5) return toast("任务提交间隔需为 1 - 5 秒", "error");
+  setBusy(els.saveRuntimeConfig, true, "保存中");
+  try {
+    const data = await apiFetch("/config/runtime", { method: "POST", body: { dola_submit_interval_seconds: interval } });
+    els.dolaSubmitInterval.value = String(data.dola_submit_interval_seconds);
+    if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${data.dola_submit_interval_seconds} 秒`;
+    toast("任务提交间隔已生效");
+  } catch (error) {
+    toast(`保存失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.saveRuntimeConfig, false);
+  }
+}
+
 async function refreshAccounts(options = {}) {
   if (portal === "client") return;
   const requestId = ++state.accountRefreshRequestId;
@@ -2556,7 +2649,7 @@ async function refreshDashboard() {
     await refreshHealth();
     const jobs = [refreshTasks({ quiet: true }), loadPlatforms()];
     if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }));
-    if (portal === "client") jobs.push(loadClientNotifications(), loadClientProfile());
+    if (portal === "client") jobs.push(loadClientNotifications(), loadMemberships(), loadClientProfile());
     const results = await Promise.allSettled(jobs);
     const rejected = results.find((item) => item.status === "rejected");
     if (rejected) throw rejected.reason;
@@ -3731,12 +3824,20 @@ function bindEvents() {
   if (els.logoutButton) els.logoutButton.addEventListener("click", logout);
   if (els.dashboardLogoutButton) els.dashboardLogoutButton.onclick = (event) => {
     event.preventDefault();
-    logout();
+    openLogoutConfirmation();
   };
   if (els.settingsLogoutButton) els.settingsLogoutButton.onclick = (event) => {
     event.preventDefault();
     logout();
   };
+  els.cancelLogoutButton?.addEventListener("click", closeLogoutConfirmation);
+  els.confirmLogoutButton?.addEventListener("click", async () => {
+    closeLogoutConfirmation();
+    await logout();
+  });
+  els.logoutConfirmModal?.addEventListener("click", (event) => {
+    if (event.target === els.logoutConfirmModal) closeLogoutConfirmation();
+  });
   const openSettingsModal = (modal, focusTarget) => {
     modal?.classList.remove("hidden");
     modal?.setAttribute("aria-hidden", "false");
@@ -3802,6 +3903,7 @@ function bindEvents() {
     }
   });
   els.saveEmailConfig?.addEventListener("click", saveEmailConfig);
+  els.runtimeConfigForm?.addEventListener("submit", saveRuntimeConfig);
   els.openModelModal?.addEventListener("click", async () => {
     try {
       await loadPlatforms();

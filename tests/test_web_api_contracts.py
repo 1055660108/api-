@@ -121,6 +121,17 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertNotIn("error", client["components"]["queue"])
         self.assertNotIn("executable_path", client["components"]["browser"])
 
+    def test_runtime_submit_interval_is_admin_only_persistent_and_validated(self) -> None:
+        self.assertEqual(self.client.get("/config/runtime").status_code, 403)
+        self.login_admin()
+        self.assertEqual(self.client.get("/config/runtime").json()["dola_submit_interval_seconds"], 5.0)
+        updated = self.client.post("/config/runtime", json={"dola_submit_interval_seconds": 2.5})
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["dola_submit_interval_seconds"], 2.5)
+        self.assertEqual(config.load_settings().dola_submit_interval_seconds, 2.5)
+        for invalid in (0.9, 5.1, "invalid"):
+            self.assertEqual(self.client.post("/config/runtime", json={"dola_submit_interval_seconds": invalid}).status_code, 400)
+
     def test_task_idempotency_replays_without_second_charge(self) -> None:
         registered = self.register("idempotent_client")
         headers = {"X-API-Token": registered["token"], "Idempotency-Key": "create-video-001"}

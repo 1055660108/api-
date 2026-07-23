@@ -18,8 +18,10 @@
     uniform vec2 uCenter;
     uniform float uSize;
     uniform float uStrength;
+    uniform float uSeed;
 
     float hash(vec2 p) {
+      p += vec2(uSeed * 0.0137, uSeed * 0.0191);
       p = fract(p * vec2(123.34, 456.21));
       p += dot(p, p + 45.32);
       return fract(p.x * p.y);
@@ -28,7 +30,7 @@
     float noise(vec2 p) {
       vec2 i = floor(p);
       vec2 f = fract(p);
-      f = f * f * (3.0 - 2.0 * f);
+      f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
       return mix(
         mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
         mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x),
@@ -66,13 +68,17 @@
       ) * contourScale;
       float sphere = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
 
-      float detailScale = mix(23.0, 5.4, smoothstep(0.05, 0.24, uSize));
-      float cloud = fbm(swirl * detailScale + vec2(time, -time * 0.66));
-      float folds = noise(swirl * detailScale * 1.92 - vec2(time * 1.1, time * 0.4));
-      float vein = abs(noise(swirl * detailScale * 2.7 + vec2(-time * 0.42, time * 0.28)) - 0.5) * 2.0;
-      float ring = sin(radius / max(uSize, 0.04) * 18.0 - cloud * 7.0 + time * 1.45) * 0.5 + 0.5;
-      float pigment = smoothstep(0.2, 0.8, cloud * 0.7 + folds * 0.34 + ring * 0.1);
-      pigment = clamp(pigment + smoothstep(0.56, 0.88, vein) * 0.22, 0.0, 1.0);
+      vec2 flowPoint = swirl;
+      flowPoint.x += sin(swirl.y * 10.0 + time * 1.15) * 0.055;
+      flowPoint.y += cos(swirl.x * 8.0 - time * 0.82) * 0.065;
+      float cloud = 0.5;
+      cloud += sin(flowPoint.x * 18.0 + flowPoint.y * 4.0 + time * 1.1) * 0.22;
+      cloud += sin(dot(flowPoint, vec2(-12.0, 16.0)) - time * 0.72) * 0.17;
+      cloud += cos(dot(flowPoint, vec2(22.0, 9.0)) + time * 0.48) * 0.1;
+      cloud += sin(dot(flowPoint, vec2(-36.0, 29.0)) + time * 0.84) * 0.055;
+      cloud += cos(dot(flowPoint, vec2(41.0, -18.0)) - time * 0.62) * 0.035;
+      cloud += (noise(flowPoint * 18.0 + vec2(time * 0.3, -time * 0.2)) - 0.5) * 0.08;
+      float pigment = smoothstep(0.12, 0.88, cloud);
       vec3 wash = vec3(0.94, 0.945, 0.94);
       vec3 ink = vec3(0.008, 0.011, 0.012);
       vec3 color = mix(wash, ink, pigment);
@@ -125,6 +131,7 @@
       this.targetSize = 0.3;
       this.strength = this.kind === "workspace" ? 0.34 : 1;
       this.targetStrength = this.strength;
+      this.seed = Math.random() * 1000;
       this.startedAt = performance.now();
       this.lastWidth = 0;
       this.lastHeight = 0;
@@ -174,6 +181,7 @@
         center: gl.getUniformLocation(this.program, "uCenter"),
         size: gl.getUniformLocation(this.program, "uSize"),
         strength: gl.getUniformLocation(this.program, "uStrength"),
+        seed: gl.getUniformLocation(this.program, "uSeed"),
       };
     }
 
@@ -187,7 +195,7 @@
       const { width, height } = this.dimensions();
       if (width < 2 || height < 2) return false;
       const compact = width < 720;
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, compact ? 1.35 : 1.65);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, compact ? 1.25 : 1.5);
       const renderWidth = Math.max(1, Math.round(width * pixelRatio));
       const renderHeight = Math.max(1, Math.round(height * pixelRatio));
       if (this.canvas.width !== renderWidth || this.canvas.height !== renderHeight) {
@@ -209,11 +217,11 @@
       const aspect = width / Math.max(height, 1);
       if (mode === "landing") {
         this.targetCenter = [0.5, compact ? 0.55 : 0.52];
-        this.targetSize = Math.min(0.315, aspect * 0.43);
+        this.targetSize = Math.min(compact ? 0.27 : 0.268, aspect * 0.43);
         this.targetStrength = 1;
       } else if (mode === "login") {
         this.targetCenter = [0.5, compact ? 0.78 : 0.8];
-        this.targetSize = Math.min(0.052, aspect * 0.105);
+        this.targetSize = Math.min(0.047, aspect * 0.1);
         this.targetStrength = 0.94;
       } else {
         this.targetCenter = [compact ? 0.76 : 0.84, compact ? 0.78 : 0.72];
@@ -235,6 +243,11 @@
     setActive(active) {
       this.active = Boolean(active);
       if (this.active) this.needsResize = true;
+    }
+
+    randomize() {
+      this.seed = Math.random() * 1000;
+      this.startedAt = performance.now() - Math.random() * 8000;
     }
 
     render(now) {
@@ -269,6 +282,7 @@
       gl.uniform2f(this.locations.center, this.center[0], this.center[1]);
       gl.uniform1f(this.locations.size, this.size);
       gl.uniform1f(this.locations.strength, this.strength);
+      gl.uniform1f(this.locations.seed, this.seed);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disable(gl.SCISSOR_TEST);
     }

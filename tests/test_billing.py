@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -76,6 +77,28 @@ class BillingTests(unittest.TestCase):
         free = temp_access.reserve_temp_quota(paid, "task-free", 8)
         self.assertEqual(free.credit_units, 2)
         self.assertEqual(free.free_remaining, 1)
+
+    def test_file_backed_quota_allows_concurrent_reads_and_reservations(self) -> None:
+        token = temp_access.create_temp_tokens(1, 1)[0]
+        temp_access.add_temp_credit_units(token["id"], 30)
+        access = temp_access.get_temp_context(token["token"])
+
+        def reserve(index: int) -> None:
+            temp_access.reserve_temp_quota(access, f"concurrent-{index}", 1)
+
+        def read(_: int) -> None:
+            temp_access.list_temp_tokens()
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(reserve, index) for index in range(20)]
+            futures.extend(executor.submit(read, index) for index in range(40))
+            for future in futures:
+                future.result()
+
+        entry = json.loads(self.tokens_path.read_text(encoding="utf-8"))["tokens"][token["id"]]
+        self.assertEqual(len(entry["reservations"]), 20)
+        self.assertEqual(entry["free_remaining"], 0)
+        self.assertEqual(entry["credit_units"], 11)
 
     def test_task_refund_is_idempotent_for_free_and_paid_reservations(self) -> None:
         token = temp_access.create_temp_tokens(1, 1)[0]

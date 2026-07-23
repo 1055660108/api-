@@ -450,6 +450,8 @@ const state = {
   modalText: "",
   modalVideoUrl: "",
   submitting: false,
+  submitIdempotencyKey: "",
+  submitFingerprint: "",
   isTempToken: false,
   tempTokens: [],
   accounts: [],
@@ -675,7 +677,11 @@ async function requestJson(path, token, options = {}) {
       credentials: "same-origin",
     });
   } catch (error) {
-    if (error.name === "AbortError") throw new Error("请求超时，请稍后重试");
+    if (error.name === "AbortError") {
+      const timeoutError = new Error("请求超时，请稍后重试");
+      timeoutError.code = "REQUEST_TIMEOUT";
+      throw timeoutError;
+    }
     throw error;
   } finally {
     window.clearTimeout(timeout);
@@ -940,6 +946,9 @@ function escapeHtml(value) {
 function clientSafeText(value, task = {}) {
   let text = String(value || "");
   if (portal !== "client") return text;
+  if (/Page\.(?:goto|click|waitFor|wait_for)|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷/i.test(text)) {
+    return "你的输入可能包含违规内容请重试！";
+  }
   const model = String(task.model || "当前模型");
   text = text.replace(/Dola|豆包|千问|qianwen|doubao|平台/gi, model);
   text = text.replace(/账号|账户|号池|换号|服务凭证/gi, "服务");
@@ -961,6 +970,7 @@ function setServiceState(ok, note) {
 let clientEntryInk = null;
 let clientWorkspaceInk = null;
 let clientLoginTransitionTimer = 0;
+let clientInkResizeTimer = 0;
 let sidebarTransitionTimer = 0;
 let sidebarTransitionFrame = 0;
 
@@ -968,35 +978,150 @@ function initClientInkBackgrounds() {
   if (typeof window.HSInkBackground !== "function") return;
   if (!clientEntryInk && els.clientInkCanvas) clientEntryInk = new window.HSInkBackground(els.clientInkCanvas, { kind: "entry" });
   if (!clientWorkspaceInk && els.clientWorkspaceInk) clientWorkspaceInk = new window.HSInkBackground(els.clientWorkspaceInk, { kind: "workspace" });
-  if (portal === "client" && !els.clientInkSplatters?.childElementCount) rerollClientInkSplatters();
+  if (portal === "client" && els.clientInkSplatters?.dataset.rendered !== "1") rerollClientInkSplatters();
+  if (portal === "client" && els.clientInkSplatters?.dataset.resizeBound !== "1") {
+    els.clientInkSplatters.dataset.resizeBound = "1";
+    window.addEventListener("resize", () => {
+      window.clearTimeout(clientInkResizeTimer);
+      clientInkResizeTimer = window.setTimeout(() => {
+        if (els.loginView?.dataset.clientStage === "landing") rerollClientInkSplatters();
+      }, 160);
+    });
+  }
+}
+
+function traceInkPool(context, x, y, radiusX, radiusY, points = 22) {
+  const vertices = [];
+  const phase = Math.random() * Math.PI * 2;
+  for (let index = 0; index < points; index += 1) {
+    const angle = (index / points) * Math.PI * 2;
+    const wobble = 0.74 + Math.random() * 0.28 + Math.sin(angle * 3 + phase) * 0.08;
+    vertices.push({ x: x + Math.cos(angle) * radiusX * wobble, y: y + Math.sin(angle) * radiusY * wobble });
+  }
+  const first = vertices[0];
+  const second = vertices[1];
+  context.beginPath();
+  context.moveTo((first.x + second.x) / 2, (first.y + second.y) / 2);
+  for (let index = 1; index <= vertices.length; index += 1) {
+    const current = vertices[index % vertices.length];
+    const next = vertices[(index + 1) % vertices.length];
+    context.quadraticCurveTo(current.x, current.y, (current.x + next.x) / 2, (current.y + next.y) / 2);
+  }
+  context.closePath();
+}
+
+function drawInkSplash(context, x, y, radius, compact) {
+  const stretch = 0.62 + Math.random() * 0.28;
+  for (let layer = 0; layer < 3; layer += 1) {
+    const scale = 1 - layer * 0.16;
+    traceInkPool(context, x, y, radius * scale, radius * stretch * scale, 22 - layer * 3);
+    context.fillStyle = `rgba(13, 16, 15, ${0.038 + layer * 0.024})`;
+    context.fill();
+  }
+
+  traceInkPool(context, x, y, radius * 0.88, radius * stretch * 0.88, 20);
+  context.strokeStyle = "rgba(13, 16, 15, .075)";
+  context.lineWidth = 1.2;
+  context.stroke();
+
+  const filamentCount = compact ? 5 : 8;
+  for (let index = 0; index < filamentCount; index += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const start = radius * (0.3 + Math.random() * 0.28);
+    const end = radius * (1.05 + Math.random() * 0.58);
+    context.beginPath();
+    context.moveTo(x + Math.cos(angle) * start, y + Math.sin(angle) * start * stretch);
+    context.quadraticCurveTo(
+      x + Math.cos(angle + 0.08) * end * 0.72,
+      y + Math.sin(angle + 0.08) * end * stretch * 0.72,
+      x + Math.cos(angle) * end,
+      y + Math.sin(angle) * end * stretch,
+    );
+    context.strokeStyle = `rgba(13, 16, 15, ${0.035 + Math.random() * 0.065})`;
+    context.lineWidth = 0.8 + Math.random() * 1.5;
+    context.stroke();
+  }
+
+  const droplets = compact ? 11 : 18;
+  for (let index = 0; index < droplets; index += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const distance = radius * (0.72 + Math.random() * 1.22);
+    const dropSize = 1.8 + Math.random() * (compact ? 6 : 9);
+    context.beginPath();
+    context.ellipse(
+      x + Math.cos(angle) * distance,
+      y + Math.sin(angle) * distance * stretch,
+      dropSize,
+      dropSize * (0.55 + Math.random() * 0.7),
+      angle,
+      0,
+      Math.PI * 2,
+    );
+    context.fillStyle = `rgba(13, 16, 15, ${0.07 + Math.random() * 0.19})`;
+    context.fill();
+  }
 }
 
 function rerollClientInkSplatters() {
   if (portal !== "client" || !els.clientInkSplatters) return;
-  const compact = window.innerWidth < 720;
-  const count = compact ? 28 : 46;
-  const centerY = compact ? 55 : 52;
-  const fragment = document.createDocumentFragment();
-  for (let index = 0; index < count; index += 1) {
-    const mark = document.createElement("span");
-    const wash = index < (compact ? 6 : 9);
-    const angle = Math.random() * Math.PI * 2;
-    const distance = 6 + Math.pow(Math.random(), 0.7) * (compact ? 38 : 46);
-    const horizontal = Math.cos(angle) * distance * (compact ? 0.88 : 1);
-    const vertical = Math.sin(angle) * distance * (compact ? 0.76 : 0.7);
-    const size = wash ? 96 + Math.random() * (compact ? 112 : 144) : 4 + Math.random() * 18;
-    mark.className = wash ? "client-ink-mark is-wash" : "client-ink-mark";
-    mark.style.left = `${50 + horizontal}%`;
-    mark.style.top = `${centerY + vertical}%`;
-    mark.style.width = `${size}px`;
-    mark.style.height = `${size * (wash ? 0.16 + Math.random() * 0.2 : 0.55 + Math.random() * 0.72)}px`;
-    mark.style.opacity = `${wash ? 0.055 + Math.random() * 0.06 : 0.12 + Math.random() * 0.22}`;
-    mark.style.rotate = `${Math.round((angle * 180) / Math.PI + (Math.random() - 0.5) * 28)}deg`;
-    mark.style.animationDelay = `${Math.round(Math.random() * 260)}ms`;
-    mark.style.borderRadius = `${35 + Math.random() * 30}% ${36 + Math.random() * 35}% ${34 + Math.random() * 33}% ${38 + Math.random() * 30}%`;
-    fragment.appendChild(mark);
+  const canvas = els.clientInkSplatters;
+  const context = canvas.getContext("2d", { alpha: true });
+  if (!context) return;
+  const width = Math.max(1, window.innerWidth);
+  const height = Math.max(1, window.innerHeight);
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+  const compact = width < 720;
+  canvas.width = Math.round(width * pixelRatio);
+  canvas.height = Math.round(height * pixelRatio);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  const washCount = compact ? 5 : 9;
+  for (let index = 0; index < washCount; index += 1) {
+    const startX = -width * 0.08 + Math.random() * width * 0.72;
+    const startY = height * (0.12 + Math.random() * 0.82);
+    const endX = startX + width * (0.28 + Math.random() * 0.46);
+    const endY = startY + (Math.random() - 0.5) * height * 0.22;
+    context.beginPath();
+    context.moveTo(startX, startY);
+    context.bezierCurveTo(
+      startX + (endX - startX) * 0.34,
+      startY + (Math.random() - 0.5) * 90,
+      startX + (endX - startX) * 0.68,
+      endY + (Math.random() - 0.5) * 90,
+      endX,
+      endY,
+    );
+    context.strokeStyle = `rgba(13, 16, 15, ${0.018 + Math.random() * 0.035})`;
+    context.lineWidth = (compact ? 5 : 8) + Math.random() * (compact ? 10 : 18);
+    context.lineCap = "round";
+    context.stroke();
   }
-  els.clientInkSplatters.replaceChildren(fragment);
+
+  const burstCount = compact ? 4 : 6;
+  const baseRadius = Math.min(width, height);
+  for (let index = 0; index < burstCount; index += 1) {
+    const x = width * (0.06 + ((index + 0.2 + Math.random() * 0.6) / burstCount) * 0.88);
+    const y = height * (0.14 + Math.random() * 0.72);
+    const radius = baseRadius * ((compact ? 0.075 : 0.105) + Math.random() * (compact ? 0.075 : 0.105));
+    drawInkSplash(context, x, y, radius, compact);
+  }
+
+  const dropCount = compact ? 30 : 48;
+  for (let index = 0; index < dropCount; index += 1) {
+    const size = 1.2 + Math.random() * (compact ? 5.5 : 7.5);
+    context.beginPath();
+    context.ellipse(Math.random() * width, height * (0.08 + Math.random() * 0.88), size, size * (0.55 + Math.random() * 0.8), Math.random() * Math.PI, 0, Math.PI * 2);
+    context.fillStyle = `rgba(13, 16, 15, ${0.055 + Math.random() * 0.16})`;
+    context.fill();
+  }
+
+  canvas.dataset.rendered = "1";
+  canvas.classList.remove("is-entering");
+  void canvas.offsetWidth;
+  canvas.classList.add("is-entering");
 }
 
 function setClientEntryStage(stage, options = {}) {
@@ -3187,7 +3312,7 @@ async function queryTask(id, options = {}) {
   state.queryingTaskIds.add(id);
   if (!options.deferRender) renderTaskTable();
   try {
-    const data = await apiFetch(`/tasks/${encodeURIComponent(id)}`);
+    const data = await apiFetch(`/tasks/${encodeURIComponent(id)}`, { timeout: 30000 });
     state.results[id] = data;
     if (!options.quiet) toast(`${shortId(id)} 查询完成`);
     if (!options.deferRender) {
@@ -3214,21 +3339,34 @@ async function queryTask(id, options = {}) {
 
 async function queryVisibleTasks() {
   if (els.queryVisibleTasks.disabled) return;
-  const ids = pageTasks().tasks.map((task) => task.id);
-  if (!ids.length) return;
+  const visibleTasks = pageTasks().tasks;
+  const ids = visibleTasks.filter((task) => {
+    const rawStatus = String(task.status || "").toLowerCase();
+    const status = getTaskStatus(task);
+    return rawStatus === "submitted" || (rawStatus === "success" && !status.url);
+  }).map((task) => task.id);
+  if (!visibleTasks.length) return;
+  if (!ids.length) {
+    toast("本页任务状态均已是最新");
+    return;
+  }
   setBusy(els.queryVisibleTasks, true, "查询中");
   let success = 0;
   let failed = 0;
+  let completed = 0;
   ids.forEach((id) => state.queryingTaskIds.add(id));
   renderTaskTable();
   try {
-    await runPool(ids, 5, async (id) => {
+    await runPool(ids, 3, async (id) => {
       try {
         state.queryingTaskIds.delete(id);
         await queryTask(id, { quiet: true, deferRender: true });
         success += 1;
       } catch (_) {
         failed += 1;
+      } finally {
+        completed += 1;
+        els.queryVisibleTasks.textContent = `查询中 ${completed}/${ids.length}`;
       }
     });
     saveSessionResults();
@@ -3416,6 +3554,24 @@ function resetSubmitForm(options = {}) {
   els.submitState.textContent = "待提交";
 }
 
+function currentSubmitFingerprint(prompt) {
+  return JSON.stringify({
+    prompt,
+    ratio: state.ratio,
+    platform: state.platform || "dola",
+    model: state.model || "",
+    images: state.images.map((file) => [file.name, file.size, file.lastModified]),
+  });
+}
+
+function submitIdempotencyKey(fingerprint) {
+  if (!state.submitIdempotencyKey || state.submitFingerprint !== fingerprint) {
+    state.submitIdempotencyKey = window.crypto?.randomUUID?.() || `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    state.submitFingerprint = fingerprint;
+  }
+  return state.submitIdempotencyKey;
+}
+
 async function submitTask(event) {
   event.preventDefault();
   if (state.submitting) return;
@@ -3436,11 +3592,23 @@ async function submitTask(event) {
   form.append("platform", state.platform || "dola");
   form.append("model", state.model || "");
   state.images.forEach((file) => form.append("images", file, file.name));
+  const fingerprint = currentSubmitFingerprint(prompt);
+  const idempotencyKey = submitIdempotencyKey(fingerprint);
+  const submitOptions = { method: "POST", body: form, headers: { "Idempotency-Key": idempotencyKey }, timeout: 45000 };
 
   setSubmitControlsDisabled(true);
   els.submitState.textContent = "提交中";
   try {
-    const data = await apiFetch("/tasks", { method: "POST", body: form });
+    let data;
+    try {
+      data = await apiFetch("/tasks", submitOptions);
+    } catch (error) {
+      if (error.code !== "REQUEST_TIMEOUT") throw error;
+      els.submitState.textContent = "正在确认提交结果";
+      data = await apiFetch("/tasks", submitOptions);
+    }
+    state.submitIdempotencyKey = "";
+    state.submitFingerprint = "";
     if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
     els.submitState.textContent = `已提交：${shortId(data.id)}`;
     const billingText = data.billing?.free_used ? "，已扣除 1 次视频额度" : Number(data.billing?.points_used || 0) > 0 ? `，已扣除 ${data.billing.points_used} 积分` : "";
@@ -3450,6 +3618,10 @@ async function submitTask(event) {
     await refreshTasks({ quiet: true });
     resetSubmitForm({ force: true });
   } catch (error) {
+    if (error.code !== "REQUEST_TIMEOUT") {
+      state.submitIdempotencyKey = "";
+      state.submitFingerprint = "";
+    }
     els.submitState.textContent = "提交失败";
     toast(`提交失败：${error.message}`, "error");
   } finally {

@@ -24,7 +24,7 @@ VIDEO_FIRST = "video_first"
 POINTS_FIRST = "points_first"
 BILLING_PRIORITIES = {VIDEO_FIRST, POINTS_FIRST}
 TEMP_TOKENS_PATH = DATA_DIR / "temp_tokens.json"
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 
 
 class QuotaExceeded(Exception):
@@ -71,12 +71,13 @@ def _read_data() -> dict[str, Any]:
         loaded = postgres.read_document("temp_tokens", {"tokens": {}})
         tokens = loaded.get("tokens")
         return {"tokens": tokens if isinstance(tokens, dict) else {}}
-    if not TEMP_TOKENS_PATH.exists():
-        return {"tokens": {}}
-    try:
-        loaded = json.loads(TEMP_TOKENS_PATH.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"temporary token data is corrupt: {TEMP_TOKENS_PATH}") from exc
+    with _LOCK:
+        if not TEMP_TOKENS_PATH.exists():
+            return {"tokens": {}}
+        try:
+            loaded = json.loads(TEMP_TOKENS_PATH.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"temporary token data is corrupt: {TEMP_TOKENS_PATH}") from exc
     if not isinstance(loaded, dict):
         return {"tokens": {}}
     tokens = loaded.get("tokens")
@@ -89,10 +90,11 @@ def _write_data(data: dict[str, Any]) -> None:
     if postgres.enabled():
         postgres.write_document("temp_tokens", data)
         return
-    TEMP_TOKENS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = TEMP_TOKENS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(TEMP_TOKENS_PATH)
+    with _LOCK:
+        TEMP_TOKENS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = TEMP_TOKENS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(TEMP_TOKENS_PATH)
 
 
 def _read_token_entry(token_hash: str) -> dict[str, Any] | None:

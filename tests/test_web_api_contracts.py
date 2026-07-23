@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -267,6 +268,29 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(out_of_range["page"], 2)
         self.assertEqual([item["id"] for item in out_of_range["tasks"]], [first["id"]])
         self.assertNotEqual(first["id"], second["id"])
+
+    def test_client_hides_technical_task_errors_but_admin_keeps_diagnostics(self) -> None:
+        registered = self.register("safe_error_client")
+        token = registered["token"]
+        owner_hash = temp_access.hash_token(token)
+        task = store.create_task("测试技术错误隔离", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        raw_error = "Page.goto: net::ERR_PROXY_CONNECTION_FAILED at https://example.invalid"
+        store.mark_failed(task["id"], raw_error)
+
+        client_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": token}).json()["tasks"][0]
+        self.assertEqual(client_task["error"], "你的输入可能包含违规内容请重试！")
+        client_result = self.client.get(f"/tasks/{task['id']}", headers={"X-API-Token": token}).json()
+        self.assertEqual(client_result["text"], "你的输入可能包含违规内容请重试！")
+
+        admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
+        self.assertEqual(admin_task["error"], raw_error)
+
+    def test_task_create_moves_blocking_storage_off_event_loop(self) -> None:
+        source = inspect.getsource(main.submit_task)
+        self.assertIn("await asyncio.to_thread", source)
+        self.assertIn("find_or_create_task", source)
+        self.assertIn("reserve_temp_quota", source)
+        self.assertIn("record_transaction", source)
 
     def test_client_and_admin_task_deletion_are_independent(self) -> None:
         registered = self.register()

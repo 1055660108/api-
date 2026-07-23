@@ -68,24 +68,41 @@
       ) * contourScale;
       float sphere = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
 
-      vec2 flowPoint = swirl;
-      flowPoint.x += sin(swirl.y * 10.0 + time * 1.15) * 0.055;
-      flowPoint.y += cos(swirl.x * 8.0 - time * 0.82) * 0.065;
-      float cloud = 0.5;
-      cloud += sin(flowPoint.x * 18.0 + flowPoint.y * 4.0 + time * 1.1) * 0.22;
-      cloud += sin(dot(flowPoint, vec2(-12.0, 16.0)) - time * 0.72) * 0.17;
-      cloud += cos(dot(flowPoint, vec2(22.0, 9.0)) + time * 0.48) * 0.1;
-      cloud += sin(dot(flowPoint, vec2(-36.0, 29.0)) + time * 0.84) * 0.055;
-      cloud += cos(dot(flowPoint, vec2(41.0, -18.0)) - time * 0.62) * 0.035;
-      cloud += (noise(flowPoint * 18.0 + vec2(time * 0.3, -time * 0.2)) - 0.5) * 0.08;
-      float pigment = smoothstep(0.08, 0.82, cloud);
-      vec3 wash = vec3(0.74, 0.75, 0.745);
+      float detailScale = mix(21.0, 5.8, smoothstep(0.05, 0.24, uSize));
+      vec2 warp = vec2(
+        noise(swirl * 3.4 + vec2(time * 0.38, -time * 0.22)),
+        noise(swirl * 3.4 + vec2(7.1 - time * 0.27, 3.7 + time * 0.31))
+      ) - 0.5;
+      vec2 inkPoint = swirl + warp * mix(0.014, 0.072, smoothstep(0.05, 0.24, uSize));
+      float cloud = fbm(inkPoint * detailScale + vec2(time, -time * 0.66));
+      float folds = noise(inkPoint * detailScale * 1.88 - vec2(time * 1.06, time * 0.4));
+      float vein = abs(noise(inkPoint * detailScale * 2.64 + vec2(-time * 0.42, time * 0.28)) - 0.5) * 2.0;
+      float ring = sin(radius / max(uSize, 0.04) * 17.0 - cloud * 6.5 + time * 1.35) * 0.5 + 0.5;
+      float pigment = smoothstep(0.2, 0.78, cloud * 0.68 + folds * 0.24 + ring * 0.08);
+      pigment = clamp(pigment + smoothstep(0.58, 0.9, vein) * 0.16, 0.0, 1.0);
+
+      vec2 spherePoint = point / max(uSize, 0.04);
+      float depth = sqrt(max(0.0, 1.0 - dot(spherePoint, spherePoint)));
+      vec3 normal = normalize(vec3(spherePoint.x, -spherePoint.y, depth));
+      float light = dot(normal, normalize(vec3(-0.46, -0.52, 0.72))) * 0.5 + 0.5;
+      float highlight = smoothstep(0.58, 0.94, light) * depth;
+      float shade = 1.0 - smoothstep(0.18, 0.72, light);
+      float rim = pow(1.0 - depth, 1.65);
+
+      vec3 wash = vec3(0.86, 0.87, 0.865);
       vec3 ink = vec3(0.008, 0.011, 0.012);
       vec3 color = mix(wash, ink, pigment);
-      color = mix(color, ink, smoothstep(0.5, 0.9, cloud) * 0.5);
+      color = mix(color, vec3(0.965), highlight * (0.1 + (1.0 - pigment) * 0.1));
+      color = mix(color, ink, shade * 0.16 + rim * 0.1);
       float grain = hash(gl_FragCoord.xy);
-      float alpha = sphere * (0.64 + pigment * 0.34 + grain * 0.012) * uStrength;
-      gl_FragColor = vec4(color, alpha);
+      float alpha = sphere * (0.72 + pigment * 0.24 + depth * 0.02 + grain * 0.008) * uStrength;
+
+      vec2 groundPoint = vec2(
+        point.x / max(uSize * 1.04, 0.01),
+        (point.y + uSize * 0.98) / max(uSize * 0.22, 0.01)
+      );
+      float groundShadow = smoothstep(1.0, 0.0, length(groundPoint)) * (1.0 - sphere) * uStrength * 0.12;
+      gl_FragColor = vec4(mix(vec3(0.05), color, sphere), max(alpha, groundShadow));
     }
   `;
 

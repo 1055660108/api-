@@ -215,7 +215,7 @@ async def lifespan(app: FastAPI):
         refund_temp_quota_once(str(stale_task.get("id") or ""), str(stale_task.get("owner_token_hash") or ""))
     reset_daily_account_quotas_if_needed()
     reconcile_account_quotas()
-    create_sem = asyncio.Semaphore(2)
+    create_sem = asyncio.Semaphore(8)
     query_sem = asyncio.Semaphore(5)
     list_sem = asyncio.Semaphore(8)
     delete_sem = asyncio.Semaphore(1)
@@ -424,6 +424,12 @@ def _client_safe_text(value: str, model: str) -> str:
 
     replacement = str(model or "当前模型")
     text = str(value or "")
+    if re.search(
+        r"Page\.(?:goto|click|waitFor|wait_for)|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return "你的输入可能包含违规内容请重试！"
     text = re.sub(r"Dola|dola|豆包|千问|qianwen|doubao|平台", replacement, text, flags=re.IGNORECASE)
     text = re.sub(r"账号|账户|号池|换号|服务凭证", "服务", text, flags=re.IGNORECASE)
     if re.search(r"额度不足|额度已用完|次数不足|次数已用完|余额不足|正在切换服务重试|正在切换账号重试|多个服务额度均不足", text):
@@ -1983,25 +1989,47 @@ async def submit_task(
 
         try:
             if key:
-                meta, created = find_or_create_task(prompt, ratio, access.token_hash if access.is_temp else "", platform, model, task_type, key, fingerprint, "tasks")
+                meta, created = await asyncio.to_thread(
+                    find_or_create_task,
+                    prompt,
+                    ratio,
+                    access.token_hash if access.is_temp else "",
+                    platform,
+                    model,
+                    task_type,
+                    key,
+                    fingerprint,
+                    "tasks",
+                )
             else:
-                meta, created = create_task(prompt, ratio, owner_token_hash=access.token_hash if access.is_temp else "", platform=platform, model=model, task_type=task_type, enqueue=False), True
+                meta = await asyncio.to_thread(
+                    create_task,
+                    prompt,
+                    ratio,
+                    owner_token_hash=access.token_hash if access.is_temp else "",
+                    platform=platform,
+                    model=model,
+                    task_type=task_type,
+                    enqueue=False,
+                )
+                created = True
             if not created:
                 return {"id": meta["id"], "replayed": True}
             queued_for_concurrency = False
             if access.is_temp:
-                access = get_temp_context_by_hash(access.token_hash) or access
-                queued_for_concurrency = active_task_count_for_owner(access.token_hash) >= access.concurrency
+                access = await asyncio.to_thread(get_temp_context_by_hash, access.token_hash) or access
+                queued_for_concurrency = await asyncio.to_thread(active_task_count_for_owner, access.token_hash) >= access.concurrency
             base_cost_units = model_cost_units(platform, model, task_type)
-            discount_units = membership_task_discount_units_by_token_hash(access.token_hash) if access.is_temp else 0
+            discount_units = await asyncio.to_thread(membership_task_discount_units_by_token_hash, access.token_hash) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
             user_id = _transaction_user_id(access)
-            reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
-            reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
+            reserved_access = await asyncio.to_thread(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            reservation = await asyncio.to_thread(get_temp_reservation, access.token_hash, str(meta["id"])) if access.is_temp else {}
             charged_units = int(reservation.get("units") or 0)
             if user_id and reservation:
                 free_used = bool(reservation.get("free"))
-                record_transaction(
+                await asyncio.to_thread(
+                    record_transaction,
                     user_id,
                     "video_quota_consume" if free_used else "consume",
                     0 if free_used else -charged_units,
@@ -2016,12 +2044,12 @@ async def submit_task(
             raise HTTPException(status_code=409, detail=str(exc))
         except QuotaExceeded as exc:
             if "meta" in locals():
-                delete_task(str(meta["id"]))
+                await asyncio.to_thread(delete_task, str(meta["id"]))
             raise HTTPException(status_code=429, detail=str(exc))
         except Exception:
             if "meta" in locals():
-                refund_temp_quota_hash(access.token_hash, str(meta["id"]))
-                delete_task(str(meta["id"]))
+                await asyncio.to_thread(refund_temp_quota_hash, access.token_hash, str(meta["id"]))
+                await asyncio.to_thread(delete_task, str(meta["id"]))
             raise
         saved_paths: list[Path] = []
         try:
@@ -2029,18 +2057,18 @@ async def submit_task(
                 filename = Path(upload.filename or f"image_{index}.png").name
                 suffix = Path(filename).suffix.lower() or ".png"
                 target = images_dir(meta["id"]) / f"{index:02d}{suffix}"
-                _save_uploaded_image(upload, target)
+                await asyncio.to_thread(_save_uploaded_image, upload, target)
                 saved_paths.append(target)
-            set_task_images(meta["id"], saved_paths)
-            finalize_task_creation(str(meta["id"]))
+            await asyncio.to_thread(set_task_images, meta["id"], saved_paths)
+            await asyncio.to_thread(finalize_task_creation, str(meta["id"]))
         except Exception:
             if reserved_access:
-                refund_temp_quota_hash(reserved_access.token_hash, str(meta["id"]))
-            delete_task(meta["id"])
+                await asyncio.to_thread(refund_temp_quota_hash, reserved_access.token_hash, str(meta["id"]))
+            await asyncio.to_thread(delete_task, meta["id"])
             raise
         response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency}
         if reserved_access and reserved_access.is_temp:
-            balance = user_balance_by_token_hash(reserved_access.token_hash)
+            balance = await asyncio.to_thread(user_balance_by_token_hash, reserved_access.token_hash)
             response["quota"] = {
                 "limit": reserved_access.limit,
                 "used": reserved_access.used,

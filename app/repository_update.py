@@ -29,10 +29,10 @@ def _run_git(root: Path, *arguments: str, timeout: int = 120) -> str:
         timeout=timeout,
         check=False,
     )
-    output = (result.stdout or result.stderr or "").strip()
     if result.returncode != 0:
-        raise RuntimeError(output[:500] or f"git exited with code {result.returncode}")
-    return output
+        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
+        raise RuntimeError(output[-5000:] or f"git exited with code {result.returncode}")
+    return (result.stdout or result.stderr or "").strip()
 
 
 def _normalized_repository(value: str) -> str:

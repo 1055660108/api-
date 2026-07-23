@@ -19,6 +19,8 @@
     uniform float uSize;
     uniform float uStrength;
     uniform float uSeed;
+    uniform float uShatter;
+    uniform float uNight;
 
     float hash(vec2 p) {
       p += vec2(uSeed * 0.0137, uSeed * 0.0191);
@@ -53,6 +55,16 @@
     void main() {
       vec2 point = vUv - uCenter;
       point.x *= uResolution.x / max(uResolution.y, 1.0);
+      vec2 screenPoint = point;
+      float screenRadius = length(screenPoint);
+      float screenAngle = atan(screenPoint.y, screenPoint.x);
+      float sector = floor((screenAngle + 3.14159265) / 6.2831853 * 15.0);
+      float piece = hash(vec2(sector, floor(screenRadius / max(uSize * 0.17, 0.012))));
+      float fracture = smoothstep(0.015, 0.62, uShatter);
+      vec2 radialDirection = normalize(screenPoint + vec2(0.0001));
+      vec2 tangentDirection = vec2(-radialDirection.y, radialDirection.x);
+      vec2 fractureOffset = radialDirection * (0.018 + piece * 0.115) + tangentDirection * (piece - 0.5) * 0.065;
+      point -= fractureOffset * fracture;
       float angle = atan(point.y, point.x);
       float radius = length(point);
       float time = uTime * 0.105;
@@ -67,6 +79,12 @@
         sin(angle * 7.0 - time) * 0.007
       ) * contourScale;
       float sphere = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
+      float sectorPosition = fract((screenAngle + 3.14159265) / 6.2831853 * 15.0);
+      float angularCrack = 1.0 - smoothstep(0.0, 0.052, min(sectorPosition, 1.0 - sectorPosition));
+      float ringPosition = fract(screenRadius / max(uSize, 0.04) * 3.35 + piece * 0.28);
+      float ringCrack = 1.0 - smoothstep(0.0, 0.045, min(ringPosition, 1.0 - ringPosition));
+      float crackMask = clamp(angularCrack + ringCrack * 0.42, 0.0, 1.0) * smoothstep(0.08, 0.58, uShatter);
+      sphere *= 1.0 - crackMask * 0.96;
 
       float detailScale = mix(21.0, 5.8, smoothstep(0.05, 0.24, uSize));
       vec2 warp = vec2(
@@ -94,15 +112,24 @@
       vec3 color = mix(wash, ink, pigment);
       color = mix(color, vec3(0.965), highlight * (0.1 + (1.0 - pigment) * 0.1));
       color = mix(color, ink, shade * 0.16 + rim * 0.1);
+      vec3 rainGlass = mix(vec3(0.79, 0.84, 0.84), vec3(0.012, 0.02, 0.022), pigment * 0.9 + shade * 0.16);
+      rainGlass = mix(rainGlass, vec3(0.95, 0.975, 0.97), highlight * (0.34 + (1.0 - pigment) * 0.28));
+      rainGlass = mix(rainGlass, vec3(0.006, 0.01, 0.012), rim * 0.28);
+      color = mix(color, rainGlass, uNight);
       float grain = hash(gl_FragCoord.xy);
       float alpha = sphere * (0.72 + pigment * 0.24 + depth * 0.02 + grain * 0.008) * uStrength;
+      alpha *= 1.0 - smoothstep(0.56, 1.0, uShatter) * 0.92;
 
       vec2 groundPoint = vec2(
         point.x / max(uSize * 1.04, 0.01),
         (point.y + uSize * 0.98) / max(uSize * 0.22, 0.01)
       );
       float groundShadow = smoothstep(1.0, 0.0, length(groundPoint)) * (1.0 - sphere) * uStrength * 0.12;
-      gl_FragColor = vec4(mix(vec3(0.05), color, sphere), max(alpha, groundShadow));
+      float halo = smoothstep(uSize + 0.095, uSize + 0.012, screenRadius) * (1.0 - sphere) * (1.0 - uShatter) * uNight * 0.09;
+      vec3 groundColor = mix(vec3(0.05), vec3(0.36, 0.43, 0.43), uNight);
+      vec3 finalColor = mix(groundColor, color, sphere);
+      finalColor = mix(finalColor, vec3(0.72, 0.79, 0.79), halo * 0.72);
+      gl_FragColor = vec4(finalColor, max(max(alpha, groundShadow), halo));
     }
   `;
 
@@ -150,6 +177,10 @@
       this.targetStrength = this.strength;
       this.seed = Math.random() * 1000;
       this.startedAt = performance.now();
+      this.growth = this.kind === "entry" ? 0.42 : 1;
+      this.shatter = 0;
+      this.burstStartedAt = 0;
+      this.burstDuration = 2360;
       this.lastWidth = 0;
       this.lastHeight = 0;
       this.needsResize = true;
@@ -199,6 +230,8 @@
         size: gl.getUniformLocation(this.program, "uSize"),
         strength: gl.getUniformLocation(this.program, "uStrength"),
         seed: gl.getUniformLocation(this.program, "uSeed"),
+        shatter: gl.getUniformLocation(this.program, "uShatter"),
+        night: gl.getUniformLocation(this.program, "uNight"),
       };
     }
 
@@ -253,8 +286,16 @@
     }
 
     setMode(mode, immediate = false) {
+      const previousMode = this.mode;
       this.mode = ["landing", "login", "workspace"].includes(mode) ? mode : "landing";
       this.updateTargets(this.mode, immediate);
+      if (this.kind === "entry" && this.mode === "landing" && previousMode !== "landing") {
+        this.growth = this.reducedMotion ? 1 : 0.42;
+      }
+      if (this.mode !== "landing") {
+        this.burstStartedAt = 0;
+        this.shatter = 0;
+      }
     }
 
     setActive(active) {
@@ -265,6 +306,25 @@
     randomize() {
       this.seed = Math.random() * 1000;
       this.startedAt = performance.now() - Math.random() * 8000;
+      if (this.kind === "entry" && this.mode === "landing") this.growth = this.reducedMotion ? 1 : 0.42;
+    }
+
+    containsPoint(clientX, clientY) {
+      if (!this.active || this.mode !== "landing" || !this.lastWidth || !this.lastHeight) return false;
+      const centerX = this.center[0] * this.lastWidth;
+      const centerY = (1 - this.center[1]) * this.lastHeight;
+      const radius = this.size * this.lastHeight * Math.max(0.72, this.growth);
+      return Math.hypot(clientX - centerX, clientY - centerY) <= radius * 1.06;
+    }
+
+    burstAt(clientX, clientY) {
+      if (this.reducedMotion || this.burstStartedAt || !this.containsPoint(clientX, clientY)) return null;
+      const centerX = this.center[0] * this.lastWidth;
+      const centerY = (1 - this.center[1]) * this.lastHeight;
+      const radius = this.size * this.lastHeight * Math.max(0.72, this.growth);
+      this.burstStartedAt = performance.now();
+      this.seed = Math.random() * 1000;
+      return { x: centerX, y: centerY, radius };
     }
 
     render(now) {
@@ -276,12 +336,35 @@
       this.center[1] += (this.targetCenter[1] - this.center[1]) * ease;
       this.size += (this.targetSize - this.size) * ease;
       this.strength += (this.targetStrength - this.strength) * ease;
+      if (this.mode === "landing") this.growth += (1 - this.growth) * (this.reducedMotion ? 1 : 0.0085);
+      else this.growth += (1 - this.growth) * 0.08;
+
+      if (this.burstStartedAt) {
+        const progress = Math.min(1, (now - this.burstStartedAt) / this.burstDuration);
+        if (progress < 0.24) {
+          const rise = progress / 0.24;
+          this.shatter = 1 - Math.pow(1 - rise, 3);
+        } else if (progress < 0.38) {
+          this.shatter = 1;
+        } else {
+          const reform = (progress - 0.38) / 0.62;
+          this.shatter = Math.pow(1 - reform, 2);
+        }
+        if (progress >= 1) {
+          this.burstStartedAt = 0;
+          this.shatter = 0;
+        }
+      }
+
+      const timeSeconds = this.reducedMotion ? 0 : (now - this.startedAt) / 1000;
+      const breathing = this.mode === "landing" && !this.reducedMotion ? 1 + Math.sin(timeSeconds * 0.42) * 0.018 : 1;
+      const displaySize = this.size * this.growth * breathing;
 
       const gl = this.gl;
       gl.disable(gl.SCISSOR_TEST);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      const radiusPixels = Math.ceil((this.size + 0.075) * this.canvas.height);
+      const radiusPixels = Math.ceil((displaySize + 0.075 + this.shatter * 0.16) * this.canvas.height);
       const centerX = Math.round(this.center[0] * this.canvas.width);
       const centerY = Math.round(this.center[1] * this.canvas.height);
       const left = Math.max(0, centerX - radiusPixels);
@@ -294,16 +377,248 @@
       gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
       gl.enableVertexAttribArray(this.locations.position);
       gl.vertexAttribPointer(this.locations.position, 2, gl.FLOAT, false, 0, 0);
-      gl.uniform1f(this.locations.time, this.reducedMotion ? 0 : (now - this.startedAt) / 1000);
+      gl.uniform1f(this.locations.time, timeSeconds);
       gl.uniform2f(this.locations.resolution, this.canvas.width, this.canvas.height);
       gl.uniform2f(this.locations.center, this.center[0], this.center[1]);
-      gl.uniform1f(this.locations.size, this.size);
+      gl.uniform1f(this.locations.size, displaySize);
       gl.uniform1f(this.locations.strength, this.strength);
       gl.uniform1f(this.locations.seed, this.seed);
+      gl.uniform1f(this.locations.shatter, this.shatter);
+      gl.uniform1f(this.locations.night, this.kind === "entry" && this.mode === "landing" ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disable(gl.SCISSOR_TEST);
     }
   }
 
+  class HSRainScene {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.context = canvas.getContext("2d", { alpha: true });
+      this.active = true;
+      this.mode = "landing";
+      this.reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      this.pixelRatio = 1;
+      this.width = 0;
+      this.height = 0;
+      this.wind = -24;
+      this.drops = [];
+      this.ripples = [];
+      this.burst = null;
+      this.lastFrameAt = performance.now();
+      this.lastRenderAt = 0;
+      this.frameInterval = 1000 / 40;
+      this.needsResize = true;
+      this.staticRendered = false;
+      if (!this.context) return;
+      this.resizeObserver = new ResizeObserver(() => { this.needsResize = true; });
+      this.resizeObserver.observe(canvas.parentElement || canvas);
+      this.render = this.render.bind(this);
+      this.frame = requestAnimationFrame(this.render);
+    }
+
+    dimensions() {
+      const rect = this.canvas.getBoundingClientRect();
+      return { width: Math.max(1, rect.width || window.innerWidth), height: Math.max(1, rect.height || window.innerHeight) };
+    }
+
+    resize() {
+      const { width, height } = this.dimensions();
+      const compact = width < 720;
+      this.pixelRatio = Math.min(window.devicePixelRatio || 1, compact ? 1 : 1.15);
+      this.canvas.width = Math.max(1, Math.round(width * this.pixelRatio));
+      this.canvas.height = Math.max(1, Math.round(height * this.pixelRatio));
+      this.canvas.style.width = `${width}px`;
+      this.canvas.style.height = `${height}px`;
+      this.context.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
+      this.width = width;
+      this.height = height;
+      this.needsResize = false;
+      this.buildDrops();
+    }
+
+    buildDrops() {
+      const compact = this.width < 720;
+      const count = compact ? 76 : Math.min(140, Math.max(112, Math.round(this.width * this.height / 12000)));
+      this.drops = Array.from({ length: count }, () => this.createDrop(true));
+      this.ripples = [];
+      this.staticRendered = false;
+    }
+
+    createDrop(initial = false) {
+      const depth = Math.random();
+      const speed = 360 + depth * 760;
+      return {
+        x: Math.random() * (this.width + 180) - 90,
+        y: initial ? Math.random() * this.height : -40 - Math.random() * this.height * 0.28,
+        depth,
+        speed,
+        length: 10 + depth * 28 + Math.random() * 10,
+        width: 0.45 + depth * 1.05,
+        alpha: 0.08 + depth * 0.34,
+      };
+    }
+
+    resetDrop(drop) {
+      Object.assign(drop, this.createDrop(false));
+    }
+
+    setMode(mode) {
+      this.mode = mode === "landing" ? "landing" : "login";
+      if (this.mode !== "landing") this.burst = null;
+      this.staticRendered = false;
+    }
+
+    setActive(active) {
+      this.active = Boolean(active);
+      if (this.active) {
+        this.needsResize = true;
+        this.lastFrameAt = performance.now();
+        this.lastRenderAt = 0;
+      }
+    }
+
+    randomize() {
+      this.wind = -38 + Math.random() * 58;
+      if (this.width) this.buildDrops();
+    }
+
+    burstAt(x, y, radius) {
+      if (this.reducedMotion || this.mode !== "landing") return;
+      const particleCount = this.width < 720 ? 54 : 82;
+      const particles = Array.from({ length: particleCount }, (_, index) => {
+        const angle = (index / particleCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.24;
+        return {
+          angle,
+          distance: radius * (0.72 + Math.random() * 1.72),
+          size: 1.5 + Math.random() * 5.8,
+          stretch: 1.1 + Math.random() * 2.6,
+          delay: Math.random() * 0.075,
+          drift: (Math.random() - 0.5) * radius * 0.22,
+        };
+      });
+      this.burst = { x, y, radius, startedAt: performance.now(), duration: 2360, particles };
+    }
+
+    drawMist(context, now) {
+      const time = now * 0.00005;
+      context.save();
+      for (let index = 0; index < 4; index += 1) {
+        const y = this.height * (0.2 + index * 0.21) + Math.sin(time * (index + 1) + index) * 18;
+        context.beginPath();
+        context.moveTo(-40, y);
+        context.bezierCurveTo(this.width * 0.28, y - 24, this.width * 0.66, y + 30, this.width + 40, y - 8);
+        context.strokeStyle = `rgba(154, 170, 169, ${0.012 + index * 0.004})`;
+        context.lineWidth = 38 + index * 13;
+        context.stroke();
+      }
+      context.restore();
+    }
+
+    drawRain(context, deltaSeconds) {
+      context.save();
+      context.lineCap = "round";
+      for (const drop of this.drops) {
+        if (!this.reducedMotion) {
+          drop.y += drop.speed * deltaSeconds;
+          drop.x += this.wind * deltaSeconds * (0.35 + drop.depth * 0.65);
+        }
+        const slant = this.wind * 0.018 * drop.length;
+        context.beginPath();
+        context.moveTo(drop.x, drop.y);
+        context.lineTo(drop.x + slant, drop.y + drop.length);
+        context.strokeStyle = `rgba(190, 207, 207, ${drop.alpha})`;
+        context.lineWidth = drop.width;
+        context.stroke();
+        if (drop.y > this.height + drop.length || drop.x < -140 || drop.x > this.width + 140) {
+          if (Math.random() < 0.22 && this.ripples.length < 28) {
+            this.ripples.push({ x: Math.max(0, Math.min(this.width, drop.x)), y: this.height * (0.91 + Math.random() * 0.075), age: 0, duration: 0.55 + Math.random() * 0.45, size: 8 + drop.depth * 18 });
+          }
+          this.resetDrop(drop);
+        }
+      }
+      context.restore();
+    }
+
+    drawRipples(context, deltaSeconds) {
+      context.save();
+      this.ripples = this.ripples.filter((ripple) => {
+        ripple.age += deltaSeconds;
+        const progress = ripple.age / ripple.duration;
+        if (progress >= 1) return false;
+        context.beginPath();
+        context.ellipse(ripple.x, ripple.y, ripple.size * (0.5 + progress * 1.8), ripple.size * (0.08 + progress * 0.22), 0, 0, Math.PI * 2);
+        context.strokeStyle = `rgba(191, 207, 206, ${(1 - progress) * 0.24})`;
+        context.lineWidth = 0.7;
+        context.stroke();
+        return true;
+      });
+      context.restore();
+    }
+
+    drawBurst(context, now) {
+      if (!this.burst) return;
+      const rawProgress = (now - this.burst.startedAt) / this.burst.duration;
+      if (rawProgress >= 1) {
+        this.burst = null;
+        return;
+      }
+      const progress = Math.max(0, rawProgress);
+      const travel = Math.sin(Math.PI * progress);
+      const visibility = Math.sin(Math.PI * Math.min(1, progress * 1.08));
+      context.save();
+      context.lineCap = "round";
+      for (const particle of this.burst.particles) {
+        const localProgress = Math.max(0, Math.min(1, (progress - particle.delay) / (1 - particle.delay)));
+        if (!localProgress) continue;
+        const localTravel = Math.sin(Math.PI * localProgress);
+        const distance = particle.distance * localTravel;
+        const curve = Math.sin(localProgress * Math.PI * 2) * particle.drift;
+        const x = this.burst.x + Math.cos(particle.angle) * distance + Math.sin(particle.angle) * curve;
+        const y = this.burst.y + Math.sin(particle.angle) * distance + Math.abs(Math.sin(Math.PI * localProgress)) * this.burst.radius * 0.18;
+        const tail = particle.stretch * (0.8 + travel * 2.2);
+        context.beginPath();
+        context.moveTo(x - Math.cos(particle.angle) * tail, y - Math.sin(particle.angle) * tail);
+        context.lineTo(x, y);
+        context.strokeStyle = `rgba(188, 220, 219, ${visibility * 0.34})`;
+        context.lineWidth = Math.max(0.7, particle.size * 0.34);
+        context.stroke();
+        context.beginPath();
+        context.ellipse(x, y, particle.size, particle.size * (0.62 + localTravel * 0.5), particle.angle, 0, Math.PI * 2);
+        context.fillStyle = `rgba(159, 194, 194, ${visibility * 0.44})`;
+        context.fill();
+        context.beginPath();
+        context.arc(x - particle.size * 0.25, y - particle.size * 0.28, Math.max(0.45, particle.size * 0.18), 0, Math.PI * 2);
+        context.fillStyle = `rgba(244, 250, 248, ${visibility * 0.65})`;
+        context.fill();
+      }
+      context.beginPath();
+      context.ellipse(this.burst.x, this.burst.y, this.burst.radius * (0.25 + travel * 1.22), this.burst.radius * (0.08 + travel * 0.29), 0, 0, Math.PI * 2);
+      context.strokeStyle = `rgba(176, 205, 204, ${(1 - travel * 0.45) * visibility * 0.26})`;
+      context.lineWidth = 1.1;
+      context.stroke();
+      context.restore();
+    }
+
+    render(now) {
+      this.frame = requestAnimationFrame(this.render);
+      if (!this.context || !this.active || document.hidden || !this.canvas.isConnected) return;
+      if (this.needsResize) this.resize();
+      if (this.mode !== "landing") return;
+      if (this.reducedMotion && this.staticRendered) return;
+      if (!this.reducedMotion && now - this.lastRenderAt < this.frameInterval) return;
+      const deltaSeconds = Math.min(0.04, Math.max(0.001, (now - this.lastFrameAt) / 1000));
+      this.lastFrameAt = now;
+      this.lastRenderAt = now;
+      const context = this.context;
+      context.clearRect(0, 0, this.width, this.height);
+      this.drawMist(context, now);
+      this.drawRain(context, deltaSeconds);
+      this.drawRipples(context, deltaSeconds);
+      this.drawBurst(context, now);
+      this.staticRendered = this.reducedMotion;
+    }
+  }
+
   window.HSInkBackground = HSInkBackground;
+  window.HSRainScene = HSRainScene;
 })();

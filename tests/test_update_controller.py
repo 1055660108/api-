@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,27 @@ from scripts import update_controller
 
 
 class UpdateControllerTests(unittest.TestCase):
+    def test_failed_command_keeps_stderr_when_stdout_contains_progress(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=("docker", "compose", "build"),
+            returncode=1,
+            stdout="#1 loading build definition\n",
+            stderr="failed to solve: no space left on device\n",
+        )
+        with patch.object(update_controller.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "no space left on device") as raised:
+                update_controller.run("docker", "compose", "build")
+        self.assertIn("#1 loading build definition", str(raised.exception))
+
+    def test_command_timeout_has_actionable_message(self) -> None:
+        with patch.object(
+            update_controller.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(("docker", "compose", "build"), 900),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "timed out after 900 seconds"):
+                update_controller.run("docker", "compose", "build")
+
     def test_deploy_waits_until_update_response_can_be_sent(self) -> None:
         with patch.object(update_controller.time, "sleep") as sleep, patch.object(update_controller, "deploy") as deploy:
             update_controller.deploy_after_response()

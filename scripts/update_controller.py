@@ -24,15 +24,32 @@ IMAGE_TAG = os.environ.get("DOLA_IMAGE_TAG", "").strip()
 STATE_LOCK = threading.Lock()
 FETCH_LOCK = threading.Lock()
 DEPLOY_START_DELAY_SECONDS = 2.0
+MAX_ERROR_LENGTH = 5000
 STATE: dict[str, str | bool] = {"updating": False, "phase": "空闲", "error": ""}
 
 
+def command_error_output(stdout: str | None, stderr: str | None) -> str:
+    return "\n".join(part.strip() for part in (stdout, stderr) if part and part.strip())
+
+
 def run(*arguments: str, timeout: int = 900) -> str:
-    result = subprocess.run(arguments, cwd=APP_DIR, capture_output=True, text=True, timeout=timeout, check=False)
-    output = (result.stdout or result.stderr or "").strip()
+    try:
+        result = subprocess.run(
+            arguments,
+            cwd=APP_DIR,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"command timed out after {timeout} seconds: {' '.join(arguments)}") from exc
     if result.returncode != 0:
-        raise RuntimeError(output[-1000:] or f"command exited with code {result.returncode}")
-    return output
+        output = command_error_output(result.stdout, result.stderr)
+        raise RuntimeError(output[-MAX_ERROR_LENGTH:] or f"command exited with code {result.returncode}")
+    return (result.stdout or result.stderr or "").strip()
 
 
 def git(*arguments: str, timeout: int = 120) -> str:
@@ -149,7 +166,7 @@ def deploy() -> None:
         wait_for_health()
         set_state(updating=False, phase="更新完成", error="", updated=True, update_available=False)
     except Exception as exc:
-        error = str(exc)[:1000]
+        error = str(exc)[-MAX_ERROR_LENGTH:]
         if before:
             try:
                 set_state(phase="正在回滚")
@@ -158,7 +175,8 @@ def deploy() -> None:
                 run("docker", "compose", "up", "-d", "--force-recreate", "api", "worker")
                 wait_for_health()
             except Exception as rollback_exc:
-                error = f"{error}; rollback failed: {str(rollback_exc)[:500]}"
+                error = f"{error}\nrollback failed: {str(rollback_exc)[-1000:]}"
+                error = error[-MAX_ERROR_LENGTH:]
         set_state(updating=False, phase="更新失败", error=error, updated=False)
 
 
@@ -193,7 +211,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_json(200, status())
         except Exception as exc:
-            self.send_json(409, {"detail": str(exc)[:1000]})
+            self.send_json(409, {"detail": str(exc)[-MAX_ERROR_LENGTH:]})
 
     def do_POST(self) -> None:
         if self.path != "/update":
@@ -202,7 +220,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_json(202, start_deploy())
         except Exception as exc:
-            self.send_json(409, {"detail": str(exc)[:1000]})
+            self.send_json(409, {"detail": str(exc)[-MAX_ERROR_LENGTH:]})
 
     def log_message(self, format: str, *args: object) -> None:
         return

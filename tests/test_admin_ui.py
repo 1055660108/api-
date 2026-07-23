@@ -22,7 +22,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("积分/次", self.javascript)
 
     def test_repository_update_control_is_present(self) -> None:
-        for element_id in ("repositoryUpdatePanel", "repositoryUpdateState", "repositoryRevision", "updateRepository"):
+        for element_id in ("repositoryUpdatePanel", "repositoryUpdateState", "repositoryUpdateError", "repositoryRevision", "updateRepository"):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn('/admin/repository-update', self.javascript)
         self.assertIn('els.updateRepository?.addEventListener("click", updateRepository)', self.javascript)
@@ -34,6 +34,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("[502, 503, 504].includes(status)", self.javascript)
         self.assertIn("服务正在重启，将继续检查更新结果", self.javascript)
         self.assertIn("系统更新成功，前后端服务已恢复", self.javascript)
+        self.assertIn("showRepositoryUpdateError(data.error)", self.javascript)
 
     def test_update_is_admin_only_and_proxy_has_single_entry(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
@@ -233,7 +234,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.6', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.7', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -253,6 +254,16 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('body[data-portal] .client-workspace-ink', styles)
         self.assertIn('body[data-portal="client"] .app-shell > .sidebar', styles)
         self.assertIn('class HSInkBackground', ink_script)
+        self.assertIn('class HSRainScene', ink_script)
+        self.assertIn('this.frameInterval = 1000 / 40', ink_script)
+        self.assertIn('const count = compact ? 76', ink_script)
+        self.assertIn('window.HSRainScene = HSRainScene', ink_script)
+        self.assertIn('burstAt(clientX, clientY)', ink_script)
+        self.assertIn('this.burstDuration = 2360', ink_script)
+        self.assertIn('gl.uniform1f(this.locations.shatter, this.shatter)', ink_script)
+        self.assertIn('clientRainScene?.burstAt?.(burst.x, burst.y, burst.radius)', self.javascript)
+        self.assertIn('clientRainScene?.setActive(false)', self.javascript)
+        self.assertIn('#loginView[data-client-stage="landing"]', styles)
         self.assertIn('powerPreference: "high-performance"', ink_script)
         self.assertIn('requestAnimationFrame(this.render)', ink_script)
         self.assertIn('gl.enable(gl.SCISSOR_TEST)', ink_script)

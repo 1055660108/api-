@@ -294,6 +294,7 @@ const els = {
   configState: document.getElementById("configState"),
   repositoryUpdatePanel: document.getElementById("repositoryUpdatePanel"),
   repositoryUpdateState: document.getElementById("repositoryUpdateState"),
+  repositoryUpdateError: document.getElementById("repositoryUpdateError"),
   repositoryRevision: document.getElementById("repositoryRevision"),
   repositoryLatestVersion: document.getElementById("repositoryLatestVersion"),
   updateRepository: document.getElementById("updateRepository"),
@@ -716,14 +717,23 @@ async function loadRepositoryStatus() {
     const data = await apiFetch("/admin/repository-update");
     els.repositoryRevision.textContent = data.version ? `v${data.version}` : "版本未知";
     if (els.repositoryLatestVersion) els.repositoryLatestVersion.textContent = data.latest_version ? `v${data.latest_version}` : "版本未知";
-    els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? `更新失败：${data.error}` : data.update_available ? "有可用更新" : "已是最新";
+    els.repositoryUpdateState.textContent = data.updating ? data.phase || "正在更新" : data.error ? "更新失败" : data.update_available ? "有可用更新" : "已是最新";
+    showRepositoryUpdateError(data.error);
     if (els.updateRepository) setBusy(els.updateRepository, Boolean(data.updating), data.phase || "正在更新");
     return data;
   } catch (error) {
-    els.repositoryUpdateState.textContent = `更新不可用：${error.message}`;
+    els.repositoryUpdateState.textContent = "更新不可用";
+    showRepositoryUpdateError(error.message);
     if (els.updateRepository) els.updateRepository.disabled = els.updateRepository.dataset.updatePolling === "true";
     return null;
   }
+}
+
+function showRepositoryUpdateError(message = "") {
+  if (!els.repositoryUpdateError) return;
+  const detail = String(message || "").trim();
+  els.repositoryUpdateError.textContent = detail;
+  els.repositoryUpdateError.classList.toggle("hidden", !detail);
 }
 
 function isTransientRepositoryUpdateError(error) {
@@ -736,6 +746,7 @@ async function updateRepository() {
   if (!window.confirm("确定部署 GitHub main 最新版本吗？系统将自动构建镜像、重启 API 与 Worker，并执行健康检查。")) return;
   setBusy(els.updateRepository, true, "正在更新");
   els.repositoryUpdateState.textContent = "正在拉取";
+  showRepositoryUpdateError();
   try {
     const data = await apiFetch("/admin/repository-update", { method: "POST" });
     els.repositoryUpdateState.textContent = data.updating ? "已开始部署" : data.updated ? "更新完成" : data.update_available ? "有可用更新" : "已是最新";
@@ -749,6 +760,7 @@ async function updateRepository() {
       await pollRepositoryUpdate();
     } else {
       els.repositoryUpdateState.textContent = "更新失败";
+      showRepositoryUpdateError(error.message);
       toast(`更新失败：${error.message}`, "error");
     }
   } finally {
@@ -770,6 +782,7 @@ async function pollRepositoryUpdate() {
       return;
     }
     els.repositoryUpdateState.textContent = "更新成功，前后端服务已恢复";
+    showRepositoryUpdateError();
     toast("系统更新成功，前后端服务已恢复");
     return;
   }
@@ -969,8 +982,10 @@ function setServiceState(ok, note) {
 
 let clientEntryInk = null;
 let clientWorkspaceInk = null;
+let clientRainScene = null;
 let clientLoginTransitionTimer = 0;
 let clientInkResizeTimer = 0;
+let clientSphereBurstTimer = 0;
 let sidebarTransitionTimer = 0;
 let sidebarTransitionFrame = 0;
 
@@ -978,6 +993,7 @@ function initClientInkBackgrounds() {
   if (typeof window.HSInkBackground !== "function") return;
   if (!clientEntryInk && els.clientInkCanvas) clientEntryInk = new window.HSInkBackground(els.clientInkCanvas, { kind: "entry" });
   if (!clientWorkspaceInk && els.clientWorkspaceInk) clientWorkspaceInk = new window.HSInkBackground(els.clientWorkspaceInk, { kind: "workspace" });
+  if (portal === "client" && !clientRainScene && els.clientInkSplatters && typeof window.HSRainScene === "function") clientRainScene = new window.HSRainScene(els.clientInkSplatters);
   if (portal === "client" && els.clientInkSplatters?.dataset.rendered !== "1") rerollClientInkSplatters();
   if (portal === "client" && els.clientInkSplatters?.dataset.resizeBound !== "1") {
     els.clientInkSplatters.dataset.resizeBound = "1";
@@ -1064,6 +1080,11 @@ function drawInkSplash(context, x, y, radius, compact) {
 
 function rerollClientInkSplatters() {
   if (portal !== "client" || !els.clientInkSplatters) return;
+  if (clientRainScene) {
+    clientRainScene.randomize();
+    els.clientInkSplatters.dataset.rendered = "1";
+    return;
+  }
   const canvas = els.clientInkSplatters;
   const context = canvas.getContext("2d", { alpha: true });
   if (!context) return;
@@ -1134,6 +1155,7 @@ function setClientEntryStage(stage, options = {}) {
     clientEntryInk?.randomize?.();
   }
   clientEntryInk?.setMode(inkMode, Boolean(options.immediate));
+  clientRainScene?.setMode(nextStage);
 }
 
 function startClientLoginTransition() {
@@ -1150,6 +1172,16 @@ function startClientLoginTransition() {
 function createClientInkSplash(event) {
   if (event.pointerType === "mouse" && event.button !== 0) return;
   const interactive = Boolean(event.target.closest("button:not(:disabled), .nav-item, a, label"));
+  if (!interactive && portal === "client" && els.loginView?.dataset.clientStage === "landing") {
+    const burst = clientEntryInk?.burstAt?.(event.clientX, event.clientY);
+    if (burst) {
+      clientRainScene?.burstAt?.(burst.x, burst.y, burst.radius);
+      window.clearTimeout(clientSphereBurstTimer);
+      els.loginView.classList.add("sphere-bursting");
+      clientSphereBurstTimer = window.setTimeout(() => els.loginView?.classList.remove("sphere-bursting"), 2380);
+      return;
+    }
+  }
   const count = interactive ? 3 + Math.floor(Math.random() * 3) : 1 + Math.floor(Math.random() * 3);
   for (let index = 0; index < count; index += 1) {
     const splash = document.createElement("span");
@@ -1178,6 +1210,7 @@ function showLogin(message = "等待输入") {
     const showLanding = ["等待输入", "等待进入", "已退出"].includes(message);
     setClientEntryStage(showLanding ? "landing" : "login", { immediate: true });
     clientEntryInk?.setActive(true);
+    clientRainScene?.setActive(true);
     clientWorkspaceInk?.setActive(false);
   } else {
     clientEntryInk?.setMode("login", true);
@@ -1199,6 +1232,7 @@ function showApp() {
   els.loginView.classList.add("hidden");
   els.appShell.classList.remove("hidden");
   clientEntryInk?.setActive(false);
+  clientRainScene?.setActive(false);
   clientWorkspaceInk?.setMode("workspace", true);
   clientWorkspaceInk?.setActive(true);
   switchView("dashboard");
@@ -3862,6 +3896,11 @@ function bindEvents() {
   });
   els.clientLoginTab?.addEventListener("click", () => setClientMode(false));
   els.clientRegisterTab?.addEventListener("click", () => setClientMode(true));
+  els.loginView?.addEventListener("pointermove", (event) => {
+    const overSphere = portal === "client" && els.loginView.dataset.clientStage === "landing" && Boolean(clientEntryInk?.containsPoint?.(event.clientX, event.clientY));
+    els.loginView.classList.toggle("sphere-hover", overSphere);
+  });
+  els.loginView?.addEventListener("pointerleave", () => els.loginView.classList.remove("sphere-hover"));
   document.addEventListener("pointerdown", createClientInkSplash);
   els.sendEmailCode?.addEventListener("click", async () => {
     if (!state.registrationEmailVerificationEnabled) return toast("邮箱注册验证未启用", "error");

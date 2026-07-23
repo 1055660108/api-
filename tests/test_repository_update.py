@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,18 @@ class RepositoryUpdateTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
+
+    def test_git_failure_keeps_stderr_when_stdout_has_progress(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=("git", "fetch"),
+            returncode=1,
+            stdout="fetching origin\n",
+            stderr="fatal: repository unavailable\n",
+        )
+        with patch.object(repository_update.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "repository unavailable") as raised:
+                repository_update._run_git(self.root, "fetch")
+        self.assertIn("fetching origin", str(raised.exception))
 
     def test_status_rejects_unexpected_origin(self) -> None:
         with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=["https://github.com/other/project.git"]):
@@ -76,7 +89,7 @@ class RepositoryUpdateTests(unittest.TestCase):
         with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=outputs):
             result = repository_update.repository_status(self.root)
 
-        self.assertEqual(result["version"], "1.4.6")
+        self.assertEqual(result["version"], "1.4.7")
         self.assertEqual(result["commit_message"], "current commit")
         self.assertEqual(result["latest_commit_message"], "latest commit")
         self.assertEqual(result["latest_version"], "1.2.4")

@@ -21,6 +21,7 @@
     uniform float uSeed;
     uniform float uShatter;
     uniform float uNight;
+    uniform float uVortex;
 
     float hash(vec2 p) {
       p += vec2(uSeed * 0.0137, uSeed * 0.0191);
@@ -65,9 +66,18 @@
       vec2 tangentDirection = vec2(-radialDirection.y, radialDirection.x);
       vec2 fractureOffset = radialDirection * (0.018 + piece * 0.115) + tangentDirection * (piece - 0.5) * 0.065;
       point -= fractureOffset * fracture;
-      float angle = atan(point.y, point.x);
-      float radius = length(point);
       float time = uTime * 0.105;
+      float radius = length(point);
+      float vortexRotation = uVortex * (
+        time * 9.2 +
+        (1.0 - smoothstep(0.0, max(uSize, 0.04), radius)) * 2.4 +
+        (noise(point * 18.0 + time * 3.0) - 0.5) * 0.78
+      );
+      float vortexCosine = cos(vortexRotation);
+      float vortexSine = sin(vortexRotation);
+      point = mat2(vortexCosine, -vortexSine, vortexSine, vortexCosine) * point;
+      float angle = atan(point.y, point.x);
+      radius = length(point);
 
       float bend = sin(angle * 3.0 + time * 1.55) * 0.11 + noise(point * 2.0 + time) * 0.2;
       float cosine = cos(bend);
@@ -76,7 +86,8 @@
       float contourScale = mix(0.14, 1.0, smoothstep(0.045, 0.22, uSize));
       float contour = (
         noise(vec2(angle * 1.8, time * 0.95)) * 0.032 +
-        sin(angle * 7.0 - time) * 0.007
+        sin(angle * 7.0 - time) * 0.007 +
+        (noise(vec2(angle * 4.6 - time * 5.0, radius * 42.0 + time * 2.2)) - 0.5) * 0.022 * uVortex
       ) * contourScale;
       float sphere = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
       float sectorPosition = fract((screenAngle + 3.14159265) / 6.2831853 * 15.0);
@@ -92,7 +103,8 @@
         noise(swirl * 3.4 + vec2(7.1 - time * 0.27, 3.7 + time * 0.31))
       ) - 0.5;
       vec2 inkPoint = swirl + warp * mix(0.014, 0.072, smoothstep(0.05, 0.24, uSize));
-      float cloud = fbm(inkPoint * detailScale + vec2(time, -time * 0.66));
+      float flowTime = time * (1.0 + uVortex * 2.8);
+      float cloud = fbm(inkPoint * detailScale + vec2(flowTime, -flowTime * 0.66));
       float folds = noise(inkPoint * detailScale * 1.88 - vec2(time * 1.06, time * 0.4));
       float vein = abs(noise(inkPoint * detailScale * 2.64 + vec2(-time * 0.42, time * 0.28)) - 0.5) * 2.0;
       float ring = sin(radius / max(uSize, 0.04) * 17.0 - cloud * 6.5 + time * 1.35) * 0.5 + 0.5;
@@ -104,6 +116,7 @@
       vec3 normal = normalize(vec3(spherePoint.x, -spherePoint.y, depth));
       float light = dot(normal, normalize(vec3(-0.46, -0.52, 0.72))) * 0.5 + 0.5;
       float highlight = smoothstep(0.58, 0.94, light) * depth;
+      float movingHighlight = pow(max(0.0, dot(normal, normalize(vec3(sin(time * 5.4) * 0.5 - 0.25, -0.58, 0.78)))), 12.0) * depth * uVortex;
       float shade = 1.0 - smoothstep(0.18, 0.72, light);
       float rim = pow(1.0 - depth, 1.65);
 
@@ -112,12 +125,17 @@
       vec3 color = mix(wash, ink, pigment);
       color = mix(color, vec3(0.965), highlight * (0.1 + (1.0 - pigment) * 0.1));
       color = mix(color, ink, shade * 0.16 + rim * 0.1);
-      vec3 rainGlass = mix(vec3(0.79, 0.84, 0.84), vec3(0.012, 0.02, 0.022), pigment * 0.9 + shade * 0.16);
-      rainGlass = mix(rainGlass, vec3(0.95, 0.975, 0.97), highlight * (0.34 + (1.0 - pigment) * 0.28));
-      rainGlass = mix(rainGlass, vec3(0.006, 0.01, 0.012), rim * 0.28);
+      float caustic = pow(max(0.0, sin(angle * 5.0 - flowTime * 5.2) * 0.5 + 0.5), 5.0) * smoothstep(0.08, 0.88, depth);
+      vec3 rainGlass = mix(vec3(0.22, 0.31, 0.33), vec3(0.008, 0.016, 0.019), pigment * 0.76 + shade * 0.13);
+      rainGlass = mix(rainGlass, vec3(0.82, 0.91, 0.9), highlight * (0.28 + (1.0 - pigment) * 0.26));
+      rainGlass = mix(rainGlass, vec3(0.99, 1.0, 1.0), movingHighlight * 0.62);
+      rainGlass = mix(rainGlass, vec3(0.58, 0.72, 0.72), caustic * (0.13 + uVortex * 0.18));
+      rainGlass = mix(rainGlass, vec3(0.08, 0.14, 0.15), rim * 0.22);
       color = mix(color, rainGlass, uNight);
       float grain = hash(gl_FragCoord.xy);
-      float alpha = sphere * (0.72 + pigment * 0.24 + depth * 0.02 + grain * 0.008) * uStrength;
+      float inkAlpha = 0.72 + pigment * 0.24 + depth * 0.02 + grain * 0.008;
+      float waterAlpha = 0.5 + pigment * 0.3 + depth * 0.04 + rim * 0.08 + uVortex * 0.13;
+      float alpha = sphere * mix(inkAlpha, waterAlpha, uNight) * uStrength;
       alpha *= 1.0 - smoothstep(0.56, 1.0, uShatter) * 0.92;
 
       vec2 groundPoint = vec2(
@@ -232,6 +250,7 @@
         seed: gl.getUniformLocation(this.program, "uSeed"),
         shatter: gl.getUniformLocation(this.program, "uShatter"),
         night: gl.getUniformLocation(this.program, "uNight"),
+        vortex: gl.getUniformLocation(this.program, "uVortex"),
       };
     }
 
@@ -269,7 +288,7 @@
         this.targetCenter = [0.5, compact ? 0.55 : 0.52];
         this.targetSize = Math.min(compact ? 0.27 : 0.268, aspect * 0.43);
         this.targetStrength = 1;
-      } else if (mode === "login") {
+      } else if (mode === "login" || mode === "converging") {
         this.targetCenter = [0.5, compact ? 0.78 : 0.8];
         this.targetSize = Math.min(0.047, aspect * 0.1);
         this.targetStrength = 0.94;
@@ -287,7 +306,7 @@
 
     setMode(mode, immediate = false) {
       const previousMode = this.mode;
-      this.mode = ["landing", "login", "workspace"].includes(mode) ? mode : "landing";
+      this.mode = ["landing", "converging", "login", "workspace"].includes(mode) ? mode : "landing";
       this.updateTargets(this.mode, immediate);
       if (this.kind === "entry" && this.mode === "landing" && previousMode !== "landing") {
         this.growth = this.reducedMotion ? 1 : 0.42;
@@ -384,7 +403,8 @@
       gl.uniform1f(this.locations.strength, this.strength);
       gl.uniform1f(this.locations.seed, this.seed);
       gl.uniform1f(this.locations.shatter, this.shatter);
-      gl.uniform1f(this.locations.night, this.kind === "entry" && this.mode === "landing" ? 1 : 0);
+      gl.uniform1f(this.locations.night, this.kind === "entry" ? 1 : 0);
+      gl.uniform1f(this.locations.vortex, this.kind === "entry" && this.mode !== "landing" ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disable(gl.SCISSOR_TEST);
     }
@@ -403,12 +423,16 @@
       this.wind = -24;
       this.drops = [];
       this.ripples = [];
+      this.orbitDrops = [];
       this.burst = null;
+      this.transitionStartedAt = 0;
+      this.transitionDuration = 1250;
       this.lastFrameAt = performance.now();
       this.lastRenderAt = 0;
-      this.frameInterval = 1000 / 40;
+      this.frameInterval = 1000 / 60;
       this.needsResize = true;
       this.staticRendered = false;
+      this.atmosphereCanvas = document.createElement("canvas");
       if (!this.context) return;
       this.resizeObserver = new ResizeObserver(() => { this.needsResize = true; });
       this.resizeObserver.observe(canvas.parentElement || canvas);
@@ -434,27 +458,62 @@
       this.height = height;
       this.needsResize = false;
       this.buildDrops();
+      this.buildAtmosphere();
     }
 
     buildDrops() {
       const compact = this.width < 720;
-      const count = compact ? 76 : Math.min(140, Math.max(112, Math.round(this.width * this.height / 12000)));
+      const count = compact ? 88 : Math.min(168, Math.max(128, Math.round(this.width * this.height / 9500)));
       this.drops = Array.from({ length: count }, () => this.createDrop(true));
+      const orbitCount = compact ? 20 : 30;
+      this.orbitDrops = Array.from({ length: orbitCount }, (_, index) => ({
+        angle: index / orbitCount * Math.PI * 2 + Math.random() * 0.3,
+        radius: 0.66 + Math.random() * 0.8,
+        speed: (0.48 + Math.random() * 0.92) * (index % 2 ? 1 : -1),
+        size: 1.2 + Math.random() * 4.2,
+        lift: 0.28 + Math.random() * 0.62,
+        phase: Math.random() * Math.PI * 2,
+      }));
       this.ripples = [];
       this.staticRendered = false;
     }
 
+    buildAtmosphere() {
+      const canvas = this.atmosphereCanvas;
+      canvas.width = Math.max(1, Math.round(this.width * this.pixelRatio));
+      canvas.height = Math.max(1, Math.round(this.height * this.pixelRatio));
+      const context = canvas.getContext("2d", { alpha: true });
+      if (!context) return;
+      context.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
+      context.clearRect(0, 0, this.width, this.height);
+      const horizon = context.createLinearGradient(0, 0, 0, this.height);
+      horizon.addColorStop(0, "rgba(32, 43, 45, 0.08)");
+      horizon.addColorStop(0.52, "rgba(108, 129, 128, 0.025)");
+      horizon.addColorStop(0.82, "rgba(1, 5, 6, 0.02)");
+      horizon.addColorStop(1, "rgba(178, 202, 199, 0.035)");
+      context.fillStyle = horizon;
+      context.fillRect(0, 0, this.width, this.height);
+      const glow = context.createRadialGradient(this.width * 0.5, this.height * 0.5, 0, this.width * 0.5, this.height * 0.5, Math.max(this.width, this.height) * 0.56);
+      glow.addColorStop(0, "rgba(154, 177, 176, 0.035)");
+      glow.addColorStop(0.42, "rgba(83, 102, 103, 0.018)");
+      glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+      context.fillStyle = glow;
+      context.fillRect(0, 0, this.width, this.height);
+    }
+
     createDrop(initial = false) {
       const depth = Math.random();
-      const speed = 360 + depth * 760;
+      const speed = 420 + depth * 940;
       return {
         x: Math.random() * (this.width + 180) - 90,
         y: initial ? Math.random() * this.height : -40 - Math.random() * this.height * 0.28,
         depth,
         speed,
-        length: 10 + depth * 28 + Math.random() * 10,
-        width: 0.45 + depth * 1.05,
-        alpha: 0.08 + depth * 0.34,
+        length: 12 + depth * 34 + Math.random() * 12,
+        width: 0.5 + depth * 1.28,
+        alpha: 0.08 + depth * 0.38,
+        layer: Math.min(2, Math.floor(depth * 3)),
+        phase: Math.random() * Math.PI * 2,
       };
     }
 
@@ -463,7 +522,21 @@
     }
 
     setMode(mode) {
-      this.mode = mode === "landing" ? "landing" : "login";
+      const nextMode = ["landing", "converging", "login"].includes(mode) ? mode : "login";
+      if (nextMode === "converging" && this.mode !== "converging") {
+        this.transitionStartedAt = performance.now();
+        for (const drop of this.drops) {
+          drop.gatherX = drop.x;
+          drop.gatherY = drop.y;
+          drop.gatherAngle = Math.atan2(drop.y - this.height * 0.2, drop.x - this.width * 0.5);
+          drop.gatherTurns = 1.4 + Math.random() * 1.8;
+        }
+      }
+      if (nextMode === "landing" && this.mode !== "landing") {
+        this.transitionStartedAt = 0;
+        this.buildDrops();
+      }
+      this.mode = nextMode;
       if (this.mode !== "landing") this.burst = null;
       this.staticRendered = false;
     }
@@ -500,41 +573,48 @@
     }
 
     drawMist(context, now) {
-      const time = now * 0.00005;
       context.save();
-      for (let index = 0; index < 4; index += 1) {
-        const y = this.height * (0.2 + index * 0.21) + Math.sin(time * (index + 1) + index) * 18;
-        context.beginPath();
-        context.moveTo(-40, y);
-        context.bezierCurveTo(this.width * 0.28, y - 24, this.width * 0.66, y + 30, this.width + 40, y - 8);
-        context.strokeStyle = `rgba(154, 170, 169, ${0.012 + index * 0.004})`;
-        context.lineWidth = 38 + index * 13;
-        context.stroke();
-      }
+      context.globalAlpha = 0.82 + Math.sin(now * 0.00022) * 0.08;
+      context.drawImage(this.atmosphereCanvas, 0, 0, this.width, this.height);
       context.restore();
     }
 
     drawRain(context, deltaSeconds) {
       context.save();
       context.lineCap = "round";
-      for (const drop of this.drops) {
-        if (!this.reducedMotion) {
-          drop.y += drop.speed * deltaSeconds;
-          drop.x += this.wind * deltaSeconds * (0.35 + drop.depth * 0.65);
-        }
-        const slant = this.wind * 0.018 * drop.length;
+      const layerColors = ["rgba(138, 159, 160, .13)", "rgba(174, 197, 198, .24)", "rgba(218, 234, 233, .42)"];
+      const layerWidths = [0.55, 0.95, 1.45];
+      for (let layer = 0; layer < 3; layer += 1) {
         context.beginPath();
-        context.moveTo(drop.x, drop.y);
-        context.lineTo(drop.x + slant, drop.y + drop.length);
-        context.strokeStyle = `rgba(190, 207, 207, ${drop.alpha})`;
-        context.lineWidth = drop.width;
-        context.stroke();
-        if (drop.y > this.height + drop.length || drop.x < -140 || drop.x > this.width + 140) {
-          if (Math.random() < 0.22 && this.ripples.length < 28) {
-            this.ripples.push({ x: Math.max(0, Math.min(this.width, drop.x)), y: this.height * (0.91 + Math.random() * 0.075), age: 0, duration: 0.55 + Math.random() * 0.45, size: 8 + drop.depth * 18 });
+        for (const drop of this.drops) {
+          if (drop.layer !== layer) continue;
+          if (!this.reducedMotion) {
+            drop.y += drop.speed * deltaSeconds;
+            drop.x += this.wind * deltaSeconds * (0.32 + drop.depth * 0.68);
           }
-          this.resetDrop(drop);
+          const slant = this.wind * 0.018 * drop.length;
+          context.moveTo(drop.x, drop.y);
+          context.lineTo(drop.x + slant, drop.y + drop.length);
+          if (drop.y > this.height + drop.length || drop.x < -140 || drop.x > this.width + 140) {
+            if (Math.random() < 0.3 && this.ripples.length < 32) {
+              this.ripples.push({
+                x: Math.max(0, Math.min(this.width, drop.x)),
+                y: this.height * (0.91 + Math.random() * 0.075),
+                age: 0,
+                duration: 0.56 + Math.random() * 0.5,
+                size: 8 + drop.depth * 20,
+                spark: 2 + Math.floor(drop.depth * 4),
+                phase: Math.random() * Math.PI,
+              });
+            }
+            this.resetDrop(drop);
+          }
         }
+        context.strokeStyle = layerColors[layer];
+        context.lineWidth = layerWidths[layer];
+        context.shadowColor = layer === 2 ? "rgba(219, 240, 239, .22)" : "transparent";
+        context.shadowBlur = layer === 2 ? 2.5 : 0;
+        context.stroke();
       }
       context.restore();
     }
@@ -550,8 +630,108 @@
         context.strokeStyle = `rgba(191, 207, 206, ${(1 - progress) * 0.24})`;
         context.lineWidth = 0.7;
         context.stroke();
+        context.beginPath();
+        for (let index = 0; index < ripple.spark; index += 1) {
+          const offset = (index - (ripple.spark - 1) / 2) * 2.8;
+          const lift = Math.sin(Math.PI * progress) * (5 + index * 1.8);
+          context.moveTo(ripple.x + offset, ripple.y - lift * 0.35);
+          context.lineTo(ripple.x + offset * 1.25, ripple.y - lift);
+        }
+        context.strokeStyle = `rgba(213, 231, 229, ${(1 - progress) * 0.18})`;
+        context.lineWidth = 0.55;
+        context.stroke();
         return true;
       });
+      context.restore();
+    }
+
+    loginTarget() {
+      const compact = this.width < 720;
+      return {
+        x: this.width * 0.5,
+        y: this.height * (compact ? 0.22 : 0.2),
+        radius: Math.max(compact ? 26 : 32, this.height * 0.047),
+      };
+    }
+
+    drawConvergence(context, now) {
+      const target = this.loginTarget();
+      const rawProgress = Math.min(1, Math.max(0, (now - this.transitionStartedAt) / this.transitionDuration));
+      const progress = rawProgress * rawProgress * (3 - 2 * rawProgress);
+      const fade = Math.max(0.08, 1 - rawProgress * 0.82);
+      const layerColors = ["rgba(142, 169, 170, .16)", "rgba(184, 209, 209, .29)", "rgba(226, 241, 240, .48)"];
+      context.save();
+      context.lineCap = "round";
+      for (let layer = 0; layer < 3; layer += 1) {
+        context.beginPath();
+        for (const drop of this.drops) {
+          if (drop.layer !== layer) continue;
+          const originX = Number.isFinite(drop.gatherX) ? drop.gatherX : drop.x;
+          const originY = Number.isFinite(drop.gatherY) ? drop.gatherY : drop.y;
+          const startRadius = Math.hypot(originX - target.x, originY - target.y);
+          const startAngle = Number.isFinite(drop.gatherAngle) ? drop.gatherAngle : Math.atan2(originY - target.y, originX - target.x);
+          const angle = startAngle + progress * Math.PI * 2 * (drop.gatherTurns || 2);
+          const radius = startRadius * Math.pow(1 - progress, 1.08) + target.radius * 0.58 * Math.sin(progress * Math.PI);
+          const x = target.x + Math.cos(angle) * radius;
+          const y = target.y + Math.sin(angle) * radius * (0.68 + drop.depth * 0.12);
+          const tangentX = -Math.sin(angle) * drop.length * (0.18 + fade * 0.42);
+          const tangentY = Math.cos(angle) * drop.length * (0.18 + fade * 0.42);
+          context.moveTo(x - tangentX, y - tangentY);
+          context.lineTo(x, y);
+        }
+        context.strokeStyle = layerColors[layer];
+        context.globalAlpha = fade;
+        context.lineWidth = 0.55 + layer * 0.42;
+        context.stroke();
+      }
+      context.restore();
+      this.drawWaterOrbit(context, now, Math.min(1, rawProgress * 1.7));
+    }
+
+    drawWaterOrbit(context, now, strength = 1) {
+      if (strength <= 0) return;
+      const target = this.loginTarget();
+      const time = now / 1000;
+      context.save();
+      context.lineCap = "round";
+
+      context.beginPath();
+      for (let index = 0; index < 14; index += 1) {
+        const phase = (time * (0.62 + index % 3 * 0.08) + index / 14) % 1;
+        const x = target.x + Math.sin(index * 2.73 + time * 1.3) * target.radius * (0.62 + index % 4 * 0.34);
+        const y = target.y - target.radius * 2.3 + phase * target.radius * 4.7;
+        context.moveTo(x, y - 4 - index % 4);
+        context.lineTo(x - 1.2, y + 7 + index % 5);
+      }
+      context.strokeStyle = `rgba(164, 199, 200, ${0.18 * strength})`;
+      context.lineWidth = 0.75;
+      context.stroke();
+
+      for (let index = 0; index < 4; index += 1) {
+        const rotation = time * (0.7 + index * 0.17) * (index % 2 ? -1 : 1) + index * 0.9;
+        context.beginPath();
+        context.ellipse(target.x, target.y, target.radius * (1.05 + index * 0.22), target.radius * (0.3 + index * 0.055), rotation, 0.22, Math.PI * 1.62);
+        context.strokeStyle = `rgba(170, 211, 211, ${(0.12 - index * 0.015) * strength})`;
+        context.lineWidth = 0.65 + (3 - index) * 0.16;
+        context.stroke();
+      }
+
+      for (const drop of this.orbitDrops) {
+        const angle = drop.angle + time * drop.speed + Math.sin(time * 0.9 + drop.phase) * 0.24;
+        const distance = target.radius * drop.radius * (1 + Math.sin(time * 1.7 + drop.phase) * 0.08);
+        const x = target.x + Math.cos(angle) * distance * 1.42;
+        const y = target.y + Math.sin(angle) * distance * drop.lift;
+        const depth = Math.sin(angle) * 0.5 + 0.5;
+        const size = drop.size * (0.68 + depth * 0.62) * strength;
+        context.beginPath();
+        context.arc(x, y, Math.max(0.4, size), 0, Math.PI * 2);
+        context.fillStyle = `rgba(129, 177, 179, ${(0.2 + depth * 0.22) * strength})`;
+        context.fill();
+        context.beginPath();
+        context.arc(x - size * 0.28, y - size * 0.34, Math.max(0.3, size * 0.22), 0, Math.PI * 2);
+        context.fillStyle = `rgba(244, 251, 250, ${(0.32 + depth * 0.36) * strength})`;
+        context.fill();
+      }
       context.restore();
     }
 
@@ -603,7 +783,6 @@
       this.frame = requestAnimationFrame(this.render);
       if (!this.context || !this.active || document.hidden || !this.canvas.isConnected) return;
       if (this.needsResize) this.resize();
-      if (this.mode !== "landing") return;
       if (this.reducedMotion && this.staticRendered) return;
       if (!this.reducedMotion && now - this.lastRenderAt < this.frameInterval) return;
       const deltaSeconds = Math.min(0.04, Math.max(0.001, (now - this.lastFrameAt) / 1000));
@@ -611,10 +790,17 @@
       this.lastRenderAt = now;
       const context = this.context;
       context.clearRect(0, 0, this.width, this.height);
-      this.drawMist(context, now);
-      this.drawRain(context, deltaSeconds);
-      this.drawRipples(context, deltaSeconds);
-      this.drawBurst(context, now);
+      if (this.mode === "landing") {
+        this.drawMist(context, now);
+        this.drawRain(context, deltaSeconds);
+        this.drawRipples(context, deltaSeconds);
+        this.drawBurst(context, now);
+      } else if (this.mode === "converging") {
+        this.drawMist(context, now);
+        this.drawConvergence(context, now);
+      } else {
+        this.drawWaterOrbit(context, now, 1);
+      }
       this.staticRendered = this.reducedMotion;
     }
   }

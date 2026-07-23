@@ -9,8 +9,8 @@
       body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.7" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.7" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.8" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.8" />
   </head>
   <body>
     <script>
@@ -22,7 +22,7 @@
       <canvas class="client-ink-canvas" id="clientInkCanvas" aria-hidden="true"></canvas>
       <div class="client-entry-home" aria-hidden="false">
         <header class="client-entry-header">
-          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.7" alt="HS" />
+          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.8" alt="HS" />
           <div class="client-entry-actions">
             <button class="secondary-button" id="returnClientLanding" type="button">返回</button>
             <button class="primary-button" id="openClientLogin" type="button">登录</button>
@@ -34,11 +34,10 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.7" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.8" alt="" /></div>
         </div>
 
         <div class="login-heading">
-          <div class="eyebrow login-portal-label">管理面板</div>
           <h1 id="loginHeadingTitle">登录</h1>
         </div>
 
@@ -98,7 +97,7 @@
       <canvas class="client-workspace-ink" id="clientWorkspaceInk" aria-hidden="true"></canvas>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.7" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.8" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -910,8 +909,7 @@
     </div>
     <div class="modal-backdrop hidden" id="forgotPasswordModal" aria-hidden="true">
       <form class="modal-panel security-modal" id="forgotPasswordForm" role="dialog" aria-modal="true" aria-labelledby="forgotPasswordModalTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">账号安全</span><h2 id="forgotPasswordModalTitle">找回密码</h2></div><button class="modal-close" id="closeForgotPasswordModal" type="button" aria-label="关闭">×</button></div>
-        <div class="security-notice">验证码只发送到已绑定并验证的邮箱。</div>
+        <div class="modal-header"><div><h2 id="forgotPasswordModalTitle">找回密码</h2></div><button class="modal-close" id="closeForgotPasswordModal" type="button" aria-label="关闭">×</button></div>
         <label class="field"><span>绑定邮箱</span><input id="forgotPasswordEmail" type="email" autocomplete="email" required /></label>
         <div class="registration-code-row"><input id="forgotPasswordCode" required inputmode="numeric" maxlength="6" placeholder="6位邮箱验证码" /><button class="secondary-button" id="sendForgotPasswordCode" type="button">发送验证码</button></div>
         <label class="field"><span>新密码</span><input id="forgotPasswordNew" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
@@ -988,14 +986,14 @@
     </div>
     <div class="modal-backdrop hidden" id="modelModal" aria-hidden="true">
       <section class="modal-panel settings-model-modal" role="dialog" aria-modal="true" aria-labelledby="modelModalTitle">
-        <div class="modal-header model-modal-header"><div><span class="modal-eyebrow">模型中心</span><h2 id="modelModalTitle">编辑生成模型</h2><p>按平台维护可用模型和单次消耗积分，关闭模型后客户端将无法选择。</p></div><button class="modal-close" id="closeModelModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header model-modal-header"><div><h2 id="modelModalTitle">编辑生成模型</h2><p>按平台维护可用模型和单次消耗积分，关闭模型后客户端将无法选择。</p></div><button class="modal-close" id="closeModelModal" type="button" aria-label="关闭">×</button></div>
         <div class="model-config-list" id="modelConfigList"></div>
         <div class="modal-actions model-modal-actions"><button class="secondary-button" id="syncQianwenModels" type="button">同步三平台</button><span>更改仅在保存后生效</span><button class="secondary-button" id="cancelModelModal" type="button">取消</button><button class="primary-button" id="saveModelConfig" type="button">保存模型配置</button></div>
       </section>
     </div>
     <div class="modal-backdrop hidden" id="packageModal" aria-hidden="true">
       <section class="modal-panel package-modal" role="dialog" aria-modal="true" aria-labelledby="packageModalTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">套餐目录</span><h2 id="packageModalTitle">管理积分套餐</h2><p>启用的套餐按排序值展示在客户端。</p></div><button class="modal-close" id="closePackageModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="packageModalTitle">管理积分套餐</h2><p>启用的套餐按排序值展示在客户端。</p></div><button class="modal-close" id="closePackageModal" type="button" aria-label="关闭">×</button></div>
         <form class="package-create-form" id="packageForm"><label class="field"><span>套餐名称</span><input id="packageName" maxlength="80" required placeholder="例如：进阶套餐" /></label><label class="field"><span>积分</span><input id="packagePoints" type="number" min="0.1" step="0.1" required /></label><label class="field"><span>赠送次数</span><input id="packageBonus" type="number" min="0" step="1" value="0" required /></label><label class="field"><span>排序</span><input id="packageSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createPackageButton" type="submit">新增套餐</button><label class="field field-wide"><span>购买跳转链接</span><input id="packagePaymentUrl" type="url" value="https://pay.ldxp.cn/shop/huisu/fhm9gj" required /></label></form>
         <div class="package-list" id="packageList"></div>
         <div class="modal-actions"><button class="secondary-button" id="cancelPackageModal" type="button">关闭</button></div>
@@ -1003,7 +1001,7 @@
     </div>
     <div class="modal-backdrop hidden" id="membershipModal" aria-hidden="true">
       <section class="modal-panel package-modal" role="dialog" aria-modal="true" aria-labelledby="membershipModalTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">会员目录</span><h2 id="membershipModalTitle">管理会员套餐</h2><p>启用的套餐会展示在客户端。</p></div><button class="modal-close" id="closeMembershipModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="membershipModalTitle">管理会员套餐</h2><p>启用的套餐会展示在客户端。</p></div><button class="modal-close" id="closeMembershipModal" type="button" aria-label="关闭">×</button></div>
         <form class="package-create-form membership-create-form" id="membershipForm"><label class="field"><span>套餐名称</span><input id="membershipName" maxlength="80" required /></label><label class="field"><span>所需积分</span><input id="membershipPrice" type="number" min="0.1" step="0.1" required /></label><label class="field"><span>有效天数</span><input id="membershipDuration" type="number" min="1" max="3650" value="30" required /></label><label class="field"><span>并发数</span><input id="membershipConcurrency" type="number" min="1" max="100" value="2" required /></label><label class="field"><span>积分减免</span><input id="membershipTaskDiscount" type="number" min="0" step="0.1" value="0" required /></label><label class="field"><span>赠送视频额度</span><input id="membershipBonus" type="number" min="0" value="0" required /></label><label class="field"><span>排序</span><input id="membershipSortOrder" type="number" step="1" value="0" required /></label><button class="primary-button" id="createMembershipButton" type="submit">新增套餐</button><label class="field field-wide"><span>套餐说明</span><input id="membershipDescription" maxlength="500" /></label></form>
         <div class="package-list" id="membershipAdminList"></div>
         <div class="modal-actions"><button class="secondary-button" id="cancelMembershipModal" type="button">关闭</button></div>
@@ -1011,20 +1009,20 @@
     </div>
     <div class="modal-backdrop hidden" id="membershipDetailsModal" aria-hidden="true">
       <section class="modal-panel membership-details-modal" role="dialog" aria-modal="true" aria-labelledby="membershipDetailsTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">会员权益</span><h2 id="membershipDetailsTitle">已购买会员</h2><p>高级会员使用期间，低级会员的剩余时间会自动暂停。</p></div><button class="modal-close" id="closeMembershipDetailsModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="membershipDetailsTitle">已购买会员</h2><p>高级会员使用期间，低级会员的剩余时间会自动暂停。</p></div><button class="modal-close" id="closeMembershipDetailsModal" type="button" aria-label="关闭">×</button></div>
         <div class="membership-details-list" id="membershipDetailsList"></div>
         <div class="modal-actions"><button class="secondary-button" id="cancelMembershipDetailsModal" type="button">关闭</button></div>
       </section>
     </div>
     <div class="modal-backdrop hidden" id="announcementModal" aria-hidden="true">
-      <section class="modal-panel announcement-modal-panel" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle"><div class="announcement-modal-accent" aria-hidden="true"></div><div class="modal-header"><div><span class="modal-eyebrow">平台公告</span><h2 id="announcementModalTitle"></h2></div><button class="modal-close" id="closeAnnouncementModal" type="button" aria-label="关闭">×</button></div><div class="announcement-modal-content" id="announcementModalContent"></div><div class="announcement-modal-footer"><span>HS 服务通知</span><button class="primary-button" id="confirmAnnouncementModal" type="button">确认</button></div></section>
+      <section class="modal-panel announcement-modal-panel" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle"><div class="announcement-modal-accent" aria-hidden="true"></div><div class="modal-header"><div><h2 id="announcementModalTitle"></h2></div><button class="modal-close" id="closeAnnouncementModal" type="button" aria-label="关闭">×</button></div><div class="announcement-modal-content" id="announcementModalContent"></div><div class="announcement-modal-footer"><span>HS 服务通知</span><button class="primary-button" id="confirmAnnouncementModal" type="button">确认</button></div></section>
     </div>
     <div class="modal-backdrop hidden" id="pointCardModal" aria-hidden="true">
       <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><h2 id="pointCardModalTitle">生成兑换码</h2><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
     </div>
     <div class="modal-backdrop hidden" id="promptPickerModal" aria-hidden="true">
       <section class="modal-panel prompt-picker-modal" role="dialog" aria-modal="true" aria-labelledby="promptPickerTitle">
-        <div class="modal-header"><div><span class="modal-eyebrow">提示词库</span><h2 id="promptPickerTitle">选择提示词</h2><p>选择后会直接带入当前生成任务。</p></div><button class="modal-close" id="closePromptPickerModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="promptPickerTitle">选择提示词</h2><p>选择后会直接带入当前生成任务。</p></div><button class="modal-close" id="closePromptPickerModal" type="button" aria-label="关闭">×</button></div>
         <div class="prompt-picker-list" id="promptPickerList"></div>
         <div class="prompt-picker-footer"><button class="page-button" id="promptPickerPrev" type="button">上一页</button><span id="promptPickerPageState">第 1 / 1 页</span><button class="page-button" id="promptPickerNext" type="button">下一页</button><button class="secondary-button" id="cancelPromptPickerModal" type="button">取消</button></div>
       </section>
@@ -1100,7 +1098,7 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/ink-bg.js?v=1.4.7"></script>
-    <script src="/admin/assets/app.js?v=1.4.7"></script>
+    <script src="/admin/assets/ink-bg.js?v=1.4.8"></script>
+    <script src="/admin/assets/app.js?v=1.4.8"></script>
   </body>
 </html>

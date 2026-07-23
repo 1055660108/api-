@@ -1149,7 +1149,7 @@ function setClientEntryStage(stage, options = {}) {
   if (portal !== "client" || !els.loginView) return;
   const nextStage = ["landing", "converging", "login"].includes(stage) ? stage : "landing";
   els.loginView.dataset.clientStage = nextStage;
-  const inkMode = nextStage === "landing" ? "landing" : "login";
+  const inkMode = nextStage;
   if (nextStage === "landing") {
     rerollClientInkSplatters();
     clientEntryInk?.randomize?.();
@@ -1162,7 +1162,7 @@ function startClientLoginTransition() {
   if (portal !== "client" || els.loginView?.dataset.clientStage === "login") return;
   window.clearTimeout(clientLoginTransitionTimer);
   setClientEntryStage("converging");
-  const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1050;
+  const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1350;
   clientLoginTransitionTimer = window.setTimeout(() => {
     setClientEntryStage("login");
     els.clientUsername?.focus({ preventScroll: true });

@@ -4,6 +4,7 @@ x-app-environment: &app-environment
   DOLA_DATA_DIR: /var/lib/dola-fetch-service
   DOLA_CONFIG_PATH: /var/lib/dola-fetch-service/config.json
   DOLA_DATABASE_URL: postgresql://${POSTGRES_USER:-dola}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-dola}
+  DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-16}
   DOLA_QUEUE_BACKEND: redis
   DOLA_REDIS_URL: redis://redis:6379/0
   DOLA_QUEUE_NAMESPACE: ${DOLA_QUEUE_NAMESPACE:-dola:tasks}
@@ -29,7 +30,7 @@ x-app-environment: &app-environment
 x-app-base: &app-base
   build:
     context: .
-  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.4}
+  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.5}
   init: true
   restart: unless-stopped
   environment: *app-environment

@@ -12,10 +12,15 @@ class VersionTests(unittest.TestCase):
         version = (root / "VERSION").read_text(encoding="utf-8").strip()
         compose = (root / "compose.yaml").read_text(encoding="utf-8")
         dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+        env_example = (root / ".env.example").read_text(encoding="utf-8")
+        postgres_source = (root / "app" / "postgres.py").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.4")
+        self.assertEqual(version, "1.4.5")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
+        self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-16}", compose)
+        self.assertIn("DOLA_DATABASE_POOL_SIZE=16", env_example)
+        self.assertIn('os.environ.get("DOLA_DATABASE_POOL_SIZE") or 16', postgres_source)
         self.assertIn("COPY VERSION ./VERSION", dockerfile)
 
 

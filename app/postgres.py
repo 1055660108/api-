@@ -128,7 +128,7 @@ _schema_ready = False
 def _connection_pool():
     global _pool, _pool_signature
     url = database_url()
-    max_size = max(2, int(os.environ.get("DOLA_DATABASE_POOL_SIZE") or 16))
+    max_size = max(2, int(os.environ.get("DOLA_DATABASE_POOL_SIZE") or 24))
     signature = f"{url}|{max_size}"
     with _pool_lock:
         if _pool is None or _pool_signature != signature:

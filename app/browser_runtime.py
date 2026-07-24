@@ -1,14 +1,210 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import time
+from contextlib import asynccontextmanager
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Coroutine
+from typing import Any, AsyncIterator, Coroutine
 
-from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Browser, BrowserContext, Error as PlaywrightError, Playwright, async_playwright
 
 from .config import APP_ROOT
+
+
+BROWSER_POOL_PROCESSES = 8
+BROWSER_CONTEXTS_PER_PROCESS = 4
+BROWSER_SUBMISSION_CONCURRENCY = BROWSER_POOL_PROCESSES * BROWSER_CONTEXTS_PER_PROCESS
+BROWSER_RECYCLE_TASKS = 80
+BROWSER_RECYCLE_SECONDS = 30 * 60
+
+
+@dataclass(eq=False)
+class _BrowserSlot:
+    key: str
+    browser: Browser | None = None
+    active: int = 0
+    completed: int = 0
+    created_at: float = 0.0
+    launching: bool = True
+    retiring: bool = False
+
+
+class BrowserContextLease:
+    def __init__(self, pool: "ReusableBrowserPool", slot: _BrowserSlot, context: BrowserContext):
+        self.pool = pool
+        self.slot = slot
+        self.browser = slot.browser
+        self.context = context
+        self._released = False
+
+    async def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        await self.pool.release(self.slot, self.context)
+
+
+class ReusableBrowserPool:
+    def __init__(self, max_processes: int = BROWSER_POOL_PROCESSES, contexts_per_process: int = BROWSER_CONTEXTS_PER_PROCESS):
+        self.max_processes = max(1, int(max_processes))
+        self.contexts_per_process = max(1, int(contexts_per_process))
+        self.capacity = self.max_processes * self.contexts_per_process
+        self._playwright: Playwright | None = None
+        self._slots: list[_BrowserSlot] = []
+        self._condition = asyncio.Condition()
+        self._start_lock = asyncio.Lock()
+        self._stopping = False
+
+    async def start(self) -> None:
+        async with self._start_lock:
+            if self._playwright is not None:
+                return
+            self._stopping = False
+            self._playwright = await async_playwright().start()
+
+    @asynccontextmanager
+    async def playwright_context(self) -> AsyncIterator[Playwright]:
+        await self.start()
+        if self._playwright is None:
+            raise RuntimeError("browser pool is not available")
+        yield self._playwright
+
+    @staticmethod
+    def _browser_connected(slot: _BrowserSlot) -> bool:
+        try:
+            return bool(slot.browser and slot.browser.is_connected())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _slot_key(executable_path: str | None, headless: bool, proxy: dict[str, str] | None) -> str:
+        return json.dumps(
+            {"executable_path": str(executable_path or ""), "headless": bool(headless), "proxy": proxy or {}},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    async def acquire_context(
+        self,
+        *,
+        executable_path: str | None,
+        headless: bool,
+        proxy: dict[str, str] | None,
+        browser_args: list[str],
+        context_options: dict[str, Any],
+    ) -> BrowserContextLease:
+        await self.start()
+        key = self._slot_key(executable_path, headless, proxy)
+        while True:
+            retired: _BrowserSlot | None = None
+            launch_slot: _BrowserSlot | None = None
+            selected: _BrowserSlot | None = None
+            async with self._condition:
+                if self._stopping:
+                    raise RuntimeError("browser pool is stopping")
+                for slot in list(self._slots):
+                    if not slot.launching and slot.active == 0 and not self._browser_connected(slot):
+                        self._slots.remove(slot)
+                        retired = slot
+                        break
+                for slot in self._slots:
+                    if slot.key == key and not slot.launching and not slot.retiring and self._browser_connected(slot) and slot.active < self.contexts_per_process:
+                        slot.active += 1
+                        selected = slot
+                        break
+                if selected is None:
+                    if len(self._slots) >= self.max_processes:
+                        idle = next((slot for slot in self._slots if not slot.launching and slot.active == 0), None)
+                        if idle is not None:
+                            self._slots.remove(idle)
+                            retired = idle
+                    if len(self._slots) < self.max_processes:
+                        launch_slot = _BrowserSlot(key=key, active=1, created_at=time.monotonic())
+                        self._slots.append(launch_slot)
+                    else:
+                        await self._condition.wait()
+                        continue
+            if retired and retired.browser:
+                await safe_close(retired.browser)
+            if selected is not None:
+                try:
+                    context = await selected.browser.new_context(**context_options)  # type: ignore[union-attr]
+                    return BrowserContextLease(self, selected, context)
+                except Exception:
+                    await self._release_slot(selected, context=None, failed=True)
+                    raise
+            if launch_slot is None:
+                continue
+            try:
+                if self._playwright is None:
+                    raise RuntimeError("browser pool is not available")
+                browser = await self._playwright.chromium.launch(
+                    headless=headless,
+                    executable_path=executable_path,
+                    proxy=proxy,
+                    args=browser_args,
+                )
+                async with self._condition:
+                    launch_slot.browser = browser
+                    launch_slot.launching = False
+                    self._condition.notify_all()
+                context = await browser.new_context(**context_options)
+                return BrowserContextLease(self, launch_slot, context)
+            except Exception:
+                await self._release_slot(launch_slot, context=None, failed=True)
+                raise
+
+    async def _release_slot(self, slot: _BrowserSlot, context: BrowserContext | None, failed: bool = False) -> None:
+        if context is not None:
+            await safe_close(context)
+        retired: Browser | None = None
+        async with self._condition:
+            slot.active = max(0, slot.active - 1)
+            slot.completed += int(context is not None)
+            expired = time.monotonic() - slot.created_at >= BROWSER_RECYCLE_SECONDS
+            recycle = failed or not self._browser_connected(slot) or slot.completed >= BROWSER_RECYCLE_TASKS or expired
+            if recycle:
+                slot.retiring = True
+            if slot in self._slots and slot.active == 0 and recycle:
+                self._slots.remove(slot)
+                retired = slot.browser
+            if slot in self._slots and slot.launching and slot.browser is None and failed:
+                self._slots.remove(slot)
+            self._condition.notify_all()
+        if retired is not None:
+            await safe_close(retired)
+
+    async def release(self, slot: _BrowserSlot, context: BrowserContext) -> None:
+        await self._release_slot(slot, context=context)
+
+    async def stop(self) -> None:
+        async with self._condition:
+            self._stopping = True
+            slots = list(self._slots)
+            self._slots.clear()
+            self._condition.notify_all()
+        await asyncio.gather(*(safe_close(slot.browser) for slot in slots if slot.browser is not None), return_exceptions=True)
+        async with self._start_lock:
+            if self._playwright is not None:
+                with suppress(Exception):
+                    await self._playwright.stop()
+                self._playwright = None
+
+    def snapshot(self) -> dict[str, int]:
+        active = sum(slot.active for slot in self._slots)
+        return {
+            "process_limit": self.max_processes,
+            "contexts_per_process": self.contexts_per_process,
+            "submission_capacity": self.capacity,
+            "processes": sum(1 for slot in self._slots if slot.browser is not None),
+            "active_contexts": active,
+            "available_contexts": max(0, self.capacity - active),
+        }
 
 
 def _playwright_candidates(root: Path) -> list[Path]:

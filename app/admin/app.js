@@ -433,6 +433,8 @@ const els = {
   workersModal: document.getElementById("workersModal"),
   workersInput: document.getElementById("workersInput"),
   effectiveWorkersInput: document.getElementById("effectiveWorkersInput"),
+  submissionConcurrencyInput: document.getElementById("submissionConcurrencyInput"),
+  remoteGenerationLimitInput: document.getElementById("remoteGenerationLimitInput"),
   workersModalState: document.getElementById("workersModalState"),
   closeWorkersModal: document.getElementById("closeWorkersModal"),
   cancelWorkersModal: document.getElementById("cancelWorkersModal"),
@@ -537,6 +539,10 @@ const state = {
   concurrency: 1,
   configuredWorkers: 1,
   maxEffectiveWorkers: 1,
+  browserPoolProcesses: 8,
+  browserContextsPerProcess: 4,
+  submissionConcurrency: 32,
+  remoteGenerationLimit: 100,
   billingPriority: "video_first",
   version: "",
   selectedVideoIds: new Set(),
@@ -1316,6 +1322,7 @@ function startAutoRefresh() {
         const activeView = document.querySelector(".view.active")?.id || "";
         const jobs = [];
         if (activeView === "dashboardView" || activeView === "tasksView") jobs.push(refreshTasks({ quiet: true, keepPage: true }));
+        if (activeView === "batch-submitView" && !state.batchAutoRunning) jobs.push(refreshBatchTaskStatuses({ quiet: true }));
         if (portal === "admin" && activeView === "accountsView") jobs.push(refreshAccounts({ quiet: true }));
         if (portal === "admin" && activeView === "usersView") jobs.push(loadUsers());
         const editingMessage = activeView === "messagesView" && Boolean(document.activeElement?.closest("#messagesView input, #messagesView textarea, #messagesView select"));
@@ -2350,8 +2357,17 @@ async function refreshHealth() {
   const effectiveWorkers = Number(data.components?.resources?.effective_workers ?? configuredWorkers);
   state.configuredWorkers = configuredWorkers || 1;
   state.maxEffectiveWorkers = Number(data.components?.resources?.capacity_limit ?? configuredWorkers ?? 1);
-  els.metricWorkers.textContent = configuredWorkers ? `${effectiveWorkers} / ${configuredWorkers}` : "-";
-  if (els.metricWorkersNote) els.metricWorkersNote.textContent = "有效 / 配置";
+  state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 8);
+  state.browserContextsPerProcess = Number(data.components?.browser?.contexts_per_process || 4);
+  state.submissionConcurrency = Number(data.components?.browser?.submission_capacity || effectiveWorkers || 32);
+  state.remoteGenerationLimit = Number(data.remote_generation_limit || state.remoteGenerationLimit || 100);
+  if (portal === "admin") {
+    els.metricWorkers.textContent = `${state.submissionConcurrency} / ${state.remoteGenerationLimit}`;
+    if (els.metricWorkersNote) els.metricWorkersNote.textContent = "提交 / 远端上限";
+  } else {
+    els.metricWorkers.textContent = configuredWorkers ? `${effectiveWorkers} / ${configuredWorkers}` : "-";
+    if (els.metricWorkersNote) els.metricWorkersNote.textContent = "有效 / 配置";
+  }
   applyAccessScope(data);
   setServiceState(true);
   updateDashboardMetrics();
@@ -2702,13 +2718,15 @@ async function importAccount(event) {
 }
 
 function openWorkersModal() {
-  els.workersInput.value = String(Math.max(1, Number(state.configuredWorkers || 1)));
-  els.effectiveWorkersInput.value = String(Math.max(1, Number(state.maxEffectiveWorkers || state.configuredWorkers || 1)));
+  els.workersInput.value = String(state.browserPoolProcesses || 8);
+  els.effectiveWorkersInput.value = String(state.browserContextsPerProcess || 4);
+  els.submissionConcurrencyInput.value = String(state.submissionConcurrency || 32);
+  els.remoteGenerationLimitInput.value = String(Math.max(1, Number(state.remoteGenerationLimit || 100)));
   els.workersModalState.textContent = "";
   els.workersModal.classList.remove("hidden");
   els.workersModal.setAttribute("aria-hidden", "false");
-  els.workersInput.focus();
-  els.workersInput.select();
+  els.remoteGenerationLimitInput.focus();
+  els.remoteGenerationLimitInput.select();
 }
 
 function closeWorkersModal() {
@@ -2766,30 +2784,27 @@ function closeVideoModal() {
 }
 
 async function saveWorkersConfig() {
-  const workers = Number.parseInt(els.workersInput.value, 10);
-  const maxEffectiveWorkers = Number.parseInt(els.effectiveWorkersInput.value, 10);
-  if (!Number.isInteger(workers) || workers < 1 || workers > 999) {
+  const submissionConcurrency = Math.max(1, Number(state.submissionConcurrency || 32));
+  const remoteGenerationLimit = Number.parseInt(els.remoteGenerationLimitInput.value, 10);
+  if (!Number.isInteger(remoteGenerationLimit) || remoteGenerationLimit < 1 || remoteGenerationLimit > 999) {
     els.workersModalState.textContent = "请输入 1 - 999";
-    toast("全局并发范围是 1 - 999", "error");
-    return;
-  }
-  if (!Number.isInteger(maxEffectiveWorkers) || maxEffectiveWorkers < 1 || maxEffectiveWorkers > 999) {
-    els.workersModalState.textContent = "请输入 1 - 999";
-    toast("真实有效并发上限范围是 1 - 999", "error");
+    toast("远端生成任务上限范围是 1 - 999", "error");
     return;
   }
   setBusy(els.saveWorkers, true, "保存中");
   try {
     const data = await apiFetch("/config/workers", {
       method: "POST",
-      body: { browser_workers: workers, max_effective_workers: maxEffectiveWorkers },
+      body: { browser_workers: submissionConcurrency, max_effective_workers: submissionConcurrency, remote_generation_limit: remoteGenerationLimit },
     });
-    const configured = Number(data.browser_workers ?? workers);
-    const effective = Number(data.effective_browser_workers ?? configured);
-    state.configuredWorkers = configured;
-    state.maxEffectiveWorkers = Number(data.max_effective_workers ?? data.capacity_limit ?? maxEffectiveWorkers);
-    els.metricWorkers.textContent = `${effective} / ${configured}`;
-    els.workersModalState.textContent = `已保存，当前有效并发 ${effective}`;
+    state.configuredWorkers = Number(data.browser_workers ?? submissionConcurrency);
+    state.maxEffectiveWorkers = Number(data.max_effective_workers ?? data.capacity_limit ?? submissionConcurrency);
+    state.browserPoolProcesses = Number(data.browser_pool_processes || 8);
+    state.browserContextsPerProcess = Number(data.browser_contexts_per_process || 4);
+    state.submissionConcurrency = Number(data.submission_concurrency || 32);
+    state.remoteGenerationLimit = Number(data.remote_generation_limit || remoteGenerationLimit);
+    els.metricWorkers.textContent = `${state.submissionConcurrency} / ${state.remoteGenerationLimit}`;
+    els.workersModalState.textContent = `已保存，远端生成上限 ${state.remoteGenerationLimit}`;
     toast("并发配置已更新");
     closeWorkersModal();
     await refreshHealth();
@@ -2941,6 +2956,7 @@ async function refreshTasks(options = {}) {
     state.taskTotalPages = Math.max(1, Number(data.total_pages || 1));
     state.page = Math.max(1, Number(data.page || state.page));
     state.taskStats = data.stats || null;
+    syncBatchPromptsFromTaskState();
     renderTaskTable({ skipUnchanged: true });
     updateDashboardMetrics();
     if (!options.quiet) toast(`已载入 ${state.taskTotal} 条任务`);
@@ -3429,6 +3445,7 @@ async function queryTask(id, options = {}) {
   try {
     const data = await apiFetch(`/tasks/${encodeURIComponent(id)}`, { timeout: 30000 });
     state.results[id] = data;
+    syncBatchPromptsFromTaskState();
     if (!options.quiet) toast(`${shortId(id)} 查询完成`);
     if (!options.deferRender) {
       saveSessionResults();
@@ -3762,16 +3779,16 @@ async function submitTask(event) {
   }
 }
 
-const MAX_BATCH_SELECTION = 30;
 const BATCH_VIDEO_DURATION = "15";
 const BATCH_DRAFT_VERSION = 1;
 const BATCH_IMAGE_DB_NAME = "dfyue_batch_images";
 const BATCH_IMAGE_DB_VERSION = 1;
 const BATCH_IMAGE_STORE = "drafts";
 let batchImageDatabasePromise = null;
+const batchSharedUploadSources = new Map();
 
 function batchConcurrencyLimit() {
-  return Math.max(1, Math.trunc(portal === "client" ? Number(state.concurrency || 1) : MAX_BATCH_SELECTION));
+  return Math.max(1, Math.trunc(portal === "client" ? Number(state.concurrency || 1) : Number(state.batchPrompts.length || 1)));
 }
 
 function syncBatchConcurrencyControls(useMaximum = false) {
@@ -3902,7 +3919,7 @@ function saveBatchDraft() {
       localStorage.removeItem(key);
       return;
     }
-    const prompts = state.batchPrompts.slice(0, 500).map((item) => ({
+    const prompts = state.batchPrompts.map((item) => ({
       row: Number(item.row || 0),
       prompt: String(item.prompt || "").slice(0, 4000),
       selected: Boolean(item.selected),
@@ -3945,7 +3962,7 @@ async function loadBatchDraft() {
     const stored = JSON.parse(localStorage.getItem(batchDraftStorageKey(owner)) || "null");
     if (!stored || stored.version !== BATCH_DRAFT_VERSION || !Array.isArray(stored.prompts)) throw new Error("no draft");
     state.batchSpreadsheetName = String(stored.filename || "").slice(0, 240);
-    state.batchPrompts = stored.prompts.slice(0, 500).map((item, index) => {
+    state.batchPrompts = stored.prompts.map((item, index) => {
       const taskId = String(item?.taskId || "").slice(0, 80);
       let status = String(item?.status || "");
       if (["queued", "running", "success"].includes(status)) status = taskId ? "running" : "";
@@ -4027,8 +4044,47 @@ function batchItemIsCreated(item) {
 function batchSelectedEntries() {
   return state.batchPrompts
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => item.selected && item.prompt.trim() && !batchItemIsCreated(item))
-    .slice(0, MAX_BATCH_SELECTION);
+    .filter(({ item }) => item.selected && item.prompt.trim() && !batchItemIsCreated(item));
+}
+
+function syncBatchPromptFromTaskState(item) {
+  const taskId = String(item?.taskId || "");
+  if (!taskId) return false;
+  const task = state.tasks.find((entry) => String(entry.id || "") === taskId);
+  const result = state.results[taskId] || {};
+  const resultCode = String(result.code || "");
+  const resultUrl = String(result.url || task?.video_url || task?.result_url || "").trim();
+  const taskStatus = String(task?.status || "").toLowerCase();
+  if (resultUrl && (resultCode === "2" || taskStatus === "success")) {
+    item.status = "completed";
+    item.error = "";
+    item.videoUrl = resultUrl;
+    item.selected = false;
+    return true;
+  }
+  const resultText = String(result.text || "").trim();
+  if (["failed", "canceled"].includes(taskStatus) || (resultCode === "0" && resultText)) {
+    item.status = "failed";
+    item.error = batchFriendlyError(task?.error || resultText || (taskStatus === "canceled" ? "用户取消生成" : "生成失败"));
+    item.videoUrl = "";
+    return true;
+  }
+  if (task || resultCode === "1") {
+    item.status = "running";
+    item.error = "";
+  }
+  return false;
+}
+
+function syncBatchPromptsFromTaskState() {
+  let changed = false;
+  state.batchPrompts.forEach((item) => {
+    const before = `${item.status}|${item.error}|${item.videoUrl}|${item.selected}`;
+    syncBatchPromptFromTaskState(item);
+    changed = changed || before !== `${item.status}|${item.error}|${item.videoUrl}|${item.selected}`;
+  });
+  if (changed) scheduleBatchDraftSave();
+  return changed;
 }
 
 function batchItemStatusText(item) {
@@ -4055,7 +4111,7 @@ function resetBatchTaskPage() {
   if (els.batchRowImageInput) els.batchRowImageInput.value = "";
   if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = "未选择文件";
   if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
-  if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(MAX_BATCH_SELECTION);
+  if (els.batchSelectionLimit) els.batchSelectionLimit.value = "1";
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = "等待导入";
   syncBatchConcurrencyControls();
   renderBatchPrompts();
@@ -4065,6 +4121,7 @@ function resetBatchTaskPage() {
 
 function renderBatchPrompts() {
   if (!els.batchPromptList) return;
+  syncBatchPromptsFromTaskState();
   const selected = batchSelectedEntries();
   const previousPage = Number(els.batchPromptList.dataset.page || 0);
   const previousScrollTop = els.batchPromptList.scrollTop;
@@ -4099,16 +4156,15 @@ function renderBatchPrompts() {
   if (els.batchPageState) els.batchPageState.textContent = `第 ${state.batchPage} / ${totalPages} 页 · 共 ${state.batchPrompts.length} 条`;
   if (els.batchPrevPage) els.batchPrevPage.disabled = state.batchPage <= 1;
   if (els.batchNextPage) els.batchNextPage.disabled = state.batchPage >= totalPages;
-  if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selected.length} / ${MAX_BATCH_SELECTION} 条`;
+  const selectable = state.batchPrompts.filter((item) => !batchItemIsCreated(item) && item.prompt.trim());
+  if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selected.length} / ${selectable.length} 条`;
   if (els.selectAllBatchPrompts) {
-    const available = state.batchPrompts.filter((item) => !batchItemIsCreated(item) && item.prompt.trim());
-    const targetCount = Math.min(MAX_BATCH_SELECTION, available.length);
-    const selectedAvailable = available.filter((item) => item.selected).length;
-    els.selectAllBatchPrompts.checked = targetCount > 0 && selectedAvailable === targetCount;
-    els.selectAllBatchPrompts.indeterminate = selectedAvailable > 0 && selectedAvailable < targetCount;
-    els.selectAllBatchPrompts.disabled = state.batchSubmitting || !available.length;
+    const selectedAvailable = selectable.filter((item) => item.selected).length;
+    els.selectAllBatchPrompts.checked = selectable.length > 0 && selectedAvailable === selectable.length;
+    els.selectAllBatchPrompts.indeterminate = selectedAvailable > 0 && selectedAvailable < selectable.length;
+    els.selectAllBatchPrompts.disabled = state.batchSubmitting || !selectable.length;
   }
-  if (els.batchSelectionLimit) els.batchSelectionLimit.max = String(Math.min(MAX_BATCH_SELECTION, Math.max(1, state.batchPrompts.length)));
+  if (els.batchSelectionLimit) els.batchSelectionLimit.max = String(Math.max(1, selectable.length));
   if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selected.length;
   if (els.autoSubmitBatchTasks) {
     els.autoSubmitBatchTasks.disabled = !state.batchAutoRunning && (state.batchSubmitting || !selected.length);
@@ -4128,7 +4184,8 @@ function renderBatchPrompts() {
 }
 
 function applyBatchSelectionCount() {
-  const requested = Math.max(1, Math.min(MAX_BATCH_SELECTION, Math.trunc(Number(els.batchSelectionLimit?.value || MAX_BATCH_SELECTION))));
+  const availableCount = state.batchPrompts.filter((item) => !batchItemIsCreated(item) && item.prompt.trim()).length;
+  const requested = Math.max(1, Math.min(Math.max(1, availableCount), Math.trunc(Number(els.batchSelectionLimit?.value || availableCount || 1))));
   if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(requested);
   let remaining = requested;
   state.batchPrompts.forEach((item) => {
@@ -4173,7 +4230,7 @@ async function parseBatchSpreadsheet() {
   try {
     const data = await apiFetch("/batch-prompts/parse", { method: "POST", body: form, timeout: 60000 });
     state.batchPrompts.forEach((item) => releaseBatchImageEntries(item.images));
-    state.batchPrompts = (data.prompts || []).map((item, index) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: index < MAX_BATCH_SELECTION, status: "", error: "", taskId: "", videoUrl: "", images: [] }));
+    state.batchPrompts = (data.prompts || []).map((item) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: true, status: "", error: "", taskId: "", videoUrl: "", images: [] }));
     state.batchPage = 1;
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `已解析 ${state.batchPrompts.length} 条提示词`;
     renderBatchPrompts();
@@ -4193,6 +4250,7 @@ async function parseBatchSpreadsheet() {
 async function createBatchTask(entry, sessionId, ratio) {
   const { item, index } = entry;
   const generation = dolaBatchGenerationSelection();
+  const sharedSourceTaskId = String(batchSharedUploadSources.get(sessionId) || "");
   const form = new FormData();
   form.append("prompt", item.prompt.trim());
   form.append("ratio", ratio);
@@ -4203,12 +4261,20 @@ async function createBatchTask(entry, sessionId, ratio) {
   form.append("batch_row", String(item.row));
   form.append("platform", generation.platform);
   form.append("model", generation.model);
-  [...state.batchSharedImages, ...(item.images || [])].forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
-  const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 45000 };
+  if (sharedSourceTaskId && state.batchSharedImages.length) {
+    form.append("batch_reference_task_id", sharedSourceTaskId);
+    form.append("batch_reference_image_count", String(state.batchSharedImages.length));
+  } else {
+    state.batchSharedImages.forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
+  }
+  (item.images || []).forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
+  const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 90000 };
   let lastError = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return await apiFetch("/tasks", options);
+      const data = await apiFetch("/tasks", options);
+      if (!sharedSourceTaskId && state.batchSharedImages.length && data?.id) batchSharedUploadSources.set(sessionId, String(data.id));
+      return data;
     } catch (error) {
       lastError = error;
       const status = Number(error.status || 0);
@@ -4250,16 +4316,23 @@ async function refreshBatchTaskStatuses(options = {}) {
     if (!options.quiet) toast("暂无已创建的任务可刷新");
     return;
   }
-  setBusy(els.refreshBatchTasks, true, "刷新中");
+  if (!options.quiet) setBusy(els.refreshBatchTasks, true, "刷新中");
   let refreshed = 0;
   let unavailable = 0;
   try {
-    await runPool(entries, 3, async (item) => {
-      try {
-        const result = await apiFetch(`/tasks/${encodeURIComponent(item.taskId)}`, { timeout: 30000 });
-        applyBatchTaskResult(item, result);
+    const result = await apiFetch("/batch-prompts/status", {
+      method: "POST",
+      body: { task_ids: entries.map((item) => item.taskId) },
+      timeout: 30000,
+    });
+    const byId = new Map((result.tasks || []).map((item) => [String(item.id || ""), item]));
+    entries.forEach((item) => {
+      const status = byId.get(String(item.taskId || ""));
+      if (status) {
+        state.results[item.taskId] = status;
+        applyBatchTaskResult(item, status);
         refreshed += 1;
-      } catch (_) {
+      } else {
         unavailable += 1;
       }
     });
@@ -4269,7 +4342,7 @@ async function refreshBatchTaskStatuses(options = {}) {
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `状态已刷新：完成 ${completed} 条，查询成功 ${refreshed} 条`;
     if (!options.quiet) toast(unavailable ? `状态刷新完成，${unavailable} 条暂时无法查询` : "任务状态已刷新", unavailable ? "error" : "success");
   } finally {
-    setBusy(els.refreshBatchTasks, false);
+    if (!options.quiet) setBusy(els.refreshBatchTasks, false);
   }
 }
 
@@ -4277,10 +4350,6 @@ function validateBatchSelection() {
   const selected = batchSelectedEntries();
   if (!selected.length) {
     toast("请至少选择一条提示词", "error");
-    return [];
-  }
-  if (selected.length > MAX_BATCH_SELECTION) {
-    toast(`单次最多选择 ${MAX_BATCH_SELECTION} 条任务`, "error");
     return [];
   }
   if (selected.some(({ item }) => state.batchSharedImages.length + (item.images?.length || 0) > 9)) {
@@ -4332,6 +4401,7 @@ async function submitBatchTasks() {
   } finally {
     state.batchSubmitting = false;
     setBusy(els.submitBatchTasks, false);
+    batchSharedUploadSources.delete(sessionId);
     renderBatchPrompts();
   }
 }
@@ -4435,6 +4505,7 @@ async function autoSubmitBatchTasks() {
     state.batchSubmitting = false;
     state.batchAutoRunning = false;
     state.batchAutoStopRequested = false;
+    batchSharedUploadSources.delete(sessionId);
     await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
     renderBatchPrompts();
   }
@@ -5064,11 +5135,9 @@ function bindEvents() {
   els.batchSelectionLimit?.addEventListener("keydown", (event) => { if (event.key === "Enter") applyBatchSelectionCount(); });
   els.selectAllBatchPrompts?.addEventListener("change", () => {
     const selected = Boolean(els.selectAllBatchPrompts.checked);
-    let remaining = selected ? MAX_BATCH_SELECTION : 0;
     state.batchPrompts.forEach((item) => {
       if (!batchItemIsCreated(item) && item.prompt.trim()) {
-        item.selected = remaining > 0;
-        remaining -= 1;
+        item.selected = selected;
       }
     });
     renderBatchPrompts();
@@ -5078,13 +5147,7 @@ function bindEvents() {
     if (!checkbox) return;
     const item = state.batchPrompts[Number(checkbox.dataset.batchPromptSelect)];
     if (item && !batchItemIsCreated(item)) {
-      if (checkbox.checked && batchSelectedEntries().length >= MAX_BATCH_SELECTION) {
-        checkbox.checked = false;
-        item.selected = false;
-        toast(`最多选择 ${MAX_BATCH_SELECTION} 条任务`, "error");
-      } else {
-        item.selected = checkbox.checked;
-      }
+      item.selected = checkbox.checked;
     }
     renderBatchPrompts();
   });
@@ -5144,7 +5207,8 @@ function bindEvents() {
       if (checkbox) checkbox.checked = false;
     }
     const selectedCount = batchSelectedEntries().length;
-    if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selectedCount} / ${MAX_BATCH_SELECTION} 条`;
+    const availableCount = state.batchPrompts.filter((item) => !batchItemIsCreated(item) && item.prompt.trim()).length;
+    if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selectedCount} / ${availableCount} 条`;
     if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selectedCount;
     scheduleBatchDraftSave();
   });
@@ -5157,7 +5221,7 @@ function bindEvents() {
     }
     const selected = batchSelectedEntries();
     if (!selected.length || state.batchSubmitting) return;
-    if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(Math.min(MAX_BATCH_SELECTION, selected.length));
+    if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(selected.length);
     syncBatchConcurrencyControls();
     openSettingsModal(els.batchAutoModal, els.batchSelectionLimit);
   });
@@ -5367,6 +5431,10 @@ function bindEvents() {
     if (event.key === "Escape") closeWorkersModal();
   });
   els.effectiveWorkersInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveWorkersConfig();
+    if (event.key === "Escape") closeWorkersModal();
+  });
+  els.remoteGenerationLimitInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveWorkersConfig();
     if (event.key === "Escape") closeWorkersModal();
   });

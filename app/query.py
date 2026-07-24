@@ -33,6 +33,7 @@ POLICY_RETRY_TEXT = "你的输入可能包含违规内容请重试！"
 POLICY_RETRYING_TEXT = "检测到内容异常，正在自动重试..."
 ACCOUNT_QUOTA_RETRY_TEXT = "当前账号额度不足，正在切换账号重试"
 REFERENCE_IMAGE_REQUIRED_TEXT = "未收到可用参考图，请重新上传参考图后再提交"
+REFERENCE_IMAGE_RETRY_TEXT = "参考图识别异常，正在更换账号重新上传"
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -594,7 +595,20 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         if account_id:
             clear_account_current_task(account_id, task_id)
             refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+        if int(meta.get("image_count") or 0) > 0:
+            if account_id:
+                record_failed_account(task_id, account_id)
+            retry_count = retry_submitted_task(
+                task_id,
+                REFERENCE_IMAGE_RETRY_TEXT,
+                max_retries=MAX_TASK_RETRIES,
+                delay_seconds=10,
+            )
+            if retry_count <= MAX_TASK_RETRIES:
+                clear_transient_result(task_id)
+                return {"code": "1", "text": REFERENCE_IMAGE_RETRY_TEXT, "url": ""}
         mark_failed(task_id, REFERENCE_IMAGE_REQUIRED_TEXT)
+        meta = get_meta(task_id)
         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
         return {"code": "0", "text": REFERENCE_IMAGE_REQUIRED_TEXT, "url": ""}
     if is_account_quota_insufficient(text):

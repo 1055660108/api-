@@ -16,7 +16,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
-from .browser_runtime import resolve_browser_executable, safe_close, safe_unroute_all
+from .browser_runtime import BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
 from .proxy_manager import fetch_proxy_from_api, fetch_proxy_from_subscription, mark_node_unavailable
 from .store import (
@@ -632,12 +632,13 @@ async def _fetch_json(client: httpx.AsyncClient, url: str, *, label: str, **kwar
 
 
 class DolaFetchAutomation:
-    def __init__(self, task_id: str, prompt: str, ratio: str, duration: int | None = None, account: dict[str, Any] | None = None):
+    def __init__(self, task_id: str, prompt: str, ratio: str, duration: int | None = None, account: dict[str, Any] | None = None, browser_pool: ReusableBrowserPool | None = None):
         self.task_id = task_id
         self.prompt = prompt
         self.ratio = ratio
         self.duration = int(duration or 0)
         self.account = account or {}
+        self.browser_pool = browser_pool
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
@@ -678,30 +679,47 @@ class DolaFetchAutomation:
         if not self._task_exists():
             return {"success": True, "retryable": False, "reason": ""}
         clear_transient_result(self.task_id)
-        async with async_playwright() as playwright:
+        runtime = self.browser_pool.playwright_context() if self.browser_pool is not None else async_playwright()
+        async with runtime as playwright:
             browser: Browser | None = None
             context: BrowserContext | None = None
             page: Page | None = None
+            lease: BrowserContextLease | None = None
             try:
                 executable_path = self._browser_executable_path()
                 proxy_config = await self._browser_proxy_config()
-                browser = await playwright.chromium.launch(
-                    headless=self.settings.headless,
-                    executable_path=executable_path,
-                    proxy=proxy_config,
-                    args=[
-                        "--disable-dev-shm-usage",
-                        "--no-sandbox",
-                        "--disable-blink-features=AutomationControlled",
-                    ],
-                )
-                context = await browser.new_context(
-                    locale="zh-CN",
-                    viewport={"width": 1365, "height": 900},
-                    user_agent=BROWSER_USER_AGENT,
-                    extra_http_headers=BROWSER_EXTRA_HTTP_HEADERS,
-                    accept_downloads=False,
-                )
+                browser_args = [
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-blink-features=AutomationControlled",
+                ]
+                context_options = {
+                    "locale": "zh-CN",
+                    "viewport": {"width": 1365, "height": 900},
+                    "user_agent": BROWSER_USER_AGENT,
+                    "extra_http_headers": BROWSER_EXTRA_HTTP_HEADERS,
+                    "accept_downloads": False,
+                }
+                if self.browser_pool is not None:
+                    if proxy_config:
+                        context_options["proxy"] = proxy_config
+                    lease = await self.browser_pool.acquire_context(
+                        executable_path=executable_path,
+                        headless=self.settings.headless,
+                        proxy=None,
+                        browser_args=browser_args,
+                        context_options=context_options,
+                    )
+                    browser = lease.browser
+                    context = lease.context
+                else:
+                    browser = await playwright.chromium.launch(
+                        headless=self.settings.headless,
+                        executable_path=executable_path,
+                        proxy=proxy_config,
+                        args=browser_args,
+                    )
+                    context = await browser.new_context(**context_options)
                 await self._inject_account(context)
                 await context.add_init_script(BROWSER_INIT_SCRIPT)
                 page = await context.new_page()
@@ -778,8 +796,11 @@ class DolaFetchAutomation:
                 return {"success": True, "retryable": False, "reason": ""}
             finally:
                 await safe_unroute_all(page)
-                await safe_close(context)
-                await safe_close(browser)
+                if lease is not None:
+                    await lease.release()
+                else:
+                    await safe_close(context)
+                    await safe_close(browser)
 
     async def _browser_proxy_config(self) -> dict[str, str] | None:
         self.settings = load_settings()

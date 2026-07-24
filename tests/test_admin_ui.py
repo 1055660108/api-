@@ -246,7 +246,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.20', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.21', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -445,7 +445,11 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('apiFetch("/batch-prompts/parse"', self.javascript)
         self.assertIn('form.append("batch", "true")', self.javascript)
         self.assertIn('form.append("batch_index", String(index + 1))', self.javascript)
-        self.assertIn('const MAX_BATCH_SELECTION = 30', self.javascript)
+        self.assertNotIn('MAX_BATCH_SELECTION', self.javascript)
+        self.assertIn('selected: true, status: ""', self.javascript)
+        self.assertIn('function syncBatchPromptsFromTaskState()', self.javascript)
+        self.assertIn('item.videoUrl = resultUrl', self.javascript)
+        self.assertNotIn('id="batchSelectionLimit" type="number" min="1" max="30"', self.html)
         self.assertIn('const BATCH_VIDEO_DURATION = "15"', self.javascript)
         self.assertNotIn('id="batchTaskDuration"', self.html)
         self.assertIn('form.append("duration", BATCH_VIDEO_DURATION)', self.javascript)
@@ -541,6 +545,8 @@ class AdminUITests(unittest.TestCase):
             "openAnnouncementHistory",
             "announcementHistoryModal",
             "effectiveWorkersInput",
+            "submissionConcurrencyInput",
+            "remoteGenerationLimitInput",
         ):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertGreaterEqual(self.html.count('class="nav-icon" data-lucide='), 16)
@@ -557,7 +563,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="criticalPortalStyles"', self.html)
         self.assertIn('body[data-portal="client"] #pointCardsNavItem', self.html)
         self.assertIn('body[data-portal="client"] .admin-credential-field', self.html)
-        self.assertIn('max_effective_workers: maxEffectiveWorkers', self.javascript)
+        self.assertIn('remote_generation_limit: remoteGenerationLimit', self.javascript)
+        self.assertIn('body: { browser_workers: submissionConcurrency, max_effective_workers: submissionConcurrency, remote_generation_limit: remoteGenerationLimit }', self.javascript)
+        self.assertIn('提交 / 远端上限', self.javascript)
+        self.assertIn('浏览器提交池固定为 8 × 4', self.html)
         self.assertIn('Number(item.task_discount_points || 0) > 0', self.javascript)
         self.assertNotIn('id="pointCardDeleteMode"', self.html)
         self.assertIn('data-point-card-delete-mode="unused"', self.html)

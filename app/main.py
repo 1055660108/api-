@@ -25,7 +25,7 @@ from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_quota
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
-from .browser_runtime import resolve_browser_executable
+from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, resolve_browser_executable
 from .config import (
     DATA_DIR,
     DEFAULT_RATIO,
@@ -70,11 +70,13 @@ from .store import (
     mark_failed,
     migrate_task_owner,
     list_tasks,
+    list_task_metas_by_statuses,
     list_tasks_page,
     set_task_video_hidden,
     set_task_hidden,
     set_task_images,
     task_image_paths,
+    task_states,
     request_task_cancel,
     task_has_video,
     validate_task_id,
@@ -563,7 +565,8 @@ def _health_payload(access: AccessContext) -> dict:
 
     queue_health = get_task_queue().health()
     platform_guard = PlatformGuard(getattr(get_task_queue(), "client", None))
-    _, resource_health = adaptive_worker_limit(settings.browser_workers, settings.max_effective_workers)
+    effective_workers, resource_health = adaptive_worker_limit(BROWSER_SUBMISSION_CONCURRENCY, BROWSER_SUBMISSION_CONCURRENCY)
+    resource_health = {**resource_health, "effective_workers": effective_workers, "browser_pool_capacity": BROWSER_SUBMISSION_CONCURRENCY}
     browser_error = ""
     try:
         browser_path = resolve_browser_executable(settings.browser_executable_path)
@@ -576,17 +579,27 @@ def _health_payload(access: AccessContext) -> dict:
         "version": __version__,
         "status": "healthy" if queue_health["ok"] and browser_ok else "degraded",
         "role": "admin" if access.is_admin else "client",
-        "browser_workers": settings.browser_workers,
+        "browser_workers": BROWSER_SUBMISSION_CONCURRENCY,
         "active": sorted(active_task_ids()),
         "components": {
             "queue": {key: value for key, value in queue_health.items() if key != "error"},
-            "browser": {"ok": browser_ok},
+            "browser": {
+                "ok": browser_ok,
+                "process_limit": BROWSER_POOL_PROCESSES,
+                "contexts_per_process": BROWSER_CONTEXTS_PER_PROCESS,
+                "submission_capacity": BROWSER_SUBMISSION_CONCURRENCY,
+            },
             "resources": resource_health,
             "platforms": {platform: platform_guard.snapshot(platform) for platform in PLATFORM_LABELS},
         },
     }
     if access.is_admin:
         data["admin_username"] = settings.admin_username
+        data["remote_generation_limit"] = settings.remote_generation_limit
+        try:
+            data["remote_generation_active"] = len(list_task_metas_by_statuses({"submitted"}, platform="dola"))
+        except Exception:
+            data["remote_generation_active"] = 0
         data["components"]["queue"]["error"] = queue_health.get("error", "")
         data["components"]["browser"]["executable_path"] = browser_path or ""
         data["components"]["browser"]["error"] = browser_error
@@ -1585,12 +1598,16 @@ async def registration_email_config():
 @app.get("/config/workers", dependencies=[Depends(require_token)])
 async def workers_config():
     settings = load_settings()
-    effective_workers, resources = adaptive_worker_limit(settings.browser_workers, settings.max_effective_workers)
+    effective_workers, resources = adaptive_worker_limit(BROWSER_SUBMISSION_CONCURRENCY, BROWSER_SUBMISSION_CONCURRENCY)
     return {
-        "browser_workers": settings.browser_workers,
-        "max_effective_workers": settings.max_effective_workers,
+        "browser_workers": BROWSER_SUBMISSION_CONCURRENCY,
+        "max_effective_workers": BROWSER_SUBMISSION_CONCURRENCY,
         "effective_browser_workers": effective_workers,
         "capacity_limit": resources["capacity_limit"],
+        "browser_pool_processes": BROWSER_POOL_PROCESSES,
+        "browser_contexts_per_process": BROWSER_CONTEXTS_PER_PROCESS,
+        "submission_concurrency": BROWSER_SUBMISSION_CONCURRENCY,
+        "remote_generation_limit": settings.remote_generation_limit,
     }
 
 
@@ -1857,10 +1874,9 @@ async def update_workers_config(
     if access.is_temp:
         raise HTTPException(status_code=403, detail="forbidden")
     payload = await _request_payload(request)
-    raw_workers = payload.get("browser_workers") or payload.get("workers") or browser_workers
-    raw_capacity = payload.get("max_effective_workers") or payload.get("capacity_limit")
-    if raw_workers is None:
-        raise HTTPException(status_code=400, detail="browser_workers is required")
+    raw_workers = payload.get("browser_workers") or payload.get("workers") or browser_workers or BROWSER_SUBMISSION_CONCURRENCY
+    raw_capacity = payload.get("max_effective_workers") or payload.get("capacity_limit") or BROWSER_SUBMISSION_CONCURRENCY
+    raw_remote_limit = payload.get("remote_generation_limit")
     try:
         workers = int(raw_workers)
     except (TypeError, ValueError):
@@ -1874,17 +1890,27 @@ async def update_workers_config(
     if capacity < 1 or capacity > 999:
         raise HTTPException(status_code=400, detail="max_effective_workers must be between 1 and 999")
     try:
-        update_config({"browser_workers": workers, "max_effective_workers": capacity})
+        remote_limit = int(raw_remote_limit) if raw_remote_limit is not None else load_settings().remote_generation_limit
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="remote_generation_limit must be an integer")
+    if remote_limit < 1 or remote_limit > 999:
+        raise HTTPException(status_code=400, detail="remote_generation_limit must be between 1 and 999")
+    try:
+        update_config({"browser_workers": BROWSER_SUBMISSION_CONCURRENCY, "max_effective_workers": BROWSER_SUBMISSION_CONCURRENCY, "remote_generation_limit": remote_limit})
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     settings = load_settings()
-    effective_workers, resources = adaptive_worker_limit(settings.browser_workers, settings.max_effective_workers)
+    effective_workers, resources = adaptive_worker_limit(BROWSER_SUBMISSION_CONCURRENCY, BROWSER_SUBMISSION_CONCURRENCY)
     return {
         "ok": True,
-        "browser_workers": settings.browser_workers,
-        "max_effective_workers": settings.max_effective_workers,
+        "browser_workers": BROWSER_SUBMISSION_CONCURRENCY,
+        "max_effective_workers": BROWSER_SUBMISSION_CONCURRENCY,
         "effective_browser_workers": effective_workers,
         "capacity_limit": resources["capacity_limit"],
+        "browser_pool_processes": BROWSER_POOL_PROCESSES,
+        "browser_contexts_per_process": BROWSER_CONTEXTS_PER_PROCESS,
+        "submission_concurrency": BROWSER_SUBMISSION_CONCURRENCY,
+        "remote_generation_limit": settings.remote_generation_limit,
     }
 
 
@@ -2225,6 +2251,8 @@ async def submit_task(
     batch_id: Annotated[str, Form()] = "",
     batch_index: Annotated[int, Form()] = 0,
     batch_row: Annotated[int, Form()] = 0,
+    batch_reference_task_id: Annotated[str, Form()] = "",
+    batch_reference_image_count: Annotated[int, Form()] = 0,
     images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
@@ -2242,15 +2270,36 @@ async def submit_task(
         batch_id = str(batch_id or "").strip()[:100] if batch else ""
         batch_index = max(0, min(1000, int(batch_index or 0))) if batch else 0
         batch_row = max(0, min(1_000_000, int(batch_row or 0))) if batch else 0
+        batch_reference_task_id = str(batch_reference_task_id or "").strip() if batch else ""
+        batch_reference_image_count = max(0, min(load_settings().max_image_count, int(batch_reference_image_count or 0))) if batch else 0
         platform, model = validate_task_platform_model(platform, model)
         if platform == "qianwen" and task_type != "video":
             raise HTTPException(status_code=400, detail="千问当前仅支持视频任务")
         uploads = [item for item in (images or []) if item and item.filename]
-        if len(uploads) > load_settings().max_image_count:
+        if len(uploads) + batch_reference_image_count > load_settings().max_image_count:
             raise HTTPException(status_code=400, detail="too many images")
-        await _rate_limit(request, "task-create-batch" if batch else "task-create", 120 if batch else 30, 60, access.token_hash)
+        shared_reference_paths: list[Path] = []
+        if batch_reference_task_id:
+            try:
+                validate_task_id(batch_reference_task_id)
+                reference_meta = await asyncio.to_thread(get_meta, batch_reference_task_id)
+                reference_paths = await asyncio.to_thread(task_image_paths, batch_reference_task_id)
+            except (ValueError, FileNotFoundError):
+                raise HTTPException(status_code=400, detail="批量共用参考图已失效，请重新提交")
+            if (
+                not access.is_temp
+                or str(reference_meta.get("owner_token_hash") or "") != access.token_hash
+                or str(reference_meta.get("batch_id") or "") != batch_id
+                or batch_reference_image_count <= 0
+                or len(reference_paths) < batch_reference_image_count
+            ):
+                raise HTTPException(status_code=400, detail="批量共用参考图不可用，请重新提交")
+            shared_reference_paths = reference_paths[:batch_reference_image_count]
+        elif batch_reference_image_count:
+            raise HTTPException(status_code=400, detail="批量共用参考图参数无效")
+        await _rate_limit(request, "task-create-batch" if batch else "task-create", 2400 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
-        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "images": [Path(item.filename or "").name for item in uploads]})
+        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "images": [Path(item.filename or "").name for item in uploads]})
 
         try:
             if key:
@@ -2287,7 +2336,7 @@ async def submit_task(
                 )
                 created = True
             if not created:
-                return {"id": meta["id"], "replayed": True}
+                return {"id": meta["id"], "replayed": True, "image_count": int(meta.get("image_count") or 0)}
             queued_for_concurrency = False
             if access.is_temp:
                 access = await asyncio.to_thread(get_temp_context_by_hash, access.token_hash) or access
@@ -2327,7 +2376,11 @@ async def submit_task(
             raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
         saved_paths: list[Path] = []
         try:
-            for index, upload in enumerate(uploads, start=1):
+            for index, source in enumerate(shared_reference_paths, start=1):
+                target = images_dir(meta["id"]) / f"{index:02d}{source.suffix.lower()}"
+                await asyncio.to_thread(shutil.copy2, source, target)
+                saved_paths.append(target)
+            for index, upload in enumerate(uploads, start=len(saved_paths) + 1):
                 filename = Path(upload.filename or f"image_{index}.png").name
                 suffix = Path(filename).suffix.lower() or ".png"
                 target = images_dir(meta["id"]) / f"{index:02d}{suffix}"
@@ -2346,7 +2399,7 @@ async def submit_task(
             await asyncio.to_thread(delete_task, meta["id"])
             logger.exception("task creation failed while saving uploads (batch=%s)", batch)
             raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
-        response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency}
+        response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency, "image_count": len(saved_paths)}
         if reserved_access and reserved_access.is_temp:
             balance = await asyncio.to_thread(user_balance_by_token_hash, reserved_access.token_hash)
             response["quota"] = {
@@ -2385,6 +2438,39 @@ async def parse_batch_prompts(
         "prompts": prompts,
         "supported_extensions": sorted(SUPPORTED_SPREADSHEET_SUFFIXES),
     }
+
+
+@app.post("/batch-prompts/status")
+async def batch_prompt_status(
+    body: dict,
+    access: Annotated[AccessContext, Depends(require_temp)],
+):
+    raw_ids = body.get("task_ids") if isinstance(body, dict) else []
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="task_ids must be a list")
+    task_ids = list(dict.fromkeys(str(task_id or "").strip() for task_id in raw_ids if str(task_id or "").strip()))
+    if len(task_ids) > 2000:
+        raise HTTPException(status_code=400, detail="一次最多刷新 2000 条任务")
+    invalid = [task_id for task_id in task_ids if len(task_id) != 32]
+    if invalid:
+        raise HTTPException(status_code=400, detail="invalid task id")
+
+    rows = await asyncio.to_thread(task_states, task_ids, access.token_hash)
+    states = []
+    for task_id, meta, result in rows:
+        status = str(meta.get("status") or "")
+        url = str(result.get("decoded_main_url") or "")
+        if url:
+            code = "2"
+            text = "视频生成成功"
+        elif status in {"failed", "canceled"}:
+            code = "0"
+            text = _client_safe_text(str(meta.get("error") or ("用户取消生成" if status == "canceled" else "生成失败")), str(meta.get("model") or "当前模型"))
+        else:
+            code = "1"
+            text = _client_safe_text(str(meta.get("error") or ""), str(meta.get("model") or "当前模型"))
+        states.append({"id": task_id, "status": status, "code": code, "text": text, "url": url})
+    return {"tasks": states}
 
 
 @app.get("/tasks", dependencies=[Depends(require_token)])

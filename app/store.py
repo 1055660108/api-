@@ -949,6 +949,21 @@ def task_image_paths(task_id: str) -> list[Path]:
     return sorted([p for p in root.iterdir() if p.is_file()])
 
 
+def task_states(task_ids: Iterable[str], owner_token_hash: str = "") -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    normalized = [str(task_id) for task_id in dict.fromkeys(task_ids) if TASK_ID_RE.fullmatch(str(task_id))]
+    if postgres.enabled() and hasattr(postgres, "read_tasks"):
+        rows = postgres.read_tasks(normalized)
+    else:
+        rows = []
+        for task_id in normalized:
+            try:
+                rows.append((task_id, get_meta(task_id), load_result(task_id)))
+            except (FileNotFoundError, CorruptJSONError):
+                continue
+    owner = str(owner_token_hash or "")
+    return [row for row in rows if not owner or str(row[1].get("owner_token_hash") or "") == owner]
+
+
 def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str]) -> dict[str, Any]:
     prompt = str(meta.get("prompt") or "")
     owner = str(meta.get("owner_token_hash") or "")

@@ -252,6 +252,60 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual([item["batch_index"] for item in metas], list(range(1, 101)))
         self.assertEqual([item["batch_row"] for item in metas], list(range(2, 102)))
 
+    def test_batch_shared_reference_is_uploaded_once_and_copied_to_following_tasks(self) -> None:
+        registered = self.register("batch_shared_ref")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        headers = {"X-API-Token": registered["token"]}
+        common = {
+            "ratio": "9:16",
+            "duration": "15",
+            "batch": "true",
+            "batch_id": "batch-shared-reference",
+            "platform": "dola",
+            "model": "Seedance 2.0",
+        }
+        shared_image = b"\x89PNG\r\n\x1a\nshared-reference"
+        row_image = b"\x89PNG\r\n\x1a\nrow-reference"
+        first = self.client.post(
+            "/tasks",
+            headers={**headers, "Idempotency-Key": "batch-shared-reference-0001"},
+            data={**common, "prompt": "第一条", "batch_index": "1", "batch_row": "2"},
+            files=[("images", ("shared.png", shared_image, "image/png"))],
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["image_count"], 1)
+
+        second = self.client.post(
+            "/tasks",
+            headers={**headers, "Idempotency-Key": "batch-shared-reference-0002"},
+            data={
+                **common,
+                "prompt": "第二条",
+                "batch_index": "2",
+                "batch_row": "3",
+                "batch_reference_task_id": first.json()["id"],
+                "batch_reference_image_count": "1",
+            },
+            files=[("images", ("row.png", row_image, "image/png"))],
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["image_count"], 2)
+        copied = [path.read_bytes() for path in store.task_image_paths(second.json()["id"])]
+        self.assertEqual(copied, [shared_image, row_image])
+        store.save_result(second.json()["id"], extra={"decoded_main_url": "https://example.com/batch-result.mp4"})
+        store.mark_success(second.json()["id"])
+        statuses = self.client.post(
+            "/batch-prompts/status",
+            headers=headers,
+            json={"task_ids": [first.json()["id"], second.json()["id"]]},
+        )
+        self.assertEqual(statuses.status_code, 200, statuses.text)
+        by_id = {item["id"]: item for item in statuses.json()["tasks"]}
+        self.assertEqual(by_id[second.json()["id"]]["code"], "2")
+        self.assertEqual(by_id[second.json()["id"]]["url"], "https://example.com/batch-result.mp4")
+
     def test_successful_and_failed_tasks_can_be_retried_as_new_charged_tasks(self) -> None:
         registered = self.register("retry_completed_client")
         owner_hash = temp_access.hash_token(registered["token"])
@@ -540,7 +594,8 @@ class WebAPIContractTests(unittest.TestCase):
         workers = self.client.get("/config/workers").json()
         proxy = self.client.get("/config/proxy-api").json()
         platforms = self.client.get("/config/platforms").json()
-        self.assertEqual(set(workers), {"browser_workers", "max_effective_workers", "effective_browser_workers", "capacity_limit"})
+        self.assertEqual(set(workers), {"browser_workers", "max_effective_workers", "effective_browser_workers", "capacity_limit", "browser_pool_processes", "browser_contexts_per_process", "submission_concurrency", "remote_generation_limit"})
+        self.assertEqual((workers["browser_pool_processes"], workers["browser_contexts_per_process"], workers["submission_concurrency"]), (8, 4, 32))
         self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
         self.assertNotIn("proxy_subscription_url", proxy)
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
@@ -591,19 +646,27 @@ class WebAPIContractTests(unittest.TestCase):
 
     def test_global_worker_configuration_accepts_999_and_rejects_1000(self) -> None:
         headers = {"X-API-Token": self.admin_token}
-        accepted = self.client.post("/config/workers", headers=headers, json={"browser_workers": 999, "max_effective_workers": 200})
+        accepted = self.client.post("/config/workers", headers=headers, json={"browser_workers": 999, "max_effective_workers": 200, "remote_generation_limit": 150})
         self.assertEqual(accepted.status_code, 200)
         payload = accepted.json()
-        self.assertEqual(payload["browser_workers"], 999)
-        self.assertEqual(payload["max_effective_workers"], 200)
-        self.assertEqual(payload["capacity_limit"], 200)
-        self.assertLessEqual(payload["effective_browser_workers"], payload["capacity_limit"])
+        self.assertEqual(payload["browser_workers"], 32)
+        self.assertEqual(payload["max_effective_workers"], 32)
+        self.assertEqual(payload["capacity_limit"], 32)
+        self.assertEqual(payload["effective_browser_workers"], 32)
+        self.assertEqual(payload["remote_generation_limit"], 150)
+        self.assertEqual((payload["browser_pool_processes"], payload["browser_contexts_per_process"], payload["submission_concurrency"]), (8, 4, 32))
+        remote_only = self.client.post("/config/workers", headers=headers, json={"remote_generation_limit": 175})
+        self.assertEqual(remote_only.status_code, 200)
+        self.assertEqual(remote_only.json()["remote_generation_limit"], 175)
         rejected = self.client.post("/config/workers", headers=headers, json={"browser_workers": 1000})
         self.assertEqual(rejected.status_code, 400)
-        self.assertEqual(config.load_settings().browser_workers, 999)
+        self.assertEqual(config.load_settings().browser_workers, 32)
         rejected_capacity = self.client.post("/config/workers", headers=headers, json={"browser_workers": 100, "max_effective_workers": 1000})
         self.assertEqual(rejected_capacity.status_code, 400)
-        self.assertEqual(config.load_settings().max_effective_workers, 200)
+        self.assertEqual(config.load_settings().max_effective_workers, 32)
+        rejected_remote = self.client.post("/config/workers", headers=headers, json={"browser_workers": 32, "max_effective_workers": 32, "remote_generation_limit": 1000})
+        self.assertEqual(rejected_remote.status_code, 400)
+        self.assertEqual(config.load_settings().remote_generation_limit, 175)
 
     def test_proxy_node_apis_list_measure_select_and_switch(self) -> None:
         self.client.post(

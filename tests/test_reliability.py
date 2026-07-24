@@ -635,7 +635,9 @@ class ReliabilityTests(unittest.TestCase):
         manager = WorkerManager()
 
         async def start_twice() -> None:
-            with patch("app.worker.reset_running_tasks") as reset, patch("app.worker.queue_backend", return_value="file"):
+            with patch("app.worker.reset_running_tasks") as reset, patch("app.worker.queue_backend", return_value="file"), patch.object(
+                manager._dola_browser_pool, "start", new=AsyncMock()
+            ) as pool_start, patch.object(manager._dola_browser_pool, "stop", new=AsyncMock()) as pool_stop:
                 await manager.start()
                 supervisor = manager._supervisor
                 watchdog = manager._watchdog
@@ -644,8 +646,22 @@ class ReliabilityTests(unittest.TestCase):
                 self.assertIs(manager._watchdog, watchdog)
                 reset.assert_called_once()
                 await manager.stop()
+                pool_start.assert_awaited_once()
+                pool_stop.assert_awaited_once()
 
         asyncio.run(start_twice())
+
+    def test_remote_generation_limit_reserves_slots_before_browser_submission(self) -> None:
+        manager = WorkerManager()
+        settings = unittest.mock.Mock(remote_generation_limit=2)
+        submitted = [("submitted-task", {"status": "submitted", "platform": "dola"})]
+        with patch("app.worker.load_settings", return_value=settings), patch(
+            "app.worker.list_task_metas_by_statuses", return_value=submitted
+        ):
+            self.assertTrue(manager._reserve_remote_generation_slot("new-task-1"))
+            self.assertFalse(manager._reserve_remote_generation_slot("new-task-2"))
+        manager._remote_generation_reservations.discard("new-task-1")
+        self.assertEqual(manager._remote_generation_reservations, set())
 
     def test_deduct_points_is_atomic_and_preserves_free_quota(self) -> None:
         self.tokens_path.write_text(

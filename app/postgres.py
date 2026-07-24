@@ -699,6 +699,18 @@ def list_task_ids() -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def read_tasks(task_ids: list[str]) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    normalized = [str(task_id) for task_id in dict.fromkeys(task_ids) if str(task_id)]
+    if not normalized:
+        return []
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT id, meta, result FROM dola_tasks WHERE id = ANY(%s)",
+            (normalized,),
+        ).fetchall()
+    return [(str(row[0]), dict(row[1]), dict(row[2])) for row in rows]
+
+
 def list_task_metas(owner_token_hash: str | None = None) -> list[tuple[str, dict[str, Any]]]:
     query = "SELECT id, meta FROM dola_tasks"
     params: tuple[Any, ...] = ()

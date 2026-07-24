@@ -83,6 +83,7 @@ def default_config() -> dict[str, Any]:
         "port": 8088,
         "browser_workers": recommended_browser_workers(),
         "max_effective_workers": default_max_effective_workers(),
+        "remote_generation_limit": 100,
         "browser_executable_path": "",
         "headless": True,
         "task_timeout_seconds": 180,
@@ -255,6 +256,7 @@ class Settings:
     port: int
     browser_workers: int
     max_effective_workers: int
+    remote_generation_limit: int
     browser_executable_path: str
     headless: bool
     task_timeout_seconds: int
@@ -348,6 +350,7 @@ def load_settings() -> Settings:
         port=int(data.get("port") or 8088),
         browser_workers=max(1, min(999, int(data.get("browser_workers") or recommended_browser_workers()))),
         max_effective_workers=max(1, min(999, int(data.get("max_effective_workers") or default_max_effective_workers()))),
+        remote_generation_limit=max(1, min(999, int(data.get("remote_generation_limit") or 100))),
         browser_executable_path=str(data.get("browser_executable_path") or "").strip(),
         headless=_as_bool(data.get("headless"), True),
         task_timeout_seconds=max(30, int(data.get("task_timeout_seconds") or 180)),

@@ -12,6 +12,64 @@ from app import browser_runtime
 
 
 class BrowserRuntimeTests(unittest.TestCase):
+    def test_reusable_pool_limits_processes_and_contexts(self) -> None:
+        class FakeContext:
+            def __init__(self):
+                self.close = AsyncMock()
+
+        class FakeBrowser:
+            def __init__(self):
+                self.connected = True
+                self.contexts: list[FakeContext] = []
+                self.close = AsyncMock(side_effect=self._close)
+
+            def is_connected(self) -> bool:
+                return self.connected
+
+            async def _close(self) -> None:
+                self.connected = False
+
+            async def new_context(self, **_options):
+                context = FakeContext()
+                self.contexts.append(context)
+                return context
+
+        browsers: list[FakeBrowser] = []
+
+        async def launch(**_options):
+            browser = FakeBrowser()
+            browsers.append(browser)
+            return browser
+
+        playwright = unittest.mock.Mock()
+        playwright.chromium.launch = AsyncMock(side_effect=launch)
+        playwright.stop = AsyncMock()
+        runtime = unittest.mock.Mock()
+        runtime.start = AsyncMock(return_value=playwright)
+
+        async def exercise() -> None:
+            pool = browser_runtime.ReusableBrowserPool(max_processes=2, contexts_per_process=4)
+            options = {
+                "executable_path": None,
+                "headless": True,
+                "proxy": {"server": "http://proxy.example:8080"},
+                "browser_args": ["--no-sandbox"],
+                "context_options": {"locale": "zh-CN"},
+            }
+            leases = [await pool.acquire_context(**options) for _ in range(5)]
+            self.assertEqual(len(browsers), 2)
+            self.assertEqual(pool.snapshot()["active_contexts"], 5)
+            self.assertEqual(pool.snapshot()["submission_capacity"], 8)
+            self.assertTrue(all(lease.context is not leases[0].context for lease in leases[1:]))
+            await asyncio.gather(*(lease.release() for lease in leases))
+            self.assertEqual(pool.snapshot()["active_contexts"], 0)
+            await pool.stop()
+            self.assertTrue(all(not browser.connected for browser in browsers))
+            playwright.stop.assert_awaited_once()
+
+        with patch.object(browser_runtime, "async_playwright", return_value=runtime):
+            asyncio.run(exercise())
+
     def test_configured_executable_has_priority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "browser.exe"
@@ -79,6 +137,10 @@ class BrowserRuntimeTests(unittest.TestCase):
         qianwen = (root / "qianwen_automation.py").read_text(encoding="utf-8")
 
         self.assertLess(dola.index("await safe_unroute_all(page)"), dola.index("await safe_close(context)"))
+        self.assertIn("await lease.release()", dola)
+        self.assertIn('context_options["proxy"] = proxy_config', dola)
+        self.assertIn("proxy=None", dola)
+        self.assertIn("browser_pool=self._dola_browser_pool", (root / "worker.py").read_text(encoding="utf-8"))
         for source in (doubao, qianwen):
             self.assertLess(source.index('page.remove_listener("response", response_handler)'), source.index("await cancel_tracked_tasks(response_tasks)"))
             self.assertLess(source.index("await cancel_tracked_tasks(response_tasks)"), source.index("await safe_close(context)"))

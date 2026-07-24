@@ -85,8 +85,8 @@
       ) * contourScale;
       float sphericalMask = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
       vec2 puddlePoint = vec2(
-        point.x / max(uSize * 1.42, 0.04),
-        point.y / max(uSize * 0.34, 0.018)
+        screenPoint.x / max(uSize * 1.42, 0.04),
+        screenPoint.y / max(uSize * 0.34, 0.018)
       );
       float puddleRadius = length(puddlePoint);
       float puddleEdge = (fbm(puddlePoint * 2.2 + vec2(time * 0.04, -time * 0.025)) - 0.5) * 0.055;
@@ -352,7 +352,7 @@
       this.frame = requestAnimationFrame(this.render);
       if (!this.active || document.hidden || !this.gl || !this.canvas.isConnected) return;
       if (this.needsResize && !this.resize()) return;
-      const ease = this.reducedMotion ? 1 : 0.075;
+      const ease = this.reducedMotion ? 1 : this.mode === "converging" ? 0.036 : 0.075;
       this.center[0] += (this.targetCenter[0] - this.center[0]) * ease;
       this.center[1] += (this.targetCenter[1] - this.center[1]) * ease;
       this.size += (this.targetSize - this.size) * ease;
@@ -412,7 +412,7 @@
       this.sprays = [];
       this.orbitDrops = [];
       this.transitionStartedAt = 0;
-      this.transitionDuration = 1250;
+      this.transitionDuration = 1650;
       this.lastFrameAt = performance.now();
       this.lastRenderAt = 0;
       this.frameInterval = 1000 / 60;
@@ -451,7 +451,7 @@
       const compact = this.width < 720;
       const count = compact ? 88 : Math.min(150, Math.max(112, Math.round(this.width * this.height / 11000)));
       this.drops = Array.from({ length: count }, () => this.createDrop(true));
-      const glassCount = compact ? 18 : Math.min(34, Math.max(24, Math.round(this.width * this.height / 38000)));
+      const glassCount = compact ? 12 : Math.min(24, Math.max(16, Math.round(this.width * this.height / 52000)));
       this.glassDrops = Array.from({ length: glassCount }, () => this.createGlassDrop(true));
       const orbitCount = compact ? 20 : 30;
       this.orbitDrops = Array.from({ length: orbitCount }, (_, index) => ({
@@ -512,7 +512,7 @@
 
     createDrop(initial = false) {
       const depth = Math.random();
-      const speed = 270 + depth * 610;
+      const speed = 230 + depth * 520;
       const x = Math.random() * (this.width + 120) - 60;
       const puddle = this.puddleGeometry();
       const normalizedX = (x - puddle.x) / Math.max(1, puddle.radiusX);
@@ -528,9 +528,9 @@
         puddleImpact,
         depth,
         speed,
-        length: 9 + depth * 29 + Math.random() * 11,
-        width: 0.38 + depth * 1.18,
-        alpha: 0.06 + depth * 0.38,
+        length: 6 + depth * 20 + Math.random() * 7,
+        width: 0.34 + depth * 0.9,
+        alpha: 0.05 + depth * 0.32,
         layer: Math.min(2, Math.floor(depth * 3)),
         phase: Math.random() * Math.PI * 2,
       };
@@ -652,8 +652,8 @@
       context.save();
       context.lineCap = "round";
       context.globalCompositeOperation = "screen";
-      const layerColors = ["rgba(102, 132, 137, .105)", "rgba(151, 184, 187, .21)", "rgba(215, 236, 236, .39)"];
-      const layerWidths = [0.42, 0.78, 1.28];
+      const layerColors = ["rgba(102, 132, 137, .085)", "rgba(151, 184, 187, .18)", "rgba(215, 236, 236, .32)"];
+      const layerWidths = [0.36, 0.65, 1.04];
       for (let layer = 0; layer < 3; layer += 1) {
         context.beginPath();
         for (const drop of this.drops) {
@@ -674,7 +674,7 @@
         context.strokeStyle = layerColors[layer];
         context.lineWidth = layerWidths[layer];
         context.shadowColor = layer === 2 ? "rgba(219, 240, 239, .22)" : "transparent";
-        context.shadowBlur = layer === 2 ? 2.2 : 0;
+        context.shadowBlur = layer === 2 ? 1.6 : 0;
         context.stroke();
       }
       context.beginPath();
@@ -684,8 +684,8 @@
         context.moveTo(drop.x + slant * 0.58, drop.y + drop.length * 0.58);
         context.lineTo(drop.x + slant, drop.y + drop.length);
       }
-      context.strokeStyle = "rgba(244, 251, 250, .26)";
-      context.lineWidth = 0.46;
+      context.strokeStyle = "rgba(244, 251, 250, .22)";
+      context.lineWidth = 0.4;
       context.shadowColor = "rgba(210, 238, 238, .28)";
       context.shadowBlur = 2.4;
       context.stroke();
@@ -809,7 +809,7 @@
     drawConvergence(context, now) {
       const target = this.loginTarget();
       const rawProgress = Math.min(1, Math.max(0, (now - this.transitionStartedAt) / this.transitionDuration));
-      const progress = rawProgress * rawProgress * (3 - 2 * rawProgress);
+      const progress = rawProgress * rawProgress * rawProgress * (rawProgress * (rawProgress * 6 - 15) + 10);
       const fade = Math.max(0.08, 1 - rawProgress * 0.82);
       const layerColors = ["rgba(142, 169, 170, .16)", "rgba(184, 209, 209, .29)", "rgba(226, 241, 240, .48)"];
       context.save();

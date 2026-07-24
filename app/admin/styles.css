@@ -7070,6 +7070,8 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
   border-bottom: 1px solid #e1e5e3;
 }
 
+.batch-import-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.batch-import-actions > button { min-height: 40px; white-space: nowrap; }
 .batch-file-button { min-height: 40px; margin: 0; cursor: pointer; }
 .batch-file-copy { min-width: 0; }
 .batch-file-copy strong {
@@ -7127,8 +7129,9 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 
 .batch-task-options {
   display: grid;
-  grid-template-columns: minmax(124px, .9fr) minmax(124px, .9fr) minmax(180px, 1.15fr) minmax(138px, .9fr) auto auto;
+  grid-template-columns: minmax(180px, 260px) auto auto;
   align-items: end;
+  justify-content: start;
   gap: 16px;
   padding: 16px 18px 18px;
   background: rgba(252, 252, 252, .82);
@@ -7180,7 +7183,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-selection-state { align-self: center; min-width: 88px; color: #4f5754; font-size: 13px; text-align: right; }
 
 .batch-prompt-list {
-  min-height: 180px;
+  min-height: 0;
   max-height: min(43vh, 420px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -7190,11 +7193,11 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
   scrollbar-width: thin;
 }
 
-.batch-task-page .batch-prompt-list { min-height: 240px; max-height: none; }
+.batch-task-page .batch-prompt-list { min-height: 0; max-height: none; }
 
 .batch-prompt-row {
   display: grid;
-  grid-template-columns: 22px 64px minmax(0, 1fr) 104px 120px;
+  grid-template-columns: 22px 64px minmax(0, 1fr) 104px 120px 34px;
   align-items: center;
   gap: 12px;
   min-height: 104px;
@@ -7222,6 +7225,22 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-prompt-reference .batch-row-thumbs { width: 100%; justify-content: flex-end; }
 .batch-prompt-reference .text-button { padding: 5px 7px; color: #171a19; border: 1px solid #d7dcda; border-radius: 5px; }
 .batch-image-clear { width: 22px; height: 22px; padding: 0; color: #69716e; background: transparent; border: 0; cursor: pointer; }
+.batch-prompt-delete {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: #8b4a46;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
+}
+.batch-prompt-delete svg { width: 17px; height: 17px; }
+.batch-prompt-delete:hover { color: #8f2f2a; background: #faf0ef; border-color: #efd7d4; }
+.batch-prompt-delete:disabled { opacity: .36; cursor: not-allowed; }
 .batch-prompt-status { text-align: right; overflow-wrap: anywhere; }
 .batch-prompt-row.is-success .batch-prompt-status { color: #1f6250; }
 .batch-prompt-row.is-completed .batch-prompt-status { color: #1f6250; }
@@ -7238,6 +7257,42 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
   border-top: 1px solid #dfe4e1;
 }
 .batch-task-actions .muted { margin-right: auto; }
+.batch-pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.batch-pager label { display: inline-flex; align-items: center; gap: 7px; color: #69716e; font-size: 12px; }
+.batch-pager select {
+  min-width: 72px;
+  min-height: 34px;
+  padding-block: 5px;
+  background: #fff;
+  border-color: #cfd5d2;
+  border-radius: 5px;
+}
+.batch-pager .icon-button { width: 34px; height: 34px; padding: 0; }
+.batch-pager .icon-button svg { width: 17px; height: 17px; }
+#batchPageState { min-width: 132px; color: #4f5754; font-size: 12px; text-align: center; }
+
+.batch-auto-modal-panel {
+  width: min(100%, 660px);
+  padding: 24px;
+}
+.batch-auto-modal-panel .modal-header { padding-bottom: 15px; border-bottom: 1px solid #e1e5e3; }
+.batch-auto-modal-panel .modal-header h2 { margin: 0; font-size: 22px; }
+.batch-auto-modal-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: end;
+  gap: 16px;
+}
+.batch-auto-modal-fields .field { margin: 0; }
+.batch-auto-modal-fields .field > span { color: #626a67; font-size: 12px; font-weight: 600; }
+.batch-auto-modal-fields input {
+  min-height: 42px;
+  color: #1e2422;
+  background: #fff;
+  border-color: #cfd5d2;
+  border-radius: 6px;
+}
+.batch-auto-modal-panel .modal-actions { padding-top: 4px; }
 
 .prompt-manager-panel.is-empty {
   display: flex;
@@ -7263,6 +7318,24 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
 }
 
 @media (min-width: 821px) {
+  body[data-view="batch-submit"] .main {
+    overflow: hidden;
+    scrollbar-width: none;
+  }
+  body[data-view="batch-submit"] .main::-webkit-scrollbar { display: none; }
+  body[data-view="batch-submit"] #batch-submitView.active {
+    height: calc(100vh - 142px);
+    min-height: 0;
+  }
+  body[data-view="batch-submit"] #batch-submitView.active > .batch-task-page {
+    height: 100%;
+    min-height: 0;
+  }
+  body[data-view="batch-submit"] .batch-prompt-list {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
   .app-shell.sidebar-content-hidden .sidebar-client-identity,
   .app-shell.sidebar-transitioning.sidebar-content-hidden .sidebar-client-identity {
     display: none !important;
@@ -7280,6 +7353,8 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
   .batch-task-page .batch-prompt-list { min-height: 260px; max-height: none; }
   .batch-import-toolbar { grid-template-columns: 1fr auto; padding: 13px; }
   .batch-file-copy { grid-column: 1 / -1; grid-row: 2; }
+  .batch-import-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .batch-import-actions > button { flex: 1 1 auto; }
   .batch-reference-toolbar { grid-template-columns: 1fr; }
   .batch-reference-preview { justify-content: flex-start; overflow-x: auto; }
   .batch-task-options { grid-template-columns: 1fr 1fr; padding: 14px 13px 16px; gap: 12px; }
@@ -7290,8 +7365,11 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
   .batch-prompt-row textarea { grid-column: 1 / -1; min-height: 76px; }
   .batch-prompt-reference { grid-column: 1 / -1; justify-content: flex-start; }
   .batch-prompt-status { grid-column: 1 / -1; text-align: left; }
+  .batch-prompt-delete { grid-column: 2; grid-row: 1; justify-self: end; }
   .batch-task-actions { flex-wrap: wrap; }
   .batch-task-actions .muted { width: 100%; margin: 0 0 4px; }
+  .batch-pager { width: 100%; justify-content: space-between; }
+  #batchPageState { min-width: 0; }
   #feedbackModal .feedback-modal-panel { padding: 22px 20px; }
   #feedbackModal #feedbackContent { min-height: 170px; }
   .runtime-config-form { grid-template-columns: 1fr; }
@@ -7299,6 +7377,7 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
   #emailModal .modal-panel { grid-template-columns: 1fr; padding: 22px 20px; }
   #emailModal .modal-panel > .field { grid-column: 1; }
   #emailModal .email-domain-editor { grid-template-columns: 1fr; }
+  .batch-auto-modal-fields { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

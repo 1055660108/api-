@@ -244,7 +244,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.13', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.14', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -275,7 +275,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('drawConvergence(context, now)', ink_script)
         self.assertIn('drawWaterOrbit(context, now, 1)', ink_script)
         self.assertIn('gl.uniform1f(this.locations.vortex', ink_script)
-        self.assertIn('const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1350', self.javascript)
+        self.assertIn('const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1750', self.javascript)
         self.assertIn('window.HSRainScene = HSRainScene', ink_script)
         self.assertIn('burstAt(clientX, clientY)', ink_script)
         self.assertIn('drawGlassSurface(context, deltaSeconds, now)', ink_script)
@@ -298,6 +298,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('float cloud = fbm(inkPoint * detailScale', ink_script)
         self.assertIn('float sphereDepth = sqrt(max(0.0, 1.0 - dot(spherePoint, spherePoint)))', ink_script)
         self.assertIn('float depth = mix(sphereDepth, puddleDepth, uPuddle)', ink_script)
+        self.assertIn('screenPoint.x / max(uSize * 1.42', ink_script)
+        self.assertIn('this.transitionDuration = 1650', ink_script)
         self.assertIn('function traceInkPool(', self.javascript)
         self.assertIn('function drawInkSplash(', self.javascript)
         self.assertIn('const burstCount = compact ? 4 : 6', self.javascript)
@@ -418,10 +420,15 @@ class AdminUITests(unittest.TestCase):
             "batchSpreadsheetInput",
             "parseBatchSpreadsheet",
             "batchTaskRatio",
-            "batchTaskDuration",
             "batchSelectionLimit",
             "applyBatchSelectionLimit",
             "batchAutoConcurrency",
+            "batchAutoModal",
+            "confirmBatchAutoSubmit",
+            "batchPageSize",
+            "batchPrevPage",
+            "batchNextPage",
+            "batchPageState",
             "selectAllBatchPrompts",
             "batchPromptList",
             "autoSubmitBatchTasks",
@@ -432,7 +439,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('apiFetch("/batch-prompts/parse"', self.javascript)
         self.assertIn('form.append("batch", "true")', self.javascript)
         self.assertIn('form.append("batch_index", String(index + 1))', self.javascript)
-        self.assertIn('const MAX_BATCH_SELECTION = 20', self.javascript)
+        self.assertIn('const MAX_BATCH_SELECTION = 30', self.javascript)
+        self.assertIn('const BATCH_VIDEO_DURATION = "15"', self.javascript)
+        self.assertNotIn('id="batchTaskDuration"', self.html)
+        self.assertIn('form.append("duration", BATCH_VIDEO_DURATION)', self.javascript)
         self.assertIn('async function autoSubmitBatchTasks()', self.javascript)
         self.assertIn('while (active.size && !state.batchAutoStopRequested)', self.javascript)
         self.assertIn('active.size + blockedSlots < concurrency', self.javascript)
@@ -454,9 +464,16 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn('Math.min(3, selected.length)', self.javascript)
         self.assertNotIn('id="batchTaskModal"', self.html)
         self.assertIn('data-batch-prompt-text', self.javascript)
+        self.assertIn('data-delete-batch-prompt', self.javascript)
         self.assertIn('els.parseBatchSpreadsheet?.addEventListener("click", parseBatchSpreadsheet)', self.javascript)
         self.assertIn('els.submitBatchTasks?.addEventListener("click", submitBatchTasks)', self.javascript)
-        self.assertIn('els.autoSubmitBatchTasks?.addEventListener("click", autoSubmitBatchTasks)', self.javascript)
+        self.assertIn('els.autoSubmitBatchTasks?.addEventListener("click", () => {', self.javascript)
+        self.assertIn('syncBatchConcurrencyControls(true)', self.javascript)
+        self.assertIn('batchPageSize: 10', self.javascript)
+        self.assertIn('.slice(start, start + state.batchPageSize)', self.javascript)
+        self.assertIn('[10, 30, 50].includes(requested)', self.javascript)
+        self.assertIn('els.batchPrevPage?.addEventListener("click"', self.javascript)
+        self.assertIn('els.batchNextPage?.addEventListener("click"', self.javascript)
         self.assertNotIn('<option value="5">5 秒</option>', self.html)
         self.assertNotIn('<h2 id="batchTaskPageTitle">批量生成</h2>', self.html)
         critical_styles = self.html.split('<style id="criticalPortalStyles">', 1)[1].split('</style>', 1)[0]
@@ -465,6 +482,8 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn('#batch-submitView', admin_rule)
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('.batch-task-page', styles)
+        self.assertIn('body[data-view="batch-submit"] .main', styles)
+        self.assertIn('scrollbar-gutter: stable', styles)
         self.assertIn('body[data-portal] .proxy-node-card[aria-pressed="true"]', styles)
 
     def test_client_copy_and_redeem_modal_match_133_contract(self) -> None:

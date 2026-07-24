@@ -7198,7 +7198,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-prompt-row {
   display: grid;
   grid-template-columns: 22px 64px minmax(0, 1fr) 104px 120px 34px;
-  align-items: center;
+  align-items: start;
   gap: 12px;
   min-height: 104px;
   padding: 14px 2px;
@@ -7209,14 +7209,19 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-prompt-row > input { width: 16px; height: 16px; accent-color: #171a19; }
 .batch-prompt-row textarea {
   min-height: 58px;
-  max-height: 116px;
   padding: 10px 11px;
-  resize: vertical;
+  overflow: hidden;
+  resize: none;
   background: #fff;
   border: 1px solid #d7dcda;
   border-radius: 5px;
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
+.batch-prompt-row > input,
+.batch-prompt-index,
+.batch-prompt-reference,
+.batch-prompt-status,
+.batch-prompt-delete { margin-top: 10px; }
 .batch-prompt-row textarea:focus { border-color: #252b29; box-shadow: 0 0 0 3px rgba(32, 38, 36, .07); }
 
 .batch-prompt-index,

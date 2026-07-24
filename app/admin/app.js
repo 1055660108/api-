@@ -486,6 +486,7 @@ const state = {
   submitIdempotencyKey: "",
   submitFingerprint: "",
   batchSpreadsheet: null,
+  batchSpreadsheetName: "",
   batchPrompts: [],
   batchSharedImages: [],
   batchImageTargetIndex: -1,
@@ -494,6 +495,8 @@ const state = {
   batchSubmitting: false,
   batchAutoRunning: false,
   batchAutoStopRequested: false,
+  batchDraftOwner: "",
+  batchDraftSaveTimer: 0,
   isTempToken: false,
   tempTokens: [],
   accounts: [],
@@ -1388,6 +1391,7 @@ function applyAccessScope(data = {}) {
     if (els.metricWorkers) els.metricWorkers.textContent = String(state.concurrency);
   }
   syncBatchConcurrencyControls();
+  loadBatchDraft();
   if (data.version) {
     state.version = String(data.version);
     if (els.sidebarVersion) els.sidebarVersion.textContent = `v${state.version}`;
@@ -1547,6 +1551,11 @@ async function logout() {
   state.membershipHoldings = [];
   state.apiToken = "";
   state.authenticated = false;
+  clearBatchReferenceImages();
+  state.batchSpreadsheet = null;
+  state.batchSpreadsheetName = "";
+  state.batchPrompts = [];
+  state.batchDraftOwner = "";
   localStorage.removeItem(portalStorageKey(TOKEN_KEY));
   sessionStorage.removeItem(portalStorageKey(API_TOKEN_SESSION_KEY));
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
@@ -3752,6 +3761,7 @@ async function submitTask(event) {
 
 const MAX_BATCH_SELECTION = 30;
 const BATCH_VIDEO_DURATION = "15";
+const BATCH_DRAFT_VERSION = 1;
 
 function batchConcurrencyLimit() {
   return Math.max(1, Math.trunc(portal === "client" ? Number(state.concurrency || 1) : MAX_BATCH_SELECTION));
@@ -3764,6 +3774,101 @@ function syncBatchConcurrencyControls(useMaximum = false) {
     const requested = Math.trunc(useMaximum ? maximum : Number(els.batchAutoConcurrency.value || maximum));
     els.batchAutoConcurrency.value = String(Math.max(1, Math.min(maximum, requested)));
   }
+}
+
+function batchDraftStorageKey(owner = state.userName) {
+  const normalizedOwner = String(owner || "").trim().toLocaleLowerCase();
+  return normalizedOwner ? `dfyue_batch_draft_${encodeURIComponent(normalizedOwner)}` : "";
+}
+
+function saveBatchDraft() {
+  if (portal !== "client") return;
+  const key = batchDraftStorageKey();
+  if (!key) return;
+  window.clearTimeout(state.batchDraftSaveTimer);
+  state.batchDraftSaveTimer = 0;
+  try {
+    if (!state.batchPrompts.length) {
+      localStorage.removeItem(key);
+      return;
+    }
+    const prompts = state.batchPrompts.slice(0, 500).map((item) => ({
+      row: Number(item.row || 0),
+      prompt: String(item.prompt || "").slice(0, 4000),
+      selected: Boolean(item.selected),
+      status: String(item.status || ""),
+      error: String(item.error || "").slice(0, 500),
+      taskId: String(item.taskId || "").slice(0, 80),
+    }));
+    localStorage.setItem(key, JSON.stringify({
+      version: BATCH_DRAFT_VERSION,
+      filename: String(state.batchSpreadsheet?.name || state.batchSpreadsheetName || "").slice(0, 240),
+      ratio: String(els.batchTaskRatio?.value || "9:16"),
+      pageSize: state.batchPageSize,
+      autoConcurrency: Math.max(1, Math.min(batchConcurrencyLimit(), Number(els.batchAutoConcurrency?.value || 1))),
+      prompts,
+      savedAt: Date.now(),
+    }));
+  } catch (_) {
+    // A full or disabled browser storage area must not interrupt batch editing.
+  }
+}
+
+function scheduleBatchDraftSave() {
+  if (portal !== "client" || !state.userName) return;
+  window.clearTimeout(state.batchDraftSaveTimer);
+  state.batchDraftSaveTimer = window.setTimeout(saveBatchDraft, 180);
+}
+
+function loadBatchDraft() {
+  if (portal !== "client" || !state.userName) return;
+  const owner = String(state.userName).trim().toLocaleLowerCase();
+  if (!owner || state.batchDraftOwner === owner) return;
+  state.batchDraftOwner = owner;
+  clearBatchReferenceImages();
+  state.batchSpreadsheet = null;
+  state.batchSpreadsheetName = "";
+  state.batchPrompts = [];
+  state.batchPage = 1;
+  try {
+    const stored = JSON.parse(localStorage.getItem(batchDraftStorageKey(owner)) || "null");
+    if (!stored || stored.version !== BATCH_DRAFT_VERSION || !Array.isArray(stored.prompts)) throw new Error("no draft");
+    state.batchSpreadsheetName = String(stored.filename || "").slice(0, 240);
+    state.batchPrompts = stored.prompts.slice(0, 500).map((item, index) => {
+      const taskId = String(item?.taskId || "").slice(0, 80);
+      let status = String(item?.status || "");
+      if (["queued", "running"].includes(status)) status = taskId ? "success" : "";
+      if (!["", "success", "completed", "failed"].includes(status)) status = "";
+      return {
+        row: Math.max(1, Number(item?.row || index + 1)),
+        prompt: String(item?.prompt || "").slice(0, 4000),
+        selected: status === "success" || status === "completed" ? false : Boolean(item?.selected),
+        status,
+        error: String(item?.error || "").slice(0, 500),
+        taskId,
+        images: [],
+      };
+    }).filter((item) => item.prompt.trim());
+    const pageSize = Number(stored.pageSize || 10);
+    state.batchPageSize = [10, 30, 50].includes(pageSize) ? pageSize : 10;
+    if (els.batchTaskRatio && ["9:16", "16:9", "1:1", "3:4", "4:3", "21:9"].includes(stored.ratio)) els.batchTaskRatio.value = stored.ratio;
+    if (els.batchAutoConcurrency) els.batchAutoConcurrency.value = String(Math.max(1, Math.min(batchConcurrencyLimit(), Number(stored.autoConcurrency || 1))));
+  } catch (_) {
+    localStorage.removeItem(batchDraftStorageKey(owner));
+  }
+  if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheetName || "未选择文件";
+  if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchPrompts.length ? `已恢复 ${state.batchPrompts.length} 条提示词` : "等待导入";
+  renderBatchPrompts();
+}
+
+function resizeBatchPromptTextarea(textarea) {
+  if (!textarea) return;
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.max(58, textarea.scrollHeight + 2)}px`;
+}
+
+function resizeBatchPromptTextareas() {
+  els.batchPromptList?.querySelectorAll("[data-batch-prompt-text]").forEach(resizeBatchPromptTextarea);
 }
 
 function createBatchImageEntries(files) {
@@ -3812,6 +3917,7 @@ function resetBatchTaskPage() {
   if (state.batchSubmitting) return;
   clearBatchReferenceImages();
   state.batchSpreadsheet = null;
+  state.batchSpreadsheetName = "";
   state.batchPrompts = [];
   state.batchImageTargetIndex = -1;
   state.batchPage = 1;
@@ -3826,6 +3932,7 @@ function resetBatchTaskPage() {
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = "等待导入";
   syncBatchConcurrencyControls();
   renderBatchPrompts();
+  saveBatchDraft();
 }
 
 function renderBatchPrompts() {
@@ -3855,6 +3962,7 @@ function renderBatchPrompts() {
       </article>`;
     }).join("");
     window.lucide?.createIcons();
+    window.requestAnimationFrame(resizeBatchPromptTextareas);
   }
   els.batchPromptList.dataset.page = String(state.batchPage);
   els.batchPromptList.scrollTop = previousPage === state.batchPage ? previousScrollTop : 0;
@@ -3886,6 +3994,7 @@ function renderBatchPrompts() {
   if (els.batchReferenceThumbs) {
     els.batchReferenceThumbs.innerHTML = state.batchSharedImages.map((entry) => `<img src="${escapeHtml(entry.previewUrl)}" alt="共用参考图" />`).join("");
   }
+  scheduleBatchDraftSave();
 }
 
 function applyBatchSelectionCount() {
@@ -4716,6 +4825,7 @@ function bindEvents() {
   els.batchSpreadsheetInput?.addEventListener("change", () => {
     state.batchPrompts.forEach((item) => releaseBatchImageEntries(item.images));
     state.batchSpreadsheet = els.batchSpreadsheetInput.files?.[0] || null;
+    state.batchSpreadsheetName = state.batchSpreadsheet?.name || "";
     state.batchPrompts = [];
     state.batchPage = 1;
     if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheet?.name || "未选择文件";
@@ -4819,6 +4929,7 @@ function bindEvents() {
     const item = state.batchPrompts[Number(input.dataset.batchPromptText)];
     if (!item || item.status === "success") return;
     item.prompt = input.value;
+    resizeBatchPromptTextarea(input);
     if (!item.prompt.trim()) {
       item.selected = false;
       const checkbox = input.closest("[data-batch-prompt-row]")?.querySelector("[data-batch-prompt-select]");
@@ -4827,6 +4938,7 @@ function bindEvents() {
     const selectedCount = batchSelectedEntries().length;
     if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selectedCount} / ${MAX_BATCH_SELECTION} 条`;
     if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selectedCount;
+    scheduleBatchDraftSave();
   });
   els.submitBatchTasks?.addEventListener("click", submitBatchTasks);
   els.autoSubmitBatchTasks?.addEventListener("click", () => {
@@ -4837,7 +4949,7 @@ function bindEvents() {
     const selected = batchSelectedEntries();
     if (!selected.length || state.batchSubmitting) return;
     if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(Math.min(MAX_BATCH_SELECTION, selected.length));
-    syncBatchConcurrencyControls(true);
+    syncBatchConcurrencyControls();
     openSettingsModal(els.batchAutoModal, els.batchSelectionLimit);
   });
   els.confirmBatchAutoSubmit?.addEventListener("click", () => {
@@ -4847,7 +4959,11 @@ function bindEvents() {
     closeSettingsModal(els.batchAutoModal);
     autoSubmitBatchTasks();
   });
-  els.batchAutoConcurrency?.addEventListener("change", syncBatchConcurrencyControls);
+  els.batchAutoConcurrency?.addEventListener("change", () => {
+    syncBatchConcurrencyControls();
+    scheduleBatchDraftSave();
+  });
+  els.batchTaskRatio?.addEventListener("change", scheduleBatchDraftSave);
   els.openMyPrompts?.addEventListener("click", () => {
     state.promptPickerPage = 1;
     renderPromptPicker();

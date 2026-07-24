@@ -243,7 +243,7 @@ def count_pending_tasks() -> int:
     return sum(1 for item in list_tasks() if str(item.get("status") or "") == STATUS_PENDING)
 
 
-def create_task(prompt: str, ratio: str, owner_token_hash: str = "", platform: str = DEFAULT_PLATFORM, model: str = "", task_type: str = "video", enqueue: bool = True, idempotency_hash: str = "", request_fingerprint: str = "", request_route: str = "") -> dict[str, Any]:
+def create_task(prompt: str, ratio: str, owner_token_hash: str = "", platform: str = DEFAULT_PLATFORM, model: str = "", task_type: str = "video", enqueue: bool = True, idempotency_hash: str = "", request_fingerprint: str = "", request_route: str = "", duration: int | None = None) -> dict[str, Any]:
     platform = normalize_platform(platform)
     model = normalize_model(model)
     ensure_storage()
@@ -262,6 +262,7 @@ def create_task(prompt: str, ratio: str, owner_token_hash: str = "", platform: s
                     "platform": platform,
                     "model": model,
                     "task_type": "image" if task_type == "image" else "video",
+                    "duration": int(duration) if duration else 0,
                     "status": STATUS_PENDING if enqueue else "initializing",
                     "image_count": 0,
                     "owner_token_hash": owner_token_hash,
@@ -292,7 +293,7 @@ def create_task(prompt: str, ratio: str, owner_token_hash: str = "", platform: s
     raise RuntimeError("could not allocate task id")
 
 
-def find_or_create_task(prompt: str, ratio: str, owner_token_hash: str, platform: str, model: str, task_type: str, idempotency_key: str, request_fingerprint: str, request_route: str) -> tuple[dict[str, Any], bool]:
+def find_or_create_task(prompt: str, ratio: str, owner_token_hash: str, platform: str, model: str, task_type: str, idempotency_key: str, request_fingerprint: str, request_route: str, duration: int | None = None) -> tuple[dict[str, Any], bool]:
     key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
     with _TASK_CREATE_LOCK:
         if postgres.enabled():
@@ -308,6 +309,7 @@ def find_or_create_task(prompt: str, ratio: str, owner_token_hash: str, platform
                 "platform": platform,
                 "model": model,
                 "task_type": "image" if task_type == "image" else "video",
+                "duration": int(duration) if duration else 0,
                 "status": "initializing",
                 "image_count": 0,
                 "owner_token_hash": owner_token_hash,
@@ -329,7 +331,7 @@ def find_or_create_task(prompt: str, ratio: str, owner_token_hash: str, platform
             if str(meta.get("request_fingerprint") or "") != request_fingerprint:
                 raise ValueError("idempotency key conflicts with a different request")
             return meta, False
-        return create_task(prompt, ratio, owner_token_hash=owner_token_hash, platform=platform, model=model, task_type=task_type, enqueue=False, idempotency_hash=key_hash, request_fingerprint=request_fingerprint, request_route=request_route), True
+        return create_task(prompt, ratio, owner_token_hash=owner_token_hash, platform=platform, model=model, task_type=task_type, enqueue=False, idempotency_hash=key_hash, request_fingerprint=request_fingerprint, request_route=request_route, duration=duration), True
 
 
 def finalize_task_creation(task_id: str) -> dict[str, Any]:

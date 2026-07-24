@@ -413,7 +413,7 @@ class WorkerManager:
                 elif platform == "qianwen":
                     runner = QianwenVideoAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), str(meta.get("model") or "万相 2.7"), str(meta.get("task_type") or "video"), account=account)
                 else:
-                    runner = DolaFetchAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), account=account)
+                    runner = DolaFetchAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), int(meta.get("duration") or 0), account=account)
                     async with self._dola_submit_lock:
                         submit_interval = load_settings().dola_submit_interval_seconds
                         delay = submit_interval - (asyncio.get_running_loop().time() - self._last_dola_submit_at)

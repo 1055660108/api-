@@ -89,7 +89,7 @@ class RepositoryUpdateTests(unittest.TestCase):
         with patch("pathlib.Path.is_socket", return_value=False), patch.object(repository_update, "_run_git", side_effect=outputs):
             result = repository_update.repository_status(self.root)
 
-        self.assertEqual(result["version"], "1.4.8")
+        self.assertEqual(result["version"], "1.4.9")
         self.assertEqual(result["commit_message"], "current commit")
         self.assertEqual(result["latest_commit_message"], "latest commit")
         self.assertEqual(result["latest_version"], "1.2.4")

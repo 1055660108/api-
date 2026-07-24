@@ -43,6 +43,7 @@ from .platform_model_sync import fetch_platform_video_models
 from .proxy_manager import activate_mihomo_node, fetch_subscription_node_list, measure_node_delays, node_payload, rebuild_mihomo_from_snapshot
 from .resilience import PlatformGuard, adaptive_worker_limit, queue_admission
 from .repository_update import repository_status, update_repository
+from .spreadsheet_import import MAX_SPREADSHEET_BYTES, SUPPORTED_SPREADSHEET_SUFFIXES, SpreadsheetImportError, parse_spreadsheet
 from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
 from .package_catalog import create_package, disable_package, list_packages, update_package
@@ -99,6 +100,7 @@ IMAGE_MAGIC = {
     ".png": (b"\x89PNG\r\n\x1a\n",),
     ".webp": (b"RIFF",),
 }
+VALID_VIDEO_DURATIONS = {5, 10, 15}
 
 
 def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
@@ -1965,6 +1967,8 @@ async def submit_task(
     platform: Annotated[str, Form()] = DEFAULT_PLATFORM,
     model: Annotated[str, Form()] = "",
     task_type: Annotated[str, Form()] = "video",
+    duration: Annotated[int | None, Form()] = None,
+    batch: Annotated[bool, Form()] = False,
     images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
@@ -1977,15 +1981,17 @@ async def submit_task(
             raise HTTPException(status_code=400, detail="prompt is required")
         if ratio not in VALID_RATIOS:
             raise HTTPException(status_code=400, detail="invalid ratio")
+        if duration is not None and duration not in VALID_VIDEO_DURATIONS:
+            raise HTTPException(status_code=400, detail="视频时长仅支持 5、10 或 15 秒")
         platform, model = validate_task_platform_model(platform, model)
         if platform == "qianwen" and task_type != "video":
             raise HTTPException(status_code=400, detail="千问当前仅支持视频任务")
         uploads = [item for item in (images or []) if item and item.filename]
         if len(uploads) > load_settings().max_image_count:
             raise HTTPException(status_code=400, detail="too many images")
-        _rate_limit(request, "task-create", 30, 60, access.token_hash)
+        _rate_limit(request, "task-create-batch" if batch else "task-create", 120 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
-        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "platform": platform, "model": model, "task_type": task_type, "images": [Path(item.filename or "").name for item in uploads]})
+        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "images": [Path(item.filename or "").name for item in uploads]})
 
         try:
             if key:
@@ -2000,6 +2006,7 @@ async def submit_task(
                     key,
                     fingerprint,
                     "tasks",
+                    duration,
                 )
             else:
                 meta = await asyncio.to_thread(
@@ -2011,6 +2018,7 @@ async def submit_task(
                     model=model,
                     task_type=task_type,
                     enqueue=False,
+                    duration=duration,
                 )
                 created = True
             if not created:
@@ -2081,6 +2089,30 @@ async def submit_task(
                 "points_used": units_to_points(int(reservation.get("units") or 0)),
             }
         return response
+
+
+@app.post("/batch-prompts/parse")
+async def parse_batch_prompts(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_temp)],
+    spreadsheet: Annotated[UploadFile, File()],
+):
+    _rate_limit(request, "batch-prompt-parse", 10, 60, access.token_hash)
+    filename = Path(spreadsheet.filename or "").name
+    try:
+        data = await spreadsheet.read(MAX_SPREADSHEET_BYTES + 1)
+    finally:
+        await spreadsheet.close()
+    try:
+        prompts = await asyncio.to_thread(parse_spreadsheet, filename, data)
+    except SpreadsheetImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "filename": filename,
+        "count": len(prompts),
+        "prompts": prompts,
+        "supported_extensions": sorted(SUPPORTED_SPREADSHEET_SUFFIXES),
+    }
 
 
 @app.get("/tasks", dependencies=[Depends(require_token)])

@@ -4,10 +4,12 @@ import json
 import inspect
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 from app import __version__, accounts, admin_auth, config, main, package_catalog, proxy_manager, store, temp_access, users
 
@@ -155,6 +157,34 @@ class WebAPIContractTests(unittest.TestCase):
         second = self.client.post("/tasks", headers=headers, data={**common, "prompt": "城市夜景"})
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 409)
+
+    def test_client_can_parse_spreadsheet_prompts_and_submit_selected_duration(self) -> None:
+        registered = self.register("batch_spreadsheet_client")
+        headers = {"X-API-Token": registered["token"]}
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["序号", "视频提示词"])
+        sheet.append([1, "雨夜街道上的电影感镜头"])
+        sheet.append([2, "清晨云海延时摄影"])
+        payload = BytesIO()
+        workbook.save(payload)
+
+        parsed = self.client.post(
+            "/batch-prompts/parse",
+            headers=headers,
+            files={"spreadsheet": ("prompts.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(parsed.status_code, 200, parsed.text)
+        self.assertEqual(parsed.json()["count"], 2)
+        self.assertEqual([item["prompt"] for item in parsed.json()["prompts"]], ["雨夜街道上的电影感镜头", "清晨云海延时摄影"])
+
+        submitted = self.client.post(
+            "/tasks",
+            headers={**headers, "Idempotency-Key": "batch-duration-10"},
+            data={"prompt": parsed.json()["prompts"][0]["prompt"], "ratio": "16:9", "duration": "10", "batch": "true", "platform": "dola", "model": "Seedance 2.0"},
+        )
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        self.assertEqual(store.get_meta(submitted.json()["id"])["duration"], 10)
 
     def test_concurrency_overflow_is_precharged_and_queued_until_capacity_is_free(self) -> None:
         registered = self.register("limited_client")

@@ -237,6 +237,7 @@ const els = {
   promptPickerNext: document.getElementById("promptPickerNext"),
   promptPickerPageState: document.getElementById("promptPickerPageState"),
   promptGrid: document.getElementById("promptGrid"),
+  promptManagerPanel: document.getElementById("promptManagerPanel"),
   addPromptButton: document.getElementById("addPromptButton"),
   promptEditor: document.getElementById("promptEditor"),
   promptTitleInput: document.getElementById("promptTitleInput"),
@@ -252,6 +253,20 @@ const els = {
   resetSubmit: document.getElementById("resetSubmit"),
   submitTask: document.getElementById("submitTask"),
   submitState: document.getElementById("submitState"),
+  openBatchTaskModal: document.getElementById("openBatchTaskModal"),
+  batchTaskModal: document.getElementById("batchTaskModal"),
+  closeBatchTaskModal: document.getElementById("closeBatchTaskModal"),
+  cancelBatchTaskModal: document.getElementById("cancelBatchTaskModal"),
+  batchSpreadsheetInput: document.getElementById("batchSpreadsheetInput"),
+  batchSpreadsheetName: document.getElementById("batchSpreadsheetName"),
+  parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
+  batchTaskRatio: document.getElementById("batchTaskRatio"),
+  batchTaskDuration: document.getElementById("batchTaskDuration"),
+  selectAllBatchPrompts: document.getElementById("selectAllBatchPrompts"),
+  batchSelectionState: document.getElementById("batchSelectionState"),
+  batchPromptList: document.getElementById("batchPromptList"),
+  batchTaskProgress: document.getElementById("batchTaskProgress"),
+  submitBatchTasks: document.getElementById("submitBatchTasks"),
   imageInput: document.getElementById("imageInput"),
   clearImages: document.getElementById("clearImages"),
   imageList: document.getElementById("imageList"),
@@ -453,6 +468,9 @@ const state = {
   submitting: false,
   submitIdempotencyKey: "",
   submitFingerprint: "",
+  batchSpreadsheet: null,
+  batchPrompts: [],
+  batchSubmitting: false,
   isTempToken: false,
   tempTokens: [],
   accounts: [],
@@ -599,6 +617,7 @@ function renderPromptPicker() {
 
 function renderPrompts() {
   if (!els.promptGrid) return;
+  els.promptManagerPanel?.classList.toggle("is-empty", state.prompts.length === 0);
   const pages = Math.max(1, Math.ceil(state.prompts.length / state.promptPageSize));
   state.promptPage = Math.min(Math.max(1, state.promptPage), pages);
   const start = (state.promptPage - 1) * state.promptPageSize;
@@ -1178,7 +1197,7 @@ function createClientInkSplash(event) {
       clientRainScene?.burstAt?.(burst.x, burst.y, burst.radius);
       window.clearTimeout(clientSphereBurstTimer);
       els.loginView.classList.add("sphere-bursting");
-      clientSphereBurstTimer = window.setTimeout(() => els.loginView?.classList.remove("sphere-bursting"), 2380);
+      clientSphereBurstTimer = window.setTimeout(() => els.loginView?.classList.remove("sphere-bursting"), 3250);
       return;
     }
   }
@@ -2337,7 +2356,7 @@ function renderProxyNodes() {
   els.proxyNodeGrid.innerHTML = visibleNodes.map((node) => {
     const latency = node.latency_status === "available" ? `${node.latency_ms} ms` : node.latency_status === "unavailable" ? "不可用" : node.latency_status === "expired" ? "已过期" : "未检测";
     const selected = node.selected || node.id === state.proxySelectedNode;
-    return `<button class="proxy-node-card${selected ? " selected" : ""}" type="button" data-proxy-node-id="${escapeHtml(node.id)}"><span class="proxy-node-name">${escapeHtml(node.name)}</span><span class="proxy-node-country">${escapeHtml(node.country)} · ${escapeHtml(node.protocol.toUpperCase())}</span><strong class="proxy-node-latency${node.latency_ms ? " good" : ""}">${escapeHtml(latency)}</strong></button>`;
+    return `<button class="proxy-node-card${selected ? " selected" : ""}" type="button" data-proxy-node-id="${escapeHtml(node.id)}" aria-pressed="${selected ? "true" : "false"}"><span class="proxy-node-name">${escapeHtml(node.name)}</span><span class="proxy-node-country">${escapeHtml(node.country)} · ${escapeHtml(node.protocol.toUpperCase())}</span><strong class="proxy-node-latency${node.latency_ms ? " good" : ""}">${escapeHtml(latency)}</strong></button>`;
   }).join("");
 }
 
@@ -3663,6 +3682,150 @@ async function submitTask(event) {
   }
 }
 
+function resetBatchTaskModal() {
+  if (state.batchSubmitting) return;
+  state.batchSpreadsheet = null;
+  state.batchPrompts = [];
+  if (els.batchSpreadsheetInput) els.batchSpreadsheetInput.value = "";
+  if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = "未选择文件";
+  if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
+  if (els.batchTaskDuration) els.batchTaskDuration.value = "15";
+  if (els.batchTaskProgress) els.batchTaskProgress.textContent = "等待导入";
+  renderBatchPrompts();
+}
+
+function renderBatchPrompts() {
+  if (!els.batchPromptList) return;
+  const selected = state.batchPrompts.filter((item) => item.selected && item.prompt.trim());
+  if (!state.batchPrompts.length) {
+    els.batchPromptList.innerHTML = '<div class="empty-state">导入表格后点击自动解析</div>';
+  } else {
+    els.batchPromptList.innerHTML = state.batchPrompts.map((item, index) => `
+      <article class="batch-prompt-row${item.status ? ` is-${escapeHtml(item.status)}` : ""}" data-batch-prompt-row="${index}">
+        <input type="checkbox" data-batch-prompt-select="${index}" ${item.selected ? "checked" : ""} ${state.batchSubmitting || item.status === "success" ? "disabled" : ""} aria-label="选择表格第 ${escapeHtml(item.row)} 行" />
+        <span class="batch-prompt-index">第 ${escapeHtml(item.row)} 行</span>
+        <textarea data-batch-prompt-text="${index}" maxlength="4000" ${state.batchSubmitting || item.status === "success" ? "readonly" : ""}>${escapeHtml(item.prompt)}</textarea>
+        <span class="batch-prompt-status">${item.status === "success" ? `已提交 ${escapeHtml(shortId(item.taskId))}` : item.status === "failed" ? escapeHtml(item.error || "提交失败") : "待生成"}</span>
+      </article>`).join("");
+  }
+  if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selected.length} 条`;
+  if (els.selectAllBatchPrompts) {
+    const available = state.batchPrompts.filter((item) => item.status !== "success" && item.prompt.trim());
+    els.selectAllBatchPrompts.checked = Boolean(available.length) && available.every((item) => item.selected);
+    els.selectAllBatchPrompts.indeterminate = available.some((item) => item.selected) && !els.selectAllBatchPrompts.checked;
+    els.selectAllBatchPrompts.disabled = state.batchSubmitting || !available.length;
+  }
+  if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selected.length;
+}
+
+async function parseBatchSpreadsheet() {
+  const file = state.batchSpreadsheet;
+  if (!file) return toast("请先选择表格文件", "error");
+  const form = new FormData();
+  form.append("spreadsheet", file, file.name);
+  setBusy(els.parseBatchSpreadsheet, true, "解析中");
+  if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在解析表格";
+  try {
+    const data = await apiFetch("/batch-prompts/parse", { method: "POST", body: form, timeout: 60000 });
+    state.batchPrompts = (data.prompts || []).map((item) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: true, status: "", error: "", taskId: "" }));
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = `已解析 ${state.batchPrompts.length} 条提示词`;
+    renderBatchPrompts();
+    toast(`已解析 ${state.batchPrompts.length} 条视频提示词`);
+  } catch (error) {
+    state.batchPrompts = [];
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "解析失败";
+    renderBatchPrompts();
+    toast(`解析失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.parseBatchSpreadsheet, false);
+  }
+}
+
+async function submitBatchTasks() {
+  if (state.batchSubmitting) return;
+  const selected = state.batchPrompts.map((item, index) => ({ item, index })).filter(({ item }) => item.selected && item.prompt.trim() && item.status !== "success");
+  if (!selected.length) return toast("请至少选择一条提示词", "error");
+  if (selected.length > 100) return toast("单次最多生成 100 条任务", "error");
+  if (!window.confirm(`确定生成已选择的 ${selected.length} 条视频任务吗？每条任务会分别扣除视频额度或积分。`)) return;
+
+  state.batchSubmitting = true;
+  const ratio = els.batchTaskRatio?.value || "9:16";
+  const duration = els.batchTaskDuration?.value || "15";
+  const sessionId = window.crypto?.randomUUID?.() || `batch-${Date.now().toString(36)}`;
+  let cursor = 0;
+  let completed = 0;
+  let succeeded = 0;
+  let stopped = "";
+  setBusy(els.submitBatchTasks, true, "提交中");
+  renderBatchPrompts();
+
+  const submitOne = async ({ item, index }) => {
+    const form = new FormData();
+    form.append("prompt", item.prompt.trim());
+    form.append("ratio", ratio);
+    form.append("duration", duration);
+    form.append("batch", "true");
+    form.append("platform", state.platform || "dola");
+    form.append("model", state.model || "");
+    const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${index}` }, timeout: 45000 };
+    try {
+      let data;
+      try {
+        data = await apiFetch("/tasks", options);
+      } catch (error) {
+        if (error.code !== "REQUEST_TIMEOUT") throw error;
+        data = await apiFetch("/tasks", options);
+      }
+      item.status = "success";
+      item.taskId = data.id || "";
+      item.selected = false;
+      succeeded += 1;
+      if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
+    } catch (error) {
+      item.status = "failed";
+      item.error = error.message || "提交失败";
+      if (Number(error.status || 0) === 429) stopped = item.error;
+    } finally {
+      completed += 1;
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在提交 ${completed} / ${selected.length}`;
+      const row = els.batchPromptList?.querySelector(`[data-batch-prompt-row="${index}"]`);
+      if (row) {
+        row.classList.toggle("is-success", item.status === "success");
+        row.classList.toggle("is-failed", item.status === "failed");
+        const status = row.querySelector(".batch-prompt-status");
+        if (status) status.textContent = item.status === "success" ? `已提交 ${shortId(item.taskId)}` : item.error;
+      }
+    }
+  };
+
+  const worker = async () => {
+    while (!stopped) {
+      const current = cursor;
+      cursor += 1;
+      if (current >= selected.length) return;
+      await submitOne(selected[current]);
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(3, selected.length) }, () => worker()));
+    if (stopped && cursor < selected.length) {
+      selected.slice(cursor).forEach(({ item }) => {
+        item.status = "failed";
+        item.error = `未继续提交：${stopped}`;
+      });
+    }
+    const failed = selected.length - succeeded;
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = `提交完成：成功 ${succeeded} 条${failed ? `，失败 ${failed} 条` : ""}`;
+    toast(failed ? `批量提交完成，成功 ${succeeded} 条，失败 ${failed} 条` : `已提交 ${succeeded} 条视频任务`, failed ? "error" : "success");
+    await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), loadClientProfile()]);
+  } finally {
+    state.batchSubmitting = false;
+    setBusy(els.submitBatchTasks, false);
+    renderBatchPrompts();
+  }
+}
+
 async function copyText(value, label = "内容") {
   const text = String(value || "");
   if (!text) {
@@ -4232,6 +4395,57 @@ function bindEvents() {
   document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.viewShortcut));
   });
+  const closeBatchModal = () => {
+    if (state.batchSubmitting) return toast("任务正在提交，请等待提交完成", "error");
+    closeSettingsModal(els.batchTaskModal);
+  };
+  els.openBatchTaskModal?.addEventListener("click", () => {
+    resetBatchTaskModal();
+    openSettingsModal(els.batchTaskModal, els.batchSpreadsheetInput);
+  });
+  els.closeBatchTaskModal?.addEventListener("click", closeBatchModal);
+  els.cancelBatchTaskModal?.addEventListener("click", closeBatchModal);
+  els.batchTaskModal?.addEventListener("click", (event) => {
+    if (event.target === els.batchTaskModal) closeBatchModal();
+  });
+  els.batchSpreadsheetInput?.addEventListener("change", () => {
+    state.batchSpreadsheet = els.batchSpreadsheetInput.files?.[0] || null;
+    state.batchPrompts = [];
+    if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheet?.name || "未选择文件";
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchSpreadsheet ? "文件已导入，等待解析" : "等待导入";
+    renderBatchPrompts();
+  });
+  els.parseBatchSpreadsheet?.addEventListener("click", parseBatchSpreadsheet);
+  els.selectAllBatchPrompts?.addEventListener("change", () => {
+    const selected = Boolean(els.selectAllBatchPrompts.checked);
+    state.batchPrompts.forEach((item) => {
+      if (item.status !== "success" && item.prompt.trim()) item.selected = selected;
+    });
+    renderBatchPrompts();
+  });
+  els.batchPromptList?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-batch-prompt-select]");
+    if (!checkbox) return;
+    const item = state.batchPrompts[Number(checkbox.dataset.batchPromptSelect)];
+    if (item && item.status !== "success") item.selected = checkbox.checked;
+    renderBatchPrompts();
+  });
+  els.batchPromptList?.addEventListener("input", (event) => {
+    const input = event.target.closest("[data-batch-prompt-text]");
+    if (!input) return;
+    const item = state.batchPrompts[Number(input.dataset.batchPromptText)];
+    if (!item || item.status === "success") return;
+    item.prompt = input.value;
+    if (!item.prompt.trim()) {
+      item.selected = false;
+      const checkbox = input.closest("[data-batch-prompt-row]")?.querySelector("[data-batch-prompt-select]");
+      if (checkbox) checkbox.checked = false;
+    }
+    const selectedCount = state.batchPrompts.filter((entry) => entry.selected && entry.prompt.trim()).length;
+    if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selectedCount} 条`;
+    if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selectedCount;
+  });
+  els.submitBatchTasks?.addEventListener("click", submitBatchTasks);
   els.openMyPrompts?.addEventListener("click", () => {
     state.promptPickerPage = 1;
     renderPromptPicker();

@@ -616,10 +616,11 @@ async def _fetch_json(client: httpx.AsyncClient, url: str, *, label: str, **kwar
 
 
 class DolaFetchAutomation:
-    def __init__(self, task_id: str, prompt: str, ratio: str, account: dict[str, Any] | None = None):
+    def __init__(self, task_id: str, prompt: str, ratio: str, duration: int | None = None, account: dict[str, Any] | None = None):
         self.task_id = task_id
         self.prompt = prompt
         self.ratio = ratio
+        self.duration = int(duration or 0)
         self.account = account or {}
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
@@ -706,7 +707,7 @@ class DolaFetchAutomation:
                     {
                         "prompt": self.prompt,
                         "ratio": self.ratio,
-                        "duration": self.settings.video_duration,
+                        "duration": self.duration or self.settings.video_duration,
                         "attachments": attachments,
                     },
                 )

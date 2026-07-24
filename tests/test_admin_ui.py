@@ -244,7 +244,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.12', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.13', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -266,7 +266,12 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('class HSInkBackground', ink_script)
         self.assertIn('class HSRainScene', ink_script)
         self.assertIn('this.frameInterval = 1000 / 60', ink_script)
-        self.assertIn('const count = compact ? 124', ink_script)
+        self.assertIn('const count = compact ? 88', ink_script)
+        self.assertIn('puddleGeometry()', ink_script)
+        self.assertIn('drawPuddleSurface(context, now)', ink_script)
+        self.assertIn('uniform float uPuddle', ink_script)
+        self.assertIn('gl.uniform1f(this.locations.puddle', ink_script)
+        self.assertIn('puddleImpact', ink_script)
         self.assertIn('drawConvergence(context, now)', ink_script)
         self.assertIn('drawWaterOrbit(context, now, 1)', ink_script)
         self.assertIn('gl.uniform1f(this.locations.vortex', ink_script)
@@ -291,7 +296,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('requestAnimationFrame(this.render)', ink_script)
         self.assertIn('gl.enable(gl.SCISSOR_TEST)', ink_script)
         self.assertIn('float cloud = fbm(inkPoint * detailScale', ink_script)
-        self.assertIn('float depth = sqrt(max(0.0, 1.0 - dot(spherePoint, spherePoint)))', ink_script)
+        self.assertIn('float sphereDepth = sqrt(max(0.0, 1.0 - dot(spherePoint, spherePoint)))', ink_script)
+        self.assertIn('float depth = mix(sphereDepth, puddleDepth, uPuddle)', ink_script)
         self.assertIn('function traceInkPool(', self.javascript)
         self.assertIn('function drawInkSplash(', self.javascript)
         self.assertIn('const burstCount = compact ? 4 : 6', self.javascript)
@@ -415,8 +421,6 @@ class AdminUITests(unittest.TestCase):
             "batchTaskDuration",
             "batchSelectionLimit",
             "applyBatchSelectionLimit",
-            "batchPlatformSelect",
-            "batchModelSelect",
             "batchAutoConcurrency",
             "selectAllBatchPrompts",
             "batchPromptList",
@@ -436,6 +440,16 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('await apiFetch(`/tasks/${encodeURIComponent(taskId)}`', self.javascript)
         self.assertIn('URL.createObjectURL(file)', self.javascript)
         self.assertIn('class="batch-reference-thumbs"', self.html)
+        self.assertNotIn('id="batchPlatformSelect"', self.html)
+        self.assertNotIn('id="batchModelSelect"', self.html)
+        self.assertNotIn('<span>生成平台</span>', self.html)
+        self.assertNotIn('<span>生成模型</span><select id="batchModelSelect"', self.html)
+        self.assertNotIn('id="batchAutoConcurrencyState"', self.html)
+        self.assertNotIn("当前最多可使用", self.javascript)
+        self.assertIn('function dolaBatchGenerationSelection()', self.javascript)
+        self.assertIn('return { platform: "dola", model: preferredModel || "Seedance 2.0" }', self.javascript)
+        self.assertIn('form.append("platform", generation.platform)', self.javascript)
+        self.assertIn('form.append("model", generation.model)', self.javascript)
         self.assertIn('for (let current = 0; current < selected.length; current += 1)', self.javascript)
         self.assertNotIn('Math.min(3, selected.length)', self.javascript)
         self.assertNotIn('id="batchTaskModal"', self.html)

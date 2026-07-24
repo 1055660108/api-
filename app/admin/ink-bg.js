@@ -21,6 +21,7 @@
     uniform float uSeed;
     uniform float uNight;
     uniform float uVortex;
+    uniform float uPuddle;
 
     float hash(vec2 p) {
       p += vec2(uSeed * 0.0137, uSeed * 0.0191);
@@ -82,7 +83,16 @@
         sin(angle * 4.0 - time * 0.8) * 0.003 +
         (noise(point * 18.0 + vec2(-time * 1.3, time)) - 0.5) * 0.01 * uVortex
       ) * contourScale;
-      float sphere = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
+      float sphericalMask = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
+      vec2 puddlePoint = vec2(
+        point.x / max(uSize * 1.42, 0.04),
+        point.y / max(uSize * 0.34, 0.018)
+      );
+      float puddleRadius = length(puddlePoint);
+      float puddleEdge = (fbm(puddlePoint * 2.2 + vec2(time * 0.04, -time * 0.025)) - 0.5) * 0.055;
+      puddleEdge += sin(atan(puddlePoint.y, puddlePoint.x) * 7.0 + time * 0.18) * 0.009;
+      float puddleMask = smoothstep(1.04 + puddleEdge, 0.955 + puddleEdge, puddleRadius);
+      float sphere = mix(sphericalMask, puddleMask, uPuddle);
 
       float detailScale = mix(21.0, 5.8, smoothstep(0.05, 0.24, uSize));
       vec2 warp = vec2(
@@ -99,8 +109,12 @@
       float pigment = smoothstep(0.08, 0.94, fluidDensity);
 
       vec2 spherePoint = point / max(uSize, 0.04);
-      float depth = sqrt(max(0.0, 1.0 - dot(spherePoint, spherePoint)));
-      vec3 normal = normalize(vec3(spherePoint.x, -spherePoint.y, depth));
+      float sphereDepth = sqrt(max(0.0, 1.0 - dot(spherePoint, spherePoint)));
+      float puddleDepth = sqrt(max(0.0, 1.0 - dot(puddlePoint, puddlePoint)));
+      float depth = mix(sphereDepth, puddleDepth, uPuddle);
+      vec3 sphereNormal = normalize(vec3(spherePoint.x, -spherePoint.y, sphereDepth));
+      vec3 puddleNormal = normalize(vec3(puddlePoint.x * 0.18, -puddlePoint.y * 0.48, 0.96));
+      vec3 normal = normalize(mix(sphereNormal, puddleNormal, uPuddle));
       float light = dot(normal, normalize(vec3(-0.46, -0.52, 0.72))) * 0.5 + 0.5;
       float highlight = smoothstep(0.58, 0.94, light) * depth;
       float movingHighlight = pow(max(0.0, dot(normal, normalize(vec3(sin(time * 5.4) * 0.5 - 0.25, -0.58, 0.78)))), 12.0) * depth * uVortex;
@@ -119,18 +133,23 @@
       rainGlass = mix(rainGlass, vec3(0.99, 1.0, 1.0), movingHighlight * 0.62);
       rainGlass = mix(rainGlass, vec3(0.62, 0.77, 0.76), caustic * (0.16 + uVortex * 0.16));
       rainGlass = mix(rainGlass, vec3(0.08, 0.14, 0.15), rim * 0.22);
+      float puddleWave = pow(0.5 + 0.5 * sin(puddleRadius * 34.0 - time * 1.55 + cloud * 3.2), 5.0) * puddleDepth;
+      vec3 puddleColor = mix(vec3(0.035, 0.075, 0.082), vec3(0.43, 0.59, 0.6), light * 0.52 + caustic * 0.22);
+      puddleColor = mix(puddleColor, vec3(0.84, 0.92, 0.91), puddleWave * 0.2 + highlight * 0.18);
+      puddleColor = mix(puddleColor, vec3(0.015, 0.035, 0.04), (1.0 - puddleDepth) * 0.38);
+      rainGlass = mix(rainGlass, puddleColor, uPuddle);
       color = mix(color, rainGlass, uNight);
       float grain = hash(gl_FragCoord.xy);
       float inkAlpha = 0.72 + pigment * 0.24 + depth * 0.02 + grain * 0.008;
-      float waterAlpha = 0.5 + pigment * 0.3 + depth * 0.04 + rim * 0.08 + uVortex * 0.13;
+      float waterAlpha = mix(0.5 + pigment * 0.3 + depth * 0.04 + rim * 0.08 + uVortex * 0.13, 0.46 + depth * 0.2 + puddleWave * 0.08, uPuddle);
       float alpha = sphere * mix(inkAlpha, waterAlpha, uNight) * uStrength;
 
       vec2 groundPoint = vec2(
         point.x / max(uSize * 1.04, 0.01),
         (point.y + uSize * 0.98) / max(uSize * 0.22, 0.01)
       );
-      float groundShadow = smoothstep(1.0, 0.0, length(groundPoint)) * (1.0 - sphere) * uStrength * 0.12;
-      float halo = smoothstep(uSize + 0.095, uSize + 0.012, screenRadius) * (1.0 - sphere) * uNight * 0.09;
+      float groundShadow = smoothstep(1.0, 0.0, length(groundPoint)) * (1.0 - sphere) * uStrength * 0.12 * (1.0 - uPuddle);
+      float halo = smoothstep(uSize + 0.095, uSize + 0.012, screenRadius) * (1.0 - sphere) * uNight * 0.09 * (1.0 - uPuddle);
       vec3 groundColor = mix(vec3(0.05), vec3(0.36, 0.43, 0.43), uNight);
       vec3 finalColor = mix(groundColor, color, sphere);
       finalColor = mix(finalColor, vec3(0.72, 0.79, 0.79), halo * 0.72);
@@ -235,6 +254,7 @@
         seed: gl.getUniformLocation(this.program, "uSeed"),
         night: gl.getUniformLocation(this.program, "uNight"),
         vortex: gl.getUniformLocation(this.program, "uVortex"),
+        puddle: gl.getUniformLocation(this.program, "uPuddle"),
       };
     }
 
@@ -269,8 +289,8 @@
       const compact = width < 720;
       const aspect = width / Math.max(height, 1);
       if (mode === "landing") {
-        this.targetCenter = [0.5, compact ? 0.55 : 0.52];
-        this.targetSize = Math.min(compact ? 0.27 : 0.268, aspect * 0.43);
+        this.targetCenter = [0.5, compact ? 0.47 : 0.455];
+        this.targetSize = Math.min(compact ? 0.25 : 0.255, aspect * 0.4);
         this.targetStrength = 1;
       } else if (mode === "login" || mode === "converging") {
         this.targetCenter = [0.5, compact ? 0.78 : 0.8];
@@ -313,7 +333,9 @@
       const centerX = this.center[0] * this.lastWidth;
       const centerY = (1 - this.center[1]) * this.lastHeight;
       const radius = this.size * this.lastHeight * Math.max(0.72, this.growth);
-      return Math.hypot(clientX - centerX, clientY - centerY) <= radius * 1.06;
+      const normalizedX = (clientX - centerX) / Math.max(1, radius * 1.46);
+      const normalizedY = (clientY - centerY) / Math.max(1, radius * 0.42);
+      return normalizedX * normalizedX + normalizedY * normalizedY <= 1.08;
     }
 
     burstAt(clientX, clientY) {
@@ -346,7 +368,7 @@
       gl.disable(gl.SCISSOR_TEST);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      const radiusPixels = Math.ceil((displaySize + 0.075) * this.canvas.height);
+      const radiusPixels = Math.ceil((displaySize * (this.mode === "landing" ? 1.52 : 1) + 0.075) * this.canvas.height);
       const centerX = Math.round(this.center[0] * this.canvas.width);
       const centerY = Math.round(this.center[1] * this.canvas.height);
       const left = Math.max(0, centerX - radiusPixels);
@@ -367,6 +389,7 @@
       gl.uniform1f(this.locations.seed, this.seed);
       gl.uniform1f(this.locations.night, this.kind === "entry" ? 1 : 0);
       gl.uniform1f(this.locations.vortex, this.kind === "entry" ? 1 : 0);
+      gl.uniform1f(this.locations.puddle, this.kind === "entry" && this.mode === "landing" ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disable(gl.SCISSOR_TEST);
     }
@@ -382,7 +405,7 @@
       this.pixelRatio = 1;
       this.width = 0;
       this.height = 0;
-      this.wind = -24;
+      this.wind = -7;
       this.drops = [];
       this.ripples = [];
       this.glassDrops = [];
@@ -426,9 +449,9 @@
 
     buildDrops() {
       const compact = this.width < 720;
-      const count = compact ? 124 : Math.min(214, Math.max(162, Math.round(this.width * this.height / 7600)));
+      const count = compact ? 88 : Math.min(150, Math.max(112, Math.round(this.width * this.height / 11000)));
       this.drops = Array.from({ length: count }, () => this.createDrop(true));
-      const glassCount = compact ? 44 : Math.min(78, Math.max(58, Math.round(this.width * this.height / 19000)));
+      const glassCount = compact ? 18 : Math.min(34, Math.max(24, Math.round(this.width * this.height / 38000)));
       this.glassDrops = Array.from({ length: glassCount }, () => this.createGlassDrop(true));
       const orbitCount = compact ? 20 : 30;
       this.orbitDrops = Array.from({ length: orbitCount }, (_, index) => ({
@@ -444,6 +467,17 @@
       this.staticRendered = false;
     }
 
+    puddleGeometry() {
+      const compact = this.width < 720;
+      const radius = Math.min(this.height * (compact ? 0.25 : 0.255), this.width * 0.4);
+      return {
+        x: this.width * 0.5,
+        y: this.height * (compact ? 0.53 : 0.545),
+        radiusX: radius * 1.42,
+        radiusY: radius * 0.34,
+      };
+    }
+
     buildAtmosphere() {
       const canvas = this.atmosphereCanvas;
       canvas.width = Math.max(1, Math.round(this.width * this.pixelRatio));
@@ -453,10 +487,10 @@
       context.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
       context.clearRect(0, 0, this.width, this.height);
       const horizon = context.createLinearGradient(0, 0, 0, this.height);
-      horizon.addColorStop(0, "rgba(32, 43, 45, 0.08)");
-      horizon.addColorStop(0.52, "rgba(108, 129, 128, 0.025)");
-      horizon.addColorStop(0.82, "rgba(1, 5, 6, 0.02)");
-      horizon.addColorStop(1, "rgba(178, 202, 199, 0.035)");
+      horizon.addColorStop(0, "rgba(22, 34, 37, 0.075)");
+      horizon.addColorStop(0.5, "rgba(105, 128, 129, 0.026)");
+      horizon.addColorStop(0.78, "rgba(13, 24, 26, 0.035)");
+      horizon.addColorStop(1, "rgba(172, 197, 194, 0.05)");
       context.fillStyle = horizon;
       context.fillRect(0, 0, this.width, this.height);
       const glow = context.createRadialGradient(this.width * 0.5, this.height * 0.5, 0, this.width * 0.5, this.height * 0.5, Math.max(this.width, this.height) * 0.56);
@@ -478,19 +512,25 @@
 
     createDrop(initial = false) {
       const depth = Math.random();
-      const speed = 460 + depth * 1260;
-      const y = initial ? Math.random() * this.height : -40 - Math.random() * this.height * 0.28;
+      const speed = 270 + depth * 610;
+      const x = Math.random() * (this.width + 120) - 60;
+      const puddle = this.puddleGeometry();
+      const normalizedX = (x - puddle.x) / Math.max(1, puddle.radiusX);
+      const puddleImpact = Math.abs(normalizedX) < 0.94 && Math.random() < 0.52;
+      const impactY = puddleImpact
+        ? puddle.y + (Math.random() - 0.5) * puddle.radiusY * 1.42 * Math.sqrt(Math.max(0, 1 - normalizedX * normalizedX))
+        : this.height * (0.84 + Math.random() * 0.17);
+      const y = initial ? -Math.random() * this.height * 1.2 : -28 - Math.random() * this.height * 0.22;
       return {
-        x: Math.random() * (this.width + 180) - 90,
+        x,
         y,
-        impactY: initial
-          ? Math.min(this.height * 0.98, y + this.height * (0.04 + Math.random() * 0.32))
-          : this.height * (0.08 + Math.random() * 0.88),
+        impactY,
+        puddleImpact,
         depth,
         speed,
-        length: 20 + depth * 68 + Math.random() * 24,
-        width: 0.42 + depth * 1.62,
-        alpha: 0.07 + depth * 0.48,
+        length: 9 + depth * 29 + Math.random() * 11,
+        width: 0.38 + depth * 1.18,
+        alpha: 0.06 + depth * 0.38,
         layer: Math.min(2, Math.floor(depth * 3)),
         phase: Math.random() * Math.PI * 2,
       };
@@ -503,9 +543,9 @@
         x: Math.random() * this.width,
         y: initial ? Math.random() * this.height : -radius * 3,
         radius,
-        speed: 4 + depth * 22 + Math.random() * 12,
-        trail: radius * (1.4 + Math.random() * 5.5),
-        drift: (Math.random() - 0.5) * 2.2,
+        speed: 2 + depth * 10 + Math.random() * 7,
+        trail: radius * (1.2 + Math.random() * 3.4),
+        drift: (Math.random() - 0.5) * 1.2,
         phase: Math.random() * Math.PI * 2,
         pause: Math.random() * 2.4,
         depth,
@@ -550,28 +590,28 @@
     }
 
     randomize() {
-      this.wind = -38 + Math.random() * 58;
+      this.wind = -11 + Math.random() * 22;
       if (this.width) this.buildDrops();
     }
 
     burstAt(x, y, radius) {
       if (this.reducedMotion || this.mode !== "landing") return;
-      const particleCount = this.width < 720 ? 72 : 104;
+      const particleCount = this.width < 720 ? 44 : 68;
       const particles = Array.from({ length: particleCount }, (_, index) => {
-        const angle = (index / particleCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.42;
-        const speed = radius * (1.05 + Math.random() * 2.15);
+        const angle = -Math.PI + (index / Math.max(1, particleCount - 1)) * Math.PI + (Math.random() - 0.5) * 0.2;
+        const speed = radius * (0.56 + Math.random() * 1.18);
         return {
           angle,
-          vx: Math.cos(angle) * speed * (0.72 + Math.random() * 0.48),
-          vy: Math.sin(angle) * speed - radius * (0.2 + Math.random() * 0.62),
-          gravity: radius * (2.4 + Math.random() * 1.9),
-          size: 1.4 + Math.random() * 5.8,
-          delay: Math.random() * 180,
-          life: 620 + Math.random() * 720,
-          wobble: (Math.random() - 0.5) * radius * 0.24,
+          vx: Math.cos(angle) * speed * (0.82 + Math.random() * 0.38),
+          vy: Math.sin(angle) * speed - radius * (0.05 + Math.random() * 0.24),
+          gravity: radius * (1.45 + Math.random() * 1.05),
+          size: 1.2 + Math.random() * 4.4,
+          delay: Math.random() * 130,
+          life: 680 + Math.random() * 660,
+          wobble: (Math.random() - 0.5) * radius * 0.12,
         };
       });
-      this.sprays.push({ x, y, radius, startedAt: performance.now(), duration: 1680, particles, phase: Math.random() * Math.PI * 2 });
+      this.sprays.push({ x, y, radius, startedAt: performance.now(), duration: 1580, particles, phase: Math.random() * Math.PI * 2 });
       if (this.sprays.length > 3) this.sprays.shift();
     }
 
@@ -582,12 +622,38 @@
       context.restore();
     }
 
+    drawPuddleSurface(context, now) {
+      const puddle = this.puddleGeometry();
+      const time = now / 1000;
+      context.save();
+      const wash = context.createRadialGradient(puddle.x - puddle.radiusX * 0.18, puddle.y - puddle.radiusY * 0.24, puddle.radiusY * 0.08, puddle.x, puddle.y, puddle.radiusX);
+      wash.addColorStop(0, "rgba(207, 227, 226, 0.09)");
+      wash.addColorStop(0.38, "rgba(93, 132, 135, 0.055)");
+      wash.addColorStop(0.76, "rgba(18, 44, 49, 0.075)");
+      wash.addColorStop(1, "rgba(8, 24, 29, 0)");
+      context.beginPath();
+      context.ellipse(puddle.x, puddle.y, puddle.radiusX * 1.04, puddle.radiusY * 1.08, 0, 0, Math.PI * 2);
+      context.fillStyle = wash;
+      context.fill();
+
+      context.globalCompositeOperation = "screen";
+      for (let index = 0; index < 4; index += 1) {
+        const drift = 0.86 + index * 0.055 + Math.sin(time * 0.42 + index * 1.7) * 0.012;
+        context.beginPath();
+        context.ellipse(puddle.x, puddle.y, puddle.radiusX * drift, puddle.radiusY * drift, Math.sin(time * 0.18 + index) * 0.014, Math.PI * 1.04, Math.PI * 1.93);
+        context.strokeStyle = `rgba(210, 231, 230, ${0.035 + index * 0.012})`;
+        context.lineWidth = 0.55;
+        context.stroke();
+      }
+      context.restore();
+    }
+
     drawRain(context, deltaSeconds) {
       context.save();
       context.lineCap = "round";
       context.globalCompositeOperation = "screen";
-      const layerColors = ["rgba(109, 137, 141, .13)", "rgba(158, 190, 192, .27)", "rgba(222, 240, 240, .5)"];
-      const layerWidths = [0.48, 0.94, 1.62];
+      const layerColors = ["rgba(102, 132, 137, .105)", "rgba(151, 184, 187, .21)", "rgba(215, 236, 236, .39)"];
+      const layerWidths = [0.42, 0.78, 1.28];
       for (let layer = 0; layer < 3; layer += 1) {
         context.beginPath();
         for (const drop of this.drops) {
@@ -596,46 +662,48 @@
             drop.y += drop.speed * deltaSeconds;
             drop.x += this.wind * deltaSeconds * (0.32 + drop.depth * 0.68);
           }
-          const slant = this.wind * 0.018 * drop.length;
-          const sway = Math.sin(drop.phase + drop.y * 0.008) * (0.8 + drop.depth * 1.6);
+          const slant = this.wind * 0.012 * drop.length;
+          const sway = Math.sin(drop.phase + drop.y * 0.006) * (0.32 + drop.depth * 0.72);
           context.moveTo(drop.x, drop.y);
           context.quadraticCurveTo(drop.x + slant * 0.42 + sway, drop.y + drop.length * 0.48, drop.x + slant, drop.y + drop.length);
           if (drop.y + drop.length >= drop.impactY || drop.x < -140 || drop.x > this.width + 140) {
-            if (drop.x >= -20 && drop.x <= this.width + 20) this.spawnImpact(drop.x + slant, drop.impactY, drop.depth);
+            if (drop.x >= -20 && drop.x <= this.width + 20) this.spawnImpact(drop.x + slant, drop.impactY, drop.depth, drop.puddleImpact);
             this.resetDrop(drop);
           }
         }
         context.strokeStyle = layerColors[layer];
         context.lineWidth = layerWidths[layer];
         context.shadowColor = layer === 2 ? "rgba(219, 240, 239, .22)" : "transparent";
-        context.shadowBlur = layer === 2 ? 3.2 : 0;
+        context.shadowBlur = layer === 2 ? 2.2 : 0;
         context.stroke();
       }
       context.beginPath();
       for (const drop of this.drops) {
         if (drop.depth < 0.72) continue;
-        const slant = this.wind * 0.018 * drop.length;
+        const slant = this.wind * 0.012 * drop.length;
         context.moveTo(drop.x + slant * 0.58, drop.y + drop.length * 0.58);
         context.lineTo(drop.x + slant, drop.y + drop.length);
       }
-      context.strokeStyle = "rgba(246, 252, 251, .34)";
-      context.lineWidth = 0.52;
+      context.strokeStyle = "rgba(244, 251, 250, .26)";
+      context.lineWidth = 0.46;
       context.shadowColor = "rgba(210, 238, 238, .28)";
       context.shadowBlur = 2.4;
       context.stroke();
       context.restore();
     }
 
-    spawnImpact(x, y, depth) {
-      if (this.ripples.length >= 54 || Math.random() > 0.72 + depth * 0.24) return;
+    spawnImpact(x, y, depth, puddleImpact = false) {
+      const chance = puddleImpact ? 0.92 : 0.22 + depth * 0.2;
+      if (this.ripples.length >= 62 || Math.random() > chance) return;
       this.ripples.push({
         x: Math.max(0, Math.min(this.width, x)),
         y: Math.max(0, Math.min(this.height, y)),
         age: 0,
-        duration: 0.38 + Math.random() * 0.42,
-        size: 5 + depth * 15,
-        spark: 3 + Math.floor(depth * 5),
+        duration: (puddleImpact ? 0.72 : 0.38) + Math.random() * (puddleImpact ? 0.48 : 0.32),
+        size: (puddleImpact ? 9 : 4) + depth * (puddleImpact ? 20 : 10),
+        spark: puddleImpact ? 3 + Math.floor(depth * 4) : 2 + Math.floor(depth * 3),
         phase: Math.random() * Math.PI * 2,
+        puddle: puddleImpact,
       });
     }
 
@@ -645,21 +713,32 @@
         ripple.age += deltaSeconds;
         const progress = ripple.age / ripple.duration;
         if (progress >= 1) return false;
+        const horizontal = ripple.puddle ? 1.72 : 1.15;
+        const vertical = ripple.puddle ? 0.42 : 0.64;
+        const radius = ripple.size * (0.2 + progress * 1.42);
         context.beginPath();
-        context.ellipse(ripple.x, ripple.y, ripple.size * (0.28 + progress * 1.25), ripple.size * (0.2 + progress * 0.78), ripple.phase * 0.08, 0, Math.PI * 2);
-        context.strokeStyle = `rgba(220, 237, 236, ${(1 - progress) * 0.42})`;
-        context.lineWidth = 0.65 + (1 - progress) * 0.5;
+        context.ellipse(ripple.x, ripple.y, radius * horizontal, radius * vertical, ripple.puddle ? 0 : ripple.phase * 0.04, 0, Math.PI * 2);
+        context.strokeStyle = `rgba(213, 235, 235, ${(1 - progress) * (ripple.puddle ? 0.38 : 0.25)})`;
+        context.lineWidth = 0.55 + (1 - progress) * 0.62;
         context.stroke();
+        if (ripple.puddle && progress > 0.12) {
+          context.beginPath();
+          context.ellipse(ripple.x, ripple.y, radius * horizontal * 0.62, radius * vertical * 0.62, 0, 0, Math.PI * 2);
+          context.strokeStyle = `rgba(232, 246, 245, ${(1 - progress) * 0.2})`;
+          context.lineWidth = 0.48;
+          context.stroke();
+        }
         context.beginPath();
         for (let index = 0; index < ripple.spark; index += 1) {
-          const angle = ripple.phase + index / ripple.spark * Math.PI * 2;
-          const inner = ripple.size * (0.15 + progress * 0.28);
-          const outer = ripple.size * (0.35 + Math.sin(Math.PI * progress) * (0.7 + index % 3 * 0.16));
-          context.moveTo(ripple.x + Math.cos(angle) * inner, ripple.y + Math.sin(angle) * inner);
-          context.lineTo(ripple.x + Math.cos(angle) * outer, ripple.y + Math.sin(angle) * outer);
+          const spread = (index / Math.max(1, ripple.spark - 1) - 0.5) * Math.PI * 0.88;
+          const lift = Math.sin(Math.PI * Math.min(1, progress * 1.45));
+          const x = ripple.x + Math.sin(spread) * ripple.size * (0.2 + progress * 0.48);
+          const y = ripple.y - lift * ripple.size * (0.24 + (index % 2) * 0.13) + progress * ripple.size * 0.14;
+          context.moveTo(ripple.x + Math.sin(spread) * ripple.size * 0.12, ripple.y);
+          context.quadraticCurveTo(x, y - ripple.size * 0.12, x, y);
         }
-        context.strokeStyle = `rgba(236, 248, 247, ${(1 - progress) * 0.34})`;
-        context.lineWidth = 0.6;
+        context.strokeStyle = `rgba(234, 248, 247, ${(1 - progress) * (ripple.puddle ? 0.32 : 0.18)})`;
+        context.lineWidth = 0.52;
         context.stroke();
         return true;
       });
@@ -827,7 +906,7 @@
           sheet.addColorStop(0.82, `rgba(200, 231, 231, ${sheetFade * 0.1})`);
           sheet.addColorStop(1, "rgba(180, 219, 220, 0)");
           context.beginPath();
-          context.arc(spray.x, spray.y, sheetRadius, 0, Math.PI * 2);
+          context.ellipse(spray.x, spray.y, sheetRadius * 1.32, sheetRadius * 0.34, 0, 0, Math.PI * 2);
           context.fillStyle = sheet;
           context.fill();
           for (let jet = 0; jet < 9; jet += 1) {
@@ -911,6 +990,7 @@
       context.clearRect(0, 0, this.width, this.height);
       if (this.mode === "landing") {
         this.drawMist(context, now);
+        this.drawPuddleSurface(context, now);
         this.drawRain(context, deltaSeconds);
         this.drawRipples(context, deltaSeconds);
         this.drawSprays(context, now);

@@ -9,8 +9,8 @@
       body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.12" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.12" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.13" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.13" />
   </head>
   <body>
     <script>
@@ -22,7 +22,7 @@
       <canvas class="client-ink-canvas" id="clientInkCanvas" aria-hidden="true"></canvas>
       <div class="client-entry-home" aria-hidden="false">
         <header class="client-entry-header">
-          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.12" alt="HS" />
+          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.13" alt="HS" />
           <div class="client-entry-actions">
             <button class="secondary-button" id="returnClientLanding" type="button">返回</button>
             <button class="primary-button" id="openClientLogin" type="button">登录</button>
@@ -34,7 +34,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.12" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.13" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -97,7 +97,7 @@
       <canvas class="client-workspace-ink" id="clientWorkspaceInk" aria-hidden="true"></canvas>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.12" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.13" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -425,14 +425,14 @@
               <div class="batch-reference-actions"><label class="secondary-button icon-text-button" for="batchSharedImageInput"><i data-lucide="images" aria-hidden="true"></i>共用参考图</label><label class="secondary-button icon-text-button" for="batchMappedImageInput"><i data-lucide="list-tree" aria-hidden="true"></i>按行批量配图</label></div>
               <div class="batch-reference-preview" id="batchReferencePreview"><div class="batch-reference-thumbs" id="batchReferenceThumbs"></div><span id="batchReferenceState">未添加参考图</span></div>
             </div>
-            <div class="batch-task-options">
+            <div class="batch-task-options" aria-label="批量生成参数">
               <label class="field"><span>视频比例</span><select id="batchTaskRatio"><option value="9:16">9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option><option value="3:4">3:4</option><option value="4:3">4:3</option><option value="21:9">21:9</option></select></label>
               <label class="field"><span>视频时长</span><select id="batchTaskDuration"><option value="10">10 秒</option><option value="15" selected>15 秒</option></select></label>
               <label class="field batch-count-field"><span>选择数量</span><div><input id="batchSelectionLimit" type="number" min="1" max="20" value="20" /><button class="secondary-button" id="applyBatchSelectionLimit" type="button">选择</button></div></label>
+              <label class="field"><span>自动生成并发</span><input id="batchAutoConcurrency" type="number" min="1" max="20" value="1" /></label>
               <label class="batch-select-all"><input id="selectAllBatchPrompts" type="checkbox" checked /><span>全选提示词</span></label>
               <strong class="batch-selection-state" id="batchSelectionState">已选择 0 / 20 条</strong>
             </div>
-            <div class="batch-auto-options"><label class="field"><span>生成平台</span><select id="batchPlatformSelect"></select></label><label class="field"><span>生成模型</span><select id="batchModelSelect"></select></label><label class="field"><span>自动生成并发</span><input id="batchAutoConcurrency" type="number" min="1" max="20" value="1" /></label><span id="batchAutoConcurrencyState">按当前账号可用并发执行</span></div>
             <div class="batch-prompt-list" id="batchPromptList"><div class="empty-state">导入表格后点击自动解析</div></div>
             <div class="batch-task-actions"><span class="muted" id="batchTaskProgress">等待导入</span><button class="secondary-button" id="resetBatchTaskPage" type="button">清空</button><button class="secondary-button" id="autoSubmitBatchTasks" type="button" disabled>自动生成</button><button class="primary-button" id="submitBatchTasks" type="button" disabled>生成所选任务</button></div>
           </section>
@@ -1130,7 +1130,7 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/ink-bg.js?v=1.4.12"></script>
-    <script src="/admin/assets/app.js?v=1.4.12"></script>
+    <script src="/admin/assets/ink-bg.js?v=1.4.13"></script>
+    <script src="/admin/assets/app.js?v=1.4.13"></script>
   </body>
 </html>

@@ -270,10 +270,7 @@ const els = {
   applyBatchSelectionLimit: document.getElementById("applyBatchSelectionLimit"),
   selectAllBatchPrompts: document.getElementById("selectAllBatchPrompts"),
   batchSelectionState: document.getElementById("batchSelectionState"),
-  batchPlatformSelect: document.getElementById("batchPlatformSelect"),
-  batchModelSelect: document.getElementById("batchModelSelect"),
   batchAutoConcurrency: document.getElementById("batchAutoConcurrency"),
-  batchAutoConcurrencyState: document.getElementById("batchAutoConcurrencyState"),
   batchPromptList: document.getElementById("batchPromptList"),
   batchTaskProgress: document.getElementById("batchTaskProgress"),
   autoSubmitBatchTasks: document.getElementById("autoSubmitBatchTasks"),
@@ -2869,20 +2866,14 @@ function renderPlatformControls() {
   state.model = selected.model;
   els.platformSelect.value = state.platform;
   els.modelSelect.innerHTML = choices.map((item) => `<option value="${escapeHtml(`${item.platform}::${item.model}`)}"${item.platform === state.platform && item.model === state.model ? " selected" : ""}>${escapeHtml(item.model)}</option>`).join("");
-  renderBatchPlatformControls();
 }
 
-function renderBatchPlatformControls() {
-  if (!els.batchPlatformSelect || !els.batchModelSelect) return;
+function dolaBatchGenerationSelection() {
   const platforms = state.platforms.length ? state.platforms : [{ id: "dola", label: "Dola", models: ["Seedance 2.0"], enabled: true }];
-  const enabled = platforms.filter((item) => item.enabled !== false);
-  const requestedPlatform = els.batchPlatformSelect.value || state.platform || enabled[0]?.id || "dola";
-  const selectedPlatform = enabled.find((item) => String(item.id) === requestedPlatform) || enabled[0] || platforms[0];
-  els.batchPlatformSelect.innerHTML = enabled.map((item) => `<option value="${escapeHtml(item.id)}"${item === selectedPlatform ? " selected" : ""}>${escapeHtml(item.label || PLATFORM_LABELS[item.id] || item.id)}</option>`).join("");
-  const models = selectedPlatform?.models || [];
-  const requestedModel = els.batchModelSelect.value || (String(selectedPlatform?.id) === state.platform ? state.model : "");
-  const selectedModel = models.includes(requestedModel) ? requestedModel : models[0] || "";
-  els.batchModelSelect.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"${model === selectedModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("");
+  const dola = platforms.find((item) => String(item.id).toLowerCase() === "dola" && item.enabled !== false);
+  const models = (dola?.models || []).map(String).filter(Boolean);
+  const preferredModel = state.platform === "dola" && models.includes(state.model) ? state.model : models[0];
+  return { platform: "dola", model: preferredModel || "Seedance 2.0" };
 }
 
 async function refreshDashboard() {
@@ -3702,8 +3693,8 @@ async function submitTask(event) {
   const form = new FormData();
   form.append("prompt", prompt);
   form.append("ratio", state.ratio);
-  form.append("platform", els.batchPlatformSelect?.value || state.platform || "dola");
-  form.append("model", els.batchModelSelect?.value || state.model || "");
+  form.append("platform", state.platform || "dola");
+  form.append("model", state.model || "");
   state.images.forEach((file) => form.append("images", file, file.name));
   const fingerprint = currentSubmitFingerprint(prompt);
   const idempotencyKey = submitIdempotencyKey(fingerprint);
@@ -3754,7 +3745,6 @@ function syncBatchConcurrencyControls() {
     els.batchAutoConcurrency.max = String(maximum);
     els.batchAutoConcurrency.value = String(Math.max(1, Math.min(maximum, Number(els.batchAutoConcurrency.value || 1))));
   }
-  if (els.batchAutoConcurrencyState) els.batchAutoConcurrencyState.textContent = `当前最多可使用 ${maximum} 并发`;
 }
 
 function createBatchImageEntries(files) {
@@ -3926,6 +3916,7 @@ async function parseBatchSpreadsheet() {
 
 async function createBatchTask(entry, sessionId, ratio, duration) {
   const { item, index } = entry;
+  const generation = dolaBatchGenerationSelection();
   const form = new FormData();
   form.append("prompt", item.prompt.trim());
   form.append("ratio", ratio);
@@ -3934,8 +3925,8 @@ async function createBatchTask(entry, sessionId, ratio, duration) {
   form.append("batch_id", sessionId);
   form.append("batch_index", String(index + 1));
   form.append("batch_row", String(item.row));
-  form.append("platform", state.platform || "dola");
-  form.append("model", state.model || "");
+  form.append("platform", generation.platform);
+  form.append("model", generation.model);
   [...state.batchSharedImages, ...(item.images || [])].forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
   const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 45000 };
   try {
@@ -4775,7 +4766,6 @@ function bindEvents() {
   els.submitBatchTasks?.addEventListener("click", submitBatchTasks);
   els.autoSubmitBatchTasks?.addEventListener("click", autoSubmitBatchTasks);
   els.batchAutoConcurrency?.addEventListener("change", syncBatchConcurrencyControls);
-  els.batchPlatformSelect?.addEventListener("change", renderBatchPlatformControls);
   els.openMyPrompts?.addEventListener("click", () => {
     state.promptPickerPage = 1;
     renderPromptPicker();

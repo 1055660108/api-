@@ -8,7 +8,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
 from .accounts import account_for_current_task, claim_account_for_worker, clear_account_current_task, exhaust_timed_out_account, refund_account_quota, settle_account_quota
-from .automation import DolaFetchAutomation, is_final_generation_failure
+from .automation import DolaFetchAutomation, is_final_generation_failure, is_infrastructure_failure
 from .doubao_automation import DoubaoVideoAutomation
 from .qianwen_automation import QianwenVideoAutomation
 from .config import load_settings
@@ -86,6 +86,10 @@ def consume_failed_account_quota(task_id: str, account: dict, platform: str) -> 
         settle_account_quota(account_id, charge_id)
     else:
         refund_account_quota_once(task_id, account_id, charge_id)
+
+
+def should_consume_retry_account_quota(outcome: dict) -> bool:
+    return bool(outcome.get("retryable")) and not bool(outcome.get("infrastructure_fault"))
 
 
 class WorkerManager:
@@ -442,7 +446,8 @@ class WorkerManager:
                         if outcome.get("retryable"):
                             if outcome.get("account_fault"):
                                 record_failed_account(task_id, str(account.get("id") or ""))
-                            consume_failed_account_quota(task_id, account, platform)
+                            if should_consume_retry_account_quota(outcome):
+                                consume_failed_account_quota(task_id, account, platform)
                     if outcome.get("retryable"):
                         reason = str(outcome.get("reason") or "")[:500]
                         retry_count = record_retry(task_id, reason)
@@ -481,7 +486,7 @@ class WorkerManager:
                         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                 if account:
                     clear_account_current_task(str(account.get("id") or ""), task_id)
-                    if platform == "dola" or not is_final_generation_failure(str(exc)):
+                    if not is_infrastructure_failure(str(exc)) and (platform == "dola" or not is_final_generation_failure(str(exc))):
                         record_failed_account(task_id, str(account.get("id") or ""))
                         consume_failed_account_quota(task_id, account, platform)
                 await asyncio.sleep(2)

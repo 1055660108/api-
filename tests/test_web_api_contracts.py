@@ -181,10 +181,42 @@ class WebAPIContractTests(unittest.TestCase):
         submitted = self.client.post(
             "/tasks",
             headers={**headers, "Idempotency-Key": "batch-duration-10"},
-            data={"prompt": parsed.json()["prompts"][0]["prompt"], "ratio": "16:9", "duration": "10", "batch": "true", "platform": "dola", "model": "Seedance 2.0"},
+            data={"prompt": parsed.json()["prompts"][0]["prompt"], "ratio": "16:9", "duration": "10", "batch": "true", "batch_id": "batch-order-1", "batch_index": "1", "batch_row": "2", "platform": "dola", "model": "Seedance 2.0"},
         )
         self.assertEqual(submitted.status_code, 200, submitted.text)
-        self.assertEqual(store.get_meta(submitted.json()["id"])["duration"], 10)
+        meta = store.get_meta(submitted.json()["id"])
+        self.assertEqual(meta["duration"], 10)
+        self.assertEqual((meta["batch_id"], meta["batch_index"], meta["batch_row"]), ("batch-order-1", 1, 2))
+
+    def test_one_hundred_batch_tasks_are_enqueued_in_spreadsheet_order(self) -> None:
+        registered = self.register("batch_order_100_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 2000)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        headers = {"X-API-Token": registered["token"]}
+
+        for index in range(1, 101):
+            response = self.client.post(
+                "/tasks",
+                headers={**headers, "Idempotency-Key": f"batch-order-100-{index:04d}"},
+                data={
+                    "prompt": f"按顺序生成的视频提示词 {index:03d}",
+                    "ratio": "9:16",
+                    "duration": "10",
+                    "batch": "true",
+                    "batch_id": "batch-order-100",
+                    "batch_index": str(index),
+                    "batch_row": str(index + 1),
+                    "platform": "dola",
+                    "model": "Seedance 2.0",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+
+        metas = [item for item in store.list_tasks(owner_token_hash=owner_hash) if item["batch_id"] == "batch-order-100"]
+        metas.sort(key=lambda item: item["queued_at"])
+        self.assertEqual([item["batch_index"] for item in metas], list(range(1, 101)))
+        self.assertEqual([item["batch_row"] for item in metas], list(range(2, 102)))
 
     def test_concurrency_overflow_is_precharged_and_queued_until_capacity_is_free(self) -> None:
         registered = self.register("limited_client")

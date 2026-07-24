@@ -35,8 +35,10 @@ _MIHOMO_LOCK: asyncio.Lock | None = None
 _MIHOMO_CONTROLLER_PORT = 0
 _MIHOMO_SNAPSHOT_DIGEST = ""
 _MIHOMO_CONFIG_PATH: Path | None = None
+_MIHOMO_SELECTED_NODE_ID = ""
 _SUBSCRIPTION_CACHE: dict[str, Any] = {"url": "", "nodes": (), "snapshot": b"", "provider": b"", "refreshed_at": 0.0}
 _SUBSCRIPTION_CACHE_LOCK: asyncio.Lock | None = None
+_SUBSCRIPTION_RESOLVE_LOCK: asyncio.Lock | None = None
 _NODE_DELAYS: dict[str, tuple[int | None, float]] = {}
 NODE_DELAY_TTL_SECONDS = 300
 COUNTRY_MARKERS = {
@@ -365,7 +367,7 @@ async def _mihomo_ready(process: subprocess.Popen | None, port: int, controller_
 
 
 async def _proxy_from_mihomo(subscription_url: str, timeout_seconds: int, refresh_seconds: int, force_rebuild: bool = False) -> dict[str, str]:
-    global _MIHOMO_LOCK, _MIHOMO_REFRESHED_AT, _MIHOMO_SUBSCRIPTION_URL, _MIHOMO_CONTROLLER_PORT, _MIHOMO_SNAPSHOT_DIGEST, _MIHOMO_CONFIG_PATH
+    global _MIHOMO_LOCK, _MIHOMO_REFRESHED_AT, _MIHOMO_SUBSCRIPTION_URL, _MIHOMO_CONTROLLER_PORT, _MIHOMO_SNAPSHOT_DIGEST, _MIHOMO_CONFIG_PATH, _MIHOMO_SELECTED_NODE_ID
     if _MIHOMO_LOCK is None:
         _MIHOMO_LOCK = asyncio.Lock()
     async with _MIHOMO_LOCK:
@@ -397,6 +399,7 @@ async def _proxy_from_mihomo(subscription_url: str, timeout_seconds: int, refres
         _MIHOMO_CONTROLLER_PORT = controller_port
         _MIHOMO_SNAPSHOT_DIGEST = digest
         _MIHOMO_CONFIG_PATH = config_path
+        _MIHOMO_SELECTED_NODE_ID = ""
         if previous_config and previous_config != config_path and previous_config.exists():
             previous_config.unlink()
         return {"server": f"http://127.0.0.1:{port}", "node_count": "managed"}
@@ -487,6 +490,7 @@ async def measure_node_delays(nodes: tuple[ProxyNode, ...], subscription_url: st
 
 
 async def _select_mihomo_node(node: ProxyNode) -> None:
+    global _MIHOMO_SELECTED_NODE_ID
     if not await _mihomo_ready(_MIHOMO_PROCESS, _MIHOMO_PORT, _MIHOMO_CONTROLLER_PORT):
         raise RuntimeError("mihomo controller is not available")
     endpoint = f"http://127.0.0.1:{_MIHOMO_CONTROLLER_PORT}/proxies/DOLA"
@@ -498,6 +502,7 @@ async def _select_mihomo_node(node: ProxyNode) -> None:
         current = await client.get(endpoint)
     if current.status_code != 200 or str(current.json().get("now") or "") != node.name:
         raise RuntimeError("mihomo node selection did not take effect")
+    _MIHOMO_SELECTED_NODE_ID = node.id
 
 
 async def activate_mihomo_node(node: ProxyNode, subscription_url: str, timeout_seconds: int = 20, refresh_seconds: int = 900) -> None:
@@ -539,42 +544,51 @@ async def resolve_subscription_proxy(
     auto_select: bool = True,
     selected_node: str = "",
 ) -> dict[str, str]:
-    nodes = await fetch_subscription_node_list(
-        subscription_url,
-        timeout_seconds=timeout_seconds,
-        refresh_seconds=refresh_seconds,
-    )
-    chosen = next((node for node in nodes if node.id == selected_node), None)
-    if auto_select:
-        fresh_delays = {
-            node.id: delay
-            for node in nodes
-            if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
-            and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
-        }
-        if not fresh_delays:
-            await measure_node_delays(nodes, subscription_url, timeout_seconds)
-        available = [
-            (delay, node)
-            for node in nodes
-            if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
-            and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
-        ]
-        chosen = min(available, key=lambda item: item[0])[1] if available else chosen or nodes[0]
-    elif chosen is None:
-        raise RuntimeError("selected proxy node is unavailable")
-    if chosen.protocol in {"http", "https", "socks5", "socks5h"}:
-        server = chosen.uri.split("#", 1)[0]
-        return {
-            "server": server,
-            "host_port": server.rsplit("//", 1)[-1],
-            "node_count": str(len(nodes)),
-            "node_id": chosen.id,
-            "node_name": chosen.name,
-        }
-    managed = await _proxy_from_mihomo(subscription_url, timeout_seconds, refresh_seconds)
-    await _select_mihomo_node(chosen)
-    return {**managed, "node_count": str(len(nodes)), "node_id": chosen.id, "node_name": chosen.name}
+    global _SUBSCRIPTION_RESOLVE_LOCK
+    if _SUBSCRIPTION_RESOLVE_LOCK is None:
+        _SUBSCRIPTION_RESOLVE_LOCK = asyncio.Lock()
+    async with _SUBSCRIPTION_RESOLVE_LOCK:
+        nodes = await fetch_subscription_node_list(
+            subscription_url,
+            timeout_seconds=timeout_seconds,
+            refresh_seconds=refresh_seconds,
+        )
+        chosen = next((node for node in nodes if node.id == selected_node), None)
+        if auto_select:
+            fresh_delays = {
+                node.id: delay
+                for node in nodes
+                if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+                and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+            }
+            if not fresh_delays:
+                await measure_node_delays(nodes, subscription_url, timeout_seconds)
+            available = [
+                (delay, node)
+                for node in nodes
+                if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+                and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+            ]
+            chosen = min(available, key=lambda item: item[0])[1] if available else chosen or nodes[0]
+        elif chosen is None:
+            raise RuntimeError("selected proxy node is unavailable")
+        if chosen.protocol in {"http", "https", "socks5", "socks5h"}:
+            server = chosen.uri.split("#", 1)[0]
+            return {
+                "server": server,
+                "host_port": server.rsplit("//", 1)[-1],
+                "node_count": str(len(nodes)),
+                "node_id": chosen.id,
+                "node_name": chosen.name,
+            }
+        managed = await _proxy_from_mihomo(subscription_url, timeout_seconds, refresh_seconds)
+        if _MIHOMO_SELECTED_NODE_ID != chosen.id:
+            try:
+                await _select_mihomo_node(chosen)
+            except RuntimeError:
+                managed = await _proxy_from_mihomo(subscription_url, timeout_seconds, refresh_seconds, force_rebuild=True)
+                await _select_mihomo_node(chosen)
+        return {**managed, "node_count": str(len(nodes)), "node_id": chosen.id, "node_name": chosen.name}
 
 
 async def fetch_proxy_from_api(api_url: str, *, timeout_seconds: int = 20, scheme: str = "http") -> dict[str, str]:

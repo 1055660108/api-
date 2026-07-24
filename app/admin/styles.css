@@ -6706,7 +6706,7 @@ body[data-portal="client"] .client-ink-splatters.is-entering { animation: client
 body[data-portal="client"] #loginView[data-client-stage="converging"] .client-ink-splatters { opacity: .92; animation: none !important; }
 body[data-portal="client"] #loginView[data-client-stage="login"] .client-ink-splatters { opacity: .86; animation: none !important; }
 
-/* 1.4.9 rain-night entry scene and interactive water sphere. */
+/* 1.4.10 rain-on-glass entry scene and interactive water sphere. */
 body[data-portal="client"] .login-screen {
   transition: background-color 620ms cubic-bezier(.16, 1, .3, 1);
 }
@@ -6764,6 +6764,11 @@ body[data-portal="client"] #loginView[data-client-stage="landing"] #openClientLo
 
 body[data-portal="client"] #loginView[data-client-stage="landing"] .client-ink-splatters {
   opacity: .98;
+  z-index: 2;
+}
+
+body[data-portal="client"] #loginView[data-client-stage="landing"] .client-entry-home {
+  z-index: 3;
 }
 
 body[data-portal="client"] #loginView[data-client-stage="converging"] .client-ink-canvas,
@@ -7026,18 +7031,16 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 
 .sidebar-client-identity { contain: paint; isolation: isolate; backface-visibility: hidden; }
 
-.submit-secondary-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 14px;
-}
-
-.batch-task-modal {
-  width: min(calc(100vw - 40px), 980px);
-  max-height: min(90vh, 860px);
-  padding: 26px;
+.batch-task-page {
+  display: grid;
+  min-height: calc(100vh - 150px);
+  grid-template-rows: auto auto auto minmax(240px, 1fr) auto;
+  gap: 18px;
   overflow: hidden;
 }
+
+.batch-task-page .panel-header { margin: 0; }
+.batch-task-page .panel-header p { margin: 5px 0 0; color: #69716e; font-size: 13px; }
 
 .batch-import-toolbar {
   display: grid;
@@ -7111,6 +7114,8 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
   scrollbar-width: thin;
 }
 
+.batch-task-page .batch-prompt-list { min-height: 240px; max-height: none; }
+
 .batch-prompt-row {
   display: grid;
   grid-template-columns: 22px 72px minmax(0, 1fr) 132px;
@@ -7138,7 +7143,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-prompt-status { text-align: right; overflow-wrap: anywhere; }
 .batch-prompt-row.is-success .batch-prompt-status { color: #1f6250; }
 .batch-prompt-row.is-failed .batch-prompt-status { color: #a23a35; }
-.batch-task-actions { align-items: center; }
+.batch-task-actions { display: flex; align-items: center; gap: 10px; }
 .batch-task-actions .muted { margin-right: auto; }
 
 .prompt-manager-panel.is-empty {
@@ -7178,7 +7183,8 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
 @media (max-width: 700px) {
   .prompt-pager { justify-content: center; margin-top: 26px; }
   .prompt-manager-panel.is-empty .prompt-pager { justify-content: flex-end; }
-  .batch-task-modal { width: min(calc(100vw - 20px), 980px); max-height: 94vh; padding: 20px 16px; }
+  .batch-task-page { min-height: calc(100vh - 120px); grid-template-rows: auto auto auto minmax(260px, 1fr) auto; gap: 14px; }
+  .batch-task-page .batch-prompt-list { min-height: 260px; max-height: none; }
   .batch-import-toolbar { grid-template-columns: 1fr auto; padding: 13px; }
   .batch-file-copy { grid-column: 1 / -1; grid-row: 2; }
   .batch-task-options { grid-template-columns: 1fr 1fr; }

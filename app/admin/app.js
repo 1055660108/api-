@@ -253,10 +253,8 @@ const els = {
   resetSubmit: document.getElementById("resetSubmit"),
   submitTask: document.getElementById("submitTask"),
   submitState: document.getElementById("submitState"),
-  openBatchTaskModal: document.getElementById("openBatchTaskModal"),
-  batchTaskModal: document.getElementById("batchTaskModal"),
-  closeBatchTaskModal: document.getElementById("closeBatchTaskModal"),
-  cancelBatchTaskModal: document.getElementById("cancelBatchTaskModal"),
+  batchSubmitNavItem: document.getElementById("batchSubmitNavItem"),
+  resetBatchTaskPage: document.getElementById("resetBatchTaskPage"),
   batchSpreadsheetInput: document.getElementById("batchSpreadsheetInput"),
   batchSpreadsheetName: document.getElementById("batchSpreadsheetName"),
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
@@ -1004,7 +1002,6 @@ let clientWorkspaceInk = null;
 let clientRainScene = null;
 let clientLoginTransitionTimer = 0;
 let clientInkResizeTimer = 0;
-let clientSphereBurstTimer = 0;
 let sidebarTransitionTimer = 0;
 let sidebarTransitionFrame = 0;
 
@@ -1195,9 +1192,6 @@ function createClientInkSplash(event) {
     const burst = clientEntryInk?.burstAt?.(event.clientX, event.clientY);
     if (burst) {
       clientRainScene?.burstAt?.(burst.x, burst.y, burst.radius);
-      window.clearTimeout(clientSphereBurstTimer);
-      els.loginView.classList.add("sphere-bursting");
-      clientSphereBurstTimer = window.setTimeout(() => els.loginView?.classList.remove("sphere-bursting"), 3250);
       return;
     }
   }
@@ -1545,6 +1539,7 @@ function switchView(name) {
   if (portal === "client" && ["quota", "accounts", "docs", "proxy-nodes"].includes(name)) {
     name = "dashboard";
   }
+  if (portal !== "client" && name === "batch-submit") name = "dashboard";
   const targetView = document.getElementById(`${name}View`);
   if (!targetView || targetView.classList.contains("hidden")) {
     name = "dashboard";
@@ -1563,6 +1558,7 @@ function switchView(name) {
   if (name === "accounts" && !state.accounts.length) refreshAccounts();
   if (name === "videos") renderVideoLibrary();
   if (name === "prompts") renderPrompts();
+  if (name === "batch-submit") renderBatchPrompts();
   if (name === "users") loadUsers();
   if (name === "messages") loadMessageCenter();
   if (name === "points") loadPointPackages();
@@ -3682,7 +3678,7 @@ async function submitTask(event) {
   }
 }
 
-function resetBatchTaskModal() {
+function resetBatchTaskPage() {
   if (state.batchSubmitting) return;
   state.batchSpreadsheet = null;
   state.batchPrompts = [];
@@ -3752,7 +3748,6 @@ async function submitBatchTasks() {
   const ratio = els.batchTaskRatio?.value || "9:16";
   const duration = els.batchTaskDuration?.value || "15";
   const sessionId = window.crypto?.randomUUID?.() || `batch-${Date.now().toString(36)}`;
-  let cursor = 0;
   let completed = 0;
   let succeeded = 0;
   let stopped = "";
@@ -3765,9 +3760,12 @@ async function submitBatchTasks() {
     form.append("ratio", ratio);
     form.append("duration", duration);
     form.append("batch", "true");
+    form.append("batch_id", sessionId);
+    form.append("batch_index", String(index + 1));
+    form.append("batch_row", String(item.row));
     form.append("platform", state.platform || "dola");
     form.append("model", state.model || "");
-    const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${index}` }, timeout: 45000 };
+    const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 45000 };
     try {
       let data;
       try {
@@ -3798,22 +3796,16 @@ async function submitBatchTasks() {
     }
   };
 
-  const worker = async () => {
-    while (!stopped) {
-      const current = cursor;
-      cursor += 1;
-      if (current >= selected.length) return;
-      await submitOne(selected[current]);
-    }
-  };
-
   try {
-    await Promise.all(Array.from({ length: Math.min(3, selected.length) }, () => worker()));
-    if (stopped && cursor < selected.length) {
-      selected.slice(cursor).forEach(({ item }) => {
-        item.status = "failed";
-        item.error = `未继续提交：${stopped}`;
-      });
+    for (let current = 0; current < selected.length; current += 1) {
+      if (stopped) {
+        selected.slice(current).forEach(({ item }) => {
+          item.status = "failed";
+          item.error = `未继续提交：${stopped}`;
+        });
+        break;
+      }
+      await submitOne(selected[current]);
     }
     const failed = selected.length - succeeded;
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `提交完成：成功 ${succeeded} 条${failed ? `，失败 ${failed} 条` : ""}`;
@@ -4395,18 +4387,9 @@ function bindEvents() {
   document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.viewShortcut));
   });
-  const closeBatchModal = () => {
+  els.resetBatchTaskPage?.addEventListener("click", () => {
     if (state.batchSubmitting) return toast("任务正在提交，请等待提交完成", "error");
-    closeSettingsModal(els.batchTaskModal);
-  };
-  els.openBatchTaskModal?.addEventListener("click", () => {
-    resetBatchTaskModal();
-    openSettingsModal(els.batchTaskModal, els.batchSpreadsheetInput);
-  });
-  els.closeBatchTaskModal?.addEventListener("click", closeBatchModal);
-  els.cancelBatchTaskModal?.addEventListener("click", closeBatchModal);
-  els.batchTaskModal?.addEventListener("click", (event) => {
-    if (event.target === els.batchTaskModal) closeBatchModal();
+    resetBatchTaskPage();
   });
   els.batchSpreadsheetInput?.addEventListener("change", () => {
     state.batchSpreadsheet = els.batchSpreadsheetInput.files?.[0] || null;

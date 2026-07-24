@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app import accounts, store, task_queue, temp_access
-from app.worker import WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once
+from app.worker import WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once, should_consume_retry_account_quota
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -328,6 +328,10 @@ class ReliabilityTests(unittest.TestCase):
         data = json.loads(self.accounts_path.read_text(encoding="utf-8"))["accounts"][0]
         charge = next(item for item in data["quota_charges"] if item["charge_id"] == claimed["quota_charge_id"])
         self.assertEqual(charge["status"], "settled")
+
+    def test_infrastructure_retry_does_not_consume_account_quota(self) -> None:
+        self.assertFalse(should_consume_retry_account_quota({"retryable": True, "infrastructure_fault": True}))
+        self.assertTrue(should_consume_retry_account_quota({"retryable": True, "infrastructure_fault": False}))
 
     def test_reconciliation_repairs_quota_used_from_charge_ledger(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=3)

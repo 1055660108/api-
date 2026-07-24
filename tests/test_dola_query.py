@@ -22,6 +22,16 @@ def single_chain(conversation_id: str, messages: list[dict]) -> dict:
 
 
 class DolaQueryTests(unittest.TestCase):
+    def test_proxy_and_browser_transport_errors_are_infrastructure_failures(self) -> None:
+        for reason in (
+            "mihomo controller is not available",
+            "mihomo DOLA proxy group is unavailable",
+            "Page.evaluate: TypeError: Failed to fetch",
+            "All connection attempts failed",
+        ):
+            self.assertTrue(automation.is_infrastructure_failure(reason))
+        self.assertFalse(automation.is_infrastructure_failure("你的输入可能包含违规内容请重试！"))
+
     def test_query_does_not_fall_back_to_recent_conversation(self) -> None:
         with patch.object(query, "expire_task_if_timeout"), patch.object(
             query, "get_meta", return_value={"status": query.STATUS_SUBMITTED}

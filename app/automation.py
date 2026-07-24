@@ -48,10 +48,26 @@ BROWSER_EXTRA_HTTP_HEADERS = {
     "sec-ch-ua-platform": '"Windows"',
 }
 FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
+INFRASTRUCTURE_ERROR_MARKERS = (
+    "mihomo ",
+    "all connection attempts failed",
+    "failed to fetch",
+    "proxy connection",
+    "proxy subscription",
+    "connection refused",
+    "connection reset",
+    "net::err_proxy",
+    "net::err_connection",
+)
 
 
 def is_final_generation_failure(text: str) -> bool:
     return FINAL_FAILURE_TEXT in str(text or "")
+
+
+def is_infrastructure_failure(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(marker in normalized for marker in INFRASTRUCTURE_ERROR_MARKERS)
 
 
 BROWSER_INIT_SCRIPT = r"""
@@ -650,7 +666,10 @@ class DolaFetchAutomation:
         except Exception as exc:
             reason = str(exc)[:500]
             self._mark_pending(reason)
-            return {"success": False, "retryable": True, "reason": reason}
+            infrastructure_fault = is_infrastructure_failure(reason)
+            if infrastructure_fault:
+                self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
+            return {"success": False, "retryable": True, "reason": reason, "infrastructure_fault": infrastructure_fault}
 
     async def _run_once(self) -> dict[str, Any]:
         if not self._task_exists():

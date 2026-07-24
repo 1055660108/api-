@@ -1969,6 +1969,9 @@ async def submit_task(
     task_type: Annotated[str, Form()] = "video",
     duration: Annotated[int | None, Form()] = None,
     batch: Annotated[bool, Form()] = False,
+    batch_id: Annotated[str, Form()] = "",
+    batch_index: Annotated[int, Form()] = 0,
+    batch_row: Annotated[int, Form()] = 0,
     images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
@@ -1983,6 +1986,9 @@ async def submit_task(
             raise HTTPException(status_code=400, detail="invalid ratio")
         if duration is not None and duration not in VALID_VIDEO_DURATIONS:
             raise HTTPException(status_code=400, detail="视频时长仅支持 5、10 或 15 秒")
+        batch_id = str(batch_id or "").strip()[:100] if batch else ""
+        batch_index = max(0, min(1000, int(batch_index or 0))) if batch else 0
+        batch_row = max(0, min(1_000_000, int(batch_row or 0))) if batch else 0
         platform, model = validate_task_platform_model(platform, model)
         if platform == "qianwen" and task_type != "video":
             raise HTTPException(status_code=400, detail="千问当前仅支持视频任务")
@@ -1991,7 +1997,7 @@ async def submit_task(
             raise HTTPException(status_code=400, detail="too many images")
         _rate_limit(request, "task-create-batch" if batch else "task-create", 120 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
-        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "images": [Path(item.filename or "").name for item in uploads]})
+        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "images": [Path(item.filename or "").name for item in uploads]})
 
         try:
             if key:
@@ -2007,6 +2013,9 @@ async def submit_task(
                     fingerprint,
                     "tasks",
                     duration,
+                    batch_id,
+                    batch_index,
+                    batch_row,
                 )
             else:
                 meta = await asyncio.to_thread(
@@ -2019,6 +2028,9 @@ async def submit_task(
                     task_type=task_type,
                     enqueue=False,
                     duration=duration,
+                    batch_id=batch_id,
+                    batch_index=batch_index,
+                    batch_row=batch_row,
                 )
                 created = True
             if not created:

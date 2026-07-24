@@ -234,7 +234,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.9', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.10', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -256,18 +256,21 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('class HSInkBackground', ink_script)
         self.assertIn('class HSRainScene', ink_script)
         self.assertIn('this.frameInterval = 1000 / 60', ink_script)
-        self.assertIn('const count = compact ? 112', ink_script)
+        self.assertIn('const count = compact ? 124', ink_script)
         self.assertIn('drawConvergence(context, now)', ink_script)
         self.assertIn('drawWaterOrbit(context, now, 1)', ink_script)
         self.assertIn('gl.uniform1f(this.locations.vortex', ink_script)
         self.assertIn('const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1350', self.javascript)
         self.assertIn('window.HSRainScene = HSRainScene', ink_script)
         self.assertIn('burstAt(clientX, clientY)', ink_script)
-        self.assertIn('this.burstDuration = 3200', ink_script)
-        self.assertIn('const puddleY = this.burst.y + this.burst.radius * 1.05', ink_script)
+        self.assertIn('drawGlassSurface(context, deltaSeconds, now)', ink_script)
+        self.assertIn('drawSprays(context, now)', ink_script)
+        self.assertIn('this.glassDrops = Array.from', ink_script)
+        self.assertIn('this.sprays.push(', ink_script)
         self.assertNotIn('angularCrack', ink_script)
         self.assertNotIn('ringCrack', ink_script)
-        self.assertIn('gl.uniform1f(this.locations.shatter, this.shatter)', ink_script)
+        self.assertNotIn('uShatter', ink_script)
+        self.assertNotIn('sphere-bursting', self.javascript)
         self.assertIn('clientRainScene?.burstAt?.(burst.x, burst.y, burst.radius)', self.javascript)
         self.assertIn('clientRainScene?.setActive(false)', self.javascript)
         self.assertIn('#loginView[data-client-stage="landing"]', styles)
@@ -389,8 +392,9 @@ class AdminUITests(unittest.TestCase):
 
     def test_spreadsheet_batch_submission_is_complete_and_editable(self) -> None:
         for element_id in (
-            "openBatchTaskModal",
-            "batchTaskModal",
+            "batchSubmitNavItem",
+            "batch-submitView",
+            "resetBatchTaskPage",
             "batchSpreadsheetInput",
             "parseBatchSpreadsheet",
             "batchTaskRatio",
@@ -403,11 +407,15 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('accept=".xlsx,.xls,.ods,.csv,.tsv,.txt"', self.html)
         self.assertIn('apiFetch("/batch-prompts/parse"', self.javascript)
         self.assertIn('form.append("batch", "true")', self.javascript)
+        self.assertIn('form.append("batch_index", String(index + 1))', self.javascript)
+        self.assertIn('for (let current = 0; current < selected.length; current += 1)', self.javascript)
+        self.assertNotIn('Math.min(3, selected.length)', self.javascript)
+        self.assertNotIn('id="batchTaskModal"', self.html)
         self.assertIn('data-batch-prompt-text', self.javascript)
         self.assertIn('els.parseBatchSpreadsheet?.addEventListener("click", parseBatchSpreadsheet)', self.javascript)
         self.assertIn('els.submitBatchTasks?.addEventListener("click", submitBatchTasks)', self.javascript)
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
-        self.assertIn('.batch-task-modal', styles)
+        self.assertIn('.batch-task-page', styles)
         self.assertIn('body[data-portal] .proxy-node-card[aria-pressed="true"]', styles)
 
     def test_client_copy_and_redeem_modal_match_133_contract(self) -> None:

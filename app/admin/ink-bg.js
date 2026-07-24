@@ -19,7 +19,6 @@
     uniform float uSize;
     uniform float uStrength;
     uniform float uSeed;
-    uniform float uShatter;
     uniform float uNight;
     uniform float uVortex;
 
@@ -59,11 +58,6 @@
       vec2 screenPoint = point;
       float screenRadius = length(screenPoint);
       float time = uTime * 0.105;
-      float liquidBreak = smoothstep(0.035, 0.82, uShatter);
-      float liquidNoise = noise(vec2(screenPoint.x * 9.0 + time * 3.1, screenPoint.y * 6.0 - time * 2.2)) - 0.5;
-      point.x += liquidNoise * uSize * 0.2 * liquidBreak;
-      point.y += (0.05 + smoothstep(0.0, uSize, screenRadius) * 0.11) * liquidBreak;
-      point.y += sin(screenPoint.x / max(uSize, 0.04) * 5.0 + time * 5.2) * uSize * 0.055 * liquidBreak;
       float radius = length(point);
       float vortexRotation = uVortex * (
         time * 9.2 +
@@ -87,13 +81,7 @@
         sin(angle * 5.0 - time) * 0.004 +
         (noise(screenPoint * 24.0 + vec2(-time * 2.4, time * 1.6)) - 0.5) * 0.016 * uVortex
       ) * contourScale;
-      contour += liquidBreak * (
-        sin(angle * 4.0 + time * 4.0) * 0.024 +
-        (noise(vec2(angle * 7.0 - time * 2.0, screenRadius * 18.0)) - 0.5) * 0.052
-      );
       float sphere = smoothstep(uSize + contour + 0.014, uSize + contour - 0.016, radius);
-      float liquidDissolve = noise(screenPoint * 22.0 + vec2(time * 2.4, -time * 3.1));
-      sphere *= 1.0 - smoothstep(0.43, 0.77, liquidDissolve) * liquidBreak * 0.42;
 
       float detailScale = mix(21.0, 5.8, smoothstep(0.05, 0.24, uSize));
       vec2 warp = vec2(
@@ -134,14 +122,13 @@
       float inkAlpha = 0.72 + pigment * 0.24 + depth * 0.02 + grain * 0.008;
       float waterAlpha = 0.5 + pigment * 0.3 + depth * 0.04 + rim * 0.08 + uVortex * 0.13;
       float alpha = sphere * mix(inkAlpha, waterAlpha, uNight) * uStrength;
-      alpha *= 1.0 - smoothstep(0.56, 1.0, uShatter) * 0.92;
 
       vec2 groundPoint = vec2(
         point.x / max(uSize * 1.04, 0.01),
         (point.y + uSize * 0.98) / max(uSize * 0.22, 0.01)
       );
       float groundShadow = smoothstep(1.0, 0.0, length(groundPoint)) * (1.0 - sphere) * uStrength * 0.12;
-      float halo = smoothstep(uSize + 0.095, uSize + 0.012, screenRadius) * (1.0 - sphere) * (1.0 - uShatter) * uNight * 0.09;
+      float halo = smoothstep(uSize + 0.095, uSize + 0.012, screenRadius) * (1.0 - sphere) * uNight * 0.09;
       vec3 groundColor = mix(vec3(0.05), vec3(0.36, 0.43, 0.43), uNight);
       vec3 finalColor = mix(groundColor, color, sphere);
       finalColor = mix(finalColor, vec3(0.72, 0.79, 0.79), halo * 0.72);
@@ -194,9 +181,7 @@
       this.seed = Math.random() * 1000;
       this.startedAt = performance.now();
       this.growth = this.kind === "entry" ? 0.42 : 1;
-      this.shatter = 0;
-      this.burstStartedAt = 0;
-      this.burstDuration = 3200;
+      this.lastSplashAt = 0;
       this.lastWidth = 0;
       this.lastHeight = 0;
       this.needsResize = true;
@@ -246,7 +231,6 @@
         size: gl.getUniformLocation(this.program, "uSize"),
         strength: gl.getUniformLocation(this.program, "uStrength"),
         seed: gl.getUniformLocation(this.program, "uSeed"),
-        shatter: gl.getUniformLocation(this.program, "uShatter"),
         night: gl.getUniformLocation(this.program, "uNight"),
         vortex: gl.getUniformLocation(this.program, "uVortex"),
       };
@@ -309,10 +293,6 @@
       if (this.kind === "entry" && this.mode === "landing" && previousMode !== "landing") {
         this.growth = this.reducedMotion ? 1 : 0.42;
       }
-      if (this.mode !== "landing") {
-        this.burstStartedAt = 0;
-        this.shatter = 0;
-      }
     }
 
     setActive(active) {
@@ -335,12 +315,12 @@
     }
 
     burstAt(clientX, clientY) {
-      if (this.reducedMotion || this.burstStartedAt || !this.containsPoint(clientX, clientY)) return null;
+      const now = performance.now();
+      if (this.reducedMotion || now - this.lastSplashAt < 180 || !this.containsPoint(clientX, clientY)) return null;
       const centerX = this.center[0] * this.lastWidth;
       const centerY = (1 - this.center[1]) * this.lastHeight;
       const radius = this.size * this.lastHeight * Math.max(0.72, this.growth);
-      this.burstStartedAt = performance.now();
-      this.seed = Math.random() * 1000;
+      this.lastSplashAt = now;
       return { x: centerX, y: centerY, radius };
     }
 
@@ -356,23 +336,6 @@
       if (this.mode === "landing") this.growth += (1 - this.growth) * (this.reducedMotion ? 1 : 0.0085);
       else this.growth += (1 - this.growth) * 0.08;
 
-      if (this.burstStartedAt) {
-        const progress = Math.min(1, (now - this.burstStartedAt) / this.burstDuration);
-        if (progress < 0.22) {
-          const rise = progress / 0.22;
-          this.shatter = 1 - Math.pow(1 - rise, 3);
-        } else if (progress < 0.56) {
-          this.shatter = 1;
-        } else {
-          const reform = (progress - 0.56) / 0.44;
-          this.shatter = Math.pow(1 - reform, 1.7);
-        }
-        if (progress >= 1) {
-          this.burstStartedAt = 0;
-          this.shatter = 0;
-        }
-      }
-
       const timeSeconds = this.reducedMotion ? 0 : (now - this.startedAt) / 1000;
       const breathing = this.mode === "landing" && !this.reducedMotion ? 1 + Math.sin(timeSeconds * 0.42) * 0.018 : 1;
       const displaySize = this.size * this.growth * breathing;
@@ -381,7 +344,7 @@
       gl.disable(gl.SCISSOR_TEST);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      const radiusPixels = Math.ceil((displaySize + 0.075 + this.shatter * 0.16) * this.canvas.height);
+      const radiusPixels = Math.ceil((displaySize + 0.075) * this.canvas.height);
       const centerX = Math.round(this.center[0] * this.canvas.width);
       const centerY = Math.round(this.center[1] * this.canvas.height);
       const left = Math.max(0, centerX - radiusPixels);
@@ -400,9 +363,8 @@
       gl.uniform1f(this.locations.size, displaySize);
       gl.uniform1f(this.locations.strength, this.strength);
       gl.uniform1f(this.locations.seed, this.seed);
-      gl.uniform1f(this.locations.shatter, this.shatter);
       gl.uniform1f(this.locations.night, this.kind === "entry" ? 1 : 0);
-      gl.uniform1f(this.locations.vortex, this.kind === "entry" && this.mode !== "landing" ? 1 : 0);
+      gl.uniform1f(this.locations.vortex, this.kind === "entry" ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disable(gl.SCISSOR_TEST);
     }
@@ -421,8 +383,9 @@
       this.wind = -24;
       this.drops = [];
       this.ripples = [];
+      this.glassDrops = [];
+      this.sprays = [];
       this.orbitDrops = [];
-      this.burst = null;
       this.transitionStartedAt = 0;
       this.transitionDuration = 1250;
       this.lastFrameAt = performance.now();
@@ -461,8 +424,10 @@
 
     buildDrops() {
       const compact = this.width < 720;
-      const count = compact ? 112 : Math.min(196, Math.max(148, Math.round(this.width * this.height / 8200)));
+      const count = compact ? 124 : Math.min(214, Math.max(162, Math.round(this.width * this.height / 7600)));
       this.drops = Array.from({ length: count }, () => this.createDrop(true));
+      const glassCount = compact ? 44 : Math.min(78, Math.max(58, Math.round(this.width * this.height / 19000)));
+      this.glassDrops = Array.from({ length: glassCount }, () => this.createGlassDrop(true));
       const orbitCount = compact ? 20 : 30;
       this.orbitDrops = Array.from({ length: orbitCount }, (_, index) => ({
         angle: index / orbitCount * Math.PI * 2 + Math.random() * 0.3,
@@ -473,6 +438,7 @@
         phase: Math.random() * Math.PI * 2,
       }));
       this.ripples = [];
+      this.sprays = [];
       this.staticRendered = false;
     }
 
@@ -497,14 +463,27 @@
       glow.addColorStop(1, "rgba(0, 0, 0, 0)");
       context.fillStyle = glow;
       context.fillRect(0, 0, this.width, this.height);
+
+      const reflection = context.createLinearGradient(0, 0, this.width, this.height);
+      reflection.addColorStop(0, "rgba(224, 239, 238, 0.025)");
+      reflection.addColorStop(0.28, "rgba(117, 147, 148, 0.008)");
+      reflection.addColorStop(0.5, "rgba(235, 245, 243, 0.035)");
+      reflection.addColorStop(0.72, "rgba(88, 116, 118, 0.008)");
+      reflection.addColorStop(1, "rgba(215, 232, 230, 0.022)");
+      context.fillStyle = reflection;
+      context.fillRect(0, 0, this.width, this.height);
     }
 
     createDrop(initial = false) {
       const depth = Math.random();
       const speed = 390 + depth * 1080;
+      const y = initial ? Math.random() * this.height : -40 - Math.random() * this.height * 0.28;
       return {
         x: Math.random() * (this.width + 180) - 90,
-        y: initial ? Math.random() * this.height : -40 - Math.random() * this.height * 0.28,
+        y,
+        impactY: initial
+          ? Math.min(this.height * 0.98, y + this.height * (0.04 + Math.random() * 0.32))
+          : this.height * (0.08 + Math.random() * 0.88),
         depth,
         speed,
         length: 13 + depth * 42 + Math.random() * 15,
@@ -515,8 +494,28 @@
       };
     }
 
+    createGlassDrop(initial = false) {
+      const depth = Math.random();
+      const radius = 1.5 + depth * 5.4 + Math.random() * 2.8;
+      return {
+        x: Math.random() * this.width,
+        y: initial ? Math.random() * this.height : -radius * 3,
+        radius,
+        speed: 4 + depth * 22 + Math.random() * 12,
+        trail: radius * (1.4 + Math.random() * 5.5),
+        drift: (Math.random() - 0.5) * 2.2,
+        phase: Math.random() * Math.PI * 2,
+        pause: Math.random() * 2.4,
+        depth,
+      };
+    }
+
     resetDrop(drop) {
       Object.assign(drop, this.createDrop(false));
+    }
+
+    resetGlassDrop(drop) {
+      Object.assign(drop, this.createGlassDrop(false));
     }
 
     setMode(mode) {
@@ -535,7 +534,7 @@
         this.buildDrops();
       }
       this.mode = nextMode;
-      if (this.mode !== "landing") this.burst = null;
+      if (this.mode !== "landing") this.sprays = [];
       this.staticRendered = false;
     }
 
@@ -555,21 +554,23 @@
 
     burstAt(x, y, radius) {
       if (this.reducedMotion || this.mode !== "landing") return;
-      const particleCount = this.width < 720 ? 76 : 112;
+      const particleCount = this.width < 720 ? 78 : 118;
       const particles = Array.from({ length: particleCount }, (_, index) => {
-        const angle = (index / particleCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.24;
+        const angle = (index / particleCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.42;
+        const speed = radius * (1.25 + Math.random() * 2.55);
         return {
           angle,
-          distance: radius * (0.74 + Math.random() * 1.86),
-          size: 1.4 + Math.random() * 6.4,
-          stretch: 1.4 + Math.random() * 3.8,
-          delay: Math.random() * 0.08,
-          drift: (Math.random() - 0.5) * radius * 0.34,
-          gravity: radius * (0.46 + Math.random() * 0.82),
-          wobble: Math.random() * Math.PI * 2,
+          vx: Math.cos(angle) * speed * (0.72 + Math.random() * 0.48),
+          vy: Math.sin(angle) * speed - radius * (0.2 + Math.random() * 0.62),
+          gravity: radius * (2.1 + Math.random() * 2.2),
+          size: 1.2 + Math.random() * 6.2,
+          delay: Math.random() * 1320,
+          life: 680 + Math.random() * 920,
+          wobble: (Math.random() - 0.5) * radius * 0.24,
         };
       });
-      this.burst = { x, y, radius, startedAt: performance.now(), duration: 3200, particles };
+      this.sprays.push({ x, y, radius, startedAt: performance.now(), duration: 2450, particles });
+      if (this.sprays.length > 3) this.sprays.shift();
     }
 
     drawMist(context, now) {
@@ -595,18 +596,8 @@
           const slant = this.wind * 0.018 * drop.length;
           context.moveTo(drop.x, drop.y);
           context.lineTo(drop.x + slant, drop.y + drop.length);
-          if (drop.y > this.height + drop.length || drop.x < -140 || drop.x > this.width + 140) {
-            if (Math.random() < 0.38 && this.ripples.length < 40) {
-              this.ripples.push({
-                x: Math.max(0, Math.min(this.width, drop.x)),
-                y: this.height * (0.91 + Math.random() * 0.075),
-                age: 0,
-                duration: 0.56 + Math.random() * 0.5,
-                size: 8 + drop.depth * 20,
-                spark: 2 + Math.floor(drop.depth * 4),
-                phase: Math.random() * Math.PI,
-              });
-            }
+          if (drop.y + drop.length >= drop.impactY || drop.x < -140 || drop.x > this.width + 140) {
+            if (drop.x >= -20 && drop.x <= this.width + 20) this.spawnImpact(drop.x + slant, drop.impactY, drop.depth);
             this.resetDrop(drop);
           }
         }
@@ -619,6 +610,19 @@
       context.restore();
     }
 
+    spawnImpact(x, y, depth) {
+      if (this.ripples.length >= 54 || Math.random() > 0.72 + depth * 0.24) return;
+      this.ripples.push({
+        x: Math.max(0, Math.min(this.width, x)),
+        y: Math.max(0, Math.min(this.height, y)),
+        age: 0,
+        duration: 0.38 + Math.random() * 0.42,
+        size: 5 + depth * 15,
+        spark: 3 + Math.floor(depth * 5),
+        phase: Math.random() * Math.PI * 2,
+      });
+    }
+
     drawRipples(context, deltaSeconds) {
       context.save();
       this.ripples = this.ripples.filter((ripple) => {
@@ -626,22 +630,75 @@
         const progress = ripple.age / ripple.duration;
         if (progress >= 1) return false;
         context.beginPath();
-        context.ellipse(ripple.x, ripple.y, ripple.size * (0.5 + progress * 1.8), ripple.size * (0.08 + progress * 0.22), 0, 0, Math.PI * 2);
-        context.strokeStyle = `rgba(191, 207, 206, ${(1 - progress) * 0.24})`;
-        context.lineWidth = 0.7;
+        context.ellipse(ripple.x, ripple.y, ripple.size * (0.28 + progress * 1.25), ripple.size * (0.2 + progress * 0.78), ripple.phase * 0.08, 0, Math.PI * 2);
+        context.strokeStyle = `rgba(220, 237, 236, ${(1 - progress) * 0.42})`;
+        context.lineWidth = 0.65 + (1 - progress) * 0.5;
         context.stroke();
         context.beginPath();
         for (let index = 0; index < ripple.spark; index += 1) {
-          const offset = (index - (ripple.spark - 1) / 2) * 2.8;
-          const lift = Math.sin(Math.PI * progress) * (5 + index * 1.8);
-          context.moveTo(ripple.x + offset, ripple.y - lift * 0.35);
-          context.lineTo(ripple.x + offset * 1.25, ripple.y - lift);
+          const angle = ripple.phase + index / ripple.spark * Math.PI * 2;
+          const inner = ripple.size * (0.15 + progress * 0.28);
+          const outer = ripple.size * (0.35 + Math.sin(Math.PI * progress) * (0.7 + index % 3 * 0.16));
+          context.moveTo(ripple.x + Math.cos(angle) * inner, ripple.y + Math.sin(angle) * inner);
+          context.lineTo(ripple.x + Math.cos(angle) * outer, ripple.y + Math.sin(angle) * outer);
         }
-        context.strokeStyle = `rgba(213, 231, 229, ${(1 - progress) * 0.18})`;
-        context.lineWidth = 0.55;
+        context.strokeStyle = `rgba(236, 248, 247, ${(1 - progress) * 0.34})`;
+        context.lineWidth = 0.6;
         context.stroke();
         return true;
       });
+      context.restore();
+    }
+
+    drawGlassSurface(context, deltaSeconds, now) {
+      const time = now / 1000;
+      context.save();
+      context.lineCap = "round";
+      context.globalCompositeOperation = "screen";
+      for (const drop of this.glassDrops) {
+        if (!this.reducedMotion) {
+          drop.pause = Math.max(0, drop.pause - deltaSeconds);
+          if (!drop.pause) {
+            const pulse = 0.72 + Math.sin(time * 1.4 + drop.phase) * 0.28;
+            drop.y += drop.speed * pulse * deltaSeconds;
+            drop.x += drop.drift * deltaSeconds;
+          }
+        }
+        if (drop.y - drop.trail > this.height + drop.radius * 4) {
+          this.resetGlassDrop(drop);
+          continue;
+        }
+        const moving = drop.pause <= 0;
+        const trailLength = moving ? drop.trail * (0.72 + drop.depth * 0.48) : drop.radius * 0.8;
+        context.beginPath();
+        context.moveTo(drop.x, drop.y - trailLength);
+        context.quadraticCurveTo(drop.x - drop.drift * 1.8, drop.y - trailLength * 0.46, drop.x, drop.y - drop.radius * 0.45);
+        context.strokeStyle = `rgba(139, 178, 180, ${0.055 + drop.depth * 0.09})`;
+        context.lineWidth = Math.max(0.7, drop.radius * 0.42);
+        context.stroke();
+
+        context.beginPath();
+        context.ellipse(drop.x, drop.y, drop.radius * 0.78, drop.radius * 1.12, drop.drift * 0.05, 0, Math.PI * 2);
+        context.fillStyle = `rgba(118, 157, 160, ${0.055 + drop.depth * 0.11})`;
+        context.fill();
+        context.strokeStyle = `rgba(218, 238, 237, ${0.16 + drop.depth * 0.22})`;
+        context.lineWidth = 0.55;
+        context.stroke();
+
+        context.beginPath();
+        context.ellipse(drop.x - drop.radius * 0.22, drop.y - drop.radius * 0.32, Math.max(0.4, drop.radius * 0.16), Math.max(0.6, drop.radius * 0.3), -0.34, 0, Math.PI * 2);
+        context.fillStyle = `rgba(250, 255, 254, ${0.3 + drop.depth * 0.32})`;
+        context.fill();
+      }
+
+      const sheen = context.createLinearGradient(0, 0, this.width, 0);
+      sheen.addColorStop(0, "rgba(218, 238, 237, 0.012)");
+      sheen.addColorStop(0.32, "rgba(236, 247, 245, 0.035)");
+      sheen.addColorStop(0.48, "rgba(120, 153, 155, 0.006)");
+      sheen.addColorStop(0.74, "rgba(231, 244, 242, 0.025)");
+      sheen.addColorStop(1, "rgba(190, 216, 215, 0.009)");
+      context.fillStyle = sheen;
+      context.fillRect(0, 0, this.width, this.height);
       context.restore();
     }
 
@@ -735,60 +792,56 @@
       context.restore();
     }
 
-    drawBurst(context, now) {
-      if (!this.burst) return;
-      const rawProgress = (now - this.burst.startedAt) / this.burst.duration;
-      if (rawProgress >= 1) {
-        this.burst = null;
-        return;
-      }
-      const progress = Math.max(0, rawProgress);
-      const outbound = 1 - Math.pow(1 - Math.min(1, progress / 0.5), 3);
-      const returnRaw = Math.max(0, Math.min(1, (progress - 0.56) / 0.44));
-      const returning = returnRaw * returnRaw * (3 - 2 * returnRaw);
-      const scatter = outbound * (1 - returning);
-      const visibility = Math.sin(Math.PI * Math.min(1, progress * 1.04));
+    drawSprays(context, now) {
+      if (!this.sprays.length) return;
       context.save();
       context.lineCap = "round";
-      for (const particle of this.burst.particles) {
-        const localProgress = Math.max(0, Math.min(1, (progress - particle.delay) / (1 - particle.delay)));
-        if (!localProgress) continue;
-        const localOut = 1 - Math.pow(1 - Math.min(1, localProgress / 0.5), 3);
-        const localReturnRaw = Math.max(0, Math.min(1, (localProgress - 0.56) / 0.44));
-        const localReturn = localReturnRaw * localReturnRaw * (3 - 2 * localReturnRaw);
-        const localScatter = localOut * (1 - localReturn);
-        const curve = Math.sin(localProgress * Math.PI * 1.7 + particle.wobble) * particle.drift * localScatter;
-        const x = this.burst.x + Math.cos(particle.angle) * particle.distance * localScatter + Math.sin(particle.angle) * curve;
-        const gravity = particle.gravity * localOut * localOut * (1 - localReturn);
-        const y = this.burst.y + Math.sin(particle.angle) * particle.distance * localScatter + gravity;
-        const tail = particle.stretch * (1 + localOut * 3.1) * (1 - localReturn * 0.72);
-        context.beginPath();
-        context.moveTo(x - Math.cos(particle.angle) * tail * 0.45, y - tail);
-        context.lineTo(x, y);
-        context.strokeStyle = `rgba(187, 219, 219, ${visibility * 0.42})`;
-        context.lineWidth = Math.max(0.75, particle.size * 0.38);
-        context.stroke();
-        context.beginPath();
-        context.ellipse(x, y, particle.size * (0.72 + localReturn * 0.2), particle.size * (1.1 + localOut * 0.85), 0, 0, Math.PI * 2);
-        context.fillStyle = `rgba(149, 191, 192, ${visibility * 0.5})`;
-        context.fill();
-        context.beginPath();
-        context.arc(x - particle.size * 0.25, y - particle.size * 0.28, Math.max(0.45, particle.size * 0.18), 0, Math.PI * 2);
-        context.fillStyle = `rgba(244, 250, 248, ${visibility * 0.65})`;
-        context.fill();
-      }
+      context.globalCompositeOperation = "screen";
+      this.sprays = this.sprays.filter((spray) => {
+        const elapsed = now - spray.startedAt;
+        if (elapsed >= spray.duration) return false;
 
-      const puddleLife = Math.sin(Math.PI * Math.min(1, Math.max(0, (progress - 0.12) / 0.78)));
-      const puddleY = this.burst.y + this.burst.radius * 1.05;
-      context.beginPath();
-      context.ellipse(this.burst.x, puddleY, this.burst.radius * (0.32 + scatter * 1.34), this.burst.radius * (0.045 + scatter * 0.17), 0, 0, Math.PI * 2);
-      context.fillStyle = `rgba(108, 151, 153, ${puddleLife * 0.08})`;
-      context.fill();
-      context.beginPath();
-      context.ellipse(this.burst.x, puddleY, this.burst.radius * (0.24 + scatter * 1.5), this.burst.radius * (0.035 + scatter * 0.2), 0, 0, Math.PI * 2);
-      context.strokeStyle = `rgba(184, 215, 214, ${puddleLife * 0.34})`;
-      context.lineWidth = 1.2;
-      context.stroke();
+        for (const particle of spray.particles) {
+          const localElapsed = elapsed - particle.delay;
+          if (localElapsed <= 0 || localElapsed >= particle.life) continue;
+          const progress = localElapsed / particle.life;
+          const seconds = localElapsed / 1000;
+          const visibility = Math.sin(Math.PI * progress) * (1 - progress * 0.22);
+          const x = spray.x + particle.vx * seconds + Math.sin(progress * Math.PI * 2 + particle.angle) * particle.wobble * progress;
+          const y = spray.y + particle.vy * seconds + particle.gravity * seconds * seconds * 0.5;
+          const velocityY = particle.vy + particle.gravity * seconds;
+          const travelAngle = Math.atan2(velocityY, particle.vx);
+          const tail = particle.size * (2.2 + (1 - progress) * 3.8);
+
+          context.beginPath();
+          context.moveTo(x - Math.cos(travelAngle) * tail, y - Math.sin(travelAngle) * tail);
+          context.lineTo(x, y);
+          context.strokeStyle = `rgba(179, 216, 217, ${visibility * 0.5})`;
+          context.lineWidth = Math.max(0.7, particle.size * 0.32);
+          context.stroke();
+
+          context.beginPath();
+          context.ellipse(x, y, particle.size * 0.68, particle.size * (1.05 + (1 - progress) * 0.62), travelAngle - Math.PI * 0.5, 0, Math.PI * 2);
+          context.fillStyle = `rgba(139, 184, 186, ${visibility * 0.54})`;
+          context.fill();
+          context.strokeStyle = `rgba(231, 246, 245, ${visibility * 0.4})`;
+          context.lineWidth = 0.5;
+          context.stroke();
+        }
+
+        const pulseWindow = Math.min(elapsed, 1550);
+        for (let pulse = 0; pulse < 4; pulse += 1) {
+          const pulseAge = pulseWindow - pulse * 360;
+          if (pulseAge <= 0 || pulseAge >= 520) continue;
+          const progress = pulseAge / 520;
+          context.beginPath();
+          context.ellipse(spray.x, spray.y, spray.radius * (0.48 + progress * 0.82), spray.radius * (0.16 + progress * 0.28), pulse * 0.37, 0, Math.PI * 2);
+          context.strokeStyle = `rgba(207, 233, 233, ${(1 - progress) * 0.26})`;
+          context.lineWidth = 0.8;
+          context.stroke();
+        }
+        return true;
+      });
       context.restore();
     }
 
@@ -807,7 +860,8 @@
         this.drawMist(context, now);
         this.drawRain(context, deltaSeconds);
         this.drawRipples(context, deltaSeconds);
-        this.drawBurst(context, now);
+        this.drawSprays(context, now);
+        this.drawGlassSurface(context, deltaSeconds, now);
       } else if (this.mode === "converging") {
         this.drawMist(context, now);
         this.drawConvergence(context, now);

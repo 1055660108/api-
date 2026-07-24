@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -8,6 +9,10 @@ from app import proxy_manager
 
 
 class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        proxy_manager._MIHOMO_SELECTED_NODE_ID = ""
+        proxy_manager._SUBSCRIPTION_RESOLVE_LOCK = None
+
     def test_parses_native_proxy_subscription(self) -> None:
         parsed = proxy_manager.parse_subscription_nodes("http://proxy.example:8080\nsocks5://127.0.0.1:1080")
 
@@ -112,6 +117,50 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["server"], "http://127.0.0.1:4567")
         self.assertEqual(managed.await_args_list[-1].args, ("https://subscription.example/token", 20, 300))
         selected.assert_awaited_once()
+
+    async def test_mihomo_selection_failure_rebuilds_once(self) -> None:
+        nodes = proxy_manager.subscription_node_list("vless://user@example.com:443#node")
+        proxy_manager._NODE_DELAYS[nodes[0].id] = (20, proxy_manager.time.monotonic())
+        managed_proxy = {"server": "http://127.0.0.1:4567", "node_count": "managed"}
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.object(
+            proxy_manager, "_proxy_from_mihomo", AsyncMock(return_value=managed_proxy)
+        ) as managed, patch.object(
+            proxy_manager, "_select_mihomo_node", AsyncMock(side_effect=[RuntimeError("mihomo controller is not available"), None])
+        ) as selected:
+            result = await proxy_manager.resolve_subscription_proxy("https://subscription.example/token")
+
+        self.assertEqual(result["server"], managed_proxy["server"])
+        self.assertEqual(selected.await_count, 2)
+        self.assertTrue(managed.await_args_list[-1].kwargs["force_rebuild"])
+
+    async def test_mihomo_selected_node_is_reused_without_controller_write(self) -> None:
+        nodes = proxy_manager.subscription_node_list("vless://user@example.com:443#node")
+        proxy_manager._NODE_DELAYS[nodes[0].id] = (20, proxy_manager.time.monotonic())
+        proxy_manager._MIHOMO_SELECTED_NODE_ID = nodes[0].id
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.object(
+            proxy_manager, "_proxy_from_mihomo", AsyncMock(return_value={"server": "http://127.0.0.1:4567", "node_count": "managed"})
+        ), patch.object(proxy_manager, "_select_mihomo_node", AsyncMock()) as selected:
+            await proxy_manager.resolve_subscription_proxy("https://subscription.example/token")
+
+        selected.assert_not_awaited()
+
+    async def test_concurrent_proxy_resolution_selects_controller_once(self) -> None:
+        nodes = proxy_manager.subscription_node_list("vless://user@example.com:443#node")
+        proxy_manager._NODE_DELAYS[nodes[0].id] = (20, proxy_manager.time.monotonic())
+
+        async def select_once(node: proxy_manager.ProxyNode) -> None:
+            await asyncio.sleep(0)
+            proxy_manager._MIHOMO_SELECTED_NODE_ID = node.id
+
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.object(
+            proxy_manager, "_proxy_from_mihomo", AsyncMock(return_value={"server": "http://127.0.0.1:4567", "node_count": "managed"})
+        ), patch.object(proxy_manager, "_select_mihomo_node", AsyncMock(side_effect=select_once)) as selected:
+            results = await asyncio.gather(*(
+                proxy_manager.resolve_subscription_proxy("https://subscription.example/token") for _ in range(20)
+            ))
+
+        self.assertEqual(len(results), 20)
+        self.assertEqual(selected.await_count, 1)
 
     async def test_mihomo_config_adds_missing_local_listener_settings(self) -> None:
         provider = b"proxies:\n  - name: secured-node\n    type: trojan\n    server: example.com\n    port: 443\n    password: preserved-secret\n"

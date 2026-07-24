@@ -17,6 +17,7 @@ class EmailVerificationTests(unittest.TestCase):
             patch.object(config, "DATA_DIR", self.root),
             patch.object(email_verification, "EMAIL_VERIFICATIONS_PATH", self.root / "email_verifications.json"),
             patch("app.email_verification.postgres.enabled", return_value=False),
+            patch.dict("os.environ", {"DOLA_ADMIN_PASSWORD": "EmailTestPassword123"}),
         ]
         for patcher in self.patchers:
             patcher.start()

@@ -26,6 +26,7 @@ class BillingTests(unittest.TestCase):
             patch.object(users, "USERS_PATH", self.users_path),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.packages_path),
             patch.object(point_transactions, "TRANSACTIONS_PATH", self.root / "point_transactions.json"),
+            patch.dict("os.environ", {"DOLA_ADMIN_PASSWORD": "BillingTestPassword123"}),
         ]
         for patcher in self.patchers:
             patcher.start()

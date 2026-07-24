@@ -15,13 +15,18 @@ class VersionTests(unittest.TestCase):
         env_example = (root / ".env.example").read_text(encoding="utf-8")
         postgres_source = (root / "app" / "postgres.py").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.14")
+        self.assertEqual(version, "1.4.15")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-24}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE=24", env_example)
         self.assertIn('os.environ.get("DOLA_DATABASE_POOL_SIZE") or 24', postgres_source)
         self.assertIn("COPY VERSION ./VERSION", dockerfile)
+        self.assertIn("COPY requirements.txt requirements.lock ./", dockerfile)
+        self.assertIn("pip install --no-cache-dir -r requirements.lock", dockerfile)
+        lock_lines = [line for line in (root / "requirements.lock").read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")]
+        self.assertTrue(lock_lines)
+        self.assertTrue(all("==" in line for line in lock_lines))
 
 
 if __name__ == "__main__":

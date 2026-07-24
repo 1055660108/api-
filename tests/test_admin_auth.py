@@ -48,6 +48,15 @@ class AdminAuthTests(unittest.TestCase):
         self.assertIn("SameSite=strict", response.headers["set-cookie"])
         self.assertEqual(self.client.get("/auth/admin").status_code, 200)
 
+    def test_new_install_rejects_missing_or_default_credentials(self) -> None:
+        self.config_path.unlink(missing_ok=True)
+        with patch.dict("os.environ", {"DOLA_ADMIN_PASSWORD": ""}):
+            with self.assertRaisesRegex(RuntimeError, "DOLA_ADMIN_PASSWORD"):
+                config.ensure_config()
+        with patch.dict("os.environ", {"DOLA_ADMIN_PASSWORD": "AnotherStrongPassword123", "DOLA_DATABASE_URL": "postgresql://dola:change-me@postgres/dola"}):
+            with self.assertRaisesRegex(RuntimeError, "POSTGRES_PASSWORD"):
+                config.ensure_config()
+
     def test_invalid_password_is_rejected(self) -> None:
         response = self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "wrong-password"})
         self.assertEqual(response.status_code, 401)

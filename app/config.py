@@ -9,7 +9,7 @@ import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from .admin_auth import hash_password, validate_username
 from .platforms import DEFAULT_MODELS, DEFAULT_PLATFORM, normalize_platform
@@ -39,6 +39,7 @@ DEFAULT_PROXY_API_URL = os.environ.get(
 )
 VALID_PROXY_API_SCHEMES = {"http", "https"}
 VALID_PROXY_SERVER_SCHEMES = {"http", "https", "socks5", "socks5h"}
+INSECURE_INITIAL_PASSWORDS = {"", "admin", "change-me", "change-me-now", "fxbtn123", "password", "test"}
 _CONFIG_LOCK = threading.Lock()
 DEFAULT_MODEL_COSTS = {
     "dola": {"Seedance 2.0": 1},
@@ -128,7 +129,8 @@ def ensure_dirs() -> None:
 
 def _load_config_dict() -> dict[str, Any]:
     ensure_dirs()
-    if not CONFIG_PATH.exists():
+    existing_config = CONFIG_PATH.exists()
+    if not existing_config:
         raw: dict[str, Any] = {}
     else:
         try:
@@ -146,15 +148,26 @@ def _load_config_dict() -> dict[str, Any]:
         data["api_token"] = secrets.token_urlsafe(32)
         changed = True
     if not data.get("admin_password_hash"):
-        data["admin_password_hash"] = hash_password(os.environ.get("DOLA_ADMIN_PASSWORD", "fxbtn123"))
+        initial_password = str(os.environ.get("DOLA_ADMIN_PASSWORD") or "")
+        if initial_password.strip().lower() in INSECURE_INITIAL_PASSWORDS or len(initial_password) < 12:
+            raise RuntimeError("DOLA_ADMIN_PASSWORD must be set to a non-default password with at least 12 characters before first startup")
+        data["admin_password_hash"] = hash_password(initial_password)
         changed = True
     legacy_salt = str(raw.get("admin_password_salt") or "")
     if legacy_salt and "$" not in str(data.get("admin_password_hash") or ""):
-        initial_password = os.environ.get("DOLA_ADMIN_PASSWORD", "fxbtn123")
+        initial_password = str(os.environ.get("DOLA_ADMIN_PASSWORD") or "")
+        if not initial_password:
+            raise RuntimeError("DOLA_ADMIN_PASSWORD is required once to migrate the legacy administrator password")
         legacy_digest = hashlib.pbkdf2_hmac("sha256", initial_password.encode("utf-8"), bytes.fromhex(legacy_salt), 240_000).hex()
         if secrets.compare_digest(legacy_digest, str(data.get("admin_password_hash") or "")):
             data["admin_password_hash"] = hash_password(initial_password)
             changed = True
+    if not existing_config:
+        database_url = str(os.environ.get("DOLA_DATABASE_URL") or "").strip()
+        parsed_database = urlparse(database_url) if database_url else None
+        database_password = unquote(parsed_database.password or "") if parsed_database else ""
+        if parsed_database and parsed_database.scheme.startswith("postgres") and database_password.lower() in INSECURE_INITIAL_PASSWORDS:
+            raise RuntimeError("POSTGRES_PASSWORD must be set to a non-default password before first startup")
     if changed or not CONFIG_PATH.exists():
         CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data

@@ -153,6 +153,8 @@ class HttpsPreparationTests(unittest.TestCase):
         self.assertIn("allow 192.0.2.10/32;", rendered)
         self.assertIn("deny all;", rendered)
         self.assertIn("ssl_protocols TLSv1.2 TLSv1.3;", rendered)
+        self.assertIn('X-Content-Type-Options "nosniff"', rendered)
+        self.assertIn("frame-ancestors 'none'", rendered)
 
 
 class BackupRestoreTests(unittest.TestCase):

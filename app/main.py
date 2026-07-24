@@ -4,6 +4,7 @@ import asyncio
 import json
 import hmac
 import hashlib
+import secrets
 import shutil
 import smtplib
 import subprocess
@@ -20,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
+from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_quota
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
 from .browser_runtime import resolve_browser_executable
@@ -129,7 +131,7 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
@@ -138,6 +140,25 @@ list_sem = None
 delete_sem = None
 _RATE_LOCK = threading.RLock()
 _RATE_BUCKETS: dict[str, list[float]] = {}
+_RATE_BUCKET_LIMIT = 10_000
+_RATE_LIMIT_SCRIPT = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local member = ARGV[4]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+local count = redis.call('ZCARD', key)
+if count >= limit then
+  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+  local retry = 1
+  if oldest[2] then retry = math.max(1, math.ceil((tonumber(oldest[2]) + window - now) / 1000)) end
+  return {0, retry}
+end
+redis.call('ZADD', key, now, member)
+redis.call('PEXPIRE', key, window)
+return {1, 0}
+"""
 quota_reset_task = None
 task_cache_cleanup_task = None
 proxy_health_task = None
@@ -145,15 +166,44 @@ LOCAL_TZ = timezone(timedelta(hours=8))
 PROXY_HEALTH_REFRESH_SECONDS = 10 * 60
 
 
-def _rate_limit(request: Request, scope: str, limit: int, window: int, identity: str = "") -> None:
-    key = f"{scope}:{request.client.host if request.client else 'unknown'}:{identity}"
+def _redis_rate_limit(key: str, limit: int, window: int) -> tuple[bool, int] | None:
+    try:
+        from .task_queue import get_task_queue
+
+        client = getattr(get_task_queue(), "client", None)
+        if client is None:
+            return None
+        now_ms = int(time.time() * 1000)
+        digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()
+        member = f"{now_ms}:{secrets.token_hex(6)}"
+        result = client.eval(_RATE_LIMIT_SCRIPT, 1, f"dola:request-rate:{digest}", now_ms, window * 1000, limit, member)
+        return bool(int(result[0])), max(0, int(result[1]))
+    except Exception:
+        return None
+
+
+def _memory_rate_limit(key: str, limit: int, window: int) -> tuple[bool, int]:
     now = time.monotonic()
     with _RATE_LOCK:
         recent = [stamp for stamp in _RATE_BUCKETS.get(key, []) if now - stamp < window]
         if len(recent) >= limit:
-            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试", headers={"Retry-After": str(window)})
+            return False, max(1, int(window - (now - recent[0])))
         recent.append(now)
         _RATE_BUCKETS[key] = recent
+        if len(_RATE_BUCKETS) > _RATE_BUCKET_LIMIT:
+            for stale_key in [item for item, stamps in _RATE_BUCKETS.items() if not stamps or now - stamps[-1] >= window]:
+                _RATE_BUCKETS.pop(stale_key, None)
+            while len(_RATE_BUCKETS) > _RATE_BUCKET_LIMIT:
+                _RATE_BUCKETS.pop(next(iter(_RATE_BUCKETS)))
+    return True, 0
+
+
+async def _rate_limit(request: Request, scope: str, limit: int, window: int, identity: str = "") -> None:
+    key = f"{scope}:{request.client.host if request.client else 'unknown'}:{identity}"
+    result = await asyncio.to_thread(_redis_rate_limit, key, limit, window)
+    allowed, retry_after = result if result is not None else _memory_rate_limit(key, limit, window)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试", headers={"Retry-After": str(retry_after or 1)})
 
 
 def _idempotency_key(value: str | None) -> str:
@@ -301,6 +351,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Fetch Task Service", version=__version__, lifespan=lifespan)
 ADMIN_DIR = Path(__file__).resolve().parent / "admin"
 
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https:; "
+        "object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    )
+    if _request_is_secure(request):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
 if ADMIN_DIR.exists():
     app.mount("/admin/assets", StaticFiles(directory=ADMIN_DIR), name="admin-assets")
 
@@ -308,6 +376,50 @@ if ADMIN_DIR.exists():
 @app.get("/health/live")
 async def health_live():
     return {"ok": True, "version": __version__}
+
+
+def _request_is_secure(request: Request) -> bool:
+    forwarded = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    return request.url.scheme == "https" or forwarded == "https"
+
+
+def _set_client_session_cookie(response: JSONResponse, request: Request, token_hash: str, previous_session: str = "") -> None:
+    if previous_session:
+        delete_client_session(previous_session)
+    response.set_cookie(
+        CLIENT_SESSION_COOKIE_NAME,
+        create_client_session(token_hash),
+        max_age=CLIENT_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=_request_is_secure(request),
+        samesite="strict",
+        path="/",
+    )
+
+
+def _clear_client_session_cookie(response: JSONResponse, request: Request) -> None:
+    response.delete_cookie(
+        CLIENT_SESSION_COOKIE_NAME,
+        path="/",
+        secure=_request_is_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def _validate_cookie_request(request: Request) -> None:
+    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return
+    fetch_site = str(request.headers.get("sec-fetch-site") or "").strip().lower()
+    if fetch_site == "cross-site":
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
+    origin = str(request.headers.get("origin") or "").strip().rstrip("/").lower()
+    if not origin:
+        return
+    scheme = "https" if _request_is_secure(request) else request.url.scheme
+    expected_origin = f"{scheme}://{request.headers.get('host') or request.url.netloc}".rstrip("/").lower()
+    if not hmac.compare_digest(origin, expected_origin):
+        raise HTTPException(status_code=403, detail="cross-site request rejected")
 
 
 async def require_token(
@@ -334,9 +446,40 @@ async def require_token(
     temp_context = await asyncio.to_thread(resolve_temp_context)
     if temp_context:
         return temp_context
+    if supplied:
+        raise HTTPException(status_code=403, detail="forbidden")
+    async def resolve_client_cookie() -> AccessContext | None:
+        client_token_hash = await asyncio.to_thread(client_session_token_hash, request.cookies.get(CLIENT_SESSION_COOKIE_NAME, ""))
+        if not client_token_hash:
+            return None
+
+        def resolve_client_session() -> AccessContext | None:
+            context = get_temp_context_by_hash(client_token_hash)
+            if context and sync_user_membership_by_token_hash(context.token_hash):
+                context = get_temp_context_by_hash(client_token_hash)
+            if context and user_token_is_enabled(context.token_hash):
+                touch_user_by_token_hash(context.token_hash)
+                return context
+            return None
+
+        return await asyncio.to_thread(resolve_client_session)
+
+    portal_hint = str(request.headers.get("x-dola-portal") or "").strip().lower()
+    prefer_client = portal_hint == "client" or request.url.path.startswith(("/auth/client", "/auth/access-state"))
+    if prefer_client:
+        client_context = await resolve_client_cookie()
+        if client_context:
+            _validate_cookie_request(request)
+            return client_context
     session_owner = session_username(request.cookies.get(SESSION_COOKIE_NAME, ""))
     if session_owner and hmac.compare_digest(session_owner, settings.admin_username):
+        _validate_cookie_request(request)
         return AccessContext(token_hash=hash_token(f"admin:{session_owner}"), is_admin=True, is_temp=False)
+    if not prefer_client:
+        client_context = await resolve_client_cookie()
+        if client_context:
+            _validate_cookie_request(request)
+            return client_context
     raise HTTPException(status_code=403, detail="forbidden")
 
 
@@ -563,7 +706,7 @@ async def admin_auth(access: Annotated[AccessContext, Depends(require_admin)]):
 @app.post("/auth/admin/login")
 async def admin_login(request: Request):
     payload = await _request_payload(request)
-    _rate_limit(request, "admin-login", 10, 60, str(payload.get("username") or "").lower())
+    await _rate_limit(request, "admin-login", 10, 60, str(payload.get("username") or "").lower())
     settings = load_settings()
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
@@ -572,15 +715,17 @@ async def admin_login(request: Request):
     if not valid_username or not valid_password:
         raise HTTPException(status_code=401, detail="管理员账号或密码错误")
     response = JSONResponse({"ok": True, "username": settings.admin_username})
-    response.set_cookie(SESSION_COOKIE_NAME, create_session(settings.admin_username), max_age=SESSION_TTL_SECONDS, httponly=True, secure=request.url.scheme == "https", samesite="strict", path="/")
+    response.set_cookie(SESSION_COOKIE_NAME, create_session(settings.admin_username), max_age=SESSION_TTL_SECONDS, httponly=True, secure=_request_is_secure(request), samesite="strict", path="/")
     return response
 
 
 @app.post("/auth/admin/logout")
 async def admin_logout(request: Request):
+    if request.cookies.get(SESSION_COOKIE_NAME):
+        _validate_cookie_request(request)
     delete_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
     response = JSONResponse({"ok": True})
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/", httponly=True, secure=request.url.scheme == "https", samesite="strict")
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/", httponly=True, secure=_request_is_secure(request), samesite="strict")
     return response
 
 
@@ -815,7 +960,7 @@ async def admin_disable_membership(package_id: str):
 @app.post("/auth/register")
 async def client_register(request: Request):
     payload = await _request_payload(request)
-    _rate_limit(request, "register", 5, 60)
+    await _rate_limit(request, "register", 5, 60)
     if payload.get("password") != payload.get("confirm_password"):
         raise HTTPException(status_code=400, detail="两次输入的密码不一致")
     try:
@@ -834,7 +979,9 @@ async def client_register(request: Request):
             video_quota_change=1,
             video_quota_balance=1,
         )
-        return {"ok": True, **registered}
+        response = JSONResponse({"ok": True, **registered})
+        _set_client_session_cookie(response, request, hash_token(str(registered.get("token") or "")))
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -847,8 +994,8 @@ async def client_registration_email_code(request: Request):
     settings = load_settings()
     try:
         email = validate_allowed_email(payload.get("email", ""), settings)
-        _rate_limit(request, "registration-email-code-ip", 5, 600)
-        _rate_limit(request, "registration-email-code-address", 3, 600, hashlib.sha256(email.encode("utf-8")).hexdigest())
+        await _rate_limit(request, "registration-email-code-ip", 5, 600)
+        await _rate_limit(request, "registration-email-code-address", 3, 600, hashlib.sha256(email.encode("utf-8")).hexdigest())
         await asyncio.to_thread(send_registration_code, email, settings)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -872,12 +1019,31 @@ async def client_login(request: Request):
 
     payload = await _request_payload(request)
     identifier = payload.get("identifier") or payload.get("username") or ""
-    _rate_limit(request, "client-login-ip", 200, 60)
-    _rate_limit(request, "client-login-identifier", 20, 60, str(identifier).strip().casefold())
+    await _rate_limit(request, "client-login-ip", 200, 60)
+    await _rate_limit(request, "client-login-identifier", 20, 60, str(identifier).strip().casefold())
     result = await asyncio.to_thread(login_user, identifier, payload.get("password", ""))
     if not result:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    return {"ok": True, **result}
+    response = JSONResponse({"ok": True, **result})
+    _set_client_session_cookie(response, request, hash_token(str(result.get("token") or "")), request.cookies.get(CLIENT_SESSION_COOKIE_NAME, ""))
+    return response
+
+
+@app.post("/auth/session", dependencies=[Depends(require_temp)])
+async def client_session_upgrade(request: Request, access: Annotated[AccessContext, Depends(require_temp)]):
+    response = JSONResponse({"ok": True})
+    _set_client_session_cookie(response, request, access.token_hash, request.cookies.get(CLIENT_SESSION_COOKIE_NAME, ""))
+    return response
+
+
+@app.post("/auth/logout")
+async def client_logout(request: Request):
+    if request.cookies.get(CLIENT_SESSION_COOKIE_NAME):
+        _validate_cookie_request(request)
+    delete_client_session(request.cookies.get(CLIENT_SESSION_COOKIE_NAME, ""))
+    response = JSONResponse({"ok": True})
+    _clear_client_session_cookie(response, request)
+    return response
 
 
 @app.post("/auth/password/forgot-code")
@@ -890,8 +1056,8 @@ async def client_forgot_password_code(request: Request):
     generic_detail = "如果该邮箱已绑定账号，验证码将发送到邮箱"
     try:
         email = normalize_email(email)
-        _rate_limit(request, "reset-password-code-ip", 5, 600)
-        _rate_limit(request, "reset-password-code-address", 3, 600, hashlib.sha256(email.encode("utf-8")).hexdigest())
+        await _rate_limit(request, "reset-password-code-ip", 5, 600)
+        await _rate_limit(request, "reset-password-code-address", 3, 600, hashlib.sha256(email.encode("utf-8")).hexdigest())
         if has_verified_enabled_email(email):
             await asyncio.to_thread(send_registration_code, email, settings, "reset_password", "", True)
     except (OSError, RuntimeError, smtplib.SMTPException):
@@ -922,7 +1088,7 @@ async def client_reset_password(request: Request):
 
 
 @app.post("/auth/token/refresh", dependencies=[Depends(require_temp)])
-async def client_token_refresh(access: Annotated[AccessContext, Depends(require_temp)]):
+async def client_token_refresh(request: Request, access: Annotated[AccessContext, Depends(require_temp)]):
     try:
         result = rotate_user_token_by_hash(access.token_hash)
     except KeyError:
@@ -930,7 +1096,9 @@ async def client_token_refresh(access: Annotated[AccessContext, Depends(require_
     migrate_task_owner(access.token_hash, hash_token(result["token"]))
     refreshed = get_temp_context(result["token"])
     payload = _health_payload(refreshed) if refreshed else {}
-    return {"ok": True, **result, **payload}
+    response = JSONResponse({"ok": True, **result, **payload})
+    _set_client_session_cookie(response, request, hash_token(result["token"]), request.cookies.get(CLIENT_SESSION_COOKIE_NAME, ""))
+    return response
 
 
 @app.post("/auth/password", dependencies=[Depends(require_temp)])
@@ -949,7 +1117,9 @@ async def client_change_password(request: Request, access: Annotated[AccessConte
     migrate_task_owner(access.token_hash, new_token_hash)
     refreshed = get_temp_context(result["token"])
     payload = _health_payload(refreshed) if refreshed else {}
-    return {"ok": True, **result, **payload}
+    response = JSONResponse({"ok": True, **result, **payload})
+    _set_client_session_cookie(response, request, new_token_hash, request.cookies.get(CLIENT_SESSION_COOKIE_NAME, ""))
+    return response
 
 
 @app.get("/auth/profile", dependencies=[Depends(require_temp)])
@@ -968,7 +1138,7 @@ async def client_email_code(request: Request, access: Annotated[AccessContext, D
     settings = load_settings()
     try:
         email = validate_allowed_email(payload.get("email", ""), settings)
-        _rate_limit(request, "change-email-code", 3, 600, access.token_hash)
+        await _rate_limit(request, "change-email-code", 3, 600, access.token_hash)
         await asyncio.to_thread(send_registration_code, email, settings, "change_email", access.token_hash)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -993,7 +1163,7 @@ async def client_change_email(request: Request, access: Annotated[AccessContext,
 @app.post("/feedback", dependencies=[Depends(require_temp)], status_code=201)
 async def client_create_feedback(request: Request, access: Annotated[AccessContext, Depends(require_temp)]):
     payload = await _request_payload(request)
-    _rate_limit(request, "feedback-user", 10, 3600, access.token_hash)
+    await _rate_limit(request, "feedback-user", 10, 3600, access.token_hash)
     try:
         user = user_identity_by_token_hash(access.token_hash)
         return {"ok": True, "feedback": create_feedback(user, payload.get("category", "其他"), payload.get("content", ""), payload.get("contact", ""), payload.get("source_page", ""))}
@@ -1513,7 +1683,7 @@ async def openai_chat_completions(
     if platform == "qianwen" and payload.task_type != "video":
         raise OpenAIAPIError(400, "Qianwen only supports video tasks", "invalid_request_error", "task_type", "unsupported_value")
     task_type = "video"
-    _rate_limit(request, "openai-task", 30, 60, access.token_hash)
+    await _rate_limit(request, "openai-task", 30, 60, access.token_hash)
     key = _idempotency_key(idempotency_key)
     fingerprint = _request_fingerprint("openai", access.token_hash, {"prompt": repair_text(prompt), "ratio": payload.ratio, "platform": platform, "model": model, "task_type": task_type})
     try:
@@ -2076,7 +2246,7 @@ async def submit_task(
         uploads = [item for item in (images or []) if item and item.filename]
         if len(uploads) > load_settings().max_image_count:
             raise HTTPException(status_code=400, detail="too many images")
-        _rate_limit(request, "task-create-batch" if batch else "task-create", 120 if batch else 30, 60, access.token_hash)
+        await _rate_limit(request, "task-create-batch" if batch else "task-create", 120 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
         fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "images": [Path(item.filename or "").name for item in uploads]})
 
@@ -2190,7 +2360,7 @@ async def parse_batch_prompts(
     access: Annotated[AccessContext, Depends(require_temp)],
     spreadsheet: Annotated[UploadFile, File()],
 ):
-    _rate_limit(request, "batch-prompt-parse", 10, 60, access.token_hash)
+    await _rate_limit(request, "batch-prompt-parse", 10, 60, access.token_hash)
     filename = Path(spreadsheet.filename or "").name
     try:
         data = await spreadsheet.read(MAX_SPREADSHEET_BYTES + 1)
@@ -2329,7 +2499,7 @@ async def retry_completed_task(request: Request, access: Annotated[AccessContext
         raise HTTPException(status_code=404, detail="task not found")
     if str(original.get("status") or "") not in {"success", "failed"}:
         raise HTTPException(status_code=409, detail="仅成功或失败任务可以重新生成")
-    _rate_limit(request, "task-retry", 30, 60, owner_hash or "admin")
+    await _rate_limit(request, "task-retry", 30, 60, owner_hash or "admin")
 
     retry_access = access
     if owner_hash:

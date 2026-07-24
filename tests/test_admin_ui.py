@@ -244,7 +244,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.14', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.15', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -319,11 +319,14 @@ class AdminUITests(unittest.TestCase):
         self.assertIn(".users-table .user-point-actions", styles)
         self.assertIn("grid-template-columns: repeat(2, minmax(64px, 1fr))", styles)
 
-    def test_admin_cookie_auth_is_not_overridden_by_legacy_token(self) -> None:
+    def test_web_cookie_auth_migrates_and_removes_legacy_local_token(self) -> None:
         self.assertIn(
-            'const savedToken = portal === "client" ? tokenFromUrl || localStorage.getItem(portalStorageKey(TOKEN_KEY)) || "" : "";',
+            'const legacyToken = portal === "client" ? tokenFromUrl || localStorage.getItem(portalStorageKey(TOKEN_KEY)) || "" : "";',
             self.javascript,
         )
+        self.assertIn('await requestJson("/auth/session", legacyToken, { method: "POST" })', self.javascript)
+        self.assertIn('return requestJson(path, "", options)', self.javascript)
+        self.assertNotIn('localStorage.setItem(portalStorageKey(TOKEN_KEY)', self.javascript)
         self.assertIn('localStorage.removeItem("dola_fetch_api_token");', self.javascript)
 
     def test_dola_submit_interval_is_conservative(self) -> None:
@@ -445,8 +448,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('form.append("duration", BATCH_VIDEO_DURATION)', self.javascript)
         self.assertIn('async function autoSubmitBatchTasks()', self.javascript)
         self.assertIn('while (active.size && !state.batchAutoStopRequested)', self.javascript)
-        self.assertIn('active.size + blockedSlots < concurrency', self.javascript)
-        self.assertIn('未创建：前序任务未成功返回视频', self.javascript)
+        self.assertIn('active.size < concurrency', self.javascript)
+        self.assertIn('const maxConsecutiveSystemErrors = 3', self.javascript)
+        self.assertIn('连续 ${maxConsecutiveSystemErrors} 次提交失败', self.javascript)
+        self.assertNotIn('blockedSlots', self.javascript)
         self.assertIn('await apiFetch(`/tasks/${encodeURIComponent(taskId)}`', self.javascript)
         self.assertIn('URL.createObjectURL(file)', self.javascript)
         self.assertIn('class="batch-reference-thumbs"', self.html)

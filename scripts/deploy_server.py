@@ -106,7 +106,7 @@ def main() -> None:
         run(client, "chmod +x /opt/dola-fetch-service/scripts/*.sh")
         run(client, "apt-get update", timeout=900)
         run(client, "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl ca-certificates", timeout=900)
-        run(client, "cd /opt/dola-fetch-service && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -r requirements.txt", timeout=900)
+        run(client, "cd /opt/dola-fetch-service && python3 -m venv .venv && .venv/bin/pip install --upgrade pip && .venv/bin/pip install -r requirements.lock", timeout=900)
         run(client, "cd /opt/dola-fetch-service && .venv/bin/python -m playwright install --with-deps chromium", timeout=1200)
         run(client, "cp /opt/dola-fetch-service/systemd/dola-fetch-service.service /etc/systemd/system/dola-fetch-service.service && systemctl daemon-reload && systemctl enable dola-fetch-service && systemctl restart dola-fetch-service", timeout=300)
         run(client, "sleep 3 && systemctl --no-pager --full status dola-fetch-service | sed -n '1,18p'", timeout=120)

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app import __version__, accounts, admin_auth, config, main, package_catalog, proxy_manager, store, temp_access, users
+from app import __version__, accounts, admin_auth, client_auth, config, main, package_catalog, proxy_manager, store, temp_access, users
 
 
 class WebAPIContractTests(unittest.TestCase):
@@ -35,6 +35,7 @@ class WebAPIContractTests(unittest.TestCase):
         for patcher in self.patchers:
             patcher.start()
         admin_auth.clear_sessions()
+        client_auth.clear_client_sessions()
         config.ensure_config()
         config.update_config({"registration_email_verification_enabled": False})
         self.client_context = TestClient(main.app)
@@ -44,6 +45,7 @@ class WebAPIContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.client_context.__exit__(None, None, None)
         admin_auth.clear_sessions()
+        client_auth.clear_client_sessions()
         for patcher in reversed(self.patchers):
             patcher.stop()
         self.temporary_directory.cleanup()
@@ -96,14 +98,45 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(set(registered), {"ok", "username", "token"})
         login = self.client.post("/auth/login", json={"username": "contract_client", "password": "ClientPassword123"})
         self.assertEqual(login.json(), registered)
+        self.assertIn("HttpOnly", login.headers["set-cookie"])
+        self.assertIn("SameSite=strict", login.headers["set-cookie"])
+        self.assertEqual(self.client.get("/auth/client").status_code, 200)
         invalid_client = self.client.post("/auth/login", json={"username": "contract_client", "password": "invalid"})
         self.assertEqual(invalid_client.status_code, 401)
         self.assertEqual(invalid_client.json(), {"detail": "用户名或密码错误"})
 
+    def test_client_cookie_is_secure_on_https_and_legacy_token_can_upgrade(self) -> None:
+        registered = self.register("cookie_upgrade_client")
+        self.client.cookies.clear()
+        upgraded = self.client.post(
+            "/auth/session",
+            headers={"X-API-Token": registered["token"], "X-Forwarded-Proto": "https"},
+        )
+        self.assertEqual(upgraded.status_code, 200)
+        cookie = upgraded.headers["set-cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("Secure", cookie)
+        self.assertIn("SameSite=strict", cookie)
+
+    def test_cookie_authenticated_writes_reject_cross_site_origin(self) -> None:
+        self.register("csrf_client")
+        rejected = self.client.post(
+            "/feedback",
+            headers={"Origin": "https://attacker.example", "X-Dola-Portal": "client"},
+            json={"category": "其他", "content": "cross site"},
+        )
+        self.assertEqual(rejected.status_code, 403)
+        allowed = self.client.post(
+            "/feedback",
+            headers={"Origin": "http://testserver", "X-Dola-Portal": "client"},
+            json={"category": "其他", "content": "same site"},
+        )
+        self.assertEqual(allowed.status_code, 201)
+
     def test_client_login_moves_password_work_off_event_loop(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn("await asyncio.to_thread(login_user", source)
-        self.assertIn('_rate_limit(request, "client-login-ip", 200, 60)', source)
+        self.assertIn('await _rate_limit(request, "client-login-ip", 200, 60)', source)
 
     def test_health_contract_is_role_scoped_for_admin_and_client(self) -> None:
         registered = self.register()
@@ -305,6 +338,7 @@ class WebAPIContractTests(unittest.TestCase):
 
     def test_query_parameter_token_is_not_accepted(self) -> None:
         registered = self.register("query_token_client")
+        self.client.cookies.clear()
         response = self.client.get(f"/tasks?token={registered['token']}")
         self.assertEqual(response.status_code, 403)
 

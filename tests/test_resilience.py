@@ -8,17 +8,50 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import admin_auth, config, main, resilience, store
+from app import admin_auth, client_auth, config, main, resilience, store
 
 
 class ResilienceUnitTests(unittest.TestCase):
     def setUp(self) -> None:
         resilience._LOCAL_BUCKETS.clear()
         resilience._LOCAL_CIRCUITS.clear()
+        main._RATE_BUCKETS.clear()
 
     def tearDown(self) -> None:
         resilience._LOCAL_BUCKETS.clear()
         resilience._LOCAL_CIRCUITS.clear()
+        main._RATE_BUCKETS.clear()
+
+    def test_request_rate_limit_uses_shared_redis_result(self) -> None:
+        client = unittest.mock.Mock()
+        client.eval.side_effect = ([1, 0], [0, 7])
+        queue = unittest.mock.Mock(client=client)
+        with patch("app.task_queue.get_task_queue", return_value=queue):
+            self.assertEqual(main._redis_rate_limit("login:127.0.0.1:user", 1, 60), (True, 0))
+            self.assertEqual(main._redis_rate_limit("login:127.0.0.1:user", 1, 60), (False, 7))
+        self.assertEqual(client.eval.call_count, 2)
+
+    def test_request_rate_limit_falls_back_to_bounded_memory(self) -> None:
+        queue = unittest.mock.Mock()
+        queue.client.eval.side_effect = OSError("redis unavailable")
+        with patch("app.task_queue.get_task_queue", return_value=queue):
+            self.assertIsNone(main._redis_rate_limit("feedback:user", 1, 60))
+        self.assertEqual(main._memory_rate_limit("feedback:user", 1, 60), (True, 0))
+        allowed, retry_after = main._memory_rate_limit("feedback:user", 1, 60)
+        self.assertFalse(allowed)
+        self.assertGreaterEqual(retry_after, 1)
+
+    def test_client_sessions_use_redis_as_the_shared_source_of_truth(self) -> None:
+        client = unittest.mock.Mock()
+        client.get.return_value = "token-hash"
+        with patch("app.client_auth._redis_client", return_value=client):
+            session_id = client_auth.create_client_session("token-hash")
+            self.assertNotIn(session_id, client_auth._SESSIONS)
+            self.assertEqual(client_auth.client_session_token_hash(session_id), "token-hash")
+            client_auth.delete_client_session(session_id)
+        client.setex.assert_called_once()
+        client.expire.assert_called_once()
+        client.delete.assert_called_once()
 
     def test_platform_rate_limit_is_shared_by_platform(self) -> None:
         with patch.dict(os.environ, {"DOLA_PLATFORM_RATE_PER_MINUTE": "1", "DOLA_PLATFORM_BURST": "2"}):
@@ -89,7 +122,7 @@ class ResilienceCompatibilityTests(unittest.TestCase):
             patch.object(config, "TASKS_DIR", self.tasks),
             patch.object(store, "TASKS_DIR", self.tasks),
             patch.object(store, "runtime_path", return_value=self.root / "runtime.json"),
-            patch.dict(os.environ, {"DOLA_ADMIN_USERNAME": "admin", "DOLA_ADMIN_PASSWORD": "password123"}),
+            patch.dict(os.environ, {"DOLA_ADMIN_USERNAME": "admin", "DOLA_ADMIN_PASSWORD": "ResiliencePassword123"}),
         ]
         for patcher in self.patchers:
             patcher.start()

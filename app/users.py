@@ -526,7 +526,10 @@ def change_user_email_by_token_hash(token_hash: str, email: str) -> dict[str, An
 
 
 def touch_user_by_token(token: str) -> None:
-    token_hash = hash_token(token)
+    touch_user_by_token_hash(hash_token(token))
+
+
+def touch_user_by_token_hash(token_hash: str) -> None:
     with _LOCK:
         if postgres.enabled():
             def mutate(entry: dict[str, Any]) -> None:

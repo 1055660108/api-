@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from app import accounts, store, task_queue, temp_access
+from app import accounts, config, store, task_queue, temp_access
 from app.worker import WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once, should_consume_retry_account_quota
 
 
@@ -25,6 +25,10 @@ class ReliabilityTests(unittest.TestCase):
             patch.object(store, "runtime_path", return_value=self.root / "runtime.json"),
             patch.object(accounts, "ACCOUNTS_PATH", self.accounts_path),
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.tokens_path),
+            patch.object(config, "CONFIG_PATH", self.root / "config.json"),
+            patch.object(config, "DATA_DIR", self.root),
+            patch.object(config, "TASKS_DIR", self.tasks),
+            patch.dict("os.environ", {"DOLA_ADMIN_PASSWORD": "ReliabilityTestPassword123"}),
         ]
         for patcher in self.patchers:
             patcher.start()

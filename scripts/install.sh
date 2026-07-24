@@ -13,6 +13,7 @@ DEFAULT_PROXY_API_URL="${DOLA_DEFAULT_PROXY_API_URL:-https://example.com/get-pro
 PYTHON_BIN=""
 PKG_MANAGER=""
 ORIGINAL_APT_SOURCES=""
+INITIAL_ADMIN_PASSWORD=""
 
 APT_MIRRORS=(
   ""
@@ -191,7 +192,7 @@ local_source_dir() {
   local script_dir source_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)" || return 1
   source_dir="$(cd "$script_dir/.." >/dev/null 2>&1 && pwd)" || return 1
-  if [ -f "$source_dir/run.py" ] && [ -d "$source_dir/app" ] && [ -f "$source_dir/requirements.txt" ]; then
+  if [ -f "$source_dir/run.py" ] && [ -d "$source_dir/app" ] && [ -f "$source_dir/requirements.lock" ]; then
     echo "$source_dir"
     return 0
   fi
@@ -253,7 +254,7 @@ setup_python_environment() {
   cd "$APP_DIR"
   "$PYTHON_BIN" -m venv .venv || die "创建虚拟环境失败"
   pip_install_with_mirrors "--upgrade pip" || die "pip 升级失败"
-  pip_install_with_mirrors "-r requirements.txt" || die "Python 依赖安装失败，已尝试多个 pip 镜像"
+  pip_install_with_mirrors "-r requirements.lock" || die "Python 依赖安装失败，已尝试多个 pip 镜像"
 }
 
 install_chromium() {
@@ -279,6 +280,10 @@ init_config() {
   export DOLA_DATA_DIR="$DATA_DIR"
   export DOLA_CONFIG_PATH="$DATA_DIR/config.json"
   export DOLA_DEFAULT_PROXY_API_URL="$DEFAULT_PROXY_API_URL"
+  if [ ! -f "$DOLA_CONFIG_PATH" ]; then
+    INITIAL_ADMIN_PASSWORD="${DOLA_ADMIN_PASSWORD:-$($APP_DIR/.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(18))')}"
+    export DOLA_ADMIN_PASSWORD="$INITIAL_ADMIN_PASSWORD"
+  fi
   cd "$APP_DIR"
   "$APP_DIR/.venv/bin/python" - <<'PY'
 from app.config import load_settings
@@ -375,6 +380,12 @@ PY
   echo "管理员面板：${admin_url}"
   echo "客户入口：${client_url}"
   echo "API Token：${token}"
+  if [ -n "$INITIAL_ADMIN_PASSWORD" ]; then
+    echo "初始管理员密码：${INITIAL_ADMIN_PASSWORD}"
+    echo "请登录后立即修改管理员密码"
+  else
+    echo "管理员密码：保持现有配置"
+  fi
   echo
   echo "常用命令："
   echo "查看服务：systemctl status ${SERVICE_NAME}"

@@ -1,4 +1,5 @@
 const TOKEN_KEY = "dfyue_api_token";
+const API_TOKEN_SESSION_KEY = "dfyue_api_token_display";
 const AUTH_KEY = "dfyue_auth_ok";
 const RESULTS_KEY = "dfyue_task_results";
 const pathName = window.location.pathname.replace(/\/+$/, "");
@@ -555,6 +556,7 @@ const state = {
   messageTab: "feedback",
   notificationUsers: [],
   selectedNotificationUserIds: new Set(),
+  authenticated: false,
 };
 
 const MAX_IMAGE_COUNT = 9;
@@ -688,7 +690,7 @@ function getClientEntryUrl() {
 
 function loadSessionResults() {
   try {
-    const token = localStorage.getItem(portalStorageKey(TOKEN_KEY)) || "";
+    const token = sessionStorage.getItem(portalStorageKey(API_TOKEN_SESSION_KEY)) || "";
     return JSON.parse(sessionStorage.getItem(`${RESULTS_KEY}_${portal}_${token}`) || "{}");
   } catch (_) {
     return {};
@@ -702,6 +704,8 @@ function saveSessionResults() {
 async function requestJson(path, token, options = {}) {
   const headers = new Headers(options.headers || {});
   if (token) headers.set("X-API-Token", token);
+  headers.set("X-Dola-Portal", portal);
+  if (String(options.method || "GET").toUpperCase() !== "GET") headers.set("X-Requested-With", "DolaWeb");
 
   let body = options.body;
   if (body && !(body instanceof FormData) && typeof body !== "string") {
@@ -751,7 +755,7 @@ async function requestJson(path, token, options = {}) {
 }
 
 async function apiFetch(path, options = {}) {
-  return requestJson(path, state.apiToken, options);
+  return requestJson(path, "", options);
 }
 
 async function loadRepositoryStatus() {
@@ -1240,6 +1244,7 @@ function createClientInkSplash(event) {
 }
 
 function showLogin(message = "等待输入") {
+  state.authenticated = false;
   document.body.dataset.portal = portal;
   els.appShell.classList.add("hidden");
   els.loginView.classList.remove("hidden");
@@ -1262,11 +1267,13 @@ function showLogin(message = "等待输入") {
 function expireSession(message = "登录已失效，请重新登录") {
   state.apiToken = "";
   localStorage.removeItem(portalStorageKey(TOKEN_KEY));
+  sessionStorage.removeItem(portalStorageKey(API_TOKEN_SESSION_KEY));
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
   showLogin(message);
 }
 
 function showApp() {
+  state.authenticated = true;
   document.body.dataset.portal = portal;
   els.loginView.classList.add("hidden");
   els.appShell.classList.remove("hidden");
@@ -1282,7 +1289,7 @@ function showApp() {
 function startAutoRefresh() {
   if (portal === "client" && !state.accessRefreshTimer) {
     state.accessRefreshTimer = window.setInterval(async () => {
-      if (!state.apiToken || document.hidden || els.appShell.classList.contains("hidden") || state.submitting || state.accessRefreshing) return;
+      if (!state.authenticated || document.hidden || els.appShell.classList.contains("hidden") || state.submitting || state.accessRefreshing) return;
       state.accessRefreshing = true;
       try {
         applyAccessScope(await apiFetch("/auth/access-state"));
@@ -1295,7 +1302,7 @@ function startAutoRefresh() {
   }
   if (!state.refreshTimer) {
     state.refreshTimer = window.setInterval(async () => {
-      if ((portal === "client" && !state.apiToken) || document.hidden || els.appShell.classList.contains("hidden")) return;
+      if ((portal === "client" && !state.authenticated) || document.hidden || els.appShell.classList.contains("hidden")) return;
       if (state.autoRefreshing) return;
       state.autoRefreshing = true;
       try {
@@ -1481,12 +1488,11 @@ async function login(event) {
     state.apiToken = token;
     loadPrompts();
     applyAccessScope(health);
-    if (token) localStorage.setItem(portalStorageKey(TOKEN_KEY), token);
-    else {
-      localStorage.removeItem(portalStorageKey(TOKEN_KEY));
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem("dola_fetch_api_token");
-    }
+    if (token) sessionStorage.setItem(portalStorageKey(API_TOKEN_SESSION_KEY), token);
+    else sessionStorage.removeItem(portalStorageKey(API_TOKEN_SESSION_KEY));
+    localStorage.removeItem(portalStorageKey(TOKEN_KEY));
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem("dola_fetch_api_token");
     sessionStorage.setItem(portalStorageKey(AUTH_KEY), "1");
     clearTokenFromUrl();
     showApp();
@@ -1528,9 +1534,9 @@ async function changeAdminPassword(event) {
 }
 
 async function logout() {
-  if (portal === "admin") {
+  if (portal === "admin" || portal === "client") {
     try {
-      await requestJson("/auth/admin/logout", "", { method: "POST" });
+      await requestJson(portal === "admin" ? "/auth/admin/logout" : "/auth/logout", "", { method: "POST" });
     } catch (_) {
     }
   }
@@ -1540,7 +1546,9 @@ async function logout() {
   state.memberships = [];
   state.membershipHoldings = [];
   state.apiToken = "";
+  state.authenticated = false;
   localStorage.removeItem(portalStorageKey(TOKEN_KEY));
+  sessionStorage.removeItem(portalStorageKey(API_TOKEN_SESSION_KEY));
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
   if (state.refreshTimer) window.clearInterval(state.refreshTimer);
   if (state.accessRefreshTimer) window.clearInterval(state.accessRefreshTimer);
@@ -1697,7 +1705,7 @@ async function loadAdminAnnouncements() {
 }
 
 async function showNextUnseenAnnouncement() {
-  if (portal !== "client" || !state.apiToken) return;
+  if (portal !== "client" || !state.authenticated) return;
   const rows = await loadClientAnnouncements();
   if (state.activeAnnouncement) {
     const current = rows.find((row) => row.id === state.activeAnnouncement.id);
@@ -2145,7 +2153,7 @@ async function changeClientPassword(event) {
     const data = await apiFetch("/auth/password", { method: "POST", body: { current_password: currentPassword, new_password: newPassword, confirm_password: confirmPassword } });
     if (!data.token || data.token === state.apiToken) throw new Error("后端未签发新的 Token");
     state.apiToken = data.token;
-    localStorage.setItem(portalStorageKey(TOKEN_KEY), data.token);
+    sessionStorage.setItem(portalStorageKey(API_TOKEN_SESSION_KEY), data.token);
     if (els.clientTokenDisplay) els.clientTokenDisplay.value = data.token;
     els.clientPasswordForm.reset();
     applyAccessScope(data);
@@ -2171,7 +2179,7 @@ async function loadEmailDomains() {
 }
 
 async function loadClientProfile() {
-  if (portal !== "client" || !state.apiToken) return;
+  if (portal !== "client" || !state.authenticated) return;
   const data = await apiFetch("/auth/profile");
   if (els.clientEmailDisplay) els.clientEmailDisplay.textContent = data.email || "未绑定";
   if (els.clientEmailState) els.clientEmailState.textContent = data.email_verified_at ? "已验证" : "未验证";
@@ -4050,12 +4058,15 @@ async function autoSubmitBatchTasks() {
   const active = new Map();
   let cursor = 0;
   let finished = 0;
-  let blockedSlots = 0;
+  let completed = 0;
+  let failed = 0;
+  let consecutiveSystemErrors = 0;
+  const maxConsecutiveSystemErrors = 3;
   let stopped = "";
   renderBatchPrompts();
 
   const launchNext = async () => {
-    while (!state.batchAutoStopRequested && !stopped && active.size + blockedSlots < concurrency && cursor < selected.length) {
+    while (!state.batchAutoStopRequested && !stopped && active.size < concurrency && cursor < selected.length) {
       const entry = selected[cursor];
       cursor += 1;
       try {
@@ -4064,13 +4075,15 @@ async function autoSubmitBatchTasks() {
         entry.item.taskId = data.id || "";
         entry.item.selected = false;
         active.set(entry.item.taskId, entry);
+        consecutiveSystemErrors = 0;
         if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
       } catch (error) {
         entry.item.status = "failed";
         entry.item.error = error.message || "提交失败";
         finished += 1;
-        blockedSlots += 1;
-        if (Number(error.status || 0) === 429) stopped = entry.item.error;
+        failed += 1;
+        consecutiveSystemErrors += 1;
+        if (consecutiveSystemErrors >= maxConsecutiveSystemErrors) stopped = `连续 ${maxConsecutiveSystemErrors} 次提交失败：${entry.item.error}`;
       }
       renderBatchPrompts();
     }
@@ -4084,16 +4097,22 @@ async function autoSubmitBatchTasks() {
       for (const [taskId, entry] of Array.from(active.entries())) {
         try {
           const result = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`, { timeout: 30000 });
+          consecutiveSystemErrors = 0;
           const successful = String(result.code || "") === "2" && Boolean(result.url);
-          const failed = String(result.code || "") === "0" && Boolean(String(result.text || "").trim());
-          if (!successful && !failed) continue;
+          const taskFailed = String(result.code || "") === "0" && Boolean(String(result.text || "").trim());
+          if (!successful && !taskFailed) continue;
           active.delete(taskId);
           entry.item.status = successful ? "completed" : "failed";
           entry.item.error = successful ? "" : String(result.text || "生成失败");
           finished += 1;
-          if (failed) blockedSlots += 1;
-        } catch (_) {
-          // A temporary query failure keeps the slot active and will be checked again.
+          if (successful) completed += 1;
+          else failed += 1;
+        } catch (error) {
+          consecutiveSystemErrors += 1;
+          if (consecutiveSystemErrors >= maxConsecutiveSystemErrors) {
+            stopped = `连续 ${maxConsecutiveSystemErrors} 次查询失败：${error.message || "网络异常"}`;
+            break;
+          }
         }
       }
       await launchNext();
@@ -4105,16 +4124,12 @@ async function autoSubmitBatchTasks() {
       if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成已停止，已有 ${active.size} 条任务继续运行`;
       toast("自动生成已停止，未轮到的任务没有创建");
     } else if (stopped) {
-      selected.slice(cursor).forEach(({ item }) => { item.status = "failed"; item.error = `未创建：${stopped}`; });
+      selected.slice(cursor).forEach(({ item }) => { item.status = ""; item.error = `未创建：${stopped}`; });
       if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成停止：${stopped}`;
       toast(`自动生成停止：${stopped}`, "error");
-    } else if (blockedSlots && cursor < selected.length) {
-      selected.slice(cursor).forEach(({ item }) => { item.status = "failed"; item.error = "未创建：前序任务未成功返回视频"; });
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成停止：${blockedSlots} 个并发槽位生成失败`;
-      toast("前序任务未成功返回视频，剩余任务没有创建", "error");
     } else {
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成完成：${finished} / ${selected.length}`;
-      toast(`自动生成已完成 ${finished} 条任务`, "success");
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成完成：成功 ${completed} 条，失败 ${failed} 条`;
+      toast(`自动生成已完成：成功 ${completed} 条，失败 ${failed} 条`, failed ? "error" : "success");
     }
   } finally {
     state.batchSubmitting = false;
@@ -4455,7 +4470,7 @@ function bindEvents() {
       const data = await apiFetch("/auth/token/refresh", { method: "POST" });
       if (!data.token || data.token === state.apiToken) throw new Error("后端未返回新的 Token");
       state.apiToken = data.token;
-      localStorage.setItem(portalStorageKey(TOKEN_KEY), data.token);
+      sessionStorage.setItem(portalStorageKey(API_TOKEN_SESSION_KEY), data.token);
       els.clientTokenDisplay.value = data.token;
       applyAccessScope(data.quota ? data : await requestJson(authPath, data.token));
       await refreshTasks({ quiet: true, keepPage: true });
@@ -5241,8 +5256,9 @@ function bindEvents() {
 async function init() {
   const params = new URLSearchParams(window.location.search);
   const tokenFromUrl = params.get("token") || "";
-  const savedToken = portal === "client" ? tokenFromUrl || localStorage.getItem(portalStorageKey(TOKEN_KEY)) || "" : "";
-  els.loginToken.value = savedToken;
+  const legacyToken = portal === "client" ? tokenFromUrl || localStorage.getItem(portalStorageKey(TOKEN_KEY)) || "" : "";
+  const displayToken = portal === "client" ? sessionStorage.getItem(portalStorageKey(API_TOKEN_SESSION_KEY)) || legacyToken : "";
+  els.loginToken.value = displayToken;
 
   applyPortalText();
   initClientInkBackgrounds();
@@ -5260,25 +5276,36 @@ async function init() {
   updateAccountDetectedCount();
   updateDashboardMetrics();
 
-  if (sessionStorage.getItem(portalStorageKey(AUTH_KEY)) === "1" && (savedToken || portal === "admin")) {
-    try {
-      const health = await requestJson(authPath, savedToken);
-      state.apiToken = savedToken;
+  const expectedSession = sessionStorage.getItem(portalStorageKey(AUTH_KEY)) === "1" || Boolean(legacyToken);
+  try {
+    if (portal === "client" && legacyToken) {
+      await requestJson("/auth/session", legacyToken, { method: "POST" });
+      sessionStorage.setItem(portalStorageKey(API_TOKEN_SESSION_KEY), legacyToken);
+      localStorage.removeItem(portalStorageKey(TOKEN_KEY));
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem("dola_fetch_api_token");
+    }
+      const health = await requestJson(authPath, "");
+      state.apiToken = displayToken;
       loadPrompts();
       applyAccessScope(health);
       clearTokenFromUrl();
+      sessionStorage.setItem(portalStorageKey(AUTH_KEY), "1");
       showApp();
       await refreshDashboard();
-    } catch (error) {
-      state.apiToken = "";
-      sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
+    return;
+  } catch (error) {
+    state.apiToken = "";
+    sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
+    if (expectedSession) {
+      sessionStorage.removeItem(portalStorageKey(API_TOKEN_SESSION_KEY));
       showLogin("登录已失效");
       toast(`自动登录失败：${error.message}`, "error");
+      return;
     }
-    return;
   }
 
-  showLogin(savedToken ? "等待进入" : "等待输入");
+  showLogin("等待输入");
 }
 
 init();

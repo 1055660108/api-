@@ -274,7 +274,13 @@ class WorkerManager:
     async def _watch_unfinished_success_tasks(self, task_ids: list[str]) -> None:
         if not task_ids:
             return
-        await asyncio.gather(*(self._watch_unfinished_success_task(task_id) for task_id in task_ids))
+        results = await asyncio.gather(
+            *(self._watch_unfinished_success_task(task_id) for task_id in task_ids),
+            return_exceptions=True,
+        )
+        errors = [str(result)[:500] for result in results if isinstance(result, Exception)]
+        if errors:
+            self._last_error = errors[-1]
 
     async def _pace_result_poll(self) -> None:
         interval = 1.0 / RESULT_POLL_RATE_PER_SECOND
@@ -327,6 +333,16 @@ class WorkerManager:
                 )
             except FileNotFoundError:
                 return
+            except Exception as exc:
+                self._last_error = str(exc)[:500]
+                with suppress(Exception):
+                    current = get_meta(task_id)
+                    if str(current.get("status") or "") == STATUS_SUBMITTED:
+                        update_meta(
+                            task_id,
+                            next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
+                        )
+                return
             finally:
                 self._result_poll_active = max(0, self._result_poll_active - 1)
 
@@ -351,6 +367,8 @@ class WorkerManager:
             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
             return True
         mark_pending(task_id, f"等待可用{platform}账号")
+        retry_at = datetime.now(timezone.utc) + timedelta(seconds=5 + secrets.randbelow(6))
+        update_meta(task_id, next_attempt_at=retry_at.isoformat())
         return False
 
     def _owner_concurrency_limits(self) -> dict[str, int]:
@@ -427,7 +445,7 @@ class WorkerManager:
                 outcome = await runner.run()
                 if outcome.get("success"):
                     self._platform_guard.record_success(platform)
-                elif outcome.get("retryable") and not outcome.get("account_fault"):
+                elif outcome.get("retryable") and not outcome.get("account_fault") and not outcome.get("infrastructure_fault"):
                     self._platform_guard.record_failure(platform)
                 if outcome.get("success") and platform in {"dola", "doubao", "qianwen"} and account:
                     settle_account_quota(str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))

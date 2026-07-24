@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import inspect
 import tempfile
@@ -217,6 +218,40 @@ class WebAPIContractTests(unittest.TestCase):
         metas.sort(key=lambda item: item["queued_at"])
         self.assertEqual([item["batch_index"] for item in metas], list(range(1, 101)))
         self.assertEqual([item["batch_row"] for item in metas], list(range(2, 102)))
+
+    def test_successful_and_failed_tasks_can_be_retried_as_new_charged_tasks(self) -> None:
+        registered = self.register("retry_completed_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        headers = {"X-API-Token": registered["token"]}
+        source_ids = []
+        for status in ("failed", "success"):
+            source = store.create_task(f"{status} task", "16:9", owner_token_hash=owner_hash, model="Seedance 2.0", duration=10)
+            image = store.images_dir(source["id"]) / "01.png"
+            image.write_bytes(b"reference-image")
+            store.set_task_images(source["id"], [image])
+            if status == "failed":
+                store.mark_failed(source["id"], "test failure")
+            else:
+                store.update_meta(source["id"], status=store.STATUS_SUCCESS, finished_at=store.utc_now())
+            source_ids.append(source["id"])
+
+        retry_ids = []
+        for source_id in source_ids:
+            response = self.client.post(f"/tasks/{source_id}/retry", headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            retry_id = response.json()["id"]
+            retry_ids.append(retry_id)
+            retry_meta = store.get_meta(retry_id)
+            self.assertEqual(retry_meta["status"], store.STATUS_PENDING)
+            self.assertEqual(retry_meta["retry_of_task_id"], source_id)
+            self.assertEqual(retry_meta["duration"], 10)
+            self.assertEqual(store.task_image_paths(retry_id)[0].read_bytes(), b"reference-image")
+
+        self.assertEqual(len(set(retry_ids)), 2)
+        active = store.create_task("active task", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        self.assertEqual(self.client.post(f"/tasks/{active['id']}/retry", headers=headers).status_code, 409)
 
     def test_concurrency_overflow_is_precharged_and_queued_until_capacity_is_free(self) -> None:
         registered = self.register("limited_client")
@@ -445,7 +480,7 @@ class WebAPIContractTests(unittest.TestCase):
         proxy = self.client.get("/config/proxy-api").json()
         platforms = self.client.get("/config/platforms").json()
         self.assertEqual(set(workers), {"browser_workers", "max_effective_workers", "effective_browser_workers", "capacity_limit"})
-        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_enabled", "proxy_auto_select", "proxy_selected_node"})
+        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
         self.assertNotIn("proxy_subscription_url", proxy)
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
         self.assertEqual({item["id"] for item in platforms["platforms"]}, {"dola", "doubao", "qianwen"})
@@ -453,6 +488,30 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(set(platform), {"id", "label", "models", "model_costs", "all_models", "enabled"})
             for model in platform["all_models"]:
                 self.assertEqual(set(model), {"name", "enabled", "cost"})
+
+    def test_proxy_health_refresh_switches_within_checked_countries(self) -> None:
+        nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
+        config.update_config({
+            "proxy_subscription_url": "https://subscription.example/token",
+            "proxy_auto_select": True,
+            "proxy_auto_countries": ["日本"],
+            "proxy_selected_node": nodes[0].id,
+        })
+
+        async def exercise() -> dict:
+            with patch("app.main.fetch_subscription_node_list", new=AsyncMock(return_value=nodes)), patch(
+                "app.main.measure_node_delays", new=AsyncMock(return_value={nodes[1].id: 35})
+            ), patch("app.main.node_payload", side_effect=lambda node: {"latency_ms": 35}), patch(
+                "app.main.activate_mihomo_node", new=AsyncMock()
+            ) as activate:
+                result = await main.refresh_proxy_health_once()
+                activate.assert_awaited_once()
+                return result
+
+        result = asyncio.run(exercise())
+        self.assertTrue(result["switched"])
+        self.assertEqual(result["selected_node"], nodes[1].id)
+        self.assertEqual(config.load_settings().proxy_selected_node, nodes[1].id)
 
     def test_global_worker_configuration_accepts_999_and_rejects_1000(self) -> None:
         headers = {"X-API-Token": self.admin_token}

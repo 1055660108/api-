@@ -257,6 +257,10 @@ const els = {
   resetBatchTaskPage: document.getElementById("resetBatchTaskPage"),
   batchSpreadsheetInput: document.getElementById("batchSpreadsheetInput"),
   batchSpreadsheetName: document.getElementById("batchSpreadsheetName"),
+  batchSharedImageInput: document.getElementById("batchSharedImageInput"),
+  batchMappedImageInput: document.getElementById("batchMappedImageInput"),
+  batchRowImageInput: document.getElementById("batchRowImageInput"),
+  batchReferenceState: document.getElementById("batchReferenceState"),
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
   batchTaskRatio: document.getElementById("batchTaskRatio"),
   batchTaskDuration: document.getElementById("batchTaskDuration"),
@@ -287,6 +291,7 @@ const els = {
   proxyEnabledSelect: document.getElementById("proxyEnabledSelect"),
   proxyAutoSelect: document.getElementById("proxyAutoSelect"),
   proxyCountryFilter: document.getElementById("proxyCountryFilter"),
+  proxyLatencyThreshold: document.getElementById("proxyLatencyThreshold"),
   proxyNodeCount: document.getElementById("proxyNodeCount"),
   proxyNodesState: document.getElementById("proxyNodesState"),
   refreshProxyNodes: document.getElementById("refreshProxyNodes"),
@@ -468,6 +473,8 @@ const state = {
   submitFingerprint: "",
   batchSpreadsheet: null,
   batchPrompts: [],
+  batchSharedImages: [],
+  batchImageTargetIndex: -1,
   batchSubmitting: false,
   isTempToken: false,
   tempTokens: [],
@@ -490,7 +497,8 @@ const state = {
   proxyEnabled: true,
   proxyAutoSelect: true,
   proxySelectedNode: "",
-  proxyCountry: "all",
+  proxyCountries: [],
+  proxyLatencyThreshold: 800,
   taskRetentionDays: 7,
   userName: "",
   prompts: [],
@@ -511,6 +519,7 @@ const state = {
   selectedVideoIds: new Set(),
   adminUsername: "",
   queryingTaskIds: new Set(),
+  retryingTaskIds: new Set(),
   deletingTaskIds: new Set(),
   pointPackages: [],
   memberships: [],
@@ -2324,8 +2333,11 @@ async function loadProxyConfig() {
   state.proxyEnabled = data.proxy_enabled !== false;
   state.proxyAutoSelect = data.proxy_auto_select !== false;
   state.proxySelectedNode = data.proxy_selected_node || "";
+  state.proxyCountries = Array.isArray(data.proxy_auto_countries) ? data.proxy_auto_countries : [];
+  state.proxyLatencyThreshold = Number(data.proxy_latency_threshold_ms || 800);
   if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
   if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
+  if (els.proxyLatencyThreshold) els.proxyLatencyThreshold.value = String(state.proxyLatencyThreshold);
   if (els.configState) els.configState.textContent = "已读取";
   return data;
 }
@@ -2334,12 +2346,11 @@ function renderProxyNodes() {
   if (!els.proxyNodeGrid) return;
   const countries = [...new Set(state.proxyNodes.map((node) => node.country || "未知"))].sort((left, right) => left.localeCompare(right, "zh-CN"));
   if (els.proxyCountryFilter) {
-    const current = countries.includes(state.proxyCountry) ? state.proxyCountry : "all";
-    els.proxyCountryFilter.innerHTML = ['<option value="all">全部地区</option>', ...countries.map((country) => `<option value="${escapeHtml(country)}">${escapeHtml(country)}</option>`)].join("");
-    els.proxyCountryFilter.value = current;
-    state.proxyCountry = current;
+    els.proxyCountryFilter.innerHTML = countries.length
+      ? countries.map((country) => `<label><input type="checkbox" value="${escapeHtml(country)}" ${state.proxyCountries.includes(country) ? "checked" : ""} /><span>${escapeHtml(country)}</span></label>`).join("")
+      : '<span class="muted">暂无国家节点</span>';
   }
-  const visibleNodes = state.proxyCountry === "all" ? state.proxyNodes : state.proxyNodes.filter((node) => node.country === state.proxyCountry);
+  const visibleNodes = state.proxyCountries.length ? state.proxyNodes.filter((node) => state.proxyCountries.includes(node.country)) : state.proxyNodes;
   if (els.proxyNodeCount) els.proxyNodeCount.textContent = `${visibleNodes.length} / ${state.proxyNodes.length} 个节点`;
   if (!state.proxyNodes.length) {
     els.proxyNodeGrid.innerHTML = '<div class="empty-state">暂无可用节点，请配置订阅后刷新</div>';
@@ -2383,8 +2394,11 @@ async function loadProxyNodes(refresh = false) {
     state.proxyEnabled = Boolean(data.enabled);
     state.proxyAutoSelect = Boolean(data.auto_select);
     state.proxySelectedNode = data.selected_node || "";
+    state.proxyCountries = Array.isArray(data.auto_countries) ? data.auto_countries : state.proxyCountries;
+    state.proxyLatencyThreshold = Number(data.latency_threshold_ms || state.proxyLatencyThreshold || 800);
     if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
     if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
+    if (els.proxyLatencyThreshold) els.proxyLatencyThreshold.value = String(state.proxyLatencyThreshold);
     renderProxyNodes();
     if (els.proxyNodesState) els.proxyNodesState.textContent = latencyError ? "节点已更新，延迟未完成" : refresh ? "延迟已更新" : "已读取";
     if (latencyError) toast(`节点列表已更新，部分延迟检测失败：${latencyError.message}`, "error");
@@ -2399,9 +2413,13 @@ async function loadProxyNodes(refresh = false) {
 
 async function saveProxyMode() {
   try {
-    const data = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_auto_select: els.proxyAutoSelect.value === "true" } });
+    const threshold = Math.max(100, Math.min(5000, Number(els.proxyLatencyThreshold?.value || 800)));
+    const data = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_auto_select: els.proxyAutoSelect.value === "true", proxy_auto_countries: state.proxyCountries, proxy_latency_threshold_ms: threshold } });
     state.proxyEnabled = Boolean(data.proxy_enabled);
     state.proxyAutoSelect = Boolean(data.proxy_auto_select);
+    state.proxyCountries = Array.isArray(data.proxy_auto_countries) ? data.proxy_auto_countries : [];
+    state.proxyLatencyThreshold = Number(data.proxy_latency_threshold_ms || threshold);
+    renderProxyNodes();
     toast(state.proxyEnabled ? (state.proxyAutoSelect ? "已开启自动节点代理" : "已开启手动节点代理") : "已关闭节点代理");
   } catch (error) {
     toast(`代理模式保存失败：${error.message}`, "error");
@@ -2928,7 +2946,7 @@ function renderTaskTable(options = {}) {
   const signature = JSON.stringify({
     page: state.page,
     totalPages: page.totalPages,
-    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.owner_name, task.status, task.error, task.retry_count, task.result_timeout_retry_count, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
+    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.owner_name, task.status, task.error, task.retry_count, task.result_timeout_retry_count, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
   });
   if (options.skipUnchanged && signature === state.taskRenderSignature) return;
   state.taskRenderSignature = signature;
@@ -2961,7 +2979,9 @@ function renderTaskTable(options = {}) {
          </div>`
       : "-";
     const isQuerying = state.queryingTaskIds.has(task.id);
+    const isRetrying = state.retryingTaskIds.has(task.id);
     const isDeleting = state.deletingTaskIds.has(task.id);
+    const canRetry = ["success", "failed"].includes(String(task.status || "").toLowerCase());
     return `
       <tr>
         <td>
@@ -2991,6 +3011,7 @@ function renderTaskTable(options = {}) {
         <td>
           <div class="row-actions">
             <button class="icon-button" type="button" data-action="query" data-id="${escapeHtml(task.id)}" ${isQuerying ? "disabled" : ""}>${isQuerying ? "查询中" : "查询"}</button>
+            ${canRetry ? `<button class="icon-button" type="button" data-action="retry" data-id="${escapeHtml(task.id)}" ${isRetrying ? "disabled" : ""}>${isRetrying ? "提交中" : "重试"}</button>` : ""}
             <button class="icon-button" type="button" data-action="copy-id" data-id="${escapeHtml(task.id)}">复制ID</button>
             <button class="danger-button" type="button" data-action="delete" data-id="${escapeHtml(task.id)}" ${isDeleting ? "disabled" : ""}>${isDeleting ? "处理中" : (status.className === "running" ? "取消" : "删除")}</button>
           </div>
@@ -3429,6 +3450,24 @@ async function queryVisibleTasks() {
   }
 }
 
+async function retryTask(id) {
+  if (state.retryingTaskIds.has(id)) return;
+  if (!window.confirm("确认重新生成此任务？系统会创建新任务并重新扣除对应的视频额度或积分。")) return;
+  state.retryingTaskIds.add(id);
+  renderTaskTable();
+  try {
+    const data = await apiFetch(`/tasks/${encodeURIComponent(id)}/retry`, { method: "POST", timeout: 60000 });
+    state.page = 1;
+    await refreshTasks({ quiet: true });
+    toast(`已创建重试任务 ${shortId(data.id)}`);
+  } catch (error) {
+    toast(`重试失败：${error.message}`, "error");
+  } finally {
+    state.retryingTaskIds.delete(id);
+    renderTaskTable();
+  }
+}
+
 async function runPool(items, limit, worker) {
   let index = 0;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -3682,7 +3721,12 @@ function resetBatchTaskPage() {
   if (state.batchSubmitting) return;
   state.batchSpreadsheet = null;
   state.batchPrompts = [];
+  state.batchSharedImages = [];
+  state.batchImageTargetIndex = -1;
   if (els.batchSpreadsheetInput) els.batchSpreadsheetInput.value = "";
+  if (els.batchSharedImageInput) els.batchSharedImageInput.value = "";
+  if (els.batchMappedImageInput) els.batchMappedImageInput.value = "";
+  if (els.batchRowImageInput) els.batchRowImageInput.value = "";
   if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = "未选择文件";
   if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
   if (els.batchTaskDuration) els.batchTaskDuration.value = "15";
@@ -3701,6 +3745,7 @@ function renderBatchPrompts() {
         <input type="checkbox" data-batch-prompt-select="${index}" ${item.selected ? "checked" : ""} ${state.batchSubmitting || item.status === "success" ? "disabled" : ""} aria-label="选择表格第 ${escapeHtml(item.row)} 行" />
         <span class="batch-prompt-index">第 ${escapeHtml(item.row)} 行</span>
         <textarea data-batch-prompt-text="${index}" maxlength="4000" ${state.batchSubmitting || item.status === "success" ? "readonly" : ""}>${escapeHtml(item.prompt)}</textarea>
+        <div class="batch-prompt-reference"><button class="text-button" type="button" data-batch-image-index="${index}" ${state.batchSubmitting || item.status === "success" ? "disabled" : ""}>参考图</button><span title="${escapeHtml((item.images || []).map((file) => file.name).join("、"))}">${item.images?.length ? `${item.images.length} 张` : "未添加"}</span>${item.images?.length ? `<button class="batch-image-clear" type="button" data-batch-image-clear="${index}" aria-label="清除第 ${escapeHtml(item.row)} 行参考图">×</button>` : ""}</div>
         <span class="batch-prompt-status">${item.status === "success" ? `已提交 ${escapeHtml(shortId(item.taskId))}` : item.status === "failed" ? escapeHtml(item.error || "提交失败") : "待生成"}</span>
       </article>`).join("");
   }
@@ -3712,6 +3757,35 @@ function renderBatchPrompts() {
     els.selectAllBatchPrompts.disabled = state.batchSubmitting || !available.length;
   }
   if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selected.length;
+  if (els.batchReferenceState) {
+    const assigned = state.batchPrompts.filter((item) => item.images?.length).length;
+    els.batchReferenceState.textContent = state.batchSharedImages.length
+      ? `共用 ${state.batchSharedImages.length} 张，单独配图 ${assigned} 行`
+      : assigned ? `已为 ${assigned} 行单独配图` : "未添加参考图";
+  }
+}
+
+function mapBatchReferenceImages(files) {
+  if (!state.batchPrompts.length) return toast("请先解析表格，再按行批量配图", "error");
+  let matched = 0;
+  const unassigned = [];
+  files.forEach((file) => {
+    const number = Number((file.name.replace(/\.[^.]+$/, "").match(/(?:^|\D)(\d{1,6})(?:\D|$)/) || [])[1] || 0);
+    const item = number ? state.batchPrompts.find((entry) => Number(entry.row) === number) : null;
+    if (!item) {
+      unassigned.push(file);
+      return;
+    }
+    item.images = [...(item.images || []), file].slice(0, 9);
+    matched += 1;
+  });
+  unassigned.forEach((file, index) => {
+    const item = state.batchPrompts[index % state.batchPrompts.length];
+    item.images = [...(item.images || []), file].slice(0, 9);
+    matched += 1;
+  });
+  renderBatchPrompts();
+  toast(`已匹配 ${matched} 张参考图`);
 }
 
 async function parseBatchSpreadsheet() {
@@ -3723,7 +3797,7 @@ async function parseBatchSpreadsheet() {
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在解析表格";
   try {
     const data = await apiFetch("/batch-prompts/parse", { method: "POST", body: form, timeout: 60000 });
-    state.batchPrompts = (data.prompts || []).map((item) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: true, status: "", error: "", taskId: "" }));
+    state.batchPrompts = (data.prompts || []).map((item) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: true, status: "", error: "", taskId: "", images: [] }));
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `已解析 ${state.batchPrompts.length} 条提示词`;
     renderBatchPrompts();
     toast(`已解析 ${state.batchPrompts.length} 条视频提示词`);
@@ -3742,6 +3816,7 @@ async function submitBatchTasks() {
   const selected = state.batchPrompts.map((item, index) => ({ item, index })).filter(({ item }) => item.selected && item.prompt.trim() && item.status !== "success");
   if (!selected.length) return toast("请至少选择一条提示词", "error");
   if (selected.length > 100) return toast("单次最多生成 100 条任务", "error");
+  if (selected.some(({ item }) => state.batchSharedImages.length + (item.images?.length || 0) > 9)) return toast("每条任务最多添加 9 张参考图", "error");
   if (!window.confirm(`确定生成已选择的 ${selected.length} 条视频任务吗？每条任务会分别扣除视频额度或积分。`)) return;
 
   state.batchSubmitting = true;
@@ -3765,6 +3840,7 @@ async function submitBatchTasks() {
     form.append("batch_row", String(item.row));
     form.append("platform", state.platform || "dola");
     form.append("model", state.model || "");
+    [...state.batchSharedImages, ...(item.images || [])].forEach((file) => form.append("images", file, file.name));
     const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 45000 };
     try {
       let data;
@@ -4398,6 +4474,21 @@ function bindEvents() {
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchSpreadsheet ? "文件已导入，等待解析" : "等待导入";
     renderBatchPrompts();
   });
+  els.batchSharedImageInput?.addEventListener("change", () => {
+    state.batchSharedImages = Array.from(els.batchSharedImageInput.files || []).slice(0, 9);
+    renderBatchPrompts();
+  });
+  els.batchMappedImageInput?.addEventListener("change", () => {
+    mapBatchReferenceImages(Array.from(els.batchMappedImageInput.files || []));
+    els.batchMappedImageInput.value = "";
+  });
+  els.batchRowImageInput?.addEventListener("change", () => {
+    const item = state.batchPrompts[state.batchImageTargetIndex];
+    if (item) item.images = Array.from(els.batchRowImageInput.files || []).slice(0, 9);
+    state.batchImageTargetIndex = -1;
+    els.batchRowImageInput.value = "";
+    renderBatchPrompts();
+  });
   els.parseBatchSpreadsheet?.addEventListener("click", parseBatchSpreadsheet);
   els.selectAllBatchPrompts?.addEventListener("change", () => {
     const selected = Boolean(els.selectAllBatchPrompts.checked);
@@ -4412,6 +4503,20 @@ function bindEvents() {
     const item = state.batchPrompts[Number(checkbox.dataset.batchPromptSelect)];
     if (item && item.status !== "success") item.selected = checkbox.checked;
     renderBatchPrompts();
+  });
+  els.batchPromptList?.addEventListener("click", (event) => {
+    const addButton = event.target.closest("[data-batch-image-index]");
+    if (addButton) {
+      state.batchImageTargetIndex = Number(addButton.dataset.batchImageIndex);
+      els.batchRowImageInput?.click();
+      return;
+    }
+    const clearButton = event.target.closest("[data-batch-image-clear]");
+    if (clearButton) {
+      const item = state.batchPrompts[Number(clearButton.dataset.batchImageClear)];
+      if (item) item.images = [];
+      renderBatchPrompts();
+    }
   });
   els.batchPromptList?.addEventListener("input", (event) => {
     const input = event.target.closest("[data-batch-prompt-text]");
@@ -4518,7 +4623,12 @@ function bindEvents() {
   els.refreshProxyNodes?.addEventListener("click", () => loadProxyNodes(true));
   els.proxyEnabledSelect?.addEventListener("change", saveProxyMode);
   els.proxyAutoSelect?.addEventListener("change", saveProxyMode);
-  els.proxyCountryFilter?.addEventListener("change", () => { state.proxyCountry = els.proxyCountryFilter.value; renderProxyNodes(); });
+  els.proxyCountryFilter?.addEventListener("change", async () => {
+    state.proxyCountries = Array.from(els.proxyCountryFilter.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+    renderProxyNodes();
+    await saveProxyMode();
+  });
+  els.proxyLatencyThreshold?.addEventListener("change", saveProxyMode);
   els.proxyNodeGrid?.addEventListener("click", (event) => {
     const card = event.target.closest("[data-proxy-node-id]");
     if (card) selectProxyNode(card.dataset.proxyNodeId);
@@ -4767,6 +4877,9 @@ function bindEvents() {
       } finally {
         setBusy(button, false);
       }
+    }
+    if (action === "retry") {
+      await retryTask(id);
     }
     if (action === "copy-id") {
       await copyText(id, "任务 ID");

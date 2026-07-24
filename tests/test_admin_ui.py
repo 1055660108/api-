@@ -44,13 +44,23 @@ class AdminUITests(unittest.TestCase):
 
     def test_proxy_nodes_can_be_filtered_by_country(self) -> None:
         self.assertIn('id="proxyCountryFilter"', self.html)
+        self.assertIn('id="proxyLatencyThreshold"', self.html)
         self.assertIn('id="proxyNodeCount"', self.html)
-        self.assertIn('node.country === state.proxyCountry', self.javascript)
+        self.assertIn('state.proxyCountries.includes(node.country)', self.javascript)
+        self.assertIn('proxy_auto_countries: state.proxyCountries', self.javascript)
         for status in ('"不可用"', '"已过期"', '"未检测"'):
             self.assertIn(status, self.javascript)
         self.assertIn('timeout: refresh ? 60000 : 20000', self.javascript)
         self.assertIn('timeout: 90000', self.javascript)
         self.assertIn('节点已更新，延迟未完成', self.javascript)
+
+    def test_task_retry_and_batch_reference_images_are_available(self) -> None:
+        for element_id in ("batchSharedImageInput", "batchMappedImageInput", "batchRowImageInput", "batchReferenceState"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('data-action="retry"', self.javascript)
+        self.assertIn('/retry`, { method: "POST"', self.javascript)
+        self.assertIn('data-batch-image-index', self.javascript)
+        self.assertIn('form.append("images", file, file.name)', self.javascript)
 
     def test_release_version_is_displayed_in_sidebar_and_admin_update_panel(self) -> None:
         self.assertIn('id="sidebarVersion"', self.html)
@@ -234,7 +244,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.10', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.11', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)

@@ -9,8 +9,8 @@
       body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #batchSubmitNavItem,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #batch-submitView,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.10" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.10" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.11" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.11" />
   </head>
   <body>
     <script>
@@ -22,7 +22,7 @@
       <canvas class="client-ink-canvas" id="clientInkCanvas" aria-hidden="true"></canvas>
       <div class="client-entry-home" aria-hidden="false">
         <header class="client-entry-header">
-          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.10" alt="HS" />
+          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.11" alt="HS" />
           <div class="client-entry-actions">
             <button class="secondary-button" id="returnClientLanding" type="button">返回</button>
             <button class="primary-button" id="openClientLogin" type="button">登录</button>
@@ -34,7 +34,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.10" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.11" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -97,7 +97,7 @@
       <canvas class="client-workspace-ink" id="clientWorkspaceInk" aria-hidden="true"></canvas>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.10" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.11" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -302,10 +302,11 @@
             <div class="node-controls">
               <label class="field"><span>代理状态</span><select id="proxyEnabledSelect"><option value="true">自动开启</option><option value="false">关闭代理</option></select></label>
               <label class="field"><span>节点模式</span><select id="proxyAutoSelect"><option value="true">自动选择最低延迟</option><option value="false">手动选择节点</option></select></label>
-              <label class="field"><span>地区筛选</span><select id="proxyCountryFilter"><option value="all">全部地区</option></select></label>
+              <label class="field"><span>高延迟阈值</span><input id="proxyLatencyThreshold" type="number" min="100" max="5000" step="50" value="800" /></label>
               <span class="settings-state" id="proxyNodesState">等待读取</span>
             </div>
-            <div class="node-summary"><span id="proxyNodeCount">0 个节点</span><span>点击节点即可切换为手动模式</span></div>
+            <div class="proxy-country-filter"><span>自动切换国家</span><div class="proxy-country-options" id="proxyCountryFilter"><span class="muted">读取节点后可勾选</span></div></div>
+            <div class="node-summary"><span id="proxyNodeCount">0 个节点</span><span>每 10 分钟自动测速；未勾选国家时使用全部节点</span></div>
             <div class="node-grid" id="proxyNodeGrid"><div class="empty-state">请先配置节点订阅</div></div>
           </section>
         </section>
@@ -414,9 +415,17 @@
             <div class="panel-header"><div><h2 id="batchTaskPageTitle">批量生成</h2><p>导入表格并选择需要生成的视频提示词。</p></div></div>
             <div class="batch-import-toolbar">
               <input class="sr-only" id="batchSpreadsheetInput" type="file" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt" />
+              <input class="sr-only" id="batchSharedImageInput" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+              <input class="sr-only" id="batchMappedImageInput" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+              <input class="sr-only" id="batchRowImageInput" type="file" accept="image/jpeg,image/png,image/webp" multiple />
               <label class="secondary-button icon-text-button batch-file-button" for="batchSpreadsheetInput"><i data-lucide="file-spreadsheet" aria-hidden="true"></i>导入表格</label>
               <div class="batch-file-copy"><strong id="batchSpreadsheetName">未选择文件</strong><div class="batch-format-list" aria-label="支持格式"><span>XLSX</span><span>XLS</span><span>ODS</span><span>CSV</span><span>TSV</span><span>TXT</span></div></div>
               <button class="primary-button icon-text-button" id="parseBatchSpreadsheet" type="button"><i data-lucide="scan-text" aria-hidden="true"></i>自动解析</button>
+            </div>
+            <div class="batch-reference-toolbar">
+              <label class="secondary-button icon-text-button" for="batchSharedImageInput"><i data-lucide="images" aria-hidden="true"></i>共用参考图</label>
+              <label class="secondary-button icon-text-button" for="batchMappedImageInput"><i data-lucide="list-tree" aria-hidden="true"></i>按行批量配图</label>
+              <span id="batchReferenceState">未添加参考图</span>
             </div>
             <div class="batch-task-options">
               <label class="field"><span>视频比例</span><select id="batchTaskRatio"><option value="9:16">9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option><option value="3:4">3:4</option><option value="4:3">4:3</option><option value="21:9">21:9</option></select></label>
@@ -1121,7 +1130,7 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/ink-bg.js?v=1.4.10"></script>
-    <script src="/admin/assets/app.js?v=1.4.10"></script>
+    <script src="/admin/assets/ink-bg.js?v=1.4.11"></script>
+    <script src="/admin/assets/app.js?v=1.4.11"></script>
   </body>
 </html>

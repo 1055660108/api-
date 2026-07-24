@@ -407,6 +407,30 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(meta["result_watch_miss_count"], 1)
             self.assertGreater(datetime.fromisoformat(meta["next_result_poll_at"]), datetime.now(timezone.utc))
 
+    def test_one_result_poll_failure_does_not_stop_the_batch(self) -> None:
+        manager = WorkerManager()
+
+        async def exercise() -> None:
+            with patch.object(
+                manager,
+                "_watch_unfinished_success_task",
+                new=AsyncMock(side_effect=[RuntimeError("database busy"), None, None]),
+            ) as watch:
+                await manager._watch_unfinished_success_tasks(["a", "b", "c"])
+                self.assertEqual(watch.await_count, 3)
+
+        asyncio.run(exercise())
+        self.assertEqual(manager._last_error, "database busy")
+
+    def test_unavailable_account_is_requeued_with_backoff(self) -> None:
+        task = self.create_task("owner")
+        store.mark_running(task["id"], "worker-1")
+        manager = WorkerManager()
+        self.assertFalse(manager._handle_unavailable_account(task["id"], store.get_meta(task["id"]), "dola"))
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
+        self.assertGreater(datetime.fromisoformat(meta["next_attempt_at"]), datetime.now(timezone.utc))
+
     def test_worker_reuses_token_concurrency_limits_for_one_second(self) -> None:
         manager = WorkerManager()
 

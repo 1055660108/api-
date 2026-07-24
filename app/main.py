@@ -4,6 +4,7 @@ import asyncio
 import json
 import hmac
 import hashlib
+import shutil
 import smtplib
 import subprocess
 import threading
@@ -70,9 +71,11 @@ from .store import (
     set_task_video_hidden,
     set_task_hidden,
     set_task_images,
+    task_image_paths,
     request_task_cancel,
     task_has_video,
     validate_task_id,
+    update_meta,
 )
 from .temp_access import (
     AccessContext,
@@ -137,7 +140,9 @@ _RATE_LOCK = threading.RLock()
 _RATE_BUCKETS: dict[str, list[float]] = {}
 quota_reset_task = None
 task_cache_cleanup_task = None
+proxy_health_task = None
 LOCAL_TZ = timezone(timedelta(hours=8))
+PROXY_HEALTH_REFRESH_SECONDS = 10 * 60
 
 
 def _rate_limit(request: Request, scope: str, limit: int, window: int, identity: str = "") -> None:
@@ -198,11 +203,62 @@ async def task_cache_cleanup_loop() -> None:
         await asyncio.sleep(6 * 60 * 60)
 
 
+async def refresh_proxy_health_once() -> dict[str, object]:
+    settings = load_settings()
+    if not settings.proxy_enabled or not settings.proxy_auto_select or not settings.proxy_subscription_url:
+        return {"checked": False, "switched": False}
+    nodes = await fetch_subscription_node_list(
+        settings.proxy_subscription_url,
+        timeout_seconds=settings.proxy_api_timeout_seconds,
+        refresh_seconds=settings.proxy_subscription_refresh_seconds,
+        force=True,
+    )
+    countries = set(settings.proxy_auto_countries)
+    eligible = tuple(node for node in nodes if not countries or node.country in countries)
+    if not eligible:
+        raise RuntimeError("所选国家没有可用节点")
+    await measure_node_delays(eligible, settings.proxy_subscription_url, settings.proxy_api_timeout_seconds)
+    measured = [(int(payload["latency_ms"]), node) for node in eligible if (payload := node_payload(node)).get("latency_ms") is not None]
+    if not measured:
+        raise RuntimeError("所选国家的节点当前均不可用")
+    best_delay, best = min(measured, key=lambda item: item[0])
+    current = next((item for item in measured if item[1].id == settings.proxy_selected_node), None)
+    threshold = settings.proxy_latency_threshold_ms
+    should_switch = current is None or current[0] > threshold or best_delay + 50 < current[0]
+    if should_switch:
+        await activate_mihomo_node(
+            best,
+            settings.proxy_subscription_url,
+            settings.proxy_api_timeout_seconds,
+            settings.proxy_subscription_refresh_seconds,
+        )
+        update_config({"proxy_selected_node": best.id})
+    return {
+        "checked": True,
+        "switched": should_switch,
+        "selected_node": best.id if should_switch else current[1].id,
+        "latency_ms": best_delay if should_switch else current[0],
+        "eligible_count": len(eligible),
+    }
+
+
+async def proxy_health_loop() -> None:
+    await asyncio.sleep(15)
+    while True:
+        try:
+            await refresh_proxy_health_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        await asyncio.sleep(PROXY_HEALTH_REFRESH_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
 
-    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task
+    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
     validate_startup_credentials(ensure_config())
@@ -223,6 +279,7 @@ async def lifespan(app: FastAPI):
     delete_sem = asyncio.Semaphore(1)
     quota_reset_task = asyncio.create_task(account_quota_reset_loop())
     task_cache_cleanup_task = asyncio.create_task(task_cache_cleanup_loop())
+    proxy_health_task = asyncio.create_task(proxy_health_loop())
     try:
         yield
     finally:
@@ -235,6 +292,10 @@ async def lifespan(app: FastAPI):
             task_cache_cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await task_cache_cleanup_task
+        if proxy_health_task:
+            proxy_health_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await proxy_health_task
 
 
 app = FastAPI(title="Fetch Task Service", version=__version__, lifespan=lifespan)
@@ -1231,6 +1292,9 @@ async def proxy_api_config():
         "proxy_enabled": settings.proxy_enabled,
         "proxy_auto_select": settings.proxy_auto_select,
         "proxy_selected_node": settings.proxy_selected_node,
+        "proxy_auto_countries": settings.proxy_auto_countries,
+        "proxy_latency_threshold_ms": settings.proxy_latency_threshold_ms,
+        "proxy_health_refresh_seconds": PROXY_HEALTH_REFRESH_SECONDS,
     }
 
 
@@ -1238,7 +1302,7 @@ async def proxy_api_config():
 async def proxy_nodes(refresh: bool = False):
     settings = load_settings()
     if not settings.proxy_subscription_url:
-        return {"nodes": [], "enabled": settings.proxy_enabled, "auto_select": settings.proxy_auto_select, "selected_node": ""}
+        return {"nodes": [], "enabled": settings.proxy_enabled, "auto_select": settings.proxy_auto_select, "selected_node": "", "auto_countries": settings.proxy_auto_countries, "latency_threshold_ms": settings.proxy_latency_threshold_ms}
     try:
         nodes = await fetch_subscription_node_list(
             settings.proxy_subscription_url,
@@ -1260,6 +1324,8 @@ async def proxy_nodes(refresh: bool = False):
         "enabled": settings.proxy_enabled,
         "auto_select": settings.proxy_auto_select,
         "selected_node": settings.proxy_selected_node,
+        "auto_countries": settings.proxy_auto_countries,
+        "latency_threshold_ms": settings.proxy_latency_threshold_ms,
     }
 
 
@@ -1838,6 +1904,18 @@ async def update_proxy_api_config(
             updates["proxy_auto_select"] = str(payload.get("proxy_auto_select")).strip().lower() in {"1", "true", "yes", "on"}
         if "proxy_selected_node" in payload:
             updates["proxy_selected_node"] = str(payload.get("proxy_selected_node") or "").strip()[:200]
+        if "proxy_auto_countries" in payload:
+            raw_countries = payload.get("proxy_auto_countries")
+            if not isinstance(raw_countries, list):
+                raise ValueError("proxy_auto_countries must be an array")
+            updates["proxy_auto_countries"] = list(dict.fromkeys(
+                str(item).strip()[:40] for item in raw_countries if str(item or "").strip()
+            ))
+        if "proxy_latency_threshold_ms" in payload:
+            threshold = int(payload.get("proxy_latency_threshold_ms"))
+            if threshold < 100 or threshold > 5000:
+                raise ValueError("proxy_latency_threshold_ms must be between 100 and 5000")
+            updates["proxy_latency_threshold_ms"] = threshold
         if not updates:
             raise ValueError("proxy configuration is required")
         update_config(updates)
@@ -1856,6 +1934,9 @@ async def update_proxy_api_config(
         "proxy_enabled": settings.proxy_enabled,
         "proxy_auto_select": settings.proxy_auto_select,
         "proxy_selected_node": settings.proxy_selected_node,
+        "proxy_auto_countries": settings.proxy_auto_countries,
+        "proxy_latency_threshold_ms": settings.proxy_latency_threshold_ms,
+        "proxy_health_refresh_seconds": PROXY_HEALTH_REFRESH_SECONDS,
     }
 
 
@@ -2231,6 +2312,101 @@ async def task_result(access: Annotated[AccessContext, Depends(require_token)], 
             result = dict(result)
             result["text"] = _client_safe_text(str(result.get("text") or ""), str(meta.get("model") or "当前模型"))
         return result
+
+
+@app.post("/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
+async def retry_completed_task(request: Request, access: Annotated[AccessContext, Depends(require_token)], task_id: str):
+    try:
+        validate_task_id(task_id)
+        original = await asyncio.to_thread(get_meta, task_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="task not found")
+    owner_hash = str(original.get("owner_token_hash") or "")
+    if access.is_temp and owner_hash != access.token_hash:
+        raise HTTPException(status_code=404, detail="task not found")
+    audience = "client" if access.is_temp else "admin"
+    if bool(original.get(f"task_hidden_for_{audience}", False)):
+        raise HTTPException(status_code=404, detail="task not found")
+    if str(original.get("status") or "") not in {"success", "failed"}:
+        raise HTTPException(status_code=409, detail="仅成功或失败任务可以重新生成")
+    _rate_limit(request, "task-retry", 30, 60, owner_hash or "admin")
+
+    retry_access = access
+    if owner_hash:
+        retry_access = await asyncio.to_thread(get_temp_context_by_hash, owner_hash)
+        if retry_access is None:
+            raise HTTPException(status_code=409, detail="任务所属用户已失效")
+    platform = str(original.get("platform") or DEFAULT_PLATFORM)
+    model = str(original.get("model") or "")
+    task_type = str(original.get("task_type") or "video")
+    prompt = str(original.get("prompt") or "").strip()
+    ratio = str(original.get("ratio") or DEFAULT_RATIO)
+    duration = int(original.get("duration") or 0) or None
+    reserved_access = None
+    reservation: dict = {}
+    retry_meta: dict | None = None
+    try:
+        retry_meta = await asyncio.to_thread(
+            create_task,
+            prompt,
+            ratio,
+            owner_token_hash=owner_hash,
+            platform=platform,
+            model=model,
+            task_type=task_type,
+            enqueue=False,
+            duration=duration,
+        )
+        if retry_access.is_temp:
+            base_cost_units = model_cost_units(platform, model, task_type)
+            discount_units = await asyncio.to_thread(membership_task_discount_units_by_token_hash, owner_hash)
+            cost_units = max(1, base_cost_units - discount_units)
+            user_id = _transaction_user_id(retry_access)
+            reserved_access = await asyncio.to_thread(reserve_temp_quota, retry_access, str(retry_meta["id"]), cost_units, user_id=user_id)
+            reservation = await asyncio.to_thread(get_temp_reservation, owner_hash, str(retry_meta["id"]))
+            if user_id and reservation:
+                free_used = bool(reservation.get("free"))
+                charged_units = int(reservation.get("units") or 0)
+                await asyncio.to_thread(
+                    record_transaction,
+                    user_id,
+                    "video_quota_consume" if free_used else "consume",
+                    0 if free_used else -charged_units,
+                    "视频额度任务消费" if free_used else "视频任务消费",
+                    balance_units=reserved_access.credit_units,
+                    video_quota_change=-1 if free_used else 0,
+                    video_quota_balance=reserved_access.free_remaining,
+                    reference_id=str(retry_meta["id"]),
+                    detail=f"重试任务 ID：{retry_meta['id']}\n原任务 ID：{task_id}",
+                )
+        source_images = await asyncio.to_thread(task_image_paths, task_id)
+        copied_images: list[Path] = []
+        for index, source in enumerate(source_images, start=1):
+            target = images_dir(str(retry_meta["id"])) / f"{index:02d}{source.suffix.lower()}"
+            await asyncio.to_thread(shutil.copy2, source, target)
+            copied_images.append(target)
+        await asyncio.to_thread(set_task_images, str(retry_meta["id"]), copied_images)
+        await asyncio.to_thread(update_meta, str(retry_meta["id"]), retry_of_task_id=task_id)
+        await asyncio.to_thread(finalize_task_creation, str(retry_meta["id"]))
+    except QuotaExceeded as exc:
+        if retry_meta:
+            await asyncio.to_thread(delete_task, str(retry_meta["id"]))
+        raise HTTPException(status_code=429, detail=str(exc))
+    except Exception:
+        if retry_meta:
+            if reserved_access:
+                await asyncio.to_thread(refund_temp_quota_hash, owner_hash, str(retry_meta["id"]))
+            await asyncio.to_thread(delete_task, str(retry_meta["id"]))
+        raise
+    return {
+        "ok": True,
+        "id": str(retry_meta["id"]),
+        "retry_of": task_id,
+        "billing": {
+            "free_used": bool(reservation.get("free")),
+            "points_used": units_to_points(int(reservation.get("units") or 0)),
+        } if retry_access.is_temp else None,
+    }
 
 
 @app.post("/tasks/{task_id}/video-visibility", dependencies=[Depends(require_token)])

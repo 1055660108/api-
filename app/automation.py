@@ -18,7 +18,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .browser_runtime import resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
-from .proxy_manager import fetch_proxy_from_api, fetch_proxy_from_subscription
+from .proxy_manager import fetch_proxy_from_api, fetch_proxy_from_subscription, mark_node_unavailable
 from .store import (
     begin_task_submission,
     clear_transient_result,
@@ -640,6 +640,7 @@ class DolaFetchAutomation:
         self.account = account or {}
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
+        self.proxy_node_id = ""
 
     def _task_exists(self) -> bool:
         return task_exists(self.task_id)
@@ -661,6 +662,7 @@ class DolaFetchAutomation:
             timeout = max(self.settings.task_timeout_seconds, 240)
             return await asyncio.wait_for(self._run_once(), timeout=timeout)
         except asyncio.TimeoutError:
+            mark_node_unavailable(self.proxy_node_id)
             self._mark_pending("browser timeout")
             return {"success": False, "retryable": True, "reason": "browser timeout"}
         except Exception as exc:
@@ -668,6 +670,7 @@ class DolaFetchAutomation:
             self._mark_pending(reason)
             infrastructure_fault = is_infrastructure_failure(reason)
             if infrastructure_fault:
+                mark_node_unavailable(self.proxy_node_id)
                 self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
             return {"success": False, "retryable": True, "reason": reason, "infrastructure_fault": infrastructure_fault}
 
@@ -791,12 +794,16 @@ class DolaFetchAutomation:
                 refresh_seconds=self.settings.proxy_subscription_refresh_seconds,
                 auto_select=self.settings.proxy_auto_select,
                 selected_node=self.settings.proxy_selected_node,
+                selected_countries=self.settings.proxy_auto_countries,
             )
+            self.proxy_node_id = str(proxy.get("node_id") or "")
             self._save_result(
                 extra={
                     "proxy_source": "subscription",
                     "proxy_server": proxy["server"],
                     "proxy_node_count": int(proxy["node_count"]) if proxy["node_count"].isdigit() else proxy["node_count"],
+                    "proxy_node_id": self.proxy_node_id,
+                    "proxy_node_name": str(proxy.get("node_name") or ""),
                 },
             )
             return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_subscription_scheme)

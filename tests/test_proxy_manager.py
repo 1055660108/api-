@@ -188,6 +188,18 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["node_id"], nodes[1].id)
         self.assertEqual(result["server"], nodes[1].uri.split("#", 1)[0])
 
+    async def test_manual_selection_is_not_restricted_by_auto_country_filters(self) -> None:
+        nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)):
+            result = await proxy_manager.resolve_subscription_proxy(
+                "https://subscription.example/token",
+                auto_select=False,
+                selected_node=nodes[0].id,
+                selected_countries=["日本"],
+            )
+
+        self.assertEqual(result["node_id"], nodes[0].id)
+
     async def test_auto_selection_uses_lowest_measured_latency(self) -> None:
         nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
         delays = {nodes[0].id: (180, proxy_manager.time.monotonic()), nodes[1].id: (35, proxy_manager.time.monotonic())}
@@ -195,6 +207,19 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
             proxy_manager._NODE_DELAYS, delays, clear=True
         ):
             result = await proxy_manager.resolve_subscription_proxy("https://subscription.example/token")
+
+        self.assertEqual(result["node_id"], nodes[1].id)
+
+    async def test_auto_selection_only_uses_checked_countries(self) -> None:
+        nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
+        delays = {nodes[0].id: (10, proxy_manager.time.monotonic()), nodes[1].id: (35, proxy_manager.time.monotonic())}
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.dict(
+            proxy_manager._NODE_DELAYS, delays, clear=True
+        ):
+            result = await proxy_manager.resolve_subscription_proxy(
+                "https://subscription.example/token",
+                selected_countries=["日本"],
+            )
 
         self.assertEqual(result["node_id"], nodes[1].id)
 
@@ -208,6 +233,12 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
             payload = proxy_manager.node_payload(node)
             self.assertEqual(payload["latency_status"], "expired")
             self.assertIsNone(payload["latency_ms"])
+
+    def test_runtime_failure_marks_selected_node_unavailable(self) -> None:
+        node = proxy_manager.subscription_node_list("http://jp.example.com:8080#Japan")[0]
+        with patch.dict(proxy_manager._NODE_DELAYS, {node.id: (25, proxy_manager.time.monotonic())}, clear=True):
+            proxy_manager.mark_node_unavailable(node.id)
+            self.assertEqual(proxy_manager.node_payload(node)["latency_status"], "unavailable")
 
     async def test_refresh_clears_delay_cache_before_atomic_rebuild(self) -> None:
         nodes = proxy_manager.subscription_node_list("vless://user@example.com:443#node")

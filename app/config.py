@@ -102,6 +102,8 @@ def default_config() -> dict[str, Any]:
         "proxy_enabled": True,
         "proxy_auto_select": True,
         "proxy_selected_node": "",
+        "proxy_auto_countries": [],
+        "proxy_latency_threshold_ms": 800,
         "registration_email_verification_enabled": True,
         "registration_email_domains": ["qq.com", "163.com"],
         "registration_smtp_host": "smtp.qq.com",
@@ -260,6 +262,8 @@ class Settings:
     proxy_enabled: bool
     proxy_auto_select: bool
     proxy_selected_node: str
+    proxy_auto_countries: list[str]
+    proxy_latency_threshold_ms: int
     registration_email_verification_enabled: bool
     registration_email_domains: list[str]
     registration_smtp_host: str
@@ -351,6 +355,12 @@ def load_settings() -> Settings:
         proxy_enabled=_as_bool(data.get("proxy_enabled"), True),
         proxy_auto_select=_as_bool(data.get("proxy_auto_select"), True),
         proxy_selected_node=str(data.get("proxy_selected_node") or "").strip()[:200],
+        proxy_auto_countries=list(dict.fromkeys(
+            str(item).strip()[:40]
+            for item in (data.get("proxy_auto_countries") if isinstance(data.get("proxy_auto_countries"), list) else [])
+            if str(item or "").strip()
+        )),
+        proxy_latency_threshold_ms=max(100, min(5000, int(data.get("proxy_latency_threshold_ms") or 800))),
         registration_email_verification_enabled=_as_bool(data.get("registration_email_verification_enabled"), True),
         registration_email_domains=[str(item).strip().lower().lstrip("@") for item in data.get("registration_email_domains", []) if str(item or "").strip()],
         registration_smtp_host=str(data.get("registration_smtp_host") or "smtp.qq.com").strip(),

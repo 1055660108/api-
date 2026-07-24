@@ -1009,13 +1009,14 @@ function escapeHtml(value) {
 function clientSafeText(value, task = {}) {
   let text = String(value || "");
   if (portal !== "client") return text;
+  const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
   if (/Page\.(?:goto|click|waitFor|wait_for)|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷/i.test(text)) {
     return "你的输入可能包含违规内容请重试！";
   }
   const model = String(task.model || "当前模型");
   text = text.replace(/Dola|豆包|千问|qianwen|doubao|平台/gi, model);
   text = text.replace(/账号|账户|号池|换号|服务凭证/gi, "服务");
-  if (/生成超过\d+分钟|正在切换服务重试|正在切换账号重试|任务提交状态已变化/.test(text)) return "正在重试";
+  if (!terminal && /生成超过\d+分钟|正在切换服务重试|正在切换账号重试|任务提交状态已变化/.test(text)) return "正在重试";
   if (/额度不足|额度已用完|次数不足|次数已用完|余额不足|多个服务额度均不足/.test(text)) return "生成异常请重试！";
   return text;
 }

@@ -32,6 +32,7 @@ SUCCESS_TEXT = "已成功"
 POLICY_RETRY_TEXT = "你的输入可能包含违规内容请重试！"
 POLICY_RETRYING_TEXT = "检测到内容异常，正在自动重试..."
 ACCOUNT_QUOTA_RETRY_TEXT = "当前账号额度不足，正在切换账号重试"
+REFERENCE_IMAGE_REQUIRED_TEXT = "未收到可用参考图，请重新上传参考图后再提交"
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -106,6 +107,11 @@ def is_account_quota_insufficient(text: str) -> bool:
     if any(marker in value for marker in direct_markers):
         return True
     return "视频生成额度" in value and "剩余" in value and "无法生成" in value
+
+
+def is_missing_reference_image_request(text: str) -> bool:
+    value = re.sub(r"\s+", "", repair_text(str(text or "")))
+    return "请上传" in value and any(marker in value for marker in ("参考图", "参考图片", "图片", "图像"))
 
 
 def sanitize_query_diagnostic(value: Any) -> str:
@@ -567,7 +573,9 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
 
     text = tts_content or "没有文本"
     query_classification = "generating"
-    if is_account_quota_insufficient(text):
+    if is_missing_reference_image_request(text):
+        query_classification = "missing_reference_image"
+    elif is_account_quota_insufficient(text):
         query_classification = "account_quota_insufficient"
     elif is_suspected_policy_false_positive(text):
         query_classification = "suspected_policy_text"
@@ -582,6 +590,13 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         },
     )
     account_id = str(result.get("account_id") or "")
+    if is_missing_reference_image_request(text):
+        if account_id:
+            clear_account_current_task(account_id, task_id)
+            refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+        mark_failed(task_id, REFERENCE_IMAGE_REQUIRED_TEXT)
+        refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+        return {"code": "0", "text": REFERENCE_IMAGE_REQUIRED_TEXT, "url": ""}
     if is_account_quota_insufficient(text):
         if account_id:
             clear_account_current_task(account_id, task_id)

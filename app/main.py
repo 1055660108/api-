@@ -654,7 +654,7 @@ def _client_task(task: dict) -> dict:
     return safe
 
 
-async def _request_payload(request: Request) -> dict[str, str]:
+async def _request_payload(request: Request) -> dict[str, object]:
     content_type = request.headers.get("content-type", "").lower()
     if "application/json" in content_type:
         try:
@@ -663,7 +663,7 @@ async def _request_payload(request: Request) -> dict[str, str]:
             raise HTTPException(status_code=400, detail="invalid json body")
         if not isinstance(data, dict):
             raise HTTPException(status_code=400, detail="json body must be an object")
-        return {str(key): str(value) for key, value in data.items() if value is not None}
+        return {str(key): value for key, value in data.items() if value is not None}
 
     if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
         form = await request.form()

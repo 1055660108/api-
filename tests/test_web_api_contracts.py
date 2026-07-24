@@ -547,6 +547,21 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(result["selected_node"], nodes[1].id)
         self.assertEqual(config.load_settings().proxy_selected_node, nodes[1].id)
 
+    def test_proxy_country_selection_preserves_json_array(self) -> None:
+        self.login_admin()
+        response = self.client.post(
+            "/config/proxy-api",
+            json={
+                "proxy_enabled": True,
+                "proxy_auto_select": True,
+                "proxy_auto_countries": ["日本", "美国", "日本"],
+                "proxy_latency_threshold_ms": 800,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["proxy_auto_countries"], ["日本", "美国"])
+        self.assertEqual(config.load_settings().proxy_auto_countries, ["日本", "美国"])
+
     def test_global_worker_configuration_accepts_999_and_rejects_1000(self) -> None:
         headers = {"X-API-Token": self.admin_token}
         accepted = self.client.post("/config/workers", headers=headers, json={"browser_workers": 999, "max_effective_workers": 200})

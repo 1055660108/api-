@@ -128,6 +128,20 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(rows[0]["kind"], "refund")
         self.assertEqual(rows[0]["amount"], 0.8)
 
+    def test_transaction_id_makes_task_consumption_retry_idempotent(self) -> None:
+        for _ in range(2):
+            point_transactions.record_transaction(
+                "user-1",
+                "consume",
+                -10,
+                "视频任务消费",
+                reference_id="task-idempotent",
+                transaction_id="task-task-idempotent",
+            )
+        rows = point_transactions.list_transactions("user-1")["transactions"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["reference_id"], "task-idempotent")
+
     def test_free_quota_refund_records_video_quota_and_task_id(self) -> None:
         token = temp_access.create_temp_tokens(1, 1)[0]
         access = temp_access.get_temp_context(token["token"])

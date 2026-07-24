@@ -377,9 +377,9 @@ class WebAPIContractTests(unittest.TestCase):
         registered = self.register("batch_fail_client")
         owner_hash = temp_access.hash_token(registered["token"])
         temp_access.add_temp_credit_units(owner_hash, 10)
-        with self.assertLogs("app.main", level="ERROR"), patch.object(
+        with self.assertLogs("app.main", level="WARNING"), patch.object(
             main, "reserve_temp_quota", side_effect=RuntimeError("database pool exhausted")
-        ):
+        ) as reserve:
             response = self.client.post(
                 "/tasks",
                 headers={"X-API-Token": registered["token"], "Idempotency-Key": "transient-batch-failure"},
@@ -398,7 +398,42 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "任务创建暂时繁忙，请稍后重试")
         self.assertEqual(response.headers["retry-after"], "2")
+        self.assertEqual(reserve.call_count, 3)
         self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
+
+    def test_transient_database_failure_is_retried_without_losing_batch_task(self) -> None:
+        registered = self.register("batch_retry_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 10)
+        original_reserve = main.reserve_temp_quota
+        calls = 0
+
+        def flaky_reserve(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("couldn't get a connection after 8.00 sec")
+            return original_reserve(*args, **kwargs)
+
+        with self.assertLogs("app.main", level="WARNING"), patch.object(main, "reserve_temp_quota", side_effect=flaky_reserve):
+            response = self.client.post(
+                "/tasks",
+                headers={"X-API-Token": registered["token"], "Idempotency-Key": "transient-batch-recovery"},
+                data={
+                    "prompt": "数据库恢复后继续创建",
+                    "ratio": "9:16",
+                    "duration": "15",
+                    "batch": "true",
+                    "batch_id": "batch-transient-recovery",
+                    "batch_index": "1",
+                    "batch_row": "2",
+                    "platform": "dola",
+                    "model": "Seedance 2.0",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(calls, 2)
+        self.assertEqual(store.get_meta(response.json()["id"])["status"], store.STATUS_PENDING)
 
     def test_openai_concurrency_overflow_returns_a_pending_queued_task(self) -> None:
         registered = self.register("limited_openai_client")

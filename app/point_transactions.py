@@ -54,12 +54,13 @@ def record_transaction(
     detail: str = "",
     video_quota_change: int = 0,
     video_quota_balance: int | None = None,
+    transaction_id: str = "",
 ) -> dict[str, Any]:
     user_id = str(user_id or "").strip()
     if not user_id:
         return {}
     entry = {
-        "id": secrets.token_hex(12),
+        "id": str(transaction_id or "").strip()[:32] or secrets.token_hex(12),
         "user_id": user_id,
         "kind": str(kind or "adjustment")[:40],
         "amount_units": int(amount_units),
@@ -78,6 +79,9 @@ def record_transaction(
             postgres.insert_point_transaction(entry)
             return dict(entry)
         data = _read()
+        existing = next((item for item in data["transactions"] if str(item.get("id") or "") == entry["id"]), None)
+        if existing:
+            return dict(existing)
         data["transactions"].append(entry)
         data["transactions"] = data["transactions"][-10000:]
         _write(data)

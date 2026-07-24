@@ -111,6 +111,31 @@ def enabled() -> bool:
     return bool(database_url())
 
 
+def is_transient_error(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    module = type(exc).__module__.lower()
+    text = str(exc or "").lower()
+    if name in {"pooltimeout", "operationalerror", "interfaceerror", "connectiontimeout"}:
+        return True
+    if "psycopg" in module and any(marker in name for marker in ("connection", "timeout", "operational", "interface")):
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "couldn't get a connection",
+            "could not get a connection",
+            "database pool exhausted",
+            "connection pool",
+            "connection reset",
+            "connection refused",
+            "connection is closed",
+            "server closed the connection",
+            "terminating connection",
+            "timeout expired",
+        )
+    )
+
+
 def _driver():
     try:
         import psycopg
@@ -138,7 +163,7 @@ def _connection_pool():
                 from psycopg_pool import ConnectionPool
             except ImportError:
                 return None
-            _pool = ConnectionPool(url, min_size=1, max_size=max_size, open=True)
+            _pool = ConnectionPool(url, min_size=min(4, max_size), max_size=max_size, timeout=8, open=True)
             _pool_signature = signature
         return _pool
 

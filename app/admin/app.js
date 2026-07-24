@@ -4270,7 +4270,7 @@ async function createBatchTask(entry, sessionId, ratio) {
   (item.images || []).forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
   const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 90000 };
   let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       const data = await apiFetch("/tasks", options);
       if (!sharedSourceTaskId && state.batchSharedImages.length && data?.id) batchSharedUploadSources.set(sessionId, String(data.id));
@@ -4279,8 +4279,8 @@ async function createBatchTask(entry, sessionId, ratio) {
       lastError = error;
       const status = Number(error.status || 0);
       const transient = error.code === "REQUEST_TIMEOUT" || [500, 502, 503, 504].includes(status) || (!status && /fetch|network|load failed/i.test(String(error.message || "")));
-      if (!transient || attempt >= 2) break;
-      await waitForBatchPoll(700 * (attempt + 1));
+      if (!transient || attempt >= 4) break;
+      await waitForBatchPoll(Math.min(8000, 800 * (2 ** attempt)));
     }
   }
   if (!lastError) lastError = new Error("提交失败，请重试");

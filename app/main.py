@@ -50,6 +50,7 @@ from .repository_update import repository_status, update_repository
 from .spreadsheet_import import MAX_SPREADSHEET_BYTES, SUPPORTED_SPREADSHEET_SUFFIXES, SpreadsheetImportError, parse_spreadsheet
 from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
+from .postgres import is_transient_error as is_transient_postgres_error
 from .package_catalog import create_package, disable_package, list_packages, update_package
 from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, get_membership, list_memberships, update_membership
 from .point_cards import delete_cards, generate_cards, list_cards, purge_legacy_cards, redeem_card
@@ -226,6 +227,24 @@ def _transaction_user_id(access: AccessContext) -> str:
         return ""
 
 
+async def _storage_call(function, *args, attempts: int = 3, **kwargs):
+    attempts = max(1, int(attempts))
+    for attempt in range(1, attempts + 1):
+        try:
+            return await asyncio.to_thread(function, *args, **kwargs)
+        except Exception as exc:
+            if attempt >= attempts or not is_transient_postgres_error(exc):
+                raise
+            logger.warning(
+                "transient storage operation failed (operation=%s attempt=%s/%s error=%s)",
+                getattr(function, "__name__", type(function).__name__),
+                attempt,
+                attempts,
+                type(exc).__name__,
+            )
+            await asyncio.sleep(0.15 * (2 ** (attempt - 1)))
+
+
 def _request_fingerprint(route: str, owner: str, payload: dict) -> str:
     raw = json.dumps({"route": route, "owner": owner, "payload": payload}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -327,7 +346,7 @@ async def lifespan(app: FastAPI):
         refund_temp_quota_once(str(stale_task.get("id") or ""), str(stale_task.get("owner_token_hash") or ""))
     reset_daily_account_quotas_if_needed()
     reconcile_account_quotas()
-    create_sem = asyncio.Semaphore(8)
+    create_sem = asyncio.Semaphore(4)
     query_sem = asyncio.Semaphore(5)
     list_sem = asyncio.Semaphore(8)
     delete_sem = asyncio.Semaphore(1)
@@ -2303,7 +2322,7 @@ async def submit_task(
 
         try:
             if key:
-                meta, created = await asyncio.to_thread(
+                meta, created = await _storage_call(
                     find_or_create_task,
                     prompt,
                     ratio,
@@ -2339,18 +2358,18 @@ async def submit_task(
                 return {"id": meta["id"], "replayed": True, "image_count": int(meta.get("image_count") or 0)}
             queued_for_concurrency = False
             if access.is_temp:
-                access = await asyncio.to_thread(get_temp_context_by_hash, access.token_hash) or access
-                queued_for_concurrency = await asyncio.to_thread(active_task_count_for_owner, access.token_hash) >= access.concurrency
+                access = await _storage_call(get_temp_context_by_hash, access.token_hash) or access
+                queued_for_concurrency = await _storage_call(active_task_count_for_owner, access.token_hash) >= access.concurrency
             base_cost_units = model_cost_units(platform, model, task_type)
-            discount_units = await asyncio.to_thread(membership_task_discount_units_by_token_hash, access.token_hash) if access.is_temp else 0
+            discount_units = await _storage_call(membership_task_discount_units_by_token_hash, access.token_hash) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
-            user_id = _transaction_user_id(access)
-            reserved_access = await asyncio.to_thread(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
-            reservation = await asyncio.to_thread(get_temp_reservation, access.token_hash, str(meta["id"])) if access.is_temp else {}
+            user_id = await _storage_call(_transaction_user_id, access)
+            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            reservation = await _storage_call(get_temp_reservation, access.token_hash, str(meta["id"])) if access.is_temp else {}
             charged_units = int(reservation.get("units") or 0)
             if user_id and reservation:
                 free_used = bool(reservation.get("free"))
-                await asyncio.to_thread(
+                await _storage_call(
                     record_transaction,
                     user_id,
                     "video_quota_consume" if free_used else "consume",
@@ -2361,6 +2380,7 @@ async def submit_task(
                     video_quota_balance=reserved_access.free_remaining,
                     reference_id=str(meta["id"]),
                     detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
+                    transaction_id=f"task-{str(meta['id'])[:27]}",
                 )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
@@ -2372,7 +2392,14 @@ async def submit_task(
             if "meta" in locals():
                 await asyncio.to_thread(refund_temp_quota_hash, access.token_hash, str(meta["id"]))
                 await asyncio.to_thread(delete_task, str(meta["id"]))
-            logger.exception("task creation failed before upload (batch=%s)", batch)
+            logger.exception(
+                "task creation failed before upload (task_id=%s batch=%s batch_id=%s batch_index=%s error_type=%s)",
+                str(locals().get("meta", {}).get("id") or ""),
+                batch,
+                batch_id,
+                batch_index,
+                type(exc).__name__,
+            )
             raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
         saved_paths: list[Path] = []
         try:
@@ -2386,7 +2413,7 @@ async def submit_task(
                 target = images_dir(meta["id"]) / f"{index:02d}{suffix}"
                 await asyncio.to_thread(_save_uploaded_image, upload, target)
                 saved_paths.append(target)
-            await asyncio.to_thread(set_task_images, meta["id"], saved_paths)
+            await _storage_call(set_task_images, meta["id"], saved_paths)
             await asyncio.to_thread(finalize_task_creation, str(meta["id"]))
         except HTTPException:
             if reserved_access:
@@ -2397,11 +2424,25 @@ async def submit_task(
             if reserved_access:
                 await asyncio.to_thread(refund_temp_quota_hash, reserved_access.token_hash, str(meta["id"]))
             await asyncio.to_thread(delete_task, meta["id"])
-            logger.exception("task creation failed while saving uploads (batch=%s)", batch)
+            logger.exception(
+                "task creation failed while saving uploads (task_id=%s batch=%s batch_id=%s batch_index=%s error_type=%s)",
+                str(meta.get("id") or ""),
+                batch,
+                batch_id,
+                batch_index,
+                type(exc).__name__,
+            )
             raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
         response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency, "image_count": len(saved_paths)}
         if reserved_access and reserved_access.is_temp:
-            balance = await asyncio.to_thread(user_balance_by_token_hash, reserved_access.token_hash)
+            try:
+                balance = await _storage_call(user_balance_by_token_hash, reserved_access.token_hash)
+            except Exception:
+                logger.exception("task created but balance refresh failed (task_id=%s)", str(meta["id"]))
+                balance = {
+                    "free_remaining": reserved_access.free_remaining,
+                    "points": units_to_points(reserved_access.credit_units),
+                }
             response["quota"] = {
                 "limit": reserved_access.limit,
                 "used": reserved_access.used,

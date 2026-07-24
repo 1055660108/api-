@@ -244,7 +244,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.11', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.12', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -275,6 +275,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('burstAt(clientX, clientY)', ink_script)
         self.assertIn('drawGlassSurface(context, deltaSeconds, now)', ink_script)
         self.assertIn('drawSprays(context, now)', ink_script)
+        self.assertIn('float bodyRotation = uVortex * time * 4.8', ink_script)
+        self.assertIn('const sheet = context.createRadialGradient', ink_script)
+        self.assertIn('context.quadraticCurveTo(drop.x + slant * 0.42 + sway', ink_script)
         self.assertIn('this.glassDrops = Array.from', ink_script)
         self.assertIn('this.sprays.push(', ink_script)
         self.assertNotIn('angularCrack', ink_script)
@@ -298,6 +301,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('.ratio-options button.active', styles)
         self.assertIn('.billing-priority-control input { accent-color: #171a19; }', styles)
         self.assertNotIn('class="modal-eyebrow"', self.html)
+        self.assertIn('#loginView[data-client-stage="landing"] .client-ink-canvas {\n  filter: none;', styles)
         self.assertNotIn('验证码只发送到已绑定并验证的邮箱。', self.html)
         self.assertIn('sidebar-content-hidden', self.javascript)
         self.assertIn('.app-shell.sidebar-content-hidden .sidebar-client-identity', styles)
@@ -409,8 +413,14 @@ class AdminUITests(unittest.TestCase):
             "parseBatchSpreadsheet",
             "batchTaskRatio",
             "batchTaskDuration",
+            "batchSelectionLimit",
+            "applyBatchSelectionLimit",
+            "batchPlatformSelect",
+            "batchModelSelect",
+            "batchAutoConcurrency",
             "selectAllBatchPrompts",
             "batchPromptList",
+            "autoSubmitBatchTasks",
             "submitBatchTasks",
         ):
             self.assertIn(f'id="{element_id}"', self.html)
@@ -418,12 +428,27 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('apiFetch("/batch-prompts/parse"', self.javascript)
         self.assertIn('form.append("batch", "true")', self.javascript)
         self.assertIn('form.append("batch_index", String(index + 1))', self.javascript)
+        self.assertIn('const MAX_BATCH_SELECTION = 20', self.javascript)
+        self.assertIn('async function autoSubmitBatchTasks()', self.javascript)
+        self.assertIn('while (active.size && !state.batchAutoStopRequested)', self.javascript)
+        self.assertIn('active.size + blockedSlots < concurrency', self.javascript)
+        self.assertIn('未创建：前序任务未成功返回视频', self.javascript)
+        self.assertIn('await apiFetch(`/tasks/${encodeURIComponent(taskId)}`', self.javascript)
+        self.assertIn('URL.createObjectURL(file)', self.javascript)
+        self.assertIn('class="batch-reference-thumbs"', self.html)
         self.assertIn('for (let current = 0; current < selected.length; current += 1)', self.javascript)
         self.assertNotIn('Math.min(3, selected.length)', self.javascript)
         self.assertNotIn('id="batchTaskModal"', self.html)
         self.assertIn('data-batch-prompt-text', self.javascript)
         self.assertIn('els.parseBatchSpreadsheet?.addEventListener("click", parseBatchSpreadsheet)', self.javascript)
         self.assertIn('els.submitBatchTasks?.addEventListener("click", submitBatchTasks)', self.javascript)
+        self.assertIn('els.autoSubmitBatchTasks?.addEventListener("click", autoSubmitBatchTasks)', self.javascript)
+        self.assertNotIn('<option value="5">5 秒</option>', self.html)
+        self.assertNotIn('<h2 id="batchTaskPageTitle">批量生成</h2>', self.html)
+        critical_styles = self.html.split('<style id="criticalPortalStyles">', 1)[1].split('</style>', 1)[0]
+        admin_rule = next(line for line in critical_styles.splitlines() if 'body[data-portal="admin"]' in line)
+        self.assertNotIn('#batchSubmitNavItem', admin_rule)
+        self.assertNotIn('#batch-submitView', admin_rule)
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('.batch-task-page', styles)
         self.assertIn('body[data-portal] .proxy-node-card[aria-pressed="true"]', styles)

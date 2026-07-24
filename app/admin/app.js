@@ -261,13 +261,22 @@ const els = {
   batchMappedImageInput: document.getElementById("batchMappedImageInput"),
   batchRowImageInput: document.getElementById("batchRowImageInput"),
   batchReferenceState: document.getElementById("batchReferenceState"),
+  batchReferencePreview: document.getElementById("batchReferencePreview"),
+  batchReferenceThumbs: document.getElementById("batchReferenceThumbs"),
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
   batchTaskRatio: document.getElementById("batchTaskRatio"),
   batchTaskDuration: document.getElementById("batchTaskDuration"),
+  batchSelectionLimit: document.getElementById("batchSelectionLimit"),
+  applyBatchSelectionLimit: document.getElementById("applyBatchSelectionLimit"),
   selectAllBatchPrompts: document.getElementById("selectAllBatchPrompts"),
   batchSelectionState: document.getElementById("batchSelectionState"),
+  batchPlatformSelect: document.getElementById("batchPlatformSelect"),
+  batchModelSelect: document.getElementById("batchModelSelect"),
+  batchAutoConcurrency: document.getElementById("batchAutoConcurrency"),
+  batchAutoConcurrencyState: document.getElementById("batchAutoConcurrencyState"),
   batchPromptList: document.getElementById("batchPromptList"),
   batchTaskProgress: document.getElementById("batchTaskProgress"),
+  autoSubmitBatchTasks: document.getElementById("autoSubmitBatchTasks"),
   submitBatchTasks: document.getElementById("submitBatchTasks"),
   imageInput: document.getElementById("imageInput"),
   clearImages: document.getElementById("clearImages"),
@@ -476,6 +485,8 @@ const state = {
   batchSharedImages: [],
   batchImageTargetIndex: -1,
   batchSubmitting: false,
+  batchAutoRunning: false,
+  batchAutoStopRequested: false,
   isTempToken: false,
   tempTokens: [],
   accounts: [],
@@ -1363,6 +1374,7 @@ function applyAccessScope(data = {}) {
     state.concurrency = Math.max(1, Number(data.token_concurrency ?? data.browser_workers ?? 1));
     if (els.metricWorkers) els.metricWorkers.textContent = String(state.concurrency);
   }
+  syncBatchConcurrencyControls();
   if (data.version) {
     state.version = String(data.version);
     if (els.sidebarVersion) els.sidebarVersion.textContent = `v${state.version}`;
@@ -1548,7 +1560,6 @@ function switchView(name) {
   if (portal === "client" && ["quota", "accounts", "docs", "proxy-nodes"].includes(name)) {
     name = "dashboard";
   }
-  if (portal !== "client" && name === "batch-submit") name = "dashboard";
   const targetView = document.getElementById(`${name}View`);
   if (!targetView || targetView.classList.contains("hidden")) {
     name = "dashboard";
@@ -2858,6 +2869,20 @@ function renderPlatformControls() {
   state.model = selected.model;
   els.platformSelect.value = state.platform;
   els.modelSelect.innerHTML = choices.map((item) => `<option value="${escapeHtml(`${item.platform}::${item.model}`)}"${item.platform === state.platform && item.model === state.model ? " selected" : ""}>${escapeHtml(item.model)}</option>`).join("");
+  renderBatchPlatformControls();
+}
+
+function renderBatchPlatformControls() {
+  if (!els.batchPlatformSelect || !els.batchModelSelect) return;
+  const platforms = state.platforms.length ? state.platforms : [{ id: "dola", label: "Dola", models: ["Seedance 2.0"], enabled: true }];
+  const enabled = platforms.filter((item) => item.enabled !== false);
+  const requestedPlatform = els.batchPlatformSelect.value || state.platform || enabled[0]?.id || "dola";
+  const selectedPlatform = enabled.find((item) => String(item.id) === requestedPlatform) || enabled[0] || platforms[0];
+  els.batchPlatformSelect.innerHTML = enabled.map((item) => `<option value="${escapeHtml(item.id)}"${item === selectedPlatform ? " selected" : ""}>${escapeHtml(item.label || PLATFORM_LABELS[item.id] || item.id)}</option>`).join("");
+  const models = selectedPlatform?.models || [];
+  const requestedModel = els.batchModelSelect.value || (String(selectedPlatform?.id) === state.platform ? state.model : "");
+  const selectedModel = models.includes(requestedModel) ? requestedModel : models[0] || "";
+  els.batchModelSelect.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"${model === selectedModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("");
 }
 
 async function refreshDashboard() {
@@ -3677,8 +3702,8 @@ async function submitTask(event) {
   const form = new FormData();
   form.append("prompt", prompt);
   form.append("ratio", state.ratio);
-  form.append("platform", state.platform || "dola");
-  form.append("model", state.model || "");
+  form.append("platform", els.batchPlatformSelect?.value || state.platform || "dola");
+  form.append("model", els.batchModelSelect?.value || state.model || "");
   state.images.forEach((file) => form.append("images", file, file.name));
   const fingerprint = currentSubmitFingerprint(prompt);
   const idempotencyKey = submitIdempotencyKey(fingerprint);
@@ -3717,12 +3742,70 @@ async function submitTask(event) {
   }
 }
 
+const MAX_BATCH_SELECTION = 20;
+
+function batchConcurrencyLimit() {
+  return Math.max(1, Math.min(MAX_BATCH_SELECTION, portal === "client" ? Number(state.concurrency || 1) : MAX_BATCH_SELECTION));
+}
+
+function syncBatchConcurrencyControls() {
+  const maximum = batchConcurrencyLimit();
+  if (els.batchAutoConcurrency) {
+    els.batchAutoConcurrency.max = String(maximum);
+    els.batchAutoConcurrency.value = String(Math.max(1, Math.min(maximum, Number(els.batchAutoConcurrency.value || 1))));
+  }
+  if (els.batchAutoConcurrencyState) els.batchAutoConcurrencyState.textContent = `当前最多可使用 ${maximum} 并发`;
+}
+
+function createBatchImageEntries(files) {
+  return Array.from(files || []).slice(0, 9).map((file) => ({ file, previewUrl: URL.createObjectURL(file) }));
+}
+
+function releaseBatchImageEntries(entries) {
+  (entries || []).forEach((entry) => {
+    if (entry?.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+  });
+}
+
+function appendBatchImageFiles(item, files) {
+  const merged = [...(item.images || []), ...createBatchImageEntries(files)];
+  item.images = merged.slice(0, 9);
+  releaseBatchImageEntries(merged.slice(9));
+}
+
+function clearBatchReferenceImages() {
+  releaseBatchImageEntries(state.batchSharedImages);
+  state.batchPrompts.forEach((item) => releaseBatchImageEntries(item.images));
+  state.batchSharedImages = [];
+}
+
+function batchItemIsCreated(item) {
+  return ["success", "running", "completed"].includes(String(item.status || ""));
+}
+
+function batchSelectedEntries() {
+  return state.batchPrompts
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.selected && item.prompt.trim() && !batchItemIsCreated(item))
+    .slice(0, MAX_BATCH_SELECTION);
+}
+
+function batchItemStatusText(item) {
+  if (item.status === "queued") return "等待自动提交";
+  if (item.status === "running") return `生成中 ${shortId(item.taskId)}`;
+  if (item.status === "completed") return `已完成 ${shortId(item.taskId)}`;
+  if (item.status === "success") return `已提交 ${shortId(item.taskId)}`;
+  if (item.status === "failed") return item.error || "生成失败";
+  return "待生成";
+}
+
 function resetBatchTaskPage() {
   if (state.batchSubmitting) return;
+  clearBatchReferenceImages();
   state.batchSpreadsheet = null;
   state.batchPrompts = [];
-  state.batchSharedImages = [];
   state.batchImageTargetIndex = -1;
+  state.batchAutoStopRequested = false;
   if (els.batchSpreadsheetInput) els.batchSpreadsheetInput.value = "";
   if (els.batchSharedImageInput) els.batchSharedImageInput.value = "";
   if (els.batchMappedImageInput) els.batchMappedImageInput.value = "";
@@ -3730,58 +3813,87 @@ function resetBatchTaskPage() {
   if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = "未选择文件";
   if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
   if (els.batchTaskDuration) els.batchTaskDuration.value = "15";
+  if (els.batchSelectionLimit) els.batchSelectionLimit.value = "20";
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = "等待导入";
+  syncBatchConcurrencyControls();
   renderBatchPrompts();
 }
 
 function renderBatchPrompts() {
   if (!els.batchPromptList) return;
-  const selected = state.batchPrompts.filter((item) => item.selected && item.prompt.trim());
+  const selected = batchSelectedEntries();
   if (!state.batchPrompts.length) {
     els.batchPromptList.innerHTML = '<div class="empty-state">导入表格后点击自动解析</div>';
   } else {
-    els.batchPromptList.innerHTML = state.batchPrompts.map((item, index) => `
+    els.batchPromptList.innerHTML = state.batchPrompts.map((item, index) => {
+      const locked = state.batchSubmitting || batchItemIsCreated(item);
+      const images = item.images || [];
+      const previews = images.slice(0, 3).map((entry) => `<img src="${escapeHtml(entry.previewUrl)}" alt="" />`).join("");
+      return `
       <article class="batch-prompt-row${item.status ? ` is-${escapeHtml(item.status)}` : ""}" data-batch-prompt-row="${index}">
-        <input type="checkbox" data-batch-prompt-select="${index}" ${item.selected ? "checked" : ""} ${state.batchSubmitting || item.status === "success" ? "disabled" : ""} aria-label="选择表格第 ${escapeHtml(item.row)} 行" />
+        <input type="checkbox" data-batch-prompt-select="${index}" ${item.selected ? "checked" : ""} ${locked ? "disabled" : ""} aria-label="选择表格第 ${escapeHtml(item.row)} 行" />
         <span class="batch-prompt-index">第 ${escapeHtml(item.row)} 行</span>
-        <textarea data-batch-prompt-text="${index}" maxlength="4000" ${state.batchSubmitting || item.status === "success" ? "readonly" : ""}>${escapeHtml(item.prompt)}</textarea>
-        <div class="batch-prompt-reference"><button class="text-button" type="button" data-batch-image-index="${index}" ${state.batchSubmitting || item.status === "success" ? "disabled" : ""}>参考图</button><span title="${escapeHtml((item.images || []).map((file) => file.name).join("、"))}">${item.images?.length ? `${item.images.length} 张` : "未添加"}</span>${item.images?.length ? `<button class="batch-image-clear" type="button" data-batch-image-clear="${index}" aria-label="清除第 ${escapeHtml(item.row)} 行参考图">×</button>` : ""}</div>
-        <span class="batch-prompt-status">${item.status === "success" ? `已提交 ${escapeHtml(shortId(item.taskId))}` : item.status === "failed" ? escapeHtml(item.error || "提交失败") : "待生成"}</span>
-      </article>`).join("");
+        <textarea data-batch-prompt-text="${index}" maxlength="4000" ${locked ? "readonly" : ""}>${escapeHtml(item.prompt)}</textarea>
+        <div class="batch-prompt-reference"><div class="batch-row-thumbs">${previews}</div><button class="text-button" type="button" data-batch-image-index="${index}" ${locked ? "disabled" : ""}>参考图</button><span title="${escapeHtml(images.map((entry) => entry.file.name).join("、"))}">${images.length ? `${images.length} 张` : "未添加"}</span>${images.length ? `<button class="batch-image-clear" type="button" data-batch-image-clear="${index}" aria-label="清除第 ${escapeHtml(item.row)} 行参考图" ${locked ? "disabled" : ""}>×</button>` : ""}</div>
+        <span class="batch-prompt-status">${escapeHtml(batchItemStatusText(item))}</span>
+      </article>`;
+    }).join("");
   }
-  if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selected.length} 条`;
+  if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selected.length} / ${MAX_BATCH_SELECTION} 条`;
   if (els.selectAllBatchPrompts) {
-    const available = state.batchPrompts.filter((item) => item.status !== "success" && item.prompt.trim());
-    els.selectAllBatchPrompts.checked = Boolean(available.length) && available.every((item) => item.selected);
-    els.selectAllBatchPrompts.indeterminate = available.some((item) => item.selected) && !els.selectAllBatchPrompts.checked;
+    const available = state.batchPrompts.filter((item) => !batchItemIsCreated(item) && item.prompt.trim());
+    const targetCount = Math.min(MAX_BATCH_SELECTION, available.length);
+    const selectedAvailable = available.filter((item) => item.selected).length;
+    els.selectAllBatchPrompts.checked = targetCount > 0 && selectedAvailable === targetCount;
+    els.selectAllBatchPrompts.indeterminate = selectedAvailable > 0 && selectedAvailable < targetCount;
     els.selectAllBatchPrompts.disabled = state.batchSubmitting || !available.length;
   }
+  if (els.batchSelectionLimit) els.batchSelectionLimit.max = String(Math.min(MAX_BATCH_SELECTION, Math.max(1, state.batchPrompts.length)));
   if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selected.length;
+  if (els.autoSubmitBatchTasks) {
+    els.autoSubmitBatchTasks.disabled = !state.batchAutoRunning && (state.batchSubmitting || !selected.length);
+    els.autoSubmitBatchTasks.textContent = state.batchAutoRunning ? "停止自动生成" : "自动生成";
+  }
+  const assigned = state.batchPrompts.filter((item) => item.images?.length).length;
   if (els.batchReferenceState) {
-    const assigned = state.batchPrompts.filter((item) => item.images?.length).length;
     els.batchReferenceState.textContent = state.batchSharedImages.length
       ? `共用 ${state.batchSharedImages.length} 张，单独配图 ${assigned} 行`
       : assigned ? `已为 ${assigned} 行单独配图` : "未添加参考图";
   }
+  if (els.batchReferenceThumbs) {
+    els.batchReferenceThumbs.innerHTML = state.batchSharedImages.map((entry) => `<img src="${escapeHtml(entry.previewUrl)}" alt="共用参考图" />`).join("");
+  }
+}
+
+function applyBatchSelectionCount() {
+  const requested = Math.max(1, Math.min(MAX_BATCH_SELECTION, Number(els.batchSelectionLimit?.value || MAX_BATCH_SELECTION)));
+  if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(requested);
+  let remaining = requested;
+  state.batchPrompts.forEach((item) => {
+    if (batchItemIsCreated(item) || !item.prompt.trim()) return;
+    item.selected = remaining > 0;
+    remaining -= 1;
+  });
+  renderBatchPrompts();
 }
 
 function mapBatchReferenceImages(files) {
   if (!state.batchPrompts.length) return toast("请先解析表格，再按行批量配图", "error");
   let matched = 0;
   const unassigned = [];
-  files.forEach((file) => {
+  Array.from(files || []).forEach((file) => {
     const number = Number((file.name.replace(/\.[^.]+$/, "").match(/(?:^|\D)(\d{1,6})(?:\D|$)/) || [])[1] || 0);
     const item = number ? state.batchPrompts.find((entry) => Number(entry.row) === number) : null;
     if (!item) {
       unassigned.push(file);
       return;
     }
-    item.images = [...(item.images || []), file].slice(0, 9);
+    appendBatchImageFiles(item, [file]);
     matched += 1;
   });
   unassigned.forEach((file, index) => {
     const item = state.batchPrompts[index % state.batchPrompts.length];
-    item.images = [...(item.images || []), file].slice(0, 9);
+    appendBatchImageFiles(item, [file]);
     matched += 1;
   });
   renderBatchPrompts();
@@ -3797,7 +3909,8 @@ async function parseBatchSpreadsheet() {
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在解析表格";
   try {
     const data = await apiFetch("/batch-prompts/parse", { method: "POST", body: form, timeout: 60000 });
-    state.batchPrompts = (data.prompts || []).map((item) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: true, status: "", error: "", taskId: "", images: [] }));
+    state.batchPrompts.forEach((item) => releaseBatchImageEntries(item.images));
+    state.batchPrompts = (data.prompts || []).map((item, index) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: index < MAX_BATCH_SELECTION, status: "", error: "", taskId: "", images: [] }));
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `已解析 ${state.batchPrompts.length} 条提示词`;
     renderBatchPrompts();
     toast(`已解析 ${state.batchPrompts.length} 条视频提示词`);
@@ -3811,85 +3924,189 @@ async function parseBatchSpreadsheet() {
   }
 }
 
+async function createBatchTask(entry, sessionId, ratio, duration) {
+  const { item, index } = entry;
+  const form = new FormData();
+  form.append("prompt", item.prompt.trim());
+  form.append("ratio", ratio);
+  form.append("duration", duration);
+  form.append("batch", "true");
+  form.append("batch_id", sessionId);
+  form.append("batch_index", String(index + 1));
+  form.append("batch_row", String(item.row));
+  form.append("platform", state.platform || "dola");
+  form.append("model", state.model || "");
+  [...state.batchSharedImages, ...(item.images || [])].forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
+  const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 45000 };
+  try {
+    return await apiFetch("/tasks", options);
+  } catch (error) {
+    if (error.code !== "REQUEST_TIMEOUT") throw error;
+    return apiFetch("/tasks", options);
+  }
+}
+
+function validateBatchSelection() {
+  const selected = batchSelectedEntries();
+  if (!selected.length) {
+    toast("请至少选择一条提示词", "error");
+    return [];
+  }
+  if (selected.length > MAX_BATCH_SELECTION) {
+    toast(`单次最多选择 ${MAX_BATCH_SELECTION} 条任务`, "error");
+    return [];
+  }
+  if (selected.some(({ item }) => state.batchSharedImages.length + (item.images?.length || 0) > 9)) {
+    toast("每条任务最多添加 9 张参考图", "error");
+    return [];
+  }
+  return selected;
+}
+
 async function submitBatchTasks() {
   if (state.batchSubmitting) return;
-  const selected = state.batchPrompts.map((item, index) => ({ item, index })).filter(({ item }) => item.selected && item.prompt.trim() && item.status !== "success");
-  if (!selected.length) return toast("请至少选择一条提示词", "error");
-  if (selected.length > 100) return toast("单次最多生成 100 条任务", "error");
-  if (selected.some(({ item }) => state.batchSharedImages.length + (item.images?.length || 0) > 9)) return toast("每条任务最多添加 9 张参考图", "error");
-  if (!window.confirm(`确定生成已选择的 ${selected.length} 条视频任务吗？每条任务会分别扣除视频额度或积分。`)) return;
-
+  const selected = validateBatchSelection();
+  if (!selected.length || !window.confirm(`确定生成已选择的 ${selected.length} 条视频任务吗？每条任务会分别扣除视频额度或积分。`)) return;
   state.batchSubmitting = true;
   const ratio = els.batchTaskRatio?.value || "9:16";
   const duration = els.batchTaskDuration?.value || "15";
   const sessionId = window.crypto?.randomUUID?.() || `batch-${Date.now().toString(36)}`;
-  let completed = 0;
   let succeeded = 0;
   let stopped = "";
   setBusy(els.submitBatchTasks, true, "提交中");
   renderBatchPrompts();
-
-  const submitOne = async ({ item, index }) => {
-    const form = new FormData();
-    form.append("prompt", item.prompt.trim());
-    form.append("ratio", ratio);
-    form.append("duration", duration);
-    form.append("batch", "true");
-    form.append("batch_id", sessionId);
-    form.append("batch_index", String(index + 1));
-    form.append("batch_row", String(item.row));
-    form.append("platform", state.platform || "dola");
-    form.append("model", state.model || "");
-    [...state.batchSharedImages, ...(item.images || [])].forEach((file) => form.append("images", file, file.name));
-    const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 45000 };
-    try {
-      let data;
-      try {
-        data = await apiFetch("/tasks", options);
-      } catch (error) {
-        if (error.code !== "REQUEST_TIMEOUT") throw error;
-        data = await apiFetch("/tasks", options);
-      }
-      item.status = "success";
-      item.taskId = data.id || "";
-      item.selected = false;
-      succeeded += 1;
-      if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
-    } catch (error) {
-      item.status = "failed";
-      item.error = error.message || "提交失败";
-      if (Number(error.status || 0) === 429) stopped = item.error;
-    } finally {
-      completed += 1;
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在提交 ${completed} / ${selected.length}`;
-      const row = els.batchPromptList?.querySelector(`[data-batch-prompt-row="${index}"]`);
-      if (row) {
-        row.classList.toggle("is-success", item.status === "success");
-        row.classList.toggle("is-failed", item.status === "failed");
-        const status = row.querySelector(".batch-prompt-status");
-        if (status) status.textContent = item.status === "success" ? `已提交 ${shortId(item.taskId)}` : item.error;
-      }
-    }
-  };
-
   try {
     for (let current = 0; current < selected.length; current += 1) {
+      const { item } = selected[current];
       if (stopped) {
-        selected.slice(current).forEach(({ item }) => {
-          item.status = "failed";
-          item.error = `未继续提交：${stopped}`;
-        });
-        break;
+        item.status = "failed";
+        item.error = `未继续提交：${stopped}`;
+        continue;
       }
-      await submitOne(selected[current]);
+      try {
+        const data = await createBatchTask(selected[current], sessionId, ratio, duration);
+        item.status = "success";
+        item.taskId = data.id || "";
+        item.selected = false;
+        succeeded += 1;
+        if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
+      } catch (error) {
+        item.status = "failed";
+        item.error = error.message || "提交失败";
+        if (Number(error.status || 0) === 429) stopped = item.error;
+      }
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在提交 ${current + 1} / ${selected.length}`;
+      renderBatchPrompts();
     }
     const failed = selected.length - succeeded;
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `提交完成：成功 ${succeeded} 条${failed ? `，失败 ${failed} 条` : ""}`;
     toast(failed ? `批量提交完成，成功 ${succeeded} 条，失败 ${failed} 条` : `已提交 ${succeeded} 条视频任务`, failed ? "error" : "success");
-    await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), loadClientProfile()]);
+    await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
   } finally {
     state.batchSubmitting = false;
     setBusy(els.submitBatchTasks, false);
+    renderBatchPrompts();
+  }
+}
+
+function waitForBatchPoll(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function autoSubmitBatchTasks() {
+  if (state.batchAutoRunning) {
+    state.batchAutoStopRequested = true;
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，已创建的任务继续生成";
+    return;
+  }
+  if (state.batchSubmitting) return;
+  const selected = validateBatchSelection();
+  if (!selected.length) return;
+  const concurrency = Math.max(1, Math.min(batchConcurrencyLimit(), Number(els.batchAutoConcurrency?.value || 1)));
+  if (els.batchAutoConcurrency) els.batchAutoConcurrency.value = String(concurrency);
+  if (!window.confirm(`按 ${concurrency} 并发自动生成 ${selected.length} 条任务？只有槽位中的任务结束后才会创建下一条。`)) return;
+
+  state.batchSubmitting = true;
+  state.batchAutoRunning = true;
+  state.batchAutoStopRequested = false;
+  selected.forEach(({ item }) => { item.status = "queued"; item.error = ""; });
+  const ratio = els.batchTaskRatio?.value || "9:16";
+  const duration = els.batchTaskDuration?.value || "15";
+  const sessionId = window.crypto?.randomUUID?.() || `batch-auto-${Date.now().toString(36)}`;
+  const active = new Map();
+  let cursor = 0;
+  let finished = 0;
+  let blockedSlots = 0;
+  let stopped = "";
+  renderBatchPrompts();
+
+  const launchNext = async () => {
+    while (!state.batchAutoStopRequested && !stopped && active.size + blockedSlots < concurrency && cursor < selected.length) {
+      const entry = selected[cursor];
+      cursor += 1;
+      try {
+        const data = await createBatchTask(entry, sessionId, ratio, duration);
+        entry.item.status = "running";
+        entry.item.taskId = data.id || "";
+        entry.item.selected = false;
+        active.set(entry.item.taskId, entry);
+        if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
+      } catch (error) {
+        entry.item.status = "failed";
+        entry.item.error = error.message || "提交失败";
+        finished += 1;
+        blockedSlots += 1;
+        if (Number(error.status || 0) === 429) stopped = entry.item.error;
+      }
+      renderBatchPrompts();
+    }
+  };
+
+  try {
+    await launchNext();
+    while (active.size && !state.batchAutoStopRequested) {
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成中：已完成 ${finished} / ${selected.length}，运行 ${active.size} 条`;
+      await waitForBatchPoll(12000);
+      for (const [taskId, entry] of Array.from(active.entries())) {
+        try {
+          const result = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`, { timeout: 30000 });
+          const successful = String(result.code || "") === "2" && Boolean(result.url);
+          const failed = String(result.code || "") === "0" && Boolean(String(result.text || "").trim());
+          if (!successful && !failed) continue;
+          active.delete(taskId);
+          entry.item.status = successful ? "completed" : "failed";
+          entry.item.error = successful ? "" : String(result.text || "生成失败");
+          finished += 1;
+          if (failed) blockedSlots += 1;
+        } catch (_) {
+          // A temporary query failure keeps the slot active and will be checked again.
+        }
+      }
+      await launchNext();
+      renderBatchPrompts();
+      await refreshTasks({ quiet: true }).catch(() => {});
+    }
+    if (state.batchAutoStopRequested) {
+      selected.slice(cursor).forEach(({ item }) => { if (item.status === "queued") item.status = ""; });
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成已停止，已有 ${active.size} 条任务继续运行`;
+      toast("自动生成已停止，未轮到的任务没有创建");
+    } else if (stopped) {
+      selected.slice(cursor).forEach(({ item }) => { item.status = "failed"; item.error = `未创建：${stopped}`; });
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成停止：${stopped}`;
+      toast(`自动生成停止：${stopped}`, "error");
+    } else if (blockedSlots && cursor < selected.length) {
+      selected.slice(cursor).forEach(({ item }) => { item.status = "failed"; item.error = "未创建：前序任务未成功返回视频"; });
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成停止：${blockedSlots} 个并发槽位生成失败`;
+      toast("前序任务未成功返回视频，剩余任务没有创建", "error");
+    } else {
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成完成：${finished} / ${selected.length}`;
+      toast(`自动生成已完成 ${finished} 条任务`, "success");
+    }
+  } finally {
+    state.batchSubmitting = false;
+    state.batchAutoRunning = false;
+    state.batchAutoStopRequested = false;
+    await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
     renderBatchPrompts();
   }
 }
@@ -4468,6 +4685,7 @@ function bindEvents() {
     resetBatchTaskPage();
   });
   els.batchSpreadsheetInput?.addEventListener("change", () => {
+    state.batchPrompts.forEach((item) => releaseBatchImageEntries(item.images));
     state.batchSpreadsheet = els.batchSpreadsheetInput.files?.[0] || null;
     state.batchPrompts = [];
     if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheet?.name || "未选择文件";
@@ -4475,7 +4693,8 @@ function bindEvents() {
     renderBatchPrompts();
   });
   els.batchSharedImageInput?.addEventListener("change", () => {
-    state.batchSharedImages = Array.from(els.batchSharedImageInput.files || []).slice(0, 9);
+    releaseBatchImageEntries(state.batchSharedImages);
+    state.batchSharedImages = createBatchImageEntries(els.batchSharedImageInput.files || []);
     renderBatchPrompts();
   });
   els.batchMappedImageInput?.addEventListener("change", () => {
@@ -4484,16 +4703,25 @@ function bindEvents() {
   });
   els.batchRowImageInput?.addEventListener("change", () => {
     const item = state.batchPrompts[state.batchImageTargetIndex];
-    if (item) item.images = Array.from(els.batchRowImageInput.files || []).slice(0, 9);
+    if (item) {
+      releaseBatchImageEntries(item.images);
+      item.images = createBatchImageEntries(els.batchRowImageInput.files || []);
+    }
     state.batchImageTargetIndex = -1;
     els.batchRowImageInput.value = "";
     renderBatchPrompts();
   });
   els.parseBatchSpreadsheet?.addEventListener("click", parseBatchSpreadsheet);
+  els.applyBatchSelectionLimit?.addEventListener("click", applyBatchSelectionCount);
+  els.batchSelectionLimit?.addEventListener("keydown", (event) => { if (event.key === "Enter") applyBatchSelectionCount(); });
   els.selectAllBatchPrompts?.addEventListener("change", () => {
     const selected = Boolean(els.selectAllBatchPrompts.checked);
+    let remaining = selected ? MAX_BATCH_SELECTION : 0;
     state.batchPrompts.forEach((item) => {
-      if (item.status !== "success" && item.prompt.trim()) item.selected = selected;
+      if (!batchItemIsCreated(item) && item.prompt.trim()) {
+        item.selected = remaining > 0;
+        remaining -= 1;
+      }
     });
     renderBatchPrompts();
   });
@@ -4501,7 +4729,15 @@ function bindEvents() {
     const checkbox = event.target.closest("[data-batch-prompt-select]");
     if (!checkbox) return;
     const item = state.batchPrompts[Number(checkbox.dataset.batchPromptSelect)];
-    if (item && item.status !== "success") item.selected = checkbox.checked;
+    if (item && !batchItemIsCreated(item)) {
+      if (checkbox.checked && batchSelectedEntries().length >= MAX_BATCH_SELECTION) {
+        checkbox.checked = false;
+        item.selected = false;
+        toast(`最多选择 ${MAX_BATCH_SELECTION} 条任务`, "error");
+      } else {
+        item.selected = checkbox.checked;
+      }
+    }
     renderBatchPrompts();
   });
   els.batchPromptList?.addEventListener("click", (event) => {
@@ -4514,7 +4750,10 @@ function bindEvents() {
     const clearButton = event.target.closest("[data-batch-image-clear]");
     if (clearButton) {
       const item = state.batchPrompts[Number(clearButton.dataset.batchImageClear)];
-      if (item) item.images = [];
+      if (item) {
+        releaseBatchImageEntries(item.images);
+        item.images = [];
+      }
       renderBatchPrompts();
     }
   });
@@ -4529,11 +4768,14 @@ function bindEvents() {
       const checkbox = input.closest("[data-batch-prompt-row]")?.querySelector("[data-batch-prompt-select]");
       if (checkbox) checkbox.checked = false;
     }
-    const selectedCount = state.batchPrompts.filter((entry) => entry.selected && entry.prompt.trim()).length;
-    if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selectedCount} 条`;
+    const selectedCount = batchSelectedEntries().length;
+    if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selectedCount} / ${MAX_BATCH_SELECTION} 条`;
     if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selectedCount;
   });
   els.submitBatchTasks?.addEventListener("click", submitBatchTasks);
+  els.autoSubmitBatchTasks?.addEventListener("click", autoSubmitBatchTasks);
+  els.batchAutoConcurrency?.addEventListener("change", syncBatchConcurrencyControls);
+  els.batchPlatformSelect?.addEventListener("change", renderBatchPlatformControls);
   els.openMyPrompts?.addEventListener("click", () => {
     state.promptPickerPage = 1;
     renderPromptPicker();

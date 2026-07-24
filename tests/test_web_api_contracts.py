@@ -319,6 +319,33 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(refunded["quota"]["free_remaining"], 1)
         self.assertEqual(refunded["quota"]["points"], 1)
 
+    def test_transient_task_creation_failure_returns_structured_retryable_error(self) -> None:
+        registered = self.register("batch_fail_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 10)
+        with self.assertLogs("app.main", level="ERROR"), patch.object(
+            main, "reserve_temp_quota", side_effect=RuntimeError("database pool exhausted")
+        ):
+            response = self.client.post(
+                "/tasks",
+                headers={"X-API-Token": registered["token"], "Idempotency-Key": "transient-batch-failure"},
+                data={
+                    "prompt": "测试临时创建失败",
+                    "ratio": "9:16",
+                    "duration": "15",
+                    "batch": "true",
+                    "batch_id": "batch-transient-failure",
+                    "batch_index": "1",
+                    "batch_row": "2",
+                    "platform": "dola",
+                    "model": "Seedance 2.0",
+                },
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "任务创建暂时繁忙，请稍后重试")
+        self.assertEqual(response.headers["retry-after"], "2")
+        self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
+
     def test_openai_concurrency_overflow_returns_a_pending_queued_task(self) -> None:
         registered = self.register("limited_openai_client")
         owner_hash = temp_access.hash_token(registered["token"])

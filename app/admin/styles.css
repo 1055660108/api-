@@ -7197,7 +7197,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 
 .batch-prompt-row {
   display: grid;
-  grid-template-columns: 22px 64px minmax(0, 1fr) 104px 120px 34px;
+  grid-template-columns: 22px 64px minmax(0, 1fr) 104px 172px 34px;
   align-items: start;
   gap: 12px;
   min-height: 104px;
@@ -7220,7 +7220,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-prompt-row > input,
 .batch-prompt-index,
 .batch-prompt-reference,
-.batch-prompt-status,
+.batch-prompt-result,
 .batch-prompt-delete { margin-top: 10px; }
 .batch-prompt-row textarea:focus { border-color: #252b29; box-shadow: 0 0 0 3px rgba(32, 38, 36, .07); }
 
@@ -7246,7 +7246,24 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-prompt-delete svg { width: 17px; height: 17px; }
 .batch-prompt-delete:hover { color: #8f2f2a; background: #faf0ef; border-color: #efd7d4; }
 .batch-prompt-delete:disabled { opacity: .36; cursor: not-allowed; }
+.batch-prompt-result { display: grid; justify-items: end; gap: 8px; min-width: 0; }
 .batch-prompt-status { text-align: right; overflow-wrap: anywhere; }
+.batch-video-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.batch-video-actions button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  color: #252b29;
+  background: #fff;
+  border: 1px solid #d4dad7;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.batch-video-actions button:hover { background: #f4f6f5; border-color: #aeb8b3; }
+.batch-video-actions svg { width: 14px; height: 14px; }
 .batch-prompt-row.is-success .batch-prompt-status { color: #1f6250; }
 .batch-prompt-row.is-completed .batch-prompt-status { color: #1f6250; }
 .batch-prompt-row.is-running .batch-prompt-status { color: #314e46; }
@@ -7369,7 +7386,9 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
   .batch-prompt-index { grid-column: 2; grid-row: 1; }
   .batch-prompt-row textarea { grid-column: 1 / -1; min-height: 76px; }
   .batch-prompt-reference { grid-column: 1 / -1; justify-content: flex-start; }
-  .batch-prompt-status { grid-column: 1 / -1; text-align: left; }
+  .batch-prompt-result { grid-column: 1 / -1; justify-items: start; }
+  .batch-prompt-status { text-align: left; }
+  .batch-video-actions { justify-content: flex-start; }
   .batch-prompt-delete { grid-column: 2; grid-row: 1; justify-self: end; }
   .batch-task-actions { flex-wrap: wrap; }
   .batch-task-actions .muted { width: 100%; margin: 0 0 4px; }

@@ -4,6 +4,7 @@ import asyncio
 import json
 import hmac
 import hashlib
+import logging
 import secrets
 import shutil
 import smtplib
@@ -106,6 +107,7 @@ IMAGE_MAGIC = {
     ".webp": (b"RIFF",),
 }
 VALID_VIDEO_DURATIONS = {5, 10, 15}
+logger = logging.getLogger(__name__)
 
 
 def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
@@ -2317,11 +2319,12 @@ async def submit_task(
             if "meta" in locals():
                 await asyncio.to_thread(delete_task, str(meta["id"]))
             raise HTTPException(status_code=429, detail=str(exc))
-        except Exception:
+        except Exception as exc:
             if "meta" in locals():
                 await asyncio.to_thread(refund_temp_quota_hash, access.token_hash, str(meta["id"]))
                 await asyncio.to_thread(delete_task, str(meta["id"]))
-            raise
+            logger.exception("task creation failed before upload (batch=%s)", batch)
+            raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
         saved_paths: list[Path] = []
         try:
             for index, upload in enumerate(uploads, start=1):
@@ -2332,11 +2335,17 @@ async def submit_task(
                 saved_paths.append(target)
             await asyncio.to_thread(set_task_images, meta["id"], saved_paths)
             await asyncio.to_thread(finalize_task_creation, str(meta["id"]))
-        except Exception:
+        except HTTPException:
             if reserved_access:
                 await asyncio.to_thread(refund_temp_quota_hash, reserved_access.token_hash, str(meta["id"]))
             await asyncio.to_thread(delete_task, meta["id"])
             raise
+        except Exception as exc:
+            if reserved_access:
+                await asyncio.to_thread(refund_temp_quota_hash, reserved_access.token_hash, str(meta["id"]))
+            await asyncio.to_thread(delete_task, meta["id"])
+            logger.exception("task creation failed while saving uploads (batch=%s)", batch)
+            raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
         response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency}
         if reserved_access and reserved_access.is_temp:
             balance = await asyncio.to_thread(user_balance_by_token_hash, reserved_access.token_hash)

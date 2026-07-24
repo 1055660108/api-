@@ -246,7 +246,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.18', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.20', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -436,6 +436,7 @@ class AdminUITests(unittest.TestCase):
             "batchPageState",
             "selectAllBatchPrompts",
             "batchPromptList",
+            "refreshBatchTasks",
             "autoSubmitBatchTasks",
             "submitBatchTasks",
         ):
@@ -449,6 +450,14 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn('id="batchTaskDuration"', self.html)
         self.assertIn('form.append("duration", BATCH_VIDEO_DURATION)', self.javascript)
         self.assertIn('async function autoSubmitBatchTasks()', self.javascript)
+        self.assertIn('async function refreshBatchTaskStatuses(options = {})', self.javascript)
+        self.assertIn('els.refreshBatchTasks?.addEventListener("click", () => refreshBatchTaskStatuses())', self.javascript)
+        self.assertIn('data-batch-video-view', self.javascript)
+        self.assertIn('data-batch-video-download', self.javascript)
+        self.assertIn('openVideoModal(item.videoUrl)', self.javascript)
+        self.assertIn('downloadVideo(item.videoUrl, item.taskId)', self.javascript)
+        self.assertIn('item.videoUrl = String(result.url || "")', self.javascript)
+        self.assertIn('return "服务暂时繁忙，请重新生成"', self.javascript)
         self.assertIn('while (active.size && !state.batchAutoStopRequested)', self.javascript)
         self.assertIn('active.size < concurrency', self.javascript)
         self.assertIn('const maxConsecutiveSystemErrors = 3', self.javascript)
@@ -479,6 +488,12 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('const BATCH_DRAFT_VERSION = 1', self.javascript)
         self.assertIn('localStorage.setItem(key, JSON.stringify({', self.javascript)
         self.assertIn('function loadBatchDraft()', self.javascript)
+        self.assertIn('const BATCH_IMAGE_DB_NAME = "dfyue_batch_images"', self.javascript)
+        self.assertIn('window.indexedDB.open(BATCH_IMAGE_DB_NAME', self.javascript)
+        self.assertIn('async function persistBatchReferenceImages()', self.javascript)
+        self.assertIn('async function readBatchImageDraft(owner)', self.javascript)
+        self.assertIn('state.batchSharedImages = createBatchImageEntries(restoredBatchImageFiles(storedImages.shared))', self.javascript)
+        self.assertIn('item.images = createBatchImageEntries(restoredBatchImageFiles(rowImages.get(Number(item.row || 0))))', self.javascript)
         self.assertIn('resizeBatchPromptTextareas', self.javascript)
         self.assertIn('batchPageSize: 10', self.javascript)
         self.assertIn('.slice(start, start + state.batchPageSize)', self.javascript)

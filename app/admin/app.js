@@ -273,6 +273,7 @@ const els = {
   batchAutoConcurrency: document.getElementById("batchAutoConcurrency"),
   batchPromptList: document.getElementById("batchPromptList"),
   batchTaskProgress: document.getElementById("batchTaskProgress"),
+  refreshBatchTasks: document.getElementById("refreshBatchTasks"),
   autoSubmitBatchTasks: document.getElementById("autoSubmitBatchTasks"),
   submitBatchTasks: document.getElementById("submitBatchTasks"),
   batchPageSize: document.getElementById("batchPageSize"),
@@ -497,6 +498,7 @@ const state = {
   batchAutoStopRequested: false,
   batchDraftOwner: "",
   batchDraftSaveTimer: 0,
+  batchImagePersistenceFailed: false,
   isTempToken: false,
   tempTokens: [],
   accounts: [],
@@ -3763,6 +3765,10 @@ async function submitTask(event) {
 const MAX_BATCH_SELECTION = 30;
 const BATCH_VIDEO_DURATION = "15";
 const BATCH_DRAFT_VERSION = 1;
+const BATCH_IMAGE_DB_NAME = "dfyue_batch_images";
+const BATCH_IMAGE_DB_VERSION = 1;
+const BATCH_IMAGE_STORE = "drafts";
+let batchImageDatabasePromise = null;
 
 function batchConcurrencyLimit() {
   return Math.max(1, Math.trunc(portal === "client" ? Number(state.concurrency || 1) : MAX_BATCH_SELECTION));
@@ -3777,9 +3783,112 @@ function syncBatchConcurrencyControls(useMaximum = false) {
   }
 }
 
+function normalizedBatchDraftOwner(owner = state.userName) {
+  return String(owner || "").trim().toLocaleLowerCase();
+}
+
 function batchDraftStorageKey(owner = state.userName) {
-  const normalizedOwner = String(owner || "").trim().toLocaleLowerCase();
+  const normalizedOwner = normalizedBatchDraftOwner(owner);
   return normalizedOwner ? `dfyue_batch_draft_${encodeURIComponent(normalizedOwner)}` : "";
+}
+
+function batchFriendlyError(value) {
+  const text = String(value || "").trim();
+  if (!text) return "提交失败，请重试";
+  if (/internal server error|http\s*50[0-4]|failed to fetch|networkerror|load failed/i.test(text)) return "服务暂时繁忙，请重新生成";
+  return text;
+}
+
+function openBatchImageDatabase() {
+  if (!window.indexedDB) return Promise.reject(new Error("当前浏览器不支持参考图缓存"));
+  if (batchImageDatabasePromise) return batchImageDatabasePromise;
+  batchImageDatabasePromise = new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(BATCH_IMAGE_DB_NAME, BATCH_IMAGE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(BATCH_IMAGE_STORE)) database.createObjectStore(BATCH_IMAGE_STORE, { keyPath: "owner" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("参考图缓存不可用"));
+    request.onblocked = () => reject(new Error("参考图缓存正在被其他页面占用"));
+  }).catch((error) => {
+    batchImageDatabasePromise = null;
+    throw error;
+  });
+  return batchImageDatabasePromise;
+}
+
+function batchImageSnapshot(entries) {
+  return (entries || []).slice(0, 9).map((entry) => ({
+    file: entry.file,
+    name: String(entry.file?.name || "reference-image"),
+    type: String(entry.file?.type || "application/octet-stream"),
+    lastModified: Number(entry.file?.lastModified || Date.now()),
+  })).filter((entry) => entry.file instanceof Blob);
+}
+
+function batchImageDraftRecord(owner = state.userName) {
+  const normalizedOwner = normalizedBatchDraftOwner(owner);
+  if (!normalizedOwner) return null;
+  return {
+    owner: normalizedOwner,
+    shared: batchImageSnapshot(state.batchSharedImages),
+    rows: state.batchPrompts.filter((item) => item.images?.length).map((item) => ({
+      row: Number(item.row || 0),
+      images: batchImageSnapshot(item.images),
+    })),
+    savedAt: Date.now(),
+  };
+}
+
+async function writeBatchImageDraft(record, remove = false) {
+  const database = await openBatchImageDatabase();
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(BATCH_IMAGE_STORE, "readwrite");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error("参考图缓存写入失败"));
+    transaction.onabort = () => reject(transaction.error || new Error("参考图缓存写入已取消"));
+    const store = transaction.objectStore(BATCH_IMAGE_STORE);
+    if (remove) store.delete(record.owner);
+    else store.put(record);
+  });
+}
+
+async function persistBatchReferenceImages() {
+  if (portal !== "client") return;
+  const record = batchImageDraftRecord();
+  if (!record) return;
+  const hasImages = record.shared.length || record.rows.some((item) => item.images.length);
+  try {
+    await writeBatchImageDraft(record, !state.batchPrompts.length || !hasImages);
+    state.batchImagePersistenceFailed = false;
+  } catch (_) {
+    if (!state.batchImagePersistenceFailed) toast("参考图缓存失败，刷新页面后可能需要重新选择", "error");
+    state.batchImagePersistenceFailed = true;
+  }
+}
+
+async function readBatchImageDraft(owner) {
+  const normalizedOwner = normalizedBatchDraftOwner(owner);
+  if (!normalizedOwner) return null;
+  const database = await openBatchImageDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(BATCH_IMAGE_STORE, "readonly");
+    const request = transaction.objectStore(BATCH_IMAGE_STORE).get(normalizedOwner);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error || new Error("参考图缓存读取失败"));
+  });
+}
+
+function restoredBatchImageFiles(items) {
+  return (items || []).slice(0, 9).map((item) => {
+    const source = item?.file;
+    if (!(source instanceof Blob)) return null;
+    return new File([source], String(item.name || source.name || "reference-image"), {
+      type: String(item.type || source.type || "application/octet-stream"),
+      lastModified: Number(item.lastModified || source.lastModified || Date.now()),
+    });
+  }).filter(Boolean);
 }
 
 function saveBatchDraft() {
@@ -3798,8 +3907,9 @@ function saveBatchDraft() {
       prompt: String(item.prompt || "").slice(0, 4000),
       selected: Boolean(item.selected),
       status: String(item.status || ""),
-      error: String(item.error || "").slice(0, 500),
+      error: item.error ? batchFriendlyError(item.error).slice(0, 500) : "",
       taskId: String(item.taskId || "").slice(0, 80),
+      videoUrl: String(item.videoUrl || "").slice(0, 4000),
     }));
     localStorage.setItem(key, JSON.stringify({
       version: BATCH_DRAFT_VERSION,
@@ -3821,7 +3931,7 @@ function scheduleBatchDraftSave() {
   state.batchDraftSaveTimer = window.setTimeout(saveBatchDraft, 180);
 }
 
-function loadBatchDraft() {
+async function loadBatchDraft() {
   if (portal !== "client" || !state.userName) return;
   const owner = String(state.userName).trim().toLocaleLowerCase();
   if (!owner || state.batchDraftOwner === owner) return;
@@ -3838,15 +3948,16 @@ function loadBatchDraft() {
     state.batchPrompts = stored.prompts.slice(0, 500).map((item, index) => {
       const taskId = String(item?.taskId || "").slice(0, 80);
       let status = String(item?.status || "");
-      if (["queued", "running"].includes(status)) status = taskId ? "success" : "";
-      if (!["", "success", "completed", "failed"].includes(status)) status = "";
+      if (["queued", "running", "success"].includes(status)) status = taskId ? "running" : "";
+      if (!["", "running", "success", "completed", "failed"].includes(status)) status = "";
       return {
         row: Math.max(1, Number(item?.row || index + 1)),
         prompt: String(item?.prompt || "").slice(0, 4000),
         selected: status === "success" || status === "completed" ? false : Boolean(item?.selected),
         status,
-        error: String(item?.error || "").slice(0, 500),
+        error: item?.error ? batchFriendlyError(item.error).slice(0, 500) : "",
         taskId,
+        videoUrl: String(item?.videoUrl || "").slice(0, 4000),
         images: [],
       };
     }).filter((item) => item.prompt.trim());
@@ -3860,6 +3971,21 @@ function loadBatchDraft() {
   if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheetName || "未选择文件";
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchPrompts.length ? `已恢复 ${state.batchPrompts.length} 条提示词` : "等待导入";
   renderBatchPrompts();
+  if (!state.batchPrompts.length) return;
+  try {
+    const storedImages = await readBatchImageDraft(owner);
+    if (state.batchDraftOwner !== owner || !storedImages) return;
+    state.batchSharedImages = createBatchImageEntries(restoredBatchImageFiles(storedImages.shared));
+    const rowImages = new Map((storedImages.rows || []).map((item) => [Number(item.row || 0), item.images || []]));
+    state.batchPrompts.forEach((item) => {
+      item.images = createBatchImageEntries(restoredBatchImageFiles(rowImages.get(Number(item.row || 0))));
+    });
+    const restoredCount = state.batchSharedImages.length + state.batchPrompts.reduce((total, item) => total + (item.images?.length || 0), 0);
+    if (els.batchTaskProgress && restoredCount) els.batchTaskProgress.textContent = `已恢复 ${state.batchPrompts.length} 条提示词和 ${restoredCount} 张参考图`;
+    renderBatchPrompts();
+  } catch (_) {
+    // Prompt drafts remain usable when browser image storage is unavailable.
+  }
 }
 
 function resizeBatchPromptTextarea(textarea) {
@@ -3910,7 +4036,7 @@ function batchItemStatusText(item) {
   if (item.status === "running") return `生成中 ${shortId(item.taskId)}`;
   if (item.status === "completed") return `已完成 ${shortId(item.taskId)}`;
   if (item.status === "success") return `已提交 ${shortId(item.taskId)}`;
-  if (item.status === "failed") return item.error || "生成失败";
+  if (item.status === "failed") return batchFriendlyError(item.error || "生成失败");
   return "待生成";
 }
 
@@ -3934,6 +4060,7 @@ function resetBatchTaskPage() {
   syncBatchConcurrencyControls();
   renderBatchPrompts();
   saveBatchDraft();
+  persistBatchReferenceImages();
 }
 
 function renderBatchPrompts() {
@@ -3952,13 +4079,14 @@ function renderBatchPrompts() {
       const locked = state.batchSubmitting || batchItemIsCreated(item);
       const images = item.images || [];
       const previews = images.slice(0, 3).map((entry) => `<img src="${escapeHtml(entry.previewUrl)}" alt="" />`).join("");
+      const videoActions = item.videoUrl ? `<div class="batch-video-actions"><button type="button" data-batch-video-view="${index}" title="查看视频"><i data-lucide="play" aria-hidden="true"></i>查看</button><button type="button" data-batch-video-download="${index}" title="下载视频"><i data-lucide="download" aria-hidden="true"></i>下载</button></div>` : "";
       return `
       <article class="batch-prompt-row${item.status ? ` is-${escapeHtml(item.status)}` : ""}" data-batch-prompt-row="${index}">
         <input type="checkbox" data-batch-prompt-select="${index}" ${item.selected ? "checked" : ""} ${locked ? "disabled" : ""} aria-label="选择表格第 ${escapeHtml(item.row)} 行" />
         <span class="batch-prompt-index">第 ${escapeHtml(item.row)} 行</span>
         <textarea data-batch-prompt-text="${index}" maxlength="4000" ${locked ? "readonly" : ""}>${escapeHtml(item.prompt)}</textarea>
         <div class="batch-prompt-reference"><div class="batch-row-thumbs">${previews}</div><button class="text-button" type="button" data-batch-image-index="${index}" ${locked ? "disabled" : ""}>参考图</button><span title="${escapeHtml(images.map((entry) => entry.file.name).join("、"))}">${images.length ? `${images.length} 张` : "未添加"}</span>${images.length ? `<button class="batch-image-clear" type="button" data-batch-image-clear="${index}" aria-label="清除第 ${escapeHtml(item.row)} 行参考图" ${locked ? "disabled" : ""}>×</button>` : ""}</div>
-        <span class="batch-prompt-status">${escapeHtml(batchItemStatusText(item))}</span>
+        <div class="batch-prompt-result"><span class="batch-prompt-status">${escapeHtml(batchItemStatusText(item))}</span>${videoActions}</div>
         <button class="batch-prompt-delete" type="button" data-delete-batch-prompt="${index}" aria-label="删除表格第 ${escapeHtml(item.row)} 行提示词" title="删除提示词" ${state.batchSubmitting ? "disabled" : ""}><i data-lucide="trash-2" aria-hidden="true"></i></button>
       </article>`;
     }).join("");
@@ -3986,6 +4114,7 @@ function renderBatchPrompts() {
     els.autoSubmitBatchTasks.disabled = !state.batchAutoRunning && (state.batchSubmitting || !selected.length);
     els.autoSubmitBatchTasks.textContent = state.batchAutoRunning ? "停止自动生成" : "自动生成";
   }
+  if (els.refreshBatchTasks) els.refreshBatchTasks.disabled = state.batchAutoRunning || !state.batchPrompts.some((item) => item.taskId);
   const assigned = state.batchPrompts.filter((item) => item.images?.length).length;
   if (els.batchReferenceState) {
     els.batchReferenceState.textContent = state.batchSharedImages.length
@@ -4029,6 +4158,7 @@ function mapBatchReferenceImages(files) {
     appendBatchImageFiles(item, [file]);
     matched += 1;
   });
+  persistBatchReferenceImages();
   renderBatchPrompts();
   toast(`已匹配 ${matched} 张参考图`);
 }
@@ -4043,15 +4173,17 @@ async function parseBatchSpreadsheet() {
   try {
     const data = await apiFetch("/batch-prompts/parse", { method: "POST", body: form, timeout: 60000 });
     state.batchPrompts.forEach((item) => releaseBatchImageEntries(item.images));
-    state.batchPrompts = (data.prompts || []).map((item, index) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: index < MAX_BATCH_SELECTION, status: "", error: "", taskId: "", images: [] }));
+    state.batchPrompts = (data.prompts || []).map((item, index) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: index < MAX_BATCH_SELECTION, status: "", error: "", taskId: "", videoUrl: "", images: [] }));
     state.batchPage = 1;
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `已解析 ${state.batchPrompts.length} 条提示词`;
     renderBatchPrompts();
+    persistBatchReferenceImages();
     toast(`已解析 ${state.batchPrompts.length} 条视频提示词`);
   } catch (error) {
     state.batchPrompts = [];
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = "解析失败";
     renderBatchPrompts();
+    persistBatchReferenceImages();
     toast(`解析失败：${error.message}`, "error");
   } finally {
     setBusy(els.parseBatchSpreadsheet, false);
@@ -4073,11 +4205,71 @@ async function createBatchTask(entry, sessionId, ratio) {
   form.append("model", generation.model);
   [...state.batchSharedImages, ...(item.images || [])].forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
   const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 45000 };
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await apiFetch("/tasks", options);
+    } catch (error) {
+      lastError = error;
+      const status = Number(error.status || 0);
+      const transient = error.code === "REQUEST_TIMEOUT" || [500, 502, 503, 504].includes(status) || (!status && /fetch|network|load failed/i.test(String(error.message || "")));
+      if (!transient || attempt >= 2) break;
+      await waitForBatchPoll(700 * (attempt + 1));
+    }
+  }
+  if (!lastError) lastError = new Error("提交失败，请重试");
+  lastError.message = batchFriendlyError(lastError.message);
+  throw lastError;
+}
+
+function applyBatchTaskResult(item, result) {
+  const successful = String(result?.code || "") === "2" && Boolean(String(result?.url || "").trim());
+  const failed = String(result?.code || "") === "0" && Boolean(String(result?.text || "").trim());
+  if (successful) {
+    item.status = "completed";
+    item.error = "";
+    item.videoUrl = String(result.url || "");
+  } else if (failed) {
+    item.status = "failed";
+    item.error = batchFriendlyError(result.text || "生成失败");
+    item.videoUrl = "";
+  } else {
+    item.status = "running";
+    item.error = "";
+  }
+  return successful || failed;
+}
+
+async function refreshBatchTaskStatuses(options = {}) {
+  if (state.batchAutoRunning) {
+    if (!options.quiet) toast("自动生成正在持续刷新状态");
+    return;
+  }
+  const entries = state.batchPrompts.filter((item) => item.taskId);
+  if (!entries.length) {
+    if (!options.quiet) toast("暂无已创建的任务可刷新");
+    return;
+  }
+  setBusy(els.refreshBatchTasks, true, "刷新中");
+  let refreshed = 0;
+  let unavailable = 0;
   try {
-    return await apiFetch("/tasks", options);
-  } catch (error) {
-    if (error.code !== "REQUEST_TIMEOUT") throw error;
-    return apiFetch("/tasks", options);
+    await runPool(entries, 3, async (item) => {
+      try {
+        const result = await apiFetch(`/tasks/${encodeURIComponent(item.taskId)}`, { timeout: 30000 });
+        applyBatchTaskResult(item, result);
+        refreshed += 1;
+      } catch (_) {
+        unavailable += 1;
+      }
+    });
+    renderBatchPrompts();
+    saveBatchDraft();
+    const completed = entries.filter((item) => item.videoUrl).length;
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = `状态已刷新：完成 ${completed} 条，查询成功 ${refreshed} 条`;
+    if (!options.quiet) toast(unavailable ? `状态刷新完成，${unavailable} 条暂时无法查询` : "任务状态已刷新", unavailable ? "error" : "success");
+  } finally {
+    setBusy(els.refreshBatchTasks, false);
   }
 }
 
@@ -4119,14 +4311,15 @@ async function submitBatchTasks() {
       }
       try {
         const data = await createBatchTask(selected[current], sessionId, ratio);
-        item.status = "success";
+        item.status = "running";
         item.taskId = data.id || "";
+        item.videoUrl = "";
         item.selected = false;
         succeeded += 1;
         if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
       } catch (error) {
         item.status = "failed";
-        item.error = error.message || "提交失败";
+        item.error = batchFriendlyError(error.message || "提交失败");
         if (Number(error.status || 0) === 429) stopped = item.error;
       }
       if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在提交 ${current + 1} / ${selected.length}`;
@@ -4189,7 +4382,7 @@ async function autoSubmitBatchTasks() {
         if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
       } catch (error) {
         entry.item.status = "failed";
-        entry.item.error = error.message || "提交失败";
+        entry.item.error = batchFriendlyError(error.message || "提交失败");
         finished += 1;
         failed += 1;
         consecutiveSystemErrors += 1;
@@ -4208,14 +4401,11 @@ async function autoSubmitBatchTasks() {
         try {
           const result = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`, { timeout: 30000 });
           consecutiveSystemErrors = 0;
-          const successful = String(result.code || "") === "2" && Boolean(result.url);
-          const taskFailed = String(result.code || "") === "0" && Boolean(String(result.text || "").trim());
-          if (!successful && !taskFailed) continue;
+          const terminal = applyBatchTaskResult(entry.item, result);
+          if (!terminal) continue;
           active.delete(taskId);
-          entry.item.status = successful ? "completed" : "failed";
-          entry.item.error = successful ? "" : String(result.text || "生成失败");
           finished += 1;
-          if (successful) completed += 1;
+          if (entry.item.videoUrl) completed += 1;
           else failed += 1;
         } catch (error) {
           consecutiveSystemErrors += 1;
@@ -4832,11 +5022,13 @@ function bindEvents() {
     if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheet?.name || "未选择文件";
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchSpreadsheet ? "文件已导入，等待解析" : "等待导入";
     renderBatchPrompts();
+    persistBatchReferenceImages();
   });
   els.batchSharedImageInput?.addEventListener("change", () => {
     releaseBatchImageEntries(state.batchSharedImages);
     state.batchSharedImages = createBatchImageEntries(els.batchSharedImageInput.files || []);
     renderBatchPrompts();
+    persistBatchReferenceImages();
   });
   els.batchMappedImageInput?.addEventListener("change", () => {
     mapBatchReferenceImages(Array.from(els.batchMappedImageInput.files || []));
@@ -4851,6 +5043,7 @@ function bindEvents() {
     state.batchImageTargetIndex = -1;
     els.batchRowImageInput.value = "";
     renderBatchPrompts();
+    persistBatchReferenceImages();
   });
   els.parseBatchSpreadsheet?.addEventListener("click", parseBatchSpreadsheet);
   els.batchPageSize?.addEventListener("change", () => {
@@ -4896,6 +5089,18 @@ function bindEvents() {
     renderBatchPrompts();
   });
   els.batchPromptList?.addEventListener("click", (event) => {
+    const viewVideoButton = event.target.closest("[data-batch-video-view]");
+    if (viewVideoButton) {
+      const item = state.batchPrompts[Number(viewVideoButton.dataset.batchVideoView)];
+      if (item?.videoUrl) openVideoModal(item.videoUrl);
+      return;
+    }
+    const downloadVideoButton = event.target.closest("[data-batch-video-download]");
+    if (downloadVideoButton) {
+      const item = state.batchPrompts[Number(downloadVideoButton.dataset.batchVideoDownload)];
+      if (item?.videoUrl) downloadVideo(item.videoUrl, item.taskId);
+      return;
+    }
     const deleteButton = event.target.closest("[data-delete-batch-prompt]");
     if (deleteButton) {
       const index = Number(deleteButton.dataset.deleteBatchPrompt);
@@ -4906,6 +5111,7 @@ function bindEvents() {
       if (state.batchImageTargetIndex === index) state.batchImageTargetIndex = -1;
       else if (state.batchImageTargetIndex > index) state.batchImageTargetIndex -= 1;
       renderBatchPrompts();
+      persistBatchReferenceImages();
       return;
     }
     const addButton = event.target.closest("[data-batch-image-index]");
@@ -4922,6 +5128,7 @@ function bindEvents() {
         item.images = [];
       }
       renderBatchPrompts();
+      persistBatchReferenceImages();
     }
   });
   els.batchPromptList?.addEventListener("input", (event) => {
@@ -4942,6 +5149,7 @@ function bindEvents() {
     scheduleBatchDraftSave();
   });
   els.submitBatchTasks?.addEventListener("click", submitBatchTasks);
+  els.refreshBatchTasks?.addEventListener("click", () => refreshBatchTaskStatuses());
   els.autoSubmitBatchTasks?.addEventListener("click", () => {
     if (state.batchAutoRunning) {
       autoSubmitBatchTasks();

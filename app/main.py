@@ -841,7 +841,7 @@ def _client_task(task: dict) -> dict:
         int(safe.get("retry_count") or 0) > 0 or int(safe.get("infrastructure_retry_count") or 0) > 0
     ):
         safe["error"] = "正在重试中，请稍等！"
-        safe["status_reason"] = "正在重试中，请稍等！"
+        safe["status_reason"] = str(safe.get("status_reason") or "正在重试中，请稍等！")
     for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
         safe.pop(key, None)
     return safe

@@ -680,7 +680,7 @@ class WebAPIContractTests(unittest.TestCase):
         client_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": token}).json()["tasks"][0]
         self.assertEqual(client_task["status"], "pending")
         self.assertEqual(client_task["error"], "正在重试中，请稍等！")
-        self.assertEqual(client_task["status_reason"], "正在重试中，请稍等！")
+        self.assertEqual(client_task["status_reason"], "重试已入队，等待执行")
 
         admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
         self.assertEqual(admin_task["error"], previous_failure)

@@ -232,6 +232,27 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(recovered["infrastructure_retry_count"], 1)
         self.assertIn("opening_generation_page", recovered["infrastructure_error"])
 
+    def test_watchdog_requeues_due_pending_retry(self) -> None:
+        task = self.create_task()
+        self.assertTrue(store.mark_running(task["id"], "worker-retry-reconcile"))
+        store.mark_submitted(task["id"])
+        self.assertEqual(store.retry_submitted_task(task["id"], "远端生成失败", delay_seconds=1), 1)
+        due = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        store.update_meta(task["id"], next_attempt_at=due, retry_queue_verified_at="", status_reason="正在重试中，请稍等！")
+        manager = WorkerManager()
+        manager._queue = unittest.mock.Mock()
+        manager._queue.requeue.return_value = True
+
+        async def reconcile() -> None:
+            await manager._watch_running_tasks_once()
+
+        asyncio.run(reconcile())
+        recovered = store.get_meta(task["id"])
+        self.assertEqual(recovered["status"], store.STATUS_PENDING)
+        self.assertEqual(recovered["status_reason"], "重试已入队，等待执行")
+        self.assertTrue(recovered["retry_queue_verified_at"])
+        manager._queue.requeue.assert_called_with(task["id"], datetime.fromisoformat(due))
+
     def test_task_creation_enqueues_through_selected_backend(self) -> None:
         queue = unittest.mock.Mock()
         with patch("app.task_queue.get_task_queue", return_value=queue):

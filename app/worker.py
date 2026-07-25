@@ -29,6 +29,7 @@ from .store import (
     mark_account_refund_once,
     mark_failed,
     mark_pending,
+    mark_retry_queue_verified,
     mark_submitted,
     mark_result_once,
     MAX_TASK_RETRIES,
@@ -127,6 +128,7 @@ class WorkerManager:
         self._remote_owner_counts: dict[str, int] = {}
         self._remote_owner_limits: dict[str, int] = {}
         self._remote_owner_refreshed_at = 0.0
+        self._last_pending_retry_reconcile_at = 0.0
         self._claimed: set[str] = set()
         self._stopping = False
         self._worker_seq = 0
@@ -276,6 +278,10 @@ class WorkerManager:
             limit=RESULT_POLL_BATCH_SIZE,
         )
         await self._watch_unfinished_success_tasks([task_id for task_id, _ in submitted_rows])
+        loop_now = asyncio.get_running_loop().time()
+        if loop_now - self._last_pending_retry_reconcile_at >= 15:
+            self._last_pending_retry_reconcile_at = loop_now
+            await asyncio.to_thread(self._reconcile_pending_retries)
         running_ids = [task_id for task_id, _ in list_task_metas_by_statuses({"running"})]
         for task_id in running_ids:
             with suppress(FileNotFoundError):
@@ -312,6 +318,25 @@ class WorkerManager:
                 else:
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
         set_active_tasks(self._claimed)
+
+    def _reconcile_pending_retries(self) -> None:
+        now = datetime.now(timezone.utc)
+        rows = list_task_metas_by_statuses({"pending"}, limit=RESULT_POLL_BATCH_SIZE)
+        for task_id, meta in rows:
+            retry_count = max(0, int(meta.get("retry_count") or 0))
+            infrastructure_retry_count = max(0, int(meta.get("infrastructure_retry_count") or 0))
+            if retry_count < 1 and infrastructure_retry_count < 1:
+                continue
+            if expire_task_if_timeout(task_id):
+                continue
+            next_attempt_at = self._parse_utc(str(meta.get("next_attempt_at") or ""))
+            if next_attempt_at and next_attempt_at > now:
+                continue
+            try:
+                if self._queue.requeue(task_id, next_attempt_at):
+                    mark_retry_queue_verified(task_id)
+            except Exception as exc:
+                self._last_error = f"retry queue reconcile failed: {str(exc)[:450]}"
 
     async def _watch_unfinished_success_tasks(self, task_ids: list[str]) -> None:
         if not task_ids:

@@ -3027,6 +3027,7 @@ async function refreshTasks(options = {}) {
 
 function getTaskStatus(task) {
   const rawStatus = String(task.status || "").toLowerCase();
+  const retrying = Number(task.retry_count || 0) > 0 || Number(task.infrastructure_retry_count || 0) > 0;
   const result = state.results[task.id];
   const resultUrl = String(result?.url ?? "");
   const resultCode = String(result?.code ?? "");
@@ -3041,10 +3042,15 @@ function getTaskStatus(task) {
   if (rawStatus === "canceled") return { state: "failed", label: "取消", className: "failed", text: clientSafeText(task.error || "用户取消生成", task), url: "" };
   if (rawStatus === "pending" && queueReason && Number(task.infrastructure_retry_count || 0) > 0) return { state: "running", label: "重试中", className: "running", text: portal === "client" || !diagnostic ? queueReason : `${queueReason}；原因：${diagnostic}`, url: "" };
   if (rawStatus === "pending" && queueReason) return { state: "pending", label: "排队中", className: "unknown", text: queueReason, url: "" };
-  if (rawStatus === "pending" && (Number(task.retry_count || 0) > 0 || Number(task.infrastructure_retry_count || 0) > 0)) return { state: "running", label: "重试中", className: "running", text: portal === "client" ? "正在重试中，请稍等！" : clientSafeText(resultText || task.error || statusReason || diagnostic || "正在重试", task), url: "" };
+  if (rawStatus === "pending" && retrying) {
+    const retryProgress = statusReason || "正在重试中，请稍等！";
+    const adminReason = String(task.error || diagnostic || "").trim();
+    return { state: "running", label: "重试已入队", className: "running", text: portal === "client" || !adminReason ? retryProgress : `${retryProgress}；上次原因：${adminReason}`, url: "" };
+  }
   if (rawStatus === "pending") return { state: "pending", label: "待执行", className: "unknown", text: clientSafeText(statusReason || resultText || task.error || diagnostic || "", task), url: "" };
   if (rawStatus === "running" || rawStatus === "submitted") {
-    return { state: "running", label: rawStatus === "submitted" ? "等待结果" : "生成中", className: "running", text: clientSafeText(statusReason || resultText || task.error || diagnostic || (rawStatus === "submitted" ? "正在等待生成结果" : "正在准备生成任务"), task), url: "" };
+    const label = rawStatus === "submitted" ? (retrying ? "重试等待结果" : "等待结果") : (retrying ? "重试执行中" : "生成中");
+    return { state: "running", label, className: "running", text: clientSafeText(statusReason || resultText || task.error || diagnostic || (rawStatus === "submitted" ? "正在等待生成结果" : "正在准备生成任务"), task), url: "" };
   }
   if (!result) return { state: "unknown", label: "未查询", className: "unknown", text: "", url: "" };
   if (result.error) return { state: "unknown", label: "查询失败", className: "failed", text: clientSafeText(result.error, task), url: "" };
@@ -3087,7 +3093,7 @@ function renderTaskTable(options = {}) {
     const resultText = status.text || task.error || "-";
     const canOpenResult = resultText && resultText !== "-";
     const retryCount = Math.max(0, Number(task.retry_count || 0));
-    const statusMeta = status.label === "重试中" ? `第 ${Math.min(retryCount, 2)} / 2 次` : "";
+    const statusMeta = retryCount > 0 && ["pending", "running", "submitted"].includes(String(task.status || "").toLowerCase()) ? `第 ${Math.min(retryCount, 2)} / 2 次重试` : "";
     const fullPrompt = String(task.prompt || task.prompt_preview || "").trim();
     const promptPreview = String(task.prompt_preview || "").trim() || "-";
     const ownerName = String(task.owner_name || "未备注").trim() || "未备注";

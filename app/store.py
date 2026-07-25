@@ -467,6 +467,19 @@ def set_execution_phase(task_id: str, phase: str, status_reason: str) -> bool:
     return updated is not None
 
 
+def mark_retry_queue_verified(task_id: str) -> bool:
+    now = utc_now()
+    updated = update_meta_if(
+        task_id,
+        {STATUS_PENDING},
+        execution_phase="retry_queued",
+        status_reason="重试已入队，等待执行",
+        retry_queue_verified_at=now,
+        phase_updated_at=now,
+    )
+    return updated is not None
+
+
 def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int] | None = None) -> bool:
     limits = concurrency_limits or {}
     claimed_at = utc_now()
@@ -479,7 +492,7 @@ def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_PENDING or bool(meta.get("cancel_requested")):
             return False
-        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", queue_reason="", queue_category="", execution_miss_count=0, execution_phase="waiting_account", status_reason="正在分配生成资源", phase_updated_at=claimed_at, submit_phase="", submit_started_at="", updated_at=claimed_at)
+        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", queue_reason="", queue_category="", execution_miss_count=0, execution_phase="waiting_account", status_reason="正在分配生成资源", phase_updated_at=claimed_at, retry_queue_verified_at="", submit_phase="", submit_started_at="", updated_at=claimed_at)
         _write_storage_json(meta_path(task_id), meta)
         return True
 
@@ -685,7 +698,10 @@ def requeue_pending_task(task_id: str) -> bool:
     from .task_queue import get_task_queue
 
     available_at = parse_time(str(meta.get("next_attempt_at") or ""))
-    return get_task_queue().requeue(task_id, available_at)
+    queued = get_task_queue().requeue(task_id, available_at)
+    if queued:
+        mark_retry_queue_verified(task_id)
+    return queued
 
 
 def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_RETRIES, delay_seconds: int = 45) -> int:
@@ -1076,6 +1092,9 @@ def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str])
         "queue_reason": str(meta.get("queue_reason") or ""),
         "queue_category": str(meta.get("queue_category") or ""),
         "queued_at": str(meta.get("queued_at") or meta.get("created_at") or ""),
+        "next_attempt_at": str(meta.get("next_attempt_at") or ""),
+        "retry_queued_at": str(meta.get("retry_queued_at") or ""),
+        "retry_queue_verified_at": str(meta.get("retry_queue_verified_at") or ""),
         "claimed_at": str(meta.get("claimed_at") or ""),
         "attempt": int(meta.get("attempt") or 0),
         "worker_id": str(meta.get("worker_id") or ""),

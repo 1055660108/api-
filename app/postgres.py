@@ -743,6 +743,7 @@ def claim_task(task_id: str, worker_id: str, owner_token_hash: str, concurrency_
             execution_phase="waiting_account",
             status_reason="正在分配生成资源",
             phase_updated_at=claimed_at,
+            retry_queue_verified_at="",
             submit_phase="",
             submit_started_at="",
             updated_at=claimed_at,

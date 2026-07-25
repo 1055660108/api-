@@ -1065,6 +1065,7 @@ function clientSafeText(value, task = {}) {
   let text = String(value || "");
   if (portal !== "client") return text;
   const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
+  if (/游客模式|请登录后再试|登录后再试/.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
   if (/当前地区不可用|所在的国家\/地区不可用|region restricted|country restricted/i.test(text)) return "正在重试中，请稍等！";
   if (/Page\.(?:goto|click|evaluate|waitFor|wait_for)|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷/i.test(text)) {
     return "你的输入可能包含违规内容请重试！";
@@ -3265,8 +3266,7 @@ function getTaskStatus(task) {
   if (rawStatus === "pending" && queueReason) return { state: "pending", label: "排队中", className: "unknown", text: queueReason, url: "" };
   if (rawStatus === "pending" && retrying) {
     const retryProgress = statusReason || "正在重试中，请稍等！";
-    const adminReason = String(task.error || diagnostic || "").trim();
-    return { state: "running", label: "重试已入队", className: "running", text: portal === "client" || !adminReason ? retryProgress : `${retryProgress}；上次原因：${adminReason}`, url: "" };
+    return { state: "running", label: "重试已入队", className: "running", text: retryProgress, url: "" };
   }
   if (rawStatus === "pending") return { state: "pending", label: "待执行", className: "unknown", text: clientSafeText(statusReason || resultText || task.error || diagnostic || "", task), url: "" };
   if (rawStatus === "running" || rawStatus === "submitted") {

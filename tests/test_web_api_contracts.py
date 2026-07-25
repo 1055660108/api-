@@ -74,6 +74,8 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("正在分配浏览器资源", "Seedance 2.0"), "正在分配服务资源")
         self.assertEqual(main._client_safe_text("正在启动浏览器", "Seedance 2.0"), "正在启动服务")
         self.assertEqual(main._client_safe_text("浏览器超时", "Seedance 2.0"), "服务超时")
+        self.assertEqual(main._client_safe_text("游客模式暂不支持生成图片和视频，请登录后再试", "Seedance 2.0"), "正在重试中，请稍等！")
+        self.assertEqual(main._client_safe_text("游客模式暂不支持生成图片和视频，请登录后再试", "Seedance 2.0", terminal=True), "生成失败，请重试！")
 
     def test_failed_region_task_never_displays_retrying_text(self) -> None:
         registered = self.register("failed_region_client")

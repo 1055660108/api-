@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from .accounts import clear_account_current_task, exhaust_account_quota, exhaust_timed_out_account, refund_account_quota, settle_account_quota
+from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, refund_account_quota, settle_account_quota
 from .automation import is_final_generation_failure
 from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, record_failed_account, retry_submitted_task, save_result
 from .temp_access import refund_temp_quota_hash
@@ -95,6 +95,11 @@ class DolaQueryError(RuntimeError):
 def is_generation_failure_text(text: str) -> bool:
     value = str(text or "")
     return any(marker in value for marker in FAILURE_TEXT_MARKERS)
+
+
+def is_account_login_invalid(text: str) -> bool:
+    value = repair_text(str(text or ""))
+    return "游客模式" in value or "请登录后再试" in value or "登录后再试" in value
 
 
 def is_suspected_policy_false_positive(text: str) -> bool:
@@ -648,10 +653,15 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             meta = get_meta(task_id)
             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
             return {"code": "0", "text": POLICY_RETRY_TEXT, "url": ""}
+        login_invalid = is_account_login_invalid(text)
         if account_id:
             clear_account_current_task(account_id, task_id)
             record_failed_account(task_id, account_id)
-            consume_failed_account_quota(task_id, meta, account_id, str(result.get("account_quota_charge_id") or ""))
+            if login_invalid:
+                disable_account_for_login(account_id, "Dola 登录状态失效（游客模式）")
+                refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+            else:
+                consume_failed_account_quota(task_id, meta, account_id, str(result.get("account_quota_charge_id") or ""))
         retry_count = retry_submitted_task(task_id, text[:500], max_retries=MAX_TASK_RETRIES, delay_seconds=10)
         if retry_count > MAX_TASK_RETRIES:
             meta = get_meta(task_id)

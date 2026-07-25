@@ -440,6 +440,40 @@ class DolaQueryTests(unittest.TestCase):
         retry_task.assert_called_once_with(task_id, automation.FINAL_FAILURE_TEXT, max_retries=2, delay_seconds=10)
         clear_result.assert_called_once_with(task_id)
 
+    def test_guest_mode_disables_account_refunds_quota_and_retries(self) -> None:
+        task_id = "0" * 32
+        guest_text = "游客模式暂不支持生成图片和视频，请登录后再试"
+        result_data = {
+            "cookie_string": "sessionid=expired",
+            "conversation_id": "12345678901234567",
+            "account_id": "account-guest",
+            "account_quota_charge_id": "charge-guest",
+        }
+        meta = {"status": query.STATUS_SUBMITTED, "owner_token_hash": "owner-hash"}
+        with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=("", guest_text))
+        ), patch.object(query, "save_result"), patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(query, "record_failed_account") as record_failed, patch.object(
+            query, "disable_account_for_login"
+        ) as disable_account, patch.object(query, "refund_account_quota_once") as refund_account, patch.object(
+            query, "settle_account_quota"
+        ) as settle_account, patch.object(query, "retry_submitted_task", return_value=1) as retry_task, patch.object(
+            query, "clear_transient_result"
+        ) as clear_result:
+            response = asyncio.run(query._query_task_once(task_id))
+
+        self.assertEqual(response, {"code": "1", "text": query.RETRY_GENERATING_TEXT, "url": ""})
+        clear_account.assert_called_once_with("account-guest", task_id)
+        record_failed.assert_called_once_with(task_id, "account-guest")
+        disable_account.assert_called_once_with("account-guest", "Dola 登录状态失效（游客模式）")
+        refund_account.assert_called_once_with(task_id, "account-guest", "charge-guest")
+        settle_account.assert_not_called()
+        retry_task.assert_called_once_with(task_id, guest_text, max_retries=2, delay_seconds=10)
+        clear_result.assert_called_once_with(task_id)
+
     def test_global_task_timeout_returns_terminal_failure(self) -> None:
         meta = {"status": query.STATUS_FAILED, "owner_token_hash": "owner-hash", "error": "超时生成失败"}
         with patch.object(query, "expire_task_if_timeout", return_value=True), patch.object(

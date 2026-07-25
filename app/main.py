@@ -1120,6 +1120,8 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
 
     replacement = str(model or "当前模型")
     text = str(value or "")
+    if re.search(r"游客模式|请登录后再试|登录后再试", text):
+        return "生成失败，请重试！" if terminal else "正在重试中，请稍等！"
     if "正在打开生成页面" in text:
         return "正在启动服务"
     text = text.replace("浏览器", "服务")

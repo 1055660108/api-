@@ -594,7 +594,7 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
                     if not normalized:
                         raise ValueError("cookie data is invalid")
                     now = utc_now()
-                    account.update(cookies=normalized, cookie_header=_cookie_header_from_items(normalized), last_cookie_refresh_at=now, enabled=True, updated_at=now)
+                    account.update(cookies=normalized, cookie_header=_cookie_header_from_items(normalized), last_cookie_refresh_at=now, enabled=True, account_status="normal", status_reason="", updated_at=now)
                     account.pop("disabled_reason", None)
                     return _public_account(account)
                 raise KeyError("account not found")
@@ -613,6 +613,8 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
             account["cookie_header"] = _cookie_header_from_items(normalized)
             account["last_cookie_refresh_at"] = utc_now()
             account["enabled"] = True
+            account["account_status"] = "normal"
+            account["status_reason"] = ""
             account.pop("disabled_reason", None)
             account["updated_at"] = account["last_cookie_refresh_at"]
             _write_data(data)

@@ -448,6 +448,21 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(accounts.list_accounts()[0]["quota_used"], 0)
         self.assertIsNone(accounts.account_for_current_task(task["id"]))
 
+    def test_login_invalid_account_is_abnormal_until_cookies_are_replaced(self) -> None:
+        created = accounts.add_account("Expired", "session=expired", quota_limit=2)
+        disabled = accounts.disable_account_for_login(created["id"], "Dola 登录状态失效（游客模式）")
+
+        self.assertFalse(disabled["enabled"])
+        self.assertEqual(disabled["account_status"], "abnormal")
+        self.assertIn("游客模式", disabled["status_reason"])
+        self.assertIsNone(accounts.account_for_worker("worker-1"))
+
+        restored = accounts.update_account_cookies(created["id"], accounts.parse_cookie_payload("session=fresh"))
+        self.assertTrue(restored["enabled"])
+        self.assertEqual(restored["account_status"], "normal")
+        self.assertEqual(restored["status_reason"], "")
+        self.assertIsNotNone(accounts.account_for_worker("worker-1"))
+
     def test_queue_deferral_does_not_consume_generation_retry(self) -> None:
         task = self.create_task("owner")
         self.assertTrue(store.mark_running(task["id"], "worker-1"))

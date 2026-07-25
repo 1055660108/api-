@@ -512,6 +512,7 @@ const state = {
   batchDraftOwner: "",
   batchDraftSaveTimer: 0,
   batchImagePersistenceFailed: false,
+  userActiveTaskCount: 0,
   isTempToken: false,
   tempTokens: [],
   accounts: [],
@@ -1412,6 +1413,7 @@ function applyAccessScope(data = {}) {
     state.concurrency = Math.max(1, Number(data.token_concurrency ?? data.browser_workers ?? 1));
     if (els.metricWorkers) els.metricWorkers.textContent = String(state.concurrency);
   }
+  if (data.active_task_count != null) state.userActiveTaskCount = Math.max(0, Number(data.active_task_count || 0));
   syncBatchConcurrencyControls();
   loadBatchDraft();
   if (data.version) {
@@ -4031,8 +4033,9 @@ async function loadBatchDraft() {
     state.batchPrompts = stored.prompts.map((item, index) => {
       const taskId = String(item?.taskId || "").slice(0, 80);
       let status = String(item?.status || "");
-      if (["queued", "running", "success"].includes(status)) status = taskId ? "running" : "";
-      if (!["", "running", "success", "completed", "failed"].includes(status)) status = "";
+      if (["running", "success"].includes(status)) status = taskId ? "running" : "";
+      if (status === "queued" && taskId) status = "running";
+      if (!["", "queued", "running", "success", "completed", "failed"].includes(status)) status = "";
       return {
         row: Math.max(1, Number(item?.row || index + 1)),
         prompt: String(item?.prompt || "").slice(0, 4000),
@@ -4154,7 +4157,7 @@ function syncBatchPromptsFromTaskState() {
 }
 
 function batchItemStatusText(item) {
-  if (item.status === "queued") return "等待自动提交";
+  if (item.status === "queued") return "批次排队中，尚未创建任务";
   if (item.status === "running") return `生成中 ${shortId(item.taskId)}`;
   if (item.status === "completed") return `已完成 ${shortId(item.taskId)}`;
   if (item.status === "success") return `已提交 ${shortId(item.taskId)}`;
@@ -4446,77 +4449,15 @@ function validateBatchSelection() {
 
 async function submitBatchTasks() {
   if (state.batchSubmitting) {
-    if (!state.batchAutoRunning) {
-      state.batchStopRequested = true;
-      requestBatchSubmissionStop();
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，当前任务确认后停止";
-      renderBatchPrompts();
-    }
+    state.batchAutoStopRequested = true;
+    requestBatchSubmissionStop();
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，已创建的任务继续生成";
     return;
   }
   const selected = validateBatchSelection();
   if (!selected.length || !window.confirm(`确定生成已选择的 ${selected.length} 条视频任务吗？每条任务会分别扣除视频额度或积分。`)) return;
-  state.batchSubmitting = true;
-  state.batchStopRequested = false;
-  const ratio = els.batchTaskRatio?.value || "9:16";
-  const sessionId = window.crypto?.randomUUID?.() || `batch-${Date.now().toString(36)}`;
-  state.batchSessionId = sessionId;
-  let succeeded = 0;
-  let stopped = "";
-  let referenceBundle = null;
-  selected.forEach(({ item }) => { item.status = "queued"; item.error = ""; });
-  renderBatchPrompts();
-  try {
-    referenceBundle = await prepareBatchReferenceBundle(sessionId);
-    for (let current = 0; current < selected.length; current += 1) {
-      const { item } = selected[current];
-      if (state.batchStopRequested) {
-        selected.slice(current).forEach(({ item: pendingItem }) => {
-          if (pendingItem.status === "queued") pendingItem.status = "";
-        });
-        break;
-      }
-      if (stopped) {
-        item.status = "failed";
-        item.error = `未继续提交：${stopped}`;
-        continue;
-      }
-      try {
-        const data = await createBatchTask(selected[current], sessionId, ratio, referenceBundle);
-        item.status = "running";
-        item.taskId = data.id || "";
-        item.videoUrl = "";
-        item.selected = false;
-        succeeded += 1;
-        if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
-      } catch (error) {
-        if (state.batchStopRequested || (Number(error.status || 0) === 409 && /停止/.test(String(error.message || "")))) {
-          item.status = "";
-          item.error = "";
-          break;
-        }
-        item.status = "failed";
-        item.error = batchFriendlyError(error.message || "提交失败");
-        if (Number(error.status || 0) === 429) stopped = item.error;
-      }
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在提交 ${current + 1} / ${selected.length}`;
-      renderBatchPrompts();
-    }
-    const failed = selected.filter(({ item }) => item.status === "failed").length;
-    const remaining = selected.filter(({ item }) => !batchItemIsCreated(item) && item.status !== "failed").length;
-    if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchStopRequested ? `已停止：创建 ${succeeded} 条，保留 ${remaining} 条待生成` : `提交完成：成功 ${succeeded} 条${failed ? `，失败 ${failed} 条` : ""}`;
-    toast(state.batchStopRequested ? `已停止提交，未创建的 ${remaining} 条可继续生成` : failed ? `批量提交完成，成功 ${succeeded} 条，失败 ${failed} 条` : `已提交 ${succeeded} 条视频任务`, failed && !state.batchStopRequested ? "error" : "success");
-    await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
-  } catch (error) {
-    selected.forEach(({ item }) => { if (item.status === "queued") item.status = ""; });
-    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "批量提交未开始";
-    toast(`批量提交失败：${batchFriendlyError(error.message)}`, "error");
-  } finally {
-    state.batchSubmitting = false;
-    state.batchStopRequested = false;
-    state.batchSessionId = "";
-    renderBatchPrompts();
-  }
+  syncBatchConcurrencyControls(true);
+  await autoSubmitBatchTasks();
 }
 
 function waitForBatchPoll(milliseconds) {
@@ -4531,6 +4472,7 @@ async function autoSubmitBatchTasks() {
     return;
   }
   if (state.batchSubmitting) return;
+  await Promise.allSettled([refreshHealth(), refreshBatchTaskStatuses({ quiet: true })]);
   const selected = validateBatchSelection();
   if (!selected.length) return;
   const concurrency = Math.max(1, Math.min(batchConcurrencyLimit(), Math.trunc(Number(els.batchAutoConcurrency?.value || batchConcurrencyLimit()))));
@@ -4545,6 +4487,10 @@ async function autoSubmitBatchTasks() {
   state.batchSessionId = sessionId;
   let referenceBundle = null;
   const active = new Map();
+  state.batchPrompts.forEach((item, index) => {
+    if (item.taskId && ["running", "success"].includes(String(item.status || ""))) active.set(item.taskId, { item, index });
+  });
+  let outsideActive = Math.max(0, Number(state.userActiveTaskCount || 0) - active.size);
   let cursor = 0;
   let finished = 0;
   let completed = 0;
@@ -4552,10 +4498,11 @@ async function autoSubmitBatchTasks() {
   let consecutiveSystemErrors = 0;
   const maxConsecutiveSystemErrors = 3;
   let stopped = "";
+  const total = selected.length + active.size;
   renderBatchPrompts();
 
   const launchNext = async () => {
-    while (!state.batchAutoStopRequested && !stopped && active.size < concurrency && cursor < selected.length) {
+    while (!state.batchAutoStopRequested && !stopped && active.size + outsideActive < concurrency && cursor < selected.length) {
       const entry = selected[cursor];
       cursor += 1;
       try {
@@ -4586,9 +4533,10 @@ async function autoSubmitBatchTasks() {
   try {
     referenceBundle = await prepareBatchReferenceBundle(sessionId);
     await launchNext();
-    while (active.size && !state.batchAutoStopRequested) {
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成中：已完成 ${finished} / ${selected.length}，运行 ${active.size} 条`;
-      await waitForBatchPoll(12000);
+    while ((active.size || cursor < selected.length) && !state.batchAutoStopRequested && !stopped) {
+      const waiting = Math.max(0, selected.length - cursor);
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成中：已完成 ${finished} / ${total}，运行 ${active.size} 条，批次排队 ${waiting} 条`;
+      await waitForBatchPoll(active.size ? 12000 : 5000);
       for (const [taskId, entry] of Array.from(active.entries())) {
         try {
           const result = await apiFetch(`/tasks/${encodeURIComponent(taskId)}`, { timeout: 30000 });
@@ -4607,6 +4555,8 @@ async function autoSubmitBatchTasks() {
           }
         }
       }
+      await refreshHealth().catch(() => {});
+      outsideActive = Math.max(0, Number(state.userActiveTaskCount || 0) - active.size);
       await launchNext();
       renderBatchPrompts();
       await refreshTasks({ quiet: true }).catch(() => {});

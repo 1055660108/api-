@@ -64,6 +64,18 @@ class ResilienceUnitTests(unittest.TestCase):
         self.assertEqual(limited.reason, "rate_limited")
         self.assertGreaterEqual(limited.retry_after, 1)
 
+    def test_dola_can_use_submit_interval_without_duplicate_rate_limit(self) -> None:
+        guard = resilience.PlatformGuard(namespace="dola-paced")
+        with patch.dict(os.environ, {"DOLA_PLATFORM_RATE_PER_MINUTE": "1", "DOLA_PLATFORM_BURST": "1"}):
+            admissions = [guard.admit("dola", rate_limit=False) for _ in range(20)]
+        self.assertTrue(all(item.allowed for item in admissions))
+
+        with patch.dict(os.environ, {"DOLA_CIRCUIT_FAILURE_THRESHOLD": "1", "DOLA_CIRCUIT_RECOVERY_SECONDS": "60"}):
+            guard.record_failure("dola")
+            blocked = guard.admit("dola", rate_limit=False)
+        self.assertFalse(blocked.allowed)
+        self.assertEqual(blocked.reason, "circuit_open")
+
     def test_circuit_opens_and_allows_single_half_open_probe(self) -> None:
         environment = {
             "DOLA_PLATFORM_RATE_PER_MINUTE": "600",

@@ -793,6 +793,7 @@ def _client_access_payload(access: AccessContext) -> dict:
             **balance,
         },
         "token_concurrency": access.concurrency,
+        "active_task_count": active_task_count_for_owner(access.token_hash),
         "remote_generation_limit": access.remote_generation_limit,
         "task_retention_days": access.task_retention_days,
         "billing_priority": access.billing_priority,

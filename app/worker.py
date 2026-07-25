@@ -526,7 +526,15 @@ class WorkerManager:
                     continue
                 if meta.get("retry_queued_at"):
                     update_meta(task_id, retry_queued_at="")
-                admission = self._platform_guard.admit(platform)
+                if platform == "dola":
+                    set_execution_phase(task_id, "waiting_submit_slot", "等待提交时段")
+                    async with self._dola_submit_lock:
+                        submit_interval = load_settings().dola_submit_interval_seconds
+                        delay = submit_interval - (asyncio.get_running_loop().time() - self._last_dola_submit_at)
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                        self._last_dola_submit_at = asyncio.get_running_loop().time()
+                admission = self._platform_guard.admit(platform, rate_limit=platform != "dola")
                 if not admission.allowed:
                     account_id = str(account.get("id") or "")
                     clear_account_current_task(account_id, task_id)
@@ -546,12 +554,6 @@ class WorkerManager:
                     runner = QianwenVideoAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), str(meta.get("model") or "万相 2.7"), str(meta.get("task_type") or "video"), account=account)
                 else:
                     runner = DolaFetchAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), int(meta.get("duration") or 0), account=account, browser_pool=self._dola_browser_pool)
-                    async with self._dola_submit_lock:
-                        submit_interval = load_settings().dola_submit_interval_seconds
-                        delay = submit_interval - (asyncio.get_running_loop().time() - self._last_dola_submit_at)
-                        if delay > 0:
-                            await asyncio.sleep(delay)
-                        self._last_dola_submit_at = asyncio.get_running_loop().time()
                 outcome = await runner.run()
                 if outcome.get("success"):
                     self._platform_guard.record_success(platform)

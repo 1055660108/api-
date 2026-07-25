@@ -67,10 +67,12 @@ class PlatformGuard:
         self.redis = redis_client
         self.namespace = (namespace or os.environ.get("DOLA_QUEUE_NAMESPACE") or "dola:tasks").strip().rstrip(":")
 
-    def admit(self, platform: str) -> Admission:
+    def admit(self, platform: str, *, rate_limit: bool = True) -> Admission:
         policy = load_policy()
         circuit = self._admit_circuit(platform, policy)
         if not circuit.allowed:
+            return circuit
+        if not rate_limit:
             return circuit
         limited = self._take_token(platform, policy)
         if not limited.allowed and circuit.reason == "half_open":

@@ -400,6 +400,38 @@ class WebAPIContractTests(unittest.TestCase):
         reservation = temp_access.get_temp_reservation(owner_hash, task_id)
         self.assertEqual(reservation["status"], "reserved")
 
+    def test_persistent_batch_status_reconciles_failed_task(self) -> None:
+        registered = self.register("batch_failed_sync")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        headers = {"X-API-Token": registered["token"]}
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 1,
+            "rows": [{"client_index": 0, "sheet_row": 2, "prompt": "失败状态同步", "image_count": 0}],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            created = self.client.post(
+                "/batch-prompts/jobs",
+                headers=headers,
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            job_id = created.json()["job"]["id"]
+            claim = batch_jobs.claim_next_row(owner_hash)
+            task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
+            batch_jobs.finish_row_creation(job_id, 1, task_id)
+            store.mark_failed(task_id, "多次生成失败")
+
+            refreshed = self.client.get(f"/batch-prompts/jobs/{job_id}", headers=headers)
+
+        self.assertEqual(refreshed.status_code, 200, refreshed.text)
+        job = refreshed.json()["job"]
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["counts"]["failed"], 1)
+        self.assertEqual(job["rows"][0]["status"], "failed")
+        self.assertEqual(job["rows"][0]["error"], "多次生成失败")
+
     def test_persistent_batch_scheduler_copies_shared_and_row_reference_images(self) -> None:
         registered = self.register("persistent_batch_images")
         owner_hash = temp_access.hash_token(registered["token"])

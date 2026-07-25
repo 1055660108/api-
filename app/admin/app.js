@@ -4257,7 +4257,7 @@ async function loadBatchDraft() {
       let status = String(item?.status || "");
       if (["running", "success"].includes(status)) status = taskId ? "running" : "";
       if (status === "queued" && taskId) status = "running";
-      if (!["", "queued", "running", "success", "completed", "failed"].includes(status)) status = "";
+      if (!["", "queued", "running", "success", "completed", "failed", "canceled"].includes(status)) status = "";
       return {
         row: Math.max(1, Number(item?.row || index + 1)),
         prompt: String(item?.prompt || "").slice(0, 4000),
@@ -4348,6 +4348,7 @@ function batchSelectedEntries() {
 function syncBatchPromptFromTaskState(item) {
   const taskId = String(item?.taskId || "");
   if (!taskId) return false;
+  const batchStatusIsTerminal = ["completed", "failed", "canceled"].includes(String(item.status || ""));
   const task = state.tasks.find((entry) => String(entry.id || "") === taskId);
   const result = state.results[taskId] || {};
   const resultCode = String(result.code || "");
@@ -4362,11 +4363,12 @@ function syncBatchPromptFromTaskState(item) {
   }
   const resultText = String(result.text || "").trim();
   if (["failed", "canceled"].includes(taskStatus) || (resultCode === "0" && resultText)) {
-    item.status = "failed";
+    item.status = taskStatus === "canceled" ? "canceled" : "failed";
     item.error = batchFriendlyError(task?.error || resultText || (taskStatus === "canceled" ? "用户取消生成" : "生成失败"));
     item.videoUrl = "";
     return true;
   }
+  if (batchStatusIsTerminal) return false;
   if (task || resultCode === "1") {
     item.status = "running";
     item.error = "";
@@ -4392,6 +4394,7 @@ function batchItemStatusText(item) {
   if (item.status === "completed") return `已完成 ${shortId(item.taskId)}`;
   if (item.status === "success") return `已提交 ${shortId(item.taskId)}`;
   if (item.status === "failed") return batchFriendlyError(item.error || "生成失败");
+  if (item.status === "canceled") return batchFriendlyError(item.error || "已取消");
   return "待生成";
 }
 

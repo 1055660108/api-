@@ -94,6 +94,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('/config/account-proxies/action', self.javascript)
         self.assertIn('function renderAccountProxyNodes()', self.javascript)
         self.assertIn('data-account-proxy-select', self.javascript)
+        self.assertIn('已过滤 ${state.proxyFilteredCount} 个高延迟或不可用节点', self.javascript)
 
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):
@@ -264,7 +265,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.38', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.39', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)

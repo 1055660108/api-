@@ -559,6 +559,7 @@ const state = {
   proxySource: "direct",
   proxyAccountConfigured: false,
   proxySelectedIds: [],
+  proxyFilteredCount: 0,
   accountProxySelectionTimer: 0,
   proxyEnabled: true,
   proxyAutoSelect: true,
@@ -2532,7 +2533,9 @@ function renderProxyNodes() {
       : '<span class="muted">暂无国家节点</span>';
   }
   const visibleNodes = state.proxyCountries.length ? state.proxyNodes.filter((node) => state.proxyCountries.includes(node.country)) : state.proxyNodes;
-  if (els.proxyNodeCount) els.proxyNodeCount.textContent = `${visibleNodes.length} / ${state.proxyNodes.length} 个节点`;
+  if (els.proxyNodeCount) els.proxyNodeCount.textContent = state.proxyFilteredCount
+    ? `${visibleNodes.length} 个可用 · 已过滤 ${state.proxyFilteredCount} 个高延迟或不可用节点`
+    : `${visibleNodes.length} / ${state.proxyNodes.length} 个节点`;
   if (!state.proxyNodes.length) {
     els.proxyNodeGrid.innerHTML = subscriptionMode ? '<div class="empty-state">暂无可用节点，请配置订阅后刷新</div>' : '<div class="empty-state">当前模式无需选择节点</div>';
     return;
@@ -2603,6 +2606,7 @@ async function loadProxyNodes(refresh = false) {
     state.proxyAutoSelect = Boolean(data.auto_select);
     state.proxySelectedNode = data.selected_node || "";
     state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : state.proxySelectedNode ? [state.proxySelectedNode] : [];
+    state.proxyFilteredCount = Number(data.filtered_count || 0);
     state.proxyCountries = Array.isArray(data.auto_countries) ? data.auto_countries : state.proxyCountries;
     state.proxyLatencyThreshold = Number(data.latency_threshold_ms || state.proxyLatencyThreshold || 800);
     if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
@@ -2639,7 +2643,7 @@ async function saveProxyMode() {
     state.proxyAutoSelect = Boolean(data.proxy_auto_select);
     state.proxyCountries = Array.isArray(data.proxy_auto_countries) ? data.proxy_auto_countries : [];
     state.proxyLatencyThreshold = Number(data.proxy_latency_threshold_ms || threshold);
-    renderProxyNodes();
+    await loadProxyNodes();
     toast(state.proxyEnabled ? (state.proxyAutoSelect ? "已开启自动节点代理" : "已开启手动节点代理") : "已关闭节点代理");
   } catch (error) {
     toast(`代理模式保存失败：${error.message}`, "error");

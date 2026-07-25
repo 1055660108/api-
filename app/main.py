@@ -474,13 +474,18 @@ async def refresh_proxy_health_once() -> dict[str, object]:
     if not eligible:
         raise RuntimeError("所选国家没有可用节点")
     await measure_node_delays(eligible, settings.proxy_subscription_url, settings.proxy_api_timeout_seconds)
-    measured = [(int(payload["latency_ms"]), node) for node in eligible if (payload := node_payload(node)).get("latency_ms") is not None]
+    threshold = settings.proxy_latency_threshold_ms
+    measured = [
+        (int(payload["latency_ms"]), node)
+        for node in eligible
+        if (payload := node_payload(node)).get("latency_ms") is not None
+        and int(payload["latency_ms"]) <= threshold
+    ]
     if not measured:
-        raise RuntimeError("所选国家的节点当前均不可用")
+        raise RuntimeError("所选国家没有低于高延迟阈值的可用节点")
     best_delay, best = min(measured, key=lambda item: item[0])
     current = next((item for item in measured if item[1].id == settings.proxy_selected_node), None)
-    threshold = settings.proxy_latency_threshold_ms
-    should_switch = current is None or current[0] > threshold or best_delay + 50 < current[0]
+    should_switch = current is None or best_delay + 50 < current[0]
     if should_switch:
         await activate_mihomo_node(
             best,
@@ -2067,9 +2072,16 @@ async def proxy_nodes(refresh: bool = False):
             )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    payloads = [node_payload(node, settings.proxy_selected_node) for node in nodes]
+    visible = [
+        payload for payload in payloads
+        if payload.get("latency_status") != "unavailable"
+        and (payload.get("latency_ms") is None or int(payload["latency_ms"]) <= settings.proxy_latency_threshold_ms)
+    ]
     return {
         "source": "subscription",
-        "nodes": [node_payload(node, settings.proxy_selected_node) for node in nodes],
+        "nodes": visible,
+        "filtered_count": len(payloads) - len(visible),
         "enabled": settings.proxy_enabled,
         "auto_select": settings.proxy_auto_select,
         "selected_node": settings.proxy_selected_node,
@@ -2112,10 +2124,28 @@ async def proxy_node_latency(request: Request):
             timeout_seconds=settings.proxy_api_timeout_seconds,
             refresh_seconds=settings.proxy_subscription_refresh_seconds,
         )
-        await measure_node_delays(nodes, settings.proxy_subscription_url, settings.proxy_api_timeout_seconds)
+        delays = await measure_node_delays(nodes, settings.proxy_subscription_url, settings.proxy_api_timeout_seconds)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
-    return {"source": "subscription", "nodes": [node_payload(node, settings.proxy_selected_node) for node in nodes]}
+    threshold = settings.proxy_latency_threshold_ms
+    visible_nodes = [node for node in nodes if delays.get(node.id) is not None and int(delays[node.id]) <= threshold]
+    countries = set(settings.proxy_auto_countries)
+    selectable = [node for node in visible_nodes if not countries or node.country in countries]
+    selected_node = settings.proxy_selected_node
+    if settings.proxy_auto_select:
+        selected_node = min(selectable, key=lambda node: int(delays[node.id])).id if selectable else ""
+        if selected_node != settings.proxy_selected_node:
+            update_config({"proxy_selected_node": selected_node})
+    payloads = [node_payload(node, selected_node) for node in visible_nodes]
+    return {
+        "source": "subscription",
+        "nodes": payloads,
+        "filtered_count": len(nodes) - len(visible_nodes),
+        "selected_node": selected_node,
+        "selected_ids": [selected_node] if selected_node else [],
+        "auto_select": settings.proxy_auto_select,
+        "latency_threshold_ms": threshold,
+    }
 
 
 @app.post("/config/proxy-nodes/select", dependencies=[Depends(require_admin)])

@@ -862,6 +862,7 @@ class DolaFetchAutomation:
                         auto_select=self.settings.proxy_auto_select,
                         selected_node=self.settings.proxy_selected_node,
                         selected_countries=self.settings.proxy_auto_countries,
+                        latency_threshold_ms=self.settings.proxy_latency_threshold_ms,
                     )
                     self.subscription_proxy = proxy
                     self.proxy_node_id = str(proxy.get("node_id") or "")

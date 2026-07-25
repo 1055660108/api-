@@ -678,7 +678,7 @@ def node_payload(node: ProxyNode, selected_node: str = "") -> dict[str, Any]:
         "latency_ms": shown_delay,
         "latency_measured": fresh and delay is not None,
         "latency_cached": cached,
-        "latency_status": "available" if fresh and delay is not None else "cached" if cached else "unavailable" if fresh else "expired" if measured_at else "pending",
+        "latency_status": "available" if fresh and delay is not None else "unavailable" if fresh else "cached" if cached else "expired" if measured_at else "pending",
         "selected": node.id == selected_node,
     }
 
@@ -692,6 +692,7 @@ async def resolve_subscription_proxy(
     auto_select: bool = True,
     selected_node: str = "",
     selected_countries: Iterable[str] = (),
+    latency_threshold_ms: int = 5000,
 ) -> dict[str, str]:
     global _SUBSCRIPTION_RESOLVE_LOCK
     if _SUBSCRIPTION_RESOLVE_LOCK is None:
@@ -719,12 +720,15 @@ async def resolve_subscription_proxy(
             }
             if not fresh_delays:
                 await measure_node_delays(selectable_nodes, subscription_url, timeout_seconds)
-            available = [
+            all_available = [
                 (delay, node)
                 for node in selectable_nodes
                 if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
                 and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
             ]
+            available = [(delay, node) for delay, node in all_available if int(delay) <= int(latency_threshold_ms)]
+            if all_available and not available:
+                raise RuntimeError("all eligible proxy nodes exceed the latency threshold")
             chosen = min(available, key=lambda item: item[0])[1] if available else chosen or selectable_nodes[0]
         elif chosen is None:
             fresh_available = [
@@ -772,6 +776,7 @@ async def acquire_dola_subscription_proxy(
     auto_select: bool = True,
     selected_node: str = "",
     selected_countries: Iterable[str] = (),
+    latency_threshold_ms: int = 5000,
 ) -> dict[str, str]:
     global _MIHOMO_LEASE_CONDITION, _MIHOMO_ACTIVE_LEASES, _MIHOMO_ACTIVE_PROXY
     if _MIHOMO_LEASE_CONDITION is None:
@@ -800,6 +805,7 @@ async def acquire_dola_subscription_proxy(
                 auto_select=auto_select,
                 selected_node=selected_node,
                 selected_countries=selected_countries,
+                latency_threshold_ms=latency_threshold_ms,
             )
             node_id = str(proxy.get("node_id") or "")
             if node_id == last_node and _node_is_cooling_down(node_id):

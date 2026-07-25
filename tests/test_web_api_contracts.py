@@ -956,6 +956,47 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.json()["proxy_auto_countries"], ["日本", "美国"])
         self.assertEqual(config.load_settings().proxy_auto_countries, ["日本", "美国"])
 
+    def test_proxy_latency_filters_threshold_and_persists_automatic_selection(self) -> None:
+        self.login_admin()
+        nodes = proxy_manager.subscription_node_list(
+            "http://slow.example.com:8080#US\nhttp://fast.example.com:8081#Japan\nhttp://down.example.com:8082#Singapore"
+        )
+        self.client.post(
+            "/config/proxy-api",
+            json={
+                "proxy_source": "subscription",
+                "proxy_subscription_url": "https://subscription.example/token",
+                "proxy_auto_select": True,
+                "proxy_latency_threshold_ms": 100,
+            },
+        )
+        delays = {nodes[0].id: 180, nodes[1].id: 45, nodes[2].id: None}
+
+        def payload(node, selected_node="") -> dict:
+            delay = delays[node.id]
+            return {
+                "id": node.id,
+                "name": node.name,
+                "country": node.country,
+                "protocol": node.protocol,
+                "latency_ms": delay,
+                "latency_status": "available" if delay is not None else "unavailable",
+                "selected": node.id == selected_node,
+            }
+
+        with patch("app.main.fetch_subscription_node_list", new=AsyncMock(return_value=nodes)), patch(
+            "app.main.measure_node_delays", new=AsyncMock(return_value=delays)
+        ), patch("app.main.node_payload", side_effect=payload):
+            measured = self.client.post("/config/proxy-nodes/latency")
+
+        self.assertEqual(measured.status_code, 200, measured.text)
+        result = measured.json()
+        self.assertEqual([item["id"] for item in result["nodes"]], [nodes[1].id])
+        self.assertEqual(result["filtered_count"], 2)
+        self.assertEqual(result["selected_node"], nodes[1].id)
+        self.assertTrue(result["nodes"][0]["selected"])
+        self.assertEqual(config.load_settings().proxy_selected_node, nodes[1].id)
+
     def test_authenticated_proxy_is_saved_without_returning_credentials(self) -> None:
         self.login_admin()
         saved = self.client.post(

@@ -19,6 +19,7 @@ def proxy_settings(primary: str) -> SimpleNamespace:
         proxy_auto_select=True,
         proxy_selected_node="",
         proxy_auto_countries=[],
+        proxy_latency_threshold_ms=800,
         proxy_account_scheme="socks5",
         proxy_account_host="proxy.example.com",
         proxy_account_port=3010,

@@ -269,6 +269,31 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["node_id"], nodes[1].id)
 
+    async def test_auto_selection_excludes_nodes_above_latency_threshold(self) -> None:
+        nodes = proxy_manager.subscription_node_list("http://slow.example.com:8080#US\nhttp://fast.example.com:8080#Japan")
+        delays = {nodes[0].id: (180, proxy_manager.time.monotonic()), nodes[1].id: (80, proxy_manager.time.monotonic())}
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.dict(
+            proxy_manager._NODE_DELAYS, delays, clear=True
+        ):
+            result = await proxy_manager.resolve_subscription_proxy(
+                "https://subscription.example/token",
+                latency_threshold_ms=100,
+            )
+
+        self.assertEqual(result["node_id"], nodes[1].id)
+
+    async def test_auto_selection_rejects_pool_when_all_nodes_exceed_threshold(self) -> None:
+        nodes = proxy_manager.subscription_node_list("http://slow.example.com:8080#US\nhttp://slower.example.com:8080#Japan")
+        delays = {nodes[0].id: (180, proxy_manager.time.monotonic()), nodes[1].id: (220, proxy_manager.time.monotonic())}
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.dict(
+            proxy_manager._NODE_DELAYS, delays, clear=True
+        ):
+            with self.assertRaisesRegex(RuntimeError, "latency threshold"):
+                await proxy_manager.resolve_subscription_proxy(
+                    "https://subscription.example/token",
+                    latency_threshold_ms=100,
+                )
+
     async def test_auto_selection_only_uses_checked_countries(self) -> None:
         nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
         delays = {nodes[0].id: (10, proxy_manager.time.monotonic()), nodes[1].id: (35, proxy_manager.time.monotonic())}

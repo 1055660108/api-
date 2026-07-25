@@ -253,6 +253,22 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(recovered["retry_queue_verified_at"])
         manager._queue.requeue.assert_called_with(task["id"], datetime.fromisoformat(due))
 
+    def test_startup_requeues_tasks_left_by_legacy_dola_guard(self) -> None:
+        task = self.create_task()
+        store.defer_task(task["id"], "平台服务繁忙，任务已自动排队", "platform_guard", 3600)
+        manager = WorkerManager()
+        manager._queue = unittest.mock.Mock()
+        manager._queue.requeue.return_value = True
+
+        manager._requeue_stale_dola_guard_tasks()
+
+        recovered = store.get_meta(task["id"])
+        self.assertEqual(recovered["status"], store.STATUS_PENDING)
+        self.assertEqual(recovered["queue_category"], "")
+        self.assertEqual(recovered["queue_reason"], "等待重新提交")
+        self.assertLessEqual(datetime.fromisoformat(recovered["next_attempt_at"]), datetime.now(timezone.utc))
+        manager._queue.requeue.assert_called_once_with(task["id"])
+
     def test_task_creation_enqueues_through_selected_backend(self) -> None:
         queue = unittest.mock.Mock()
         with patch("app.task_queue.get_task_queue", return_value=queue):

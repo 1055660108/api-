@@ -76,6 +76,12 @@ class ResilienceUnitTests(unittest.TestCase):
         self.assertFalse(blocked.allowed)
         self.assertEqual(blocked.reason, "circuit_open")
 
+    def test_worker_does_not_apply_shared_platform_guard_to_dola(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
+        self.assertIn('self._platform_guard.record_success("dola")', source)
+        self.assertIn('if platform != "dola":\n                    admission = self._platform_guard.admit(platform)', source)
+        self.assertNotIn('rate_limit=platform != "dola"', source)
+
     def test_circuit_opens_and_allows_single_half_open_probe(self) -> None:
         environment = {
             "DOLA_PLATFORM_RATE_PER_MINUTE": "600",

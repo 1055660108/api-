@@ -508,6 +508,7 @@ const state = {
   batchStopRequested: false,
   batchAutoRunning: false,
   batchAutoStopRequested: false,
+  batchConcurrencyCustomized: false,
   batchSessionId: "",
   batchDraftOwner: "",
   batchDraftSaveTimer: 0,
@@ -1410,7 +1411,9 @@ function applyAccessScope(data = {}) {
   if (data.billing_priority) state.billingPriority = String(data.billing_priority) === "points_first" ? "points_first" : "video_first";
   if (!state.userName) state.userName = "当前用户";
   if (data.token_concurrency != null || (isClient && data.browser_workers != null)) {
+    const previousConcurrency = state.concurrency;
     state.concurrency = Math.max(1, Number(data.token_concurrency ?? data.browser_workers ?? 1));
+    if (state.concurrency !== previousConcurrency) state.batchConcurrencyCustomized = false;
     if (els.metricWorkers) els.metricWorkers.textContent = String(state.concurrency);
   }
   if (data.active_task_count != null) state.userActiveTaskCount = Math.max(0, Number(data.active_task_count || 0));
@@ -3863,7 +3866,7 @@ function syncBatchConcurrencyControls(useMaximum = false) {
   const maximum = batchConcurrencyLimit();
   if (els.batchAutoConcurrency) {
     els.batchAutoConcurrency.max = String(maximum);
-    const requested = Math.trunc(useMaximum ? maximum : Number(els.batchAutoConcurrency.value || maximum));
+    const requested = Math.trunc(useMaximum || !state.batchConcurrencyCustomized ? maximum : Number(els.batchAutoConcurrency.value || maximum));
     els.batchAutoConcurrency.value = String(Math.max(1, Math.min(maximum, requested)));
   }
 }
@@ -4050,7 +4053,11 @@ async function loadBatchDraft() {
     const pageSize = Number(stored.pageSize || 10);
     state.batchPageSize = [10, 30, 50].includes(pageSize) ? pageSize : 10;
     if (els.batchTaskRatio && ["9:16", "16:9", "1:1", "3:4", "4:3", "21:9"].includes(stored.ratio)) els.batchTaskRatio.value = stored.ratio;
-    if (els.batchAutoConcurrency) els.batchAutoConcurrency.value = String(Math.max(1, Math.min(batchConcurrencyLimit(), Number(stored.autoConcurrency || 1))));
+    if (els.batchAutoConcurrency) {
+      const restoredConcurrency = Math.max(1, Math.min(batchConcurrencyLimit(), Number(stored.autoConcurrency || batchConcurrencyLimit())));
+      els.batchAutoConcurrency.value = String(restoredConcurrency);
+      state.batchConcurrencyCustomized = restoredConcurrency !== batchConcurrencyLimit();
+    }
   } catch (_) {
     localStorage.removeItem(batchDraftStorageKey(owner));
   }
@@ -4174,6 +4181,7 @@ function resetBatchTaskPage() {
   state.batchImageTargetIndex = -1;
   state.batchPage = 1;
   state.batchAutoStopRequested = false;
+  state.batchConcurrencyCustomized = false;
   if (els.batchSpreadsheetInput) els.batchSpreadsheetInput.value = "";
   if (els.batchSharedImageInput) els.batchSharedImageInput.value = "";
   if (els.batchMappedImageInput) els.batchMappedImageInput.value = "";
@@ -4242,7 +4250,7 @@ function renderBatchPrompts() {
   }
   if (els.autoSubmitBatchTasks) {
     els.autoSubmitBatchTasks.disabled = !state.batchAutoRunning && (state.batchSubmitting || !selected.length);
-    els.autoSubmitBatchTasks.textContent = state.batchAutoRunning ? "停止自动生成" : "自动生成";
+    els.autoSubmitBatchTasks.textContent = state.batchAutoRunning ? "停止生成" : "生成设置";
   }
   if (els.refreshBatchTasks) els.refreshBatchTasks.disabled = state.batchAutoRunning || !state.batchPrompts.some((item) => item.taskId);
   const assigned = state.batchPrompts.filter((item) => item.images?.length).length;
@@ -4396,7 +4404,7 @@ function applyBatchTaskResult(item, result) {
 
 async function refreshBatchTaskStatuses(options = {}) {
   if (state.batchAutoRunning) {
-    if (!options.quiet) toast("自动生成正在持续刷新状态");
+    if (!options.quiet) toast("批次生成正在持续刷新状态");
     return;
   }
   const entries = state.batchPrompts.filter((item) => item.taskId);
@@ -4456,7 +4464,7 @@ async function submitBatchTasks() {
   }
   const selected = validateBatchSelection();
   if (!selected.length || !window.confirm(`确定生成已选择的 ${selected.length} 条视频任务吗？每条任务会分别扣除视频额度或积分。`)) return;
-  syncBatchConcurrencyControls(true);
+  syncBatchConcurrencyControls();
   await autoSubmitBatchTasks();
 }
 
@@ -4535,7 +4543,7 @@ async function autoSubmitBatchTasks() {
     await launchNext();
     while ((active.size || cursor < selected.length) && !state.batchAutoStopRequested && !stopped) {
       const waiting = Math.max(0, selected.length - cursor);
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成中：已完成 ${finished} / ${total}，运行 ${active.size} 条，批次排队 ${waiting} 条`;
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `批次生成中：已完成 ${finished} / ${total}，运行 ${active.size} 条，批次排队 ${waiting} 条`;
       await waitForBatchPoll(active.size ? 12000 : 5000);
       for (const [taskId, entry] of Array.from(active.entries())) {
         try {
@@ -4563,20 +4571,20 @@ async function autoSubmitBatchTasks() {
     }
     if (state.batchAutoStopRequested) {
       selected.slice(cursor).forEach(({ item }) => { if (item.status === "queued") item.status = ""; });
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成已停止，已有 ${active.size} 条任务继续运行`;
-      toast("自动生成已停止，未轮到的任务没有创建");
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `批次生成已停止，已有 ${active.size} 条任务继续运行`;
+      toast("批次生成已停止，未轮到的任务没有创建");
     } else if (stopped) {
       selected.slice(cursor).forEach(({ item }) => { item.status = ""; item.error = `未创建：${stopped}`; });
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成停止：${stopped}`;
-      toast(`自动生成停止：${stopped}`, "error");
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `批次生成停止：${stopped}`;
+      toast(`批次生成停止：${stopped}`, "error");
     } else {
-      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成完成：成功 ${completed} 条，失败 ${failed} 条`;
-      toast(`自动生成已完成：成功 ${completed} 条，失败 ${failed} 条`, failed ? "error" : "success");
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = `批次生成完成：成功 ${completed} 条，失败 ${failed} 条`;
+      toast(`批次生成已完成：成功 ${completed} 条，失败 ${failed} 条`, failed ? "error" : "success");
     }
   } catch (error) {
     selected.slice(cursor).forEach(({ item }) => { if (item.status === "queued") item.status = ""; });
-    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "自动生成未开始";
-    toast(`自动生成失败：${batchFriendlyError(error.message)}`, "error");
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "批次生成未开始";
+    toast(`批次生成失败：${batchFriendlyError(error.message)}`, "error");
   } finally {
     state.batchSubmitting = false;
     state.batchAutoRunning = false;
@@ -5325,6 +5333,7 @@ function bindEvents() {
     autoSubmitBatchTasks();
   });
   els.batchAutoConcurrency?.addEventListener("change", () => {
+    state.batchConcurrencyCustomized = true;
     syncBatchConcurrencyControls();
     scheduleBatchDraftSave();
   });

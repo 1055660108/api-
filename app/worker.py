@@ -44,6 +44,7 @@ from .store import (
     set_active_tasks,
     STATUS_SUBMITTED,
     update_meta,
+    utc_now,
 )
 from .query import query_task
 from .resilience import PlatformGuard, adaptive_worker_limit
@@ -148,11 +149,26 @@ class WorkerManager:
             reset_running_tasks()
         else:
             self._queue.recover()
+        self._platform_guard.record_success("dola")
         self._queue.reconcile()
+        self._requeue_stale_dola_guard_tasks()
         self._stopping = False
         await self._dola_browser_pool.start()
         self._supervisor = asyncio.create_task(self._supervise())
         self._watchdog = asyncio.create_task(self._watch_running_tasks())
+
+    def _requeue_stale_dola_guard_tasks(self) -> None:
+        for task_id, meta in list_task_metas_by_statuses({"pending"}, platform="dola", limit=2000):
+            if str(meta.get("queue_category") or "") != "platform_guard":
+                continue
+            update_meta(
+                task_id,
+                next_attempt_at=utc_now(),
+                queue_reason="等待重新提交",
+                queue_category="",
+                status_reason="等待重新提交",
+            )
+            self._queue.requeue(task_id)
 
     async def stop(self) -> None:
         self._stopping = True
@@ -534,13 +550,14 @@ class WorkerManager:
                         if delay > 0:
                             await asyncio.sleep(delay)
                         self._last_dola_submit_at = asyncio.get_running_loop().time()
-                admission = self._platform_guard.admit(platform, rate_limit=platform != "dola")
-                if not admission.allowed:
-                    account_id = str(account.get("id") or "")
-                    clear_account_current_task(account_id, task_id)
-                    refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
-                    defer_task(task_id, "平台服务繁忙，任务已自动排队", "platform_guard", max(1, admission.retry_after))
-                    continue
+                if platform != "dola":
+                    admission = self._platform_guard.admit(platform)
+                    if not admission.allowed:
+                        account_id = str(account.get("id") or "")
+                        clear_account_current_task(account_id, task_id)
+                        refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
+                        defer_task(task_id, "平台服务繁忙，任务已自动排队", "platform_guard", max(1, admission.retry_after))
+                        continue
                 if not can_run_task(task_id, worker_id):
                     account_id = str(account.get("id") or "")
                     clear_account_current_task(account_id, task_id)
@@ -555,10 +572,11 @@ class WorkerManager:
                 else:
                     runner = DolaFetchAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), int(meta.get("duration") or 0), account=account, browser_pool=self._dola_browser_pool)
                 outcome = await runner.run()
-                if outcome.get("success"):
-                    self._platform_guard.record_success(platform)
-                elif outcome.get("retryable") and not outcome.get("account_fault") and not outcome.get("infrastructure_fault"):
-                    self._platform_guard.record_failure(platform)
+                if platform != "dola":
+                    if outcome.get("success"):
+                        self._platform_guard.record_success(platform)
+                    elif outcome.get("retryable") and not outcome.get("account_fault") and not outcome.get("infrastructure_fault"):
+                        self._platform_guard.record_failure(platform)
                 if outcome.get("success") and platform in {"dola", "doubao", "qianwen"} and account:
                     settle_account_quota(str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
                     clear_account_current_task(str(account.get("id") or ""), task_id)
@@ -612,7 +630,7 @@ class WorkerManager:
             except Exception as exc:
                 reason = str(exc)[:500]
                 infrastructure_fault = is_infrastructure_failure(reason)
-                if "platform" in locals():
+                if "platform" in locals() and platform != "dola":
                     if not infrastructure_fault:
                         self._platform_guard.record_failure(platform)
                 with suppress(FileNotFoundError):

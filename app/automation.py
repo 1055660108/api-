@@ -18,7 +18,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .browser_runtime import BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
-from .proxy_manager import fetch_proxy_from_api, fetch_proxy_from_subscription, mark_node_unavailable
+from .proxy_manager import acquire_dola_subscription_proxy, dola_proxy_available, fetch_proxy_from_api, mark_node_unavailable, release_dola_subscription_proxy
 from .store import (
     begin_task_submission,
     clear_transient_result,
@@ -644,6 +644,7 @@ class DolaFetchAutomation:
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
+        self.subscription_proxy: dict[str, str] | None = None
 
     def _task_exists(self) -> bool:
         return task_exists(self.task_id)
@@ -745,6 +746,7 @@ class DolaFetchAutomation:
                     pass
                 await page.wait_for_timeout(5000)
                 if self._is_region_restricted(page.url):
+                    mark_node_unavailable(self.proxy_node_id)
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "page_navigation"})
                     self._mark_pending("region restricted")
                     return {"success": False, "retryable": True, "reason": "region restricted"}
@@ -790,11 +792,13 @@ class DolaFetchAutomation:
                     self._mark_pending("service frequent")
                     return {"success": False, "retryable": True, "reason": "service frequent"}
                 if result.get("country_restricted"):
+                    mark_node_unavailable(self.proxy_node_id)
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "country_restricted", "submit_phase": "submission_response"})
                     self._mark_pending("country restricted")
                     return {"success": False, "retryable": True, "reason": "country restricted"}
                 if self._is_region_restricted(str(result.get("location_href") or page.url)):
+                    mark_node_unavailable(self.proxy_node_id)
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "submission_response"})
                     self._mark_pending("region restricted")
@@ -815,6 +819,8 @@ class DolaFetchAutomation:
                 else:
                     await safe_close(context)
                     await safe_close(browser)
+                await release_dola_subscription_proxy(self.subscription_proxy)
+                self.subscription_proxy = None
 
     async def _browser_proxy_config(self) -> dict[str, str] | None:
         self.settings = load_settings()
@@ -822,7 +828,7 @@ class DolaFetchAutomation:
             self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
             return None
         if self.settings.proxy_subscription_url:
-            proxy = await fetch_proxy_from_subscription(
+            proxy = await acquire_dola_subscription_proxy(
                 self.settings.proxy_subscription_url,
                 timeout_seconds=self.settings.proxy_api_timeout_seconds,
                 scheme=self.settings.proxy_subscription_scheme,
@@ -831,6 +837,7 @@ class DolaFetchAutomation:
                 selected_node=self.settings.proxy_selected_node,
                 selected_countries=self.settings.proxy_auto_countries,
             )
+            self.subscription_proxy = proxy
             self.proxy_node_id = str(proxy.get("node_id") or "")
             self._save_result(
                 extra={
@@ -850,6 +857,8 @@ class DolaFetchAutomation:
             timeout_seconds=self.settings.proxy_api_timeout_seconds,
             scheme=self.settings.proxy_api_scheme,
         )
+        if not await dola_proxy_available(str(proxy.get("server") or ""), min(12.0, float(self.settings.proxy_api_timeout_seconds))):
+            raise RuntimeError("proxy api returned an exit that is unavailable for Dola")
         self._save_result(
             extra={
                 "proxy_source": "api",

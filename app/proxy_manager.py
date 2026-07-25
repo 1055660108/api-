@@ -41,12 +41,22 @@ _MIHOMO_SELECTED_NODE_ID = ""
 _SUBSCRIPTION_CACHE: dict[str, Any] = {"url": "", "nodes": (), "snapshot": b"", "provider": b"", "refreshed_at": 0.0}
 _SUBSCRIPTION_CACHE_LOCK: asyncio.Lock | None = None
 _SUBSCRIPTION_RESOLVE_LOCK: asyncio.Lock | None = None
+_MIHOMO_LEASE_CONDITION: asyncio.Condition | None = None
+_MIHOMO_ACTIVE_LEASES = 0
+_MIHOMO_ACTIVE_PROXY: dict[str, str] = {}
 _NODE_DELAYS: dict[str, tuple[int | None, float]] = {}
 _NODE_LAST_GOOD: dict[str, tuple[int, float]] = {}
+_NODE_DOLA_HEALTH: dict[str, tuple[bool, float]] = {}
 _NODE_DELAYS_LOADED = False
 NODE_DELAYS_PATH = DATA_DIR / "proxy_node_delays.json"
 NODE_DELAY_TTL_SECONDS = 300
 NODE_FAILURE_COOLDOWN_SECONDS = 90
+DOLA_HEALTH_TTL_SECONDS = 300
+DOLA_HEALTHCHECK_URL = "https://www.dola.com/"
+DOLA_HEALTHCHECK_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149.0.0.0 Safari/537.36",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
+}
 COUNTRY_MARKERS = {
     "香港": ("香港", "hong kong", "hongkong", " hk", "🇭🇰"),
     "台湾": ("台湾", "taiwan", " taipei", " tw", "🇹🇼"),
@@ -132,6 +142,7 @@ def mark_node_unavailable(node_id: str) -> None:
     normalized = str(node_id or "").strip()
     if normalized:
         _NODE_DELAYS[normalized] = (None, time.monotonic())
+        _NODE_DOLA_HEALTH[normalized] = (False, time.monotonic())
 
 
 def _node_is_cooling_down(node_id: str) -> bool:
@@ -506,17 +517,61 @@ async def fetch_subscription_node_list(
         return nodes
 
 
-async def _native_node_delay(node: ProxyNode, timeout_seconds: float = 5.0) -> int | None:
-    if not node.server or not node.port:
-        return None
+def _dola_response_is_available(response: httpx.Response) -> bool:
+    final_url = str(getattr(response, "url", "") or "").lower()
+    location = str(response.headers.get("location") or "").lower()
+    preview = str(response.text or "")[:8000].lower()
+    restricted = any(
+        marker in f"{final_url} {location} {preview}"
+        for marker in ("region-restricted", "country restricted", "current region is not available", "当前地区不可用")
+    )
+    status = int(response.status_code)
+    return 200 <= status < 500 and status != 407 and not restricted
+
+
+async def _probe_dola_proxy(server: str, timeout_seconds: float = 8.0) -> tuple[bool, int | None]:
     started = time.perf_counter()
     try:
-        _, writer = await asyncio.wait_for(asyncio.open_connection(node.server, node.port), timeout_seconds)
-        writer.close()
-        await writer.wait_closed()
-        return max(1, round((time.perf_counter() - started) * 1000))
-    except (OSError, asyncio.TimeoutError):
+        timeout = httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))
+        async with httpx.AsyncClient(
+            proxy=str(server or ""),
+            timeout=timeout,
+            follow_redirects=True,
+            max_redirects=5,
+            trust_env=False,
+            headers=DOLA_HEALTHCHECK_HEADERS,
+        ) as client:
+            response = await client.get(DOLA_HEALTHCHECK_URL)
+        elapsed = max(1, round((time.perf_counter() - started) * 1000))
+        return _dola_response_is_available(response), elapsed
+    except (httpx.HTTPError, RuntimeError, ValueError, TypeError):
+        return False, None
+
+
+async def dola_proxy_available(server: str, timeout_seconds: float = 8.0) -> bool:
+    available, _ = await _probe_dola_proxy(server, timeout_seconds)
+    return available
+
+
+async def _node_dola_available(node_id: str, server: str, timeout_seconds: float = 8.0) -> bool:
+    normalized = str(node_id or "")
+    cached = _NODE_DOLA_HEALTH.get(normalized)
+    if cached and cached[0] and time.monotonic() - cached[1] < DOLA_HEALTH_TTL_SECONDS:
+        return True
+    available, _ = await _probe_dola_proxy(server, timeout_seconds)
+    _NODE_DOLA_HEALTH[normalized] = (available, time.monotonic())
+    if not available:
+        mark_node_unavailable(normalized)
+    return available
+
+
+async def _native_node_delay(node: ProxyNode, timeout_seconds: float = 8.0) -> int | None:
+    if not node.server or not node.port:
         return None
+    server = node.uri.split("#", 1)[0]
+    available, elapsed = await _probe_dola_proxy(server, timeout_seconds)
+    _NODE_DOLA_HEALTH[node.id] = (available, time.monotonic())
+    return elapsed if available else None
 
 
 async def _mihomo_node_delay(node: ProxyNode, timeout_seconds: float = 8.0) -> int | None:
@@ -526,7 +581,7 @@ async def _mihomo_node_delay(node: ProxyNode, timeout_seconds: float = 8.0) -> i
     endpoint = f"http://127.0.0.1:{_MIHOMO_CONTROLLER_PORT}/proxies/{quote(node.name, safe='')}/delay"
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-            response = await client.get(endpoint, params={"url": "https://www.gstatic.com/generate_204", "timeout": round(timeout_seconds * 1000)})
+            response = await client.get(endpoint, params={"url": DOLA_HEALTHCHECK_URL, "timeout": round(timeout_seconds * 1000)})
         if response.status_code == 200:
             return int(response.json().get("delay") or 0) or None
     except (httpx.HTTPError, ValueError, TypeError):
@@ -675,6 +730,7 @@ async def resolve_subscription_proxy(
                 "node_count": str(len(nodes)),
                 "node_id": chosen.id,
                 "node_name": chosen.name,
+                "proxy_mode": "native",
             }
         managed = await _proxy_from_mihomo(subscription_url, timeout_seconds, refresh_seconds)
         if _MIHOMO_SELECTED_NODE_ID != chosen.id:
@@ -683,7 +739,71 @@ async def resolve_subscription_proxy(
             except RuntimeError:
                 managed = await _proxy_from_mihomo(subscription_url, timeout_seconds, refresh_seconds, force_rebuild=True)
                 await _select_mihomo_node(chosen)
-        return {**managed, "node_count": str(len(nodes)), "node_id": chosen.id, "node_name": chosen.name}
+        return {**managed, "node_count": str(len(nodes)), "node_id": chosen.id, "node_name": chosen.name, "proxy_mode": "mihomo"}
+
+
+async def acquire_dola_subscription_proxy(
+    subscription_url: str,
+    *,
+    timeout_seconds: int = 20,
+    scheme: str = "http",
+    refresh_seconds: int = 900,
+    auto_select: bool = True,
+    selected_node: str = "",
+    selected_countries: Iterable[str] = (),
+) -> dict[str, str]:
+    global _MIHOMO_LEASE_CONDITION, _MIHOMO_ACTIVE_LEASES, _MIHOMO_ACTIVE_PROXY
+    if _MIHOMO_LEASE_CONDITION is None:
+        _MIHOMO_LEASE_CONDITION = asyncio.Condition()
+    nodes = await fetch_subscription_node_list(
+        subscription_url,
+        timeout_seconds=timeout_seconds,
+        refresh_seconds=refresh_seconds,
+    )
+    attempts = max(1, len(nodes))
+    async with _MIHOMO_LEASE_CONDITION:
+        while _MIHOMO_ACTIVE_LEASES > 0:
+            active_node = str(_MIHOMO_ACTIVE_PROXY.get("node_id") or "")
+            if active_node and not _node_is_cooling_down(active_node):
+                _MIHOMO_ACTIVE_LEASES += 1
+                return {**_MIHOMO_ACTIVE_PROXY, "mihomo_lease": "1"}
+            await _MIHOMO_LEASE_CONDITION.wait()
+
+        last_node = ""
+        for _ in range(attempts):
+            proxy = await resolve_subscription_proxy(
+                subscription_url,
+                timeout_seconds=timeout_seconds,
+                scheme=scheme,
+                refresh_seconds=refresh_seconds,
+                auto_select=auto_select,
+                selected_node=selected_node,
+                selected_countries=selected_countries,
+            )
+            node_id = str(proxy.get("node_id") or "")
+            if node_id == last_node and _node_is_cooling_down(node_id):
+                break
+            last_node = node_id
+            if await _node_dola_available(node_id, str(proxy.get("server") or ""), min(12.0, float(timeout_seconds))):
+                if proxy.get("proxy_mode") == "mihomo":
+                    _MIHOMO_ACTIVE_PROXY = dict(proxy)
+                    _MIHOMO_ACTIVE_LEASES = 1
+                    return {**proxy, "mihomo_lease": "1"}
+                return proxy
+        raise RuntimeError("all eligible proxy nodes are unavailable for Dola")
+
+
+async def release_dola_subscription_proxy(proxy: dict[str, str] | None) -> None:
+    global _MIHOMO_ACTIVE_LEASES, _MIHOMO_ACTIVE_PROXY, _MIHOMO_LEASE_CONDITION
+    if not proxy or str(proxy.get("mihomo_lease") or "") != "1":
+        return
+    if _MIHOMO_LEASE_CONDITION is None:
+        return
+    async with _MIHOMO_LEASE_CONDITION:
+        _MIHOMO_ACTIVE_LEASES = max(0, _MIHOMO_ACTIVE_LEASES - 1)
+        if _MIHOMO_ACTIVE_LEASES == 0:
+            _MIHOMO_ACTIVE_PROXY = {}
+            _MIHOMO_LEASE_CONDITION.notify_all()
 
 
 async def fetch_proxy_from_api(api_url: str, *, timeout_seconds: int = 20, scheme: str = "http") -> dict[str, str]:

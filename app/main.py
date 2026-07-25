@@ -1087,7 +1087,7 @@ def _admit_task_creation() -> None:
         raise HTTPException(status_code=503, detail="任务队列繁忙，请稍后重试", headers={"Retry-After": str(admission.retry_after)})
 
 
-def _client_safe_text(value: str, model: str) -> str:
+def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
     import re
 
     replacement = str(model or "当前模型")
@@ -1096,7 +1096,7 @@ def _client_safe_text(value: str, model: str) -> str:
         return "正在启动服务"
     text = text.replace("浏览器", "服务")
     if re.search(r"当前地区不可用|所在的国家/地区不可用|region restricted|country restricted", text, flags=re.IGNORECASE):
-        return "正在重试中，请稍等！"
+        return "生成失败，请重试！" if terminal else "正在重试中，请稍等！"
     if re.search(
         r"Page\.(?:goto|click|evaluate|waitFor|wait_for)|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
         text,
@@ -1113,9 +1113,10 @@ def _client_safe_text(value: str, model: str) -> str:
 def _client_task(task: dict) -> dict:
     safe = dict(task)
     model = str(safe.get("model") or "当前模型")
+    terminal = str(safe.get("status") or "") in {"failed", "canceled"}
     for key in ("error", "status_reason"):
         if key in safe:
-            safe[key] = _client_safe_text(str(safe.get(key) or ""), model)
+            safe[key] = _client_safe_text(str(safe.get(key) or ""), model, terminal=terminal)
     if str(safe.get("status") or "") == "pending" and (
         int(safe.get("retry_count") or 0) > 0 or int(safe.get("infrastructure_retry_count") or 0) > 0
     ):
@@ -2884,7 +2885,15 @@ async def persistent_batch_job_status(job_id: str, access: Annotated[AccessConte
     if task_ids:
         states = await asyncio.to_thread(task_states, task_ids, access.token_hash)
         payloads = {
-            task_id: {"status": str(meta.get("status") or ""), "error": _client_safe_text(str(meta.get("error") or ""), str(meta.get("model") or "当前模型")), "video_url": str(result.get("decoded_main_url") or "")}
+            task_id: {
+                "status": str(meta.get("status") or ""),
+                "error": _client_safe_text(
+                    str(meta.get("error") or ""),
+                    str(meta.get("model") or "当前模型"),
+                    terminal=str(meta.get("status") or "") in {"failed", "canceled"},
+                ),
+                "video_url": str(result.get("decoded_main_url") or ""),
+            }
             for task_id, meta, result in states
         }
         job = await asyncio.to_thread(reconcile_batch_job, job_id, payloads)
@@ -3188,7 +3197,11 @@ async def batch_prompt_status(
             text = "视频生成成功"
         elif status in {"failed", "canceled"}:
             code = "0"
-            text = _client_safe_text(str(meta.get("error") or ("用户取消生成" if status == "canceled" else "生成失败")), str(meta.get("model") or "当前模型"))
+            text = _client_safe_text(
+                str(meta.get("error") or ("用户取消生成" if status == "canceled" else "生成失败")),
+                str(meta.get("model") or "当前模型"),
+                terminal=True,
+            )
         elif status == "pending" and (
             int(meta.get("retry_count") or 0) > 0 or int(meta.get("infrastructure_retry_count") or 0) > 0
         ):
@@ -3303,7 +3316,11 @@ async def task_result(access: Annotated[AccessContext, Depends(require_token)], 
         result = await query_task(task_id)
         if access.is_temp:
             result = dict(result)
-            result["text"] = _client_safe_text(str(result.get("text") or ""), str(meta.get("model") or "当前模型"))
+            result["text"] = _client_safe_text(
+                str(result.get("text") or ""),
+                str(meta.get("model") or "当前模型"),
+                terminal=str(result.get("code") or "") == "0",
+            )
         return result
 
 

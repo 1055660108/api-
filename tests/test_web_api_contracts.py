@@ -70,9 +70,24 @@ class WebAPIContractTests(unittest.TestCase):
     def test_region_restriction_is_hidden_for_all_client_task_states(self) -> None:
         for reason in ("Dola 当前地区不可用", "region restricted", "country restricted"):
             self.assertEqual(main._client_safe_text(reason, "Seedance 2.0"), "正在重试中，请稍等！")
+            self.assertEqual(main._client_safe_text(reason, "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("正在分配浏览器资源", "Seedance 2.0"), "正在分配服务资源")
         self.assertEqual(main._client_safe_text("正在启动浏览器", "Seedance 2.0"), "正在启动服务")
         self.assertEqual(main._client_safe_text("浏览器超时", "Seedance 2.0"), "服务超时")
+
+    def test_failed_region_task_never_displays_retrying_text(self) -> None:
+        registered = self.register("failed_region_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        task = store.create_task("地区失败终态", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        store.mark_failed(task["id"], "region restricted")
+        headers = {"X-API-Token": registered["token"]}
+
+        listed = self.client.get("/tasks?page=1&page_size=20", headers=headers).json()["tasks"][0]
+        result = self.client.get(f"/tasks/{task['id']}", headers=headers).json()
+
+        self.assertEqual(listed["status"], "failed")
+        self.assertEqual(listed["error"], "生成失败，请重试！")
+        self.assertEqual(result, {"code": "0", "text": "生成失败，请重试！", "url": ""})
 
     def test_admin_and_client_entries_publish_the_same_static_bundle(self) -> None:
         admin = self.client.get("/admin")

@@ -140,6 +140,9 @@ class BrowserRuntimeTests(unittest.TestCase):
         self.assertIn("await lease.release()", dola)
         self.assertIn('context_options["proxy"] = proxy_config', dola)
         self.assertIn("proxy=None", dola)
+        self.assertGreaterEqual(dola.count("mark_node_unavailable(self.proxy_node_id)"), 5)
+        self.assertIn("await release_dola_subscription_proxy(self.subscription_proxy)", dola)
+        self.assertIn("await dola_proxy_available", dola)
         self.assertIn("browser_pool=self._dola_browser_pool", (root / "worker.py").read_text(encoding="utf-8"))
         for source in (doubao, qianwen):
             self.assertLess(source.index('page.remove_listener("response", response_handler)'), source.index("await cancel_tracked_tasks(response_tasks)"))

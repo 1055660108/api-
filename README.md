@@ -86,6 +86,8 @@ export DOLA_QUEUE_VISIBILITY_TIMEOUT=180
 
 Redis 队列将任务原子移动到 processing，并通过租约心跳确认 Worker 存活；租约过期时，未提交到上游平台的任务恢复为 pending，已提交任务恢复为 submitted 继续查询结果。延迟重试保存在有序集合，到期后自动回到 ready 队列。
 
+多任务提交使用独立的后台公平调度：批次计划和每一行状态持久化在 PostgreSQL，Redis 保存跨用户轮询顺序和调度锁。尚未取得全局及用户并发槽位的行不会创建任务 ID，也不会扣除额度或积分；槽位释放后按用户轮询创建下一条。关闭或刷新浏览器不会中断批次，旧版已经创建的批量任务仍沿用原任务接口查询。
+
 未配置 `DOLA_QUEUE_BACKEND` 时默认使用 `file`，继续通过任务文件扫描领取，便于本地运行和兼容既有测试。生产 Redis 模式要求 API 与 Worker 使用共享任务存储；多机部署时应同时配置 `DOLA_DATABASE_URL`。
 
 ## Docker Compose 四服务部署

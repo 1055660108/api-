@@ -72,6 +72,15 @@ CREATE TABLE IF NOT EXISTS dola_user_activity (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS dola_user_activity_user_created_idx ON dola_user_activity (user_id, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS dola_batch_jobs (
+    id varchar(32) PRIMARY KEY,
+    owner_token_hash varchar(64) NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dola_batch_jobs_owner_created_idx ON dola_batch_jobs (owner_token_hash, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS dola_batch_jobs_status_idx ON dola_batch_jobs ((payload->>'status'), updated_at);
 INSERT INTO dola_schema_version(version) VALUES (1) ON CONFLICT (version) DO NOTHING;
 INSERT INTO dola_accounts(id, payload)
 SELECT item->>'id', item
@@ -108,6 +117,7 @@ WHERE name = 'point_transactions'
 ON CONFLICT (id) DO NOTHING;
 INSERT INTO dola_schema_version(version) VALUES (3) ON CONFLICT (version) DO NOTHING;
 INSERT INTO dola_schema_version(version) VALUES (4) ON CONFLICT (version) DO NOTHING;
+INSERT INTO dola_schema_version(version) VALUES (5) ON CONFLICT (version) DO NOTHING;
 """
 
 
@@ -623,6 +633,58 @@ def delete_document(name: str) -> None:
         conn.execute("DELETE FROM dola_documents WHERE name = %s", (name,))
 
 
+def create_batch_job(job_id: str, owner_token_hash: str, payload: dict[str, Any]) -> bool:
+    from psycopg.types.json import Jsonb
+
+    with connection() as conn:
+        row = conn.execute(
+            "INSERT INTO dola_batch_jobs(id, owner_token_hash, payload) VALUES (%s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING RETURNING id",
+            (job_id, owner_token_hash, Jsonb(payload)),
+        ).fetchone()
+    return row is not None
+
+
+def read_batch_job(job_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute("SELECT payload FROM dola_batch_jobs WHERE id = %s", (job_id,)).fetchone()
+    return dict(row[0]) if row else None
+
+
+def mutate_batch_job(job_id: str, mutator: Callable[[dict[str, Any]], T]) -> T:
+    from psycopg.types.json import Jsonb
+
+    with connection() as conn:
+        row = conn.execute("SELECT payload FROM dola_batch_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+        if not row:
+            raise KeyError(job_id)
+        payload = dict(row[0])
+        result = mutator(payload)
+        conn.execute(
+            "UPDATE dola_batch_jobs SET payload = %s, updated_at = now() WHERE id = %s",
+            (Jsonb(payload), job_id),
+        )
+        return result
+
+
+def list_batch_jobs(owner_token_hash: str | None = None, *, active_only: bool = False, limit: int = 100) -> list[dict[str, Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    if owner_token_hash is not None:
+        conditions.append("owner_token_hash = %s")
+        params.append(str(owner_token_hash))
+    if active_only:
+        conditions.append("payload->>'status' IN ('queued', 'running', 'canceling')")
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(max(1, min(1000, int(limit))))
+    with connection() as conn:
+        rows = conn.execute(
+            f"SELECT payload FROM dola_batch_jobs{where} ORDER BY created_at DESC, id DESC LIMIT %s",
+            tuple(params),
+        ).fetchall()
+    return [dict(row[0]) for row in rows]
+
+
 def task_exists(task_id: str) -> bool:
     with connection() as conn:
         return conn.execute("SELECT 1 FROM dola_tasks WHERE id = %s", (task_id,)).fetchone() is not None
@@ -937,4 +999,4 @@ def delete_task(task_id: str) -> None:
 
 def clear_all() -> None:
     with connection() as conn:
-        conn.execute("TRUNCATE dola_tasks, dola_documents, dola_accounts, dola_temp_tokens, dola_users, dola_point_transactions, dola_user_activity")
+        conn.execute("TRUNCATE dola_tasks, dola_documents, dola_accounts, dola_temp_tokens, dola_users, dola_point_transactions, dola_user_activity, dola_batch_jobs")

@@ -29,6 +29,19 @@ from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_quota
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
+from .batch_jobs import (
+    cancel_job as cancel_persistent_batch_job,
+    claim_next_row as claim_next_batch_row,
+    coordinator as batch_coordinator,
+    create_job as create_batch_job,
+    fail_or_requeue_row as fail_or_requeue_batch_row,
+    finish_row_creation as finish_batch_row_creation,
+    get_job as get_batch_job,
+    list_jobs as list_batch_jobs,
+    public_job as public_batch_job,
+    reconcile_job as reconcile_batch_job,
+    recover_stale_creating_rows,
+)
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, resolve_browser_executable
 from .config import (
     DATA_DIR,
@@ -174,6 +187,8 @@ _CANCELED_BATCHES_LOCK = threading.RLock()
 _RATE_LOCK = threading.RLock()
 _RATE_BUCKETS: dict[str, list[float]] = {}
 _RATE_BUCKET_LIMIT = 10_000
+_BATCH_RECONCILE_AT = 0.0
+_BATCH_RECOVER_AT = 0.0
 
 
 def _owner_create_semaphore(access: AccessContext) -> asyncio.Semaphore:
@@ -221,14 +236,25 @@ def _batch_reference_path(reference_id: str) -> Path:
     return app_config.DATA_DIR / "batch_references" / normalized
 
 
+def _batch_job_assets_path(job_id: str) -> Path:
+    normalized = str(job_id or "").strip().lower()
+    if len(normalized) != 32 or any(character not in "0123456789abcdef" for character in normalized):
+        raise ValueError("invalid batch job id")
+    return app_config.DATA_DIR / "batch_job_assets" / normalized
+
+
 def _cleanup_batch_references() -> None:
     references_dir = app_config.DATA_DIR / "batch_references"
     if not references_dir.exists():
         return
+    try:
+        protected = {str(job.get("reference_id") or "") for job in list_batch_jobs(None, active_only=True, limit=1000)}
+    except Exception:
+        protected = set()
     cutoff = time.time() - MAX_BATCH_REFERENCE_AGE_SECONDS
     for path in references_dir.iterdir():
         try:
-            if path.is_dir() and path.stat().st_mtime < cutoff:
+            if path.name not in protected and path.is_dir() and path.stat().st_mtime < cutoff:
                 shutil.rmtree(path)
         except OSError:
             continue
@@ -476,11 +502,255 @@ async def proxy_health_loop() -> None:
         await asyncio.sleep(PROXY_HEALTH_REFRESH_SECONDS)
 
 
+def _batch_job_is_active(job_id: str, owner_token_hash: str) -> bool:
+    job = get_batch_job(job_id, owner_token_hash)
+    return bool(job and str(job.get("status") or "") in {"queued", "running"} and not job.get("canceled_at"))
+
+
+async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
+    assert create_sem is not None
+    job = dict(claim.get("job") or {})
+    row = dict(claim.get("row") or {})
+    job_id = str(job.get("id") or "")
+    owner_hash = str(job.get("owner_token_hash") or "")
+    row_index = max(1, int(row.get("index") or 0))
+    access = await _storage_call(get_temp_context_by_hash, owner_hash)
+    if not access or not access.is_temp or not user_token_is_enabled(owner_hash):
+        raise ValueError("用户账号不可用")
+    if await _storage_call(sync_user_membership_by_token_hash, owner_hash):
+        access = await _storage_call(get_temp_context_by_hash, owner_hash)
+    if not access or not _batch_job_is_active(job_id, owner_hash):
+        raise HTTPException(status_code=409, detail="批量提交已停止")
+
+    prompt = repair_text(str(row.get("prompt") or "").strip())
+    ratio = str(job.get("ratio") or DEFAULT_RATIO).strip()
+    platform, model = validate_task_platform_model("dola", str(job.get("model") or "Seedance 2.0"))
+    if not prompt or ratio not in VALID_RATIOS:
+        raise ValueError("批量任务参数无效")
+    shared_reference_paths: list[Path] = []
+    reference_id = str(job.get("reference_id") or "")
+    reference_count = max(0, int(job.get("reference_count") or 0))
+    if reference_id:
+        shared_reference_paths = await asyncio.to_thread(
+            _batch_reference_paths,
+            reference_id,
+            owner_hash,
+            str(job.get("reference_batch_id") or job_id),
+        )
+        if reference_count <= 0 or len(shared_reference_paths) < reference_count:
+            raise ValueError("批量共用参考图数量无效，请重新上传")
+        shared_reference_paths = shared_reference_paths[:reference_count]
+    assets_root = _batch_job_assets_path(job_id)
+    row_reference_paths: list[Path] = []
+    for name in row.get("image_files", []):
+        candidate = assets_root / Path(str(name)).name
+        if not candidate.is_file():
+            raise ValueError("批量任务参考图不完整，请重新上传")
+        row_reference_paths.append(candidate)
+    if len(shared_reference_paths) + len(row_reference_paths) > load_settings().max_image_count:
+        raise ValueError("每条任务最多添加 9 张参考图")
+
+    key = f"batch-job-{job_id}-{row_index:06d}"
+    fingerprint = _request_fingerprint(
+        "batch-jobs",
+        owner_hash,
+        {"job_id": job_id, "row_index": row_index, "prompt": prompt, "ratio": ratio, "duration": 15, "images": [path.name for path in row_reference_paths]},
+    )
+    meta: dict[str, object] | None = None
+    reserved_access: AccessContext | None = None
+    created = False
+    resumed_initializing = False
+    async with _owner_create_semaphore(access), create_sem:
+        await asyncio.to_thread(_admit_task_creation)
+        try:
+            meta, created = await _storage_call(
+                find_or_create_task,
+                prompt,
+                ratio,
+                owner_hash,
+                platform,
+                model,
+                "video",
+                key,
+                fingerprint,
+                "batch-jobs",
+                15,
+                job_id,
+                row_index,
+                int(row.get("sheet_row") or 0),
+            )
+            resumed_initializing = not created and str(meta.get("status") or "") == "initializing"
+            if not created and not resumed_initializing:
+                return str(meta["id"])
+            base_cost_units = model_cost_units(platform, model, "video")
+            discount_units = await _storage_call(membership_task_discount_units_by_token_hash, owner_hash)
+            cost_units = max(1, base_cost_units - discount_units)
+            user_id = await _storage_call(_transaction_user_id, access)
+            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            if not _batch_job_is_active(job_id, owner_hash):
+                raise HTTPException(status_code=409, detail="批量提交已停止")
+            reservation = await _storage_call(get_temp_reservation, owner_hash, str(meta["id"]))
+            charged_units = int(reservation.get("units") or 0)
+            if user_id and reservation:
+                free_used = bool(reservation.get("free"))
+                await _storage_call(
+                    record_transaction,
+                    user_id,
+                    "video_quota_consume" if free_used else "consume",
+                    0 if free_used else -charged_units,
+                    "视频额度任务消费" if free_used else "视频任务消费",
+                    balance_units=reserved_access.credit_units,
+                    video_quota_change=-1 if free_used else 0,
+                    video_quota_balance=reserved_access.free_remaining,
+                    reference_id=str(meta["id"]),
+                    detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
+                    transaction_id=f"task-{str(meta['id'])[:27]}",
+                )
+        except Exception:
+            if meta and (created or resumed_initializing):
+                await _storage_call(refund_temp_quota_hash, owner_hash, str(meta["id"]), attempts=2)
+                await _storage_call(delete_task, str(meta["id"]), attempts=2)
+            raise
+
+        saved_paths: list[Path] = []
+        try:
+            for index, source in enumerate([*shared_reference_paths, *row_reference_paths], start=1):
+                target = images_dir(str(meta["id"])) / f"{index:02d}{source.suffix.lower()}"
+                await asyncio.to_thread(shutil.copy2, source, target)
+                saved_paths.append(target)
+            await _storage_call(set_task_images, str(meta["id"]), saved_paths)
+            if not _batch_job_is_active(job_id, owner_hash):
+                raise HTTPException(status_code=409, detail="批量提交已停止")
+            await _storage_call(finalize_task_creation, str(meta["id"]))
+        except Exception:
+            if reserved_access:
+                await _storage_call(refund_temp_quota_hash, owner_hash, str(meta["id"]), attempts=2)
+            await _storage_call(delete_task, str(meta["id"]), attempts=2)
+            raise
+        if user_id:
+            await _record_activity_safe(
+                user_id,
+                "task_submit",
+                "提交视频生成任务",
+                reference_id=str(meta["id"]),
+                detail=f"{model} / {ratio} / 多任务第 {row_index} 条",
+            )
+        return str(meta["id"])
+
+
+async def _reconcile_persistent_batch_jobs(jobs: list[dict[str, object]]) -> None:
+    all_task_ids = list(dict.fromkeys(
+        str(row.get("task_id") or "")
+        for job in jobs
+        for row in job.get("rows", [])
+        if isinstance(row, dict)
+        and str(row.get("task_id") or "")
+        and str(row.get("status") or "") not in {"completed", "failed", "canceled"}
+    ))
+    states = await asyncio.to_thread(task_states, all_task_ids) if all_task_ids else []
+    all_payloads = {
+        task_id: {
+            "status": str(meta.get("status") or ""),
+            "error": str(meta.get("error") or ""),
+            "video_url": str(result.get("decoded_main_url") or ""),
+        }
+        for task_id, meta, result in states
+    }
+    for job in jobs:
+        job_id = str(job.get("id") or "")
+        task_ids = [
+            str(row.get("task_id") or "")
+            for row in job.get("rows", [])
+            if isinstance(row, dict)
+            and str(row.get("task_id") or "")
+            and str(row.get("status") or "") not in {"completed", "failed", "canceled"}
+        ]
+        if not task_ids:
+            continue
+        payloads = {task_id: all_payloads[task_id] for task_id in task_ids if task_id in all_payloads}
+        needs_update = any(
+            payload.get("video_url") or str(payload.get("status") or "") in {"failed", "canceled"}
+            for payload in payloads.values()
+        )
+        if not needs_update:
+            continue
+        updated = await asyncio.to_thread(reconcile_batch_job, job_id, payloads)
+        if str(updated.get("status") or "") in {"completed", "canceled"}:
+            await asyncio.to_thread(shutil.rmtree, _batch_job_assets_path(job_id), True)
+
+
+async def batch_scheduler_tick() -> bool:
+    global _BATCH_RECONCILE_AT, _BATCH_RECOVER_AT
+    coordinator = batch_coordinator()
+    with coordinator.lease(120) as acquired:
+        if not acquired:
+            return False
+        if time.monotonic() >= _BATCH_RECOVER_AT:
+            await asyncio.to_thread(recover_stale_creating_rows)
+            _BATCH_RECOVER_AT = time.monotonic() + 30.0
+        jobs = await asyncio.to_thread(list_batch_jobs, None, active_only=True, limit=1000)
+        if not jobs:
+            return False
+        if time.monotonic() >= _BATCH_RECONCILE_AT:
+            await _reconcile_persistent_batch_jobs(jobs)
+            _BATCH_RECONCILE_AT = time.monotonic() + 1.0
+            jobs = await asyncio.to_thread(list_batch_jobs, None, active_only=True, limit=1000)
+        active_rows = await asyncio.to_thread(list_task_metas_by_statuses, {"pending", "running", "submitted"})
+        global_capacity = max(1, min(BROWSER_SUBMISSION_CONCURRENCY, int(load_settings().max_effective_workers or BROWSER_SUBMISSION_CONCURRENCY)))
+        if len(active_rows) >= global_capacity:
+            return False
+        eligible: set[str] = set()
+        for job in jobs:
+            if not any(str(row.get("status") or "") == "queued" for row in job.get("rows", []) if isinstance(row, dict)):
+                continue
+            owner_hash = str(job.get("owner_token_hash") or "")
+            access = await _storage_call(get_temp_context_by_hash, owner_hash)
+            if not access or not user_token_is_enabled(owner_hash):
+                continue
+            owner_limit = min(max(1, int(job.get("concurrency") or 1)), max(1, int(access.concurrency or 1)))
+            owner_active = await _storage_call(active_task_count_for_owner, owner_hash)
+            if owner_active < owner_limit:
+                eligible.add(owner_hash)
+        owner = await asyncio.to_thread(coordinator.next_owner, eligible)
+        if not owner:
+            return False
+        claim = await asyncio.to_thread(claim_next_batch_row, owner)
+        if not claim:
+            return False
+        job_id = str(dict(claim.get("job") or {}).get("id") or "")
+        row_index = int(dict(claim.get("row") or {}).get("index") or 0)
+        try:
+            task_id = await _create_scheduled_batch_task(claim)
+            await asyncio.to_thread(finish_batch_row_creation, job_id, row_index, task_id)
+        except (QuotaExceeded, ValueError) as exc:
+            await asyncio.to_thread(fail_or_requeue_batch_row, job_id, row_index, str(exc), retry=False)
+        except HTTPException as exc:
+            retry = int(exc.status_code) >= 500
+            await asyncio.to_thread(fail_or_requeue_batch_row, job_id, row_index, str(exc.detail), retry=retry)
+        except Exception as exc:
+            logger.exception("persistent batch row creation failed (job_id=%s row=%s)", job_id, row_index)
+            await asyncio.to_thread(fail_or_requeue_batch_row, job_id, row_index, "任务创建暂时繁忙，请稍后重试", retry=True)
+        return True
+
+
+async def batch_scheduler_loop() -> None:
+    await asyncio.sleep(1)
+    while True:
+        try:
+            scheduled = await batch_scheduler_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("persistent batch scheduler tick failed")
+            scheduled = False
+        await asyncio.sleep(0.15 if scheduled else 1.0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
 
-    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task
+    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task, batch_scheduler_task
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
     _OWNER_CREATE_SEMAPHORES.clear()
@@ -503,6 +773,7 @@ async def lifespan(app: FastAPI):
     quota_reset_task = asyncio.create_task(account_quota_reset_loop())
     task_cache_cleanup_task = asyncio.create_task(task_cache_cleanup_loop())
     proxy_health_task = asyncio.create_task(proxy_health_loop())
+    batch_scheduler_task = asyncio.create_task(batch_scheduler_loop())
     try:
         yield
     finally:
@@ -519,6 +790,10 @@ async def lifespan(app: FastAPI):
             proxy_health_task.cancel()
             with suppress(asyncio.CancelledError):
                 await proxy_health_task
+        if batch_scheduler_task:
+            batch_scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await batch_scheduler_task
         _OWNER_CREATE_SEMAPHORES.clear()
 
 
@@ -2500,6 +2775,119 @@ async def delete_batch_references(reference_id: str, access: Annotated[AccessCon
     return {"ok": True, "deleted": deleted}
 
 
+@app.post("/batch-prompts/jobs", dependencies=[Depends(require_temp)])
+async def create_persistent_batch_job(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_temp)],
+    manifest: Annotated[str, Form()],
+    images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
+):
+    await _rate_limit(request, "batch-job-create", 10, 60, access.token_hash)
+    try:
+        payload = json.loads(str(manifest or ""))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="批量生成设置无效") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        raise HTTPException(status_code=400, detail="批量生成设置无效")
+    raw_rows = payload["rows"]
+    if not raw_rows or len(raw_rows) > 2000:
+        raise HTTPException(status_code=400, detail="每个批次需包含 1 至 2000 条提示词")
+    ratio = str(payload.get("ratio") or DEFAULT_RATIO).strip()
+    if ratio not in VALID_RATIOS:
+        raise HTTPException(status_code=400, detail="invalid ratio")
+    try:
+        concurrency = max(1, min(int(access.concurrency or 1), int(payload.get("concurrency") or access.concurrency or 1)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="生成并发无效") from exc
+    reference_id = str(payload.get("reference_id") or "").strip()
+    reference_count = max(0, min(load_settings().max_image_count, int(payload.get("reference_count") or 0)))
+    reference_batch_id = str(payload.get("reference_batch_id") or "").strip()[:100]
+    if reference_id:
+        shared_paths = await asyncio.to_thread(_batch_reference_paths, reference_id, access.token_hash, reference_batch_id)
+        if reference_count <= 0 or len(shared_paths) < reference_count:
+            raise HTTPException(status_code=400, detail="批量共用参考图数量无效，请重新上传")
+    elif reference_count:
+        raise HTTPException(status_code=400, detail="批量共用参考图参数无效")
+
+    normalized_rows: list[dict[str, object]] = []
+    expected_images = 0
+    for index, raw in enumerate(raw_rows, start=1):
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="批量提示词格式无效")
+        prompt = repair_text(str(raw.get("prompt") or "").strip())
+        if not prompt:
+            raise HTTPException(status_code=400, detail=f"第 {index} 条提示词为空")
+        image_count = max(0, int(raw.get("image_count") or 0))
+        if reference_count + image_count > load_settings().max_image_count:
+            raise HTTPException(status_code=400, detail=f"第 {index} 条任务最多添加 {load_settings().max_image_count} 张参考图")
+        expected_images += image_count
+        normalized_rows.append({
+            "client_index": max(0, int(raw.get("client_index") or index - 1)),
+            "sheet_row": max(1, int(raw.get("sheet_row") or index)),
+            "prompt": prompt,
+            "image_count": image_count,
+            "image_files": [],
+        })
+    uploads = [item for item in (images or []) if item and item.filename]
+    if len(uploads) != expected_images:
+        raise HTTPException(status_code=400, detail="批量任务参考图上传不完整，请重新提交")
+
+    job_id = secrets.token_hex(16)
+    assets_root = _batch_job_assets_path(job_id)
+    assets_root.mkdir(parents=True, exist_ok=False)
+    upload_cursor = 0
+    try:
+        for row_index, row in enumerate(normalized_rows, start=1):
+            saved_names: list[str] = []
+            for image_index in range(int(row["image_count"])):
+                upload = uploads[upload_cursor]
+                upload_cursor += 1
+                suffix = Path(upload.filename or "").suffix.lower()
+                if suffix not in IMAGE_MAGIC:
+                    raise HTTPException(status_code=400, detail="unsupported image type")
+                filename = f"{row_index:06d}-{image_index + 1:02d}{suffix}"
+                await asyncio.to_thread(_save_uploaded_image, upload, assets_root / filename)
+                saved_names.append(filename)
+            row["image_files"] = saved_names
+        job = await _storage_call(
+            create_batch_job,
+            access.token_hash,
+            normalized_rows,
+            ratio=ratio,
+            concurrency=concurrency,
+            reference_id=reference_id,
+            reference_count=reference_count,
+            reference_batch_id=reference_batch_id,
+            job_id=job_id,
+        )
+    except Exception:
+        shutil.rmtree(assets_root, ignore_errors=True)
+        raise
+    return JSONResponse(status_code=201, content={"job": public_batch_job(job)})
+
+
+@app.get("/batch-prompts/jobs/current", dependencies=[Depends(require_temp)])
+async def current_persistent_batch_job(access: Annotated[AccessContext, Depends(require_temp)]):
+    jobs = await asyncio.to_thread(list_batch_jobs, access.token_hash, active_only=True, limit=1)
+    return {"job": public_batch_job(jobs[0]) if jobs else None}
+
+
+@app.get("/batch-prompts/jobs/{job_id}", dependencies=[Depends(require_temp)])
+async def persistent_batch_job_status(job_id: str, access: Annotated[AccessContext, Depends(require_temp)]):
+    job = await asyncio.to_thread(get_batch_job, job_id, access.token_hash)
+    if not job:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    task_ids = [str(row.get("task_id") or "") for row in job.get("rows", []) if isinstance(row, dict) and str(row.get("task_id") or "")]
+    if task_ids:
+        states = await asyncio.to_thread(task_states, task_ids, access.token_hash)
+        payloads = {
+            task_id: {"status": str(meta.get("status") or ""), "error": _client_safe_text(str(meta.get("error") or ""), str(meta.get("model") or "当前模型")), "video_url": str(result.get("decoded_main_url") or "")}
+            for task_id, meta, result in states
+        }
+        job = await asyncio.to_thread(reconcile_batch_job, job_id, payloads)
+    return {"job": public_batch_job(job)}
+
+
 @app.post("/batch-prompts/{batch_id}/cancel", dependencies=[Depends(require_token)])
 async def cancel_batch_prompt_submission(
     batch_id: str,
@@ -2508,6 +2896,11 @@ async def cancel_batch_prompt_submission(
     normalized = str(batch_id or "").strip()[:100]
     if not normalized:
         raise HTTPException(status_code=400, detail="batch id is required")
+    if access.is_temp:
+        existing = await asyncio.to_thread(get_batch_job, normalized, access.token_hash)
+        if existing:
+            canceled = await asyncio.to_thread(cancel_persistent_batch_job, normalized, access.token_hash)
+            return {"ok": True, "batch_id": normalized, "job": public_batch_job(canceled)}
     _set_batch_canceled(access, normalized)
     return {"ok": True, "batch_id": normalized}
 

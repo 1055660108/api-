@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS dola_point_transactions (
 
 CREATE INDEX IF NOT EXISTS dola_point_transactions_user_created_idx ON dola_point_transactions (user_id, created_at DESC, id DESC);
 
+CREATE TABLE IF NOT EXISTS dola_batch_jobs (
+    id varchar(32) PRIMARY KEY,
+    owner_token_hash varchar(64) NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS dola_batch_jobs_owner_created_idx ON dola_batch_jobs (owner_token_hash, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS dola_batch_jobs_status_idx ON dola_batch_jobs ((payload->>'status'), updated_at);
+
 INSERT INTO dola_schema_version(version) VALUES (1) ON CONFLICT (version) DO NOTHING;
 INSERT INTO dola_accounts(id, payload)
 SELECT item->>'id', item
@@ -98,3 +109,5 @@ WHERE name = 'point_transactions'
   AND NOT EXISTS (SELECT 1 FROM dola_schema_version WHERE version = 3)
 ON CONFLICT (id) DO NOTHING;
 INSERT INTO dola_schema_version(version) VALUES (3) ON CONFLICT (version) DO NOTHING;
+INSERT INTO dola_schema_version(version) VALUES (4) ON CONFLICT (version) DO NOTHING;
+INSERT INTO dola_schema_version(version) VALUES (5) ON CONFLICT (version) DO NOTHING;

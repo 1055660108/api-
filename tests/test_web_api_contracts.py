@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app import __version__, accounts, admin_auth, client_auth, config, main, package_catalog, point_transactions, proxy_manager, store, temp_access, users
+from app import __version__, accounts, admin_auth, batch_jobs, client_auth, config, main, package_catalog, point_transactions, proxy_manager, store, temp_access, users
 
 
 class WebAPIContractTests(unittest.TestCase):
@@ -280,6 +280,109 @@ class WebAPIContractTests(unittest.TestCase):
         meta = store.get_meta(submitted.json()["id"])
         self.assertEqual(meta["duration"], 10)
         self.assertEqual((meta["batch_id"], meta["batch_index"], meta["batch_row"]), ("batch-order-1", 1, 2))
+
+    def test_persistent_batch_plan_has_no_task_id_or_charge_before_scheduler_claim(self) -> None:
+        registered = self.register("persistent_batch_waiting")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        headers = {"X-API-Token": registered["token"]}
+        before = temp_access.get_temp_context_by_hash(owner_hash)
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 1,
+            "rows": [
+                {"client_index": index, "sheet_row": index + 2, "prompt": f"后台公平排队 {index + 1}", "image_count": 0}
+                for index in range(3)
+            ],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            response = self.client.post("/batch-prompts/jobs", headers=headers, data={"manifest": json.dumps(manifest, ensure_ascii=False)})
+            self.assertEqual(response.status_code, 201, response.text)
+            job = response.json()["job"]
+            self.assertEqual(job["counts"]["queued"], 3)
+            self.assertTrue(all(not row["task_id"] for row in job["rows"]))
+            self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
+            after = temp_access.get_temp_context_by_hash(owner_hash)
+            self.assertEqual((after.free_remaining, after.credit_units), (before.free_remaining, before.credit_units))
+            current = self.client.get("/batch-prompts/jobs/current", headers=headers)
+            self.assertEqual(current.status_code, 200)
+            self.assertEqual(current.json()["job"]["id"], job["id"])
+            canceled = self.client.post(f"/batch-prompts/{job['id']}/cancel", headers=headers)
+            self.assertEqual(canceled.status_code, 200, canceled.text)
+            self.assertEqual(canceled.json()["job"]["counts"]["canceled"], 3)
+        self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
+
+    def test_persistent_batch_claim_creates_and_charges_only_one_row(self) -> None:
+        registered = self.register("persistent_batch_claim")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        headers = {"X-API-Token": registered["token"]}
+        manifest = {
+            "ratio": "16:9",
+            "concurrency": 1,
+            "rows": [
+                {"client_index": 0, "sheet_row": 2, "prompt": "第一条后台任务", "image_count": 0},
+                {"client_index": 1, "sheet_row": 3, "prompt": "第二条仍在排队", "image_count": 0},
+            ],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            response = self.client.post("/batch-prompts/jobs", headers=headers, data={"manifest": json.dumps(manifest, ensure_ascii=False)})
+            self.assertEqual(response.status_code, 201, response.text)
+            job_id = response.json()["job"]["id"]
+            claim = batch_jobs.claim_next_row(owner_hash)
+            self.assertIsNotNone(claim)
+            task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
+            batch_jobs.finish_row_creation(job_id, 1, task_id)
+            job = batch_jobs.public_job(batch_jobs.get_job(job_id, owner_hash))
+        self.assertEqual(job["rows"][0]["task_id"], task_id)
+        self.assertEqual(job["rows"][0]["status"], "running")
+        self.assertEqual(job["rows"][1]["status"], "queued")
+        self.assertEqual(job["rows"][1]["task_id"], "")
+        self.assertEqual(len(store.list_tasks(owner_token_hash=owner_hash)), 1)
+        reservation = temp_access.get_temp_reservation(owner_hash, task_id)
+        self.assertEqual(reservation["status"], "reserved")
+
+    def test_persistent_batch_scheduler_copies_shared_and_row_reference_images(self) -> None:
+        registered = self.register("persistent_batch_images")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        headers = {"X-API-Token": registered["token"]}
+        reference_batch_id = "persistent-reference-session"
+        shared_image = b"\x89PNG\r\n\x1a\nshared-persistent"
+        row_image = b"\x89PNG\r\n\x1a\nrow-persistent"
+        shared = self.client.post(
+            "/batch-prompts/references",
+            headers=headers,
+            data={"batch_id": reference_batch_id},
+            files=[("images", ("shared.png", shared_image, "image/png"))],
+        )
+        self.assertEqual(shared.status_code, 200, shared.text)
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 1,
+            "reference_id": shared.json()["reference_id"],
+            "reference_count": 1,
+            "reference_batch_id": reference_batch_id,
+            "rows": [{"client_index": 0, "sheet_row": 2, "prompt": "带两类参考图的任务", "image_count": 1}],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            created = self.client.post(
+                "/batch-prompts/jobs",
+                headers=headers,
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)},
+                files=[("images", ("row.png", row_image, "image/png"))],
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            claim = batch_jobs.claim_next_row(owner_hash)
+            task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
+        self.assertEqual([path.read_bytes() for path in store.task_image_paths(task_id)], [shared_image, row_image])
+
+    def test_batch_coordinator_rotates_eligible_owners(self) -> None:
+        batch_jobs._LOCAL_OWNER_CURSOR = 0
+        coordinator = batch_jobs.BatchCoordinator()
+        self.assertEqual([coordinator.next_owner({"owner-a", "owner-b"}) for _ in range(4)], ["owner-a", "owner-b", "owner-a", "owner-b"])
 
     def test_one_hundred_batch_tasks_are_enqueued_in_spreadsheet_order(self) -> None:
         registered = self.register("batch_order_100_client")

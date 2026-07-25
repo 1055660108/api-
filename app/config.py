@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import hashlib
 import os
@@ -144,7 +145,11 @@ def _load_config_dict() -> dict[str, Any]:
         try:
             loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             raw = loaded if isinstance(loaded, dict) else {}
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        except OSError as exc:
+            if exc.errno in {errno.EMFILE, errno.ENFILE}:
+                raise RuntimeError("service file descriptor limit is exhausted") from exc
+            raise RuntimeError(f"config data cannot be read: {CONFIG_PATH}") from exc
+        except (UnicodeError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"config data is corrupt: {CONFIG_PATH}") from exc
         if not isinstance(loaded, dict):
             raise RuntimeError(f"config data is corrupt: {CONFIG_PATH}")

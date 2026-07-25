@@ -26,8 +26,18 @@ class PublicHttpsInstallerTests(unittest.TestCase):
     def test_installer_enables_https_redirect_without_touching_data(self) -> None:
         self.assertIn("certbot --nginx", self.script)
         self.assertIn("--redirect", self.script)
+        self.assertIn('apply_public_hardening.sh', self.script)
         self.assertNotIn("docker compose down", self.script)
         self.assertNotIn("docker volume", self.script)
+
+    def test_hardening_limits_abnormal_connections_without_reducing_upload_size(self) -> None:
+        hardening = (Path(__file__).resolve().parents[1] / "scripts" / "apply_public_hardening.sh").read_text(encoding="utf-8")
+        self.assertIn("limit_conn dola_per_ip 80", hardening)
+        self.assertIn("rate=60r/s", hardening)
+        self.assertIn("burst=180 nodelay", hardening)
+        self.assertIn("client_header_timeout 15s", hardening)
+        self.assertIn("nginx -t", hardening)
+        self.assertIn("systemctl reload nginx", hardening)
 
 
 if __name__ == "__main__":

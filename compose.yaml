@@ -26,14 +26,21 @@ x-app-environment: &app-environment
   DOLA_RESULT_POLL_RATE_PER_SECOND: ${DOLA_RESULT_POLL_RATE_PER_SECOND:-8}
   DOLA_RESULT_POLL_BATCH_SIZE: ${DOLA_RESULT_POLL_BATCH_SIZE:-256}
   DOLA_RESULT_POLL_INTERVAL_SECONDS: ${DOLA_RESULT_POLL_INTERVAL_SECONDS:-20}
+  DOLA_API_MAX_CONNECTIONS: ${DOLA_API_MAX_CONNECTIONS:-512}
+  DOLA_API_HEALTH_FAILURES_BEFORE_RESTART: ${DOLA_API_HEALTH_FAILURES_BEFORE_RESTART:-3}
+  DOLA_API_FD_RESTART_THRESHOLD: ${DOLA_API_FD_RESTART_THRESHOLD:-4096}
   DOLA_UPDATE_CONTROLLER_SOCKET: /run/dola-update/controller.sock
 
 x-app-base: &app-base
   build:
     context: .
-  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.40}
+  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.41}
   init: true
   restart: unless-stopped
+  ulimits:
+    nofile:
+      soft: ${DOLA_NOFILE_SOFT_LIMIT:-65535}
+      hard: ${DOLA_NOFILE_HARD_LIMIT:-65535}
   environment: *app-environment
   volumes:
     - app-data:/var/lib/dola-fetch-service
@@ -53,7 +60,7 @@ services:
     ports:
       - "127.0.0.1:${DOLA_PORT:-8088}:8088"
     healthcheck:
-      test: ["CMD", "python", "-c", "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8088/health/live', timeout=2); assert r.status == 200 and json.load(r).get('ok') is True"]
+      test: ["CMD", "python", "-m", "app.api_healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 5

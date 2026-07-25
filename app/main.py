@@ -22,7 +22,6 @@ import httpx
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
-from starlette.background import BackgroundTask
 
 from . import config as app_config
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
@@ -819,11 +818,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Fetch Task Service", version=__version__, lifespan=lifespan)
 ADMIN_DIR = Path(__file__).resolve().parent / "admin"
+BLOCKED_PROBE_SUFFIXES = {".asp", ".aspx", ".bak", ".cgi", ".env", ".ini", ".php", ".sql"}
+
+
+def _is_sensitive_probe_path(path: str) -> bool:
+    normalized = str(path or "").lower()
+    segments = tuple(segment for segment in normalized.split("/") if segment)
+    if any(segment.startswith(".") and segment != ".well-known" for segment in segments):
+        return True
+    return any(normalized.endswith(suffix) for suffix in BLOCKED_PROBE_SUFFIXES)
 
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    response = await call_next(request)
+    response = JSONResponse(status_code=404, content={"detail": "Not Found"}) if _is_sensitive_probe_path(request.url.path) else await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -3545,6 +3553,14 @@ async def task_video(
         headers["Range"] = request.headers["range"]
     client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0), follow_redirects=False, trust_env=False)
     response = None
+
+    async def close_upstream() -> None:
+        try:
+            if response is not None:
+                await response.aclose()
+        finally:
+            await client.aclose()
+
     try:
         current_url = url
         for _ in range(6):
@@ -3559,15 +3575,16 @@ async def task_video(
             current_url = _validate_video_url(urljoin(current_url, location))
         if response is None or response.status_code not in {200, 206}:
             status = response.status_code if response is not None else 502
-            if response is not None:
-                await response.aclose()
-            await client.aclose()
             raise HTTPException(status_code=502, detail=f"video upstream returned HTTP {status}")
     except HTTPException:
+        await close_upstream()
         raise
     except httpx.HTTPError as exc:
-        await client.aclose()
+        await close_upstream()
         raise HTTPException(status_code=502, detail="video upstream unavailable") from exc
+    except BaseException:
+        await close_upstream()
+        raise
 
     outgoing_headers = {
         key: value
@@ -3579,16 +3596,18 @@ async def task_video(
     if download:
         outgoing_headers["Content-Disposition"] = f'attachment; filename="{task_id}.mp4"'
 
-    async def close_stream() -> None:
-        await response.aclose()
-        await client.aclose()
+    async def stream_video():
+        try:
+            async for chunk in response.aiter_raw():
+                yield chunk
+        finally:
+            await close_upstream()
 
     return StreamingResponse(
-        response.aiter_raw(),
+        stream_video(),
         status_code=response.status_code,
         media_type=response.headers.get("content-type") or "video/mp4",
         headers=outgoing_headers,
-        background=BackgroundTask(close_stream),
     )
 
 

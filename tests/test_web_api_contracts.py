@@ -160,6 +160,44 @@ class WebAPIContractTests(unittest.TestCase):
         denied = self.client.get(f"/tasks/{task['id']}/video", headers={"X-API-Token": other["token"]})
         self.assertEqual(denied.status_code, 404)
 
+    def test_task_video_proxy_closes_upstream_on_invalid_redirect(self) -> None:
+        registered = self.register("video_redirect_owner")
+        owner_hash = temp_access.hash_token(registered["token"])
+        task = store.create_task("视频重定向", "9:16", owner_token_hash=owner_hash, platform="dola")
+        store.save_result(task["id"], extra={"decoded_main_url": "https://cdn.example/video.mp4"})
+        closed: dict[str, bool] = {}
+
+        class RedirectResponse:
+            status_code = 302
+            headers = {"location": "http://127.0.0.1/private.mp4"}
+
+            async def aclose(self):
+                closed["response"] = True
+
+        class RedirectClient:
+            def build_request(self, method, url, headers):
+                return object()
+
+            async def send(self, request, stream=False):
+                return RedirectResponse()
+
+            async def aclose(self):
+                closed["client"] = True
+
+        with patch.object(main.httpx, "AsyncClient", return_value=RedirectClient()):
+            response = self.client.get(f"/tasks/{task['id']}/video", headers={"X-API-Token": registered["token"]})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(closed["response"])
+        self.assertTrue(closed["client"])
+
+    def test_sensitive_probe_paths_are_rejected_before_routing(self) -> None:
+        for path in ("/.env", "/.git/config", "/wp-config.php", "/backup.sql"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 404, path)
+            self.assertEqual(response.json(), {"detail": "Not Found"})
+            self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+
     def test_login_contracts_keep_credentials_and_error_shapes_compatible(self) -> None:
         invalid_admin = self.client.post("/auth/admin/login", json={"username": "contract-admin", "password": "invalid"})
         self.assertEqual(invalid_admin.status_code, 401)

@@ -16,7 +16,7 @@ class VersionTests(unittest.TestCase):
         postgres_source = (root / "app" / "postgres.py").read_text(encoding="utf-8")
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.40")
+        self.assertEqual(version, "1.4.41")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-24}", compose)
@@ -24,6 +24,9 @@ class VersionTests(unittest.TestCase):
         self.assertIn('os.environ.get("DOLA_DATABASE_POOL_SIZE") or 24', postgres_source)
         self.assertIn("DOLA_DATABASE_POOL_TIMEOUT: ${DOLA_DATABASE_POOL_TIMEOUT:-3}", compose)
         self.assertIn("DOLA_DATABASE_POOL_TIMEOUT=3", env_example)
+        self.assertIn("DOLA_API_MAX_CONNECTIONS: ${DOLA_API_MAX_CONNECTIONS:-512}", compose)
+        self.assertIn("DOLA_NOFILE_SOFT_LIMIT:-65535", compose)
+        self.assertIn('test: ["CMD", "python", "-m", "app.api_healthcheck"]', compose)
         self.assertIn('"remote_generation_limit": 0', config_source)
         self.assertIn("COPY VERSION ./VERSION", dockerfile)
         self.assertIn("COPY requirements.txt requirements.lock ./", dockerfile)

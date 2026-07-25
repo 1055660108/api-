@@ -101,6 +101,7 @@ certbot --nginx \
 nginx -t
 systemctl reload nginx
 systemctl enable --now certbot.timer >/dev/null 2>&1 || true
+bash "$(dirname "$0")/apply_public_hardening.sh"
 
 echo "HTTPS 已启用：https://$DOMAIN/client"
 curl --fail --show-error --silent --max-time 15 "https://$DOMAIN/health/live"

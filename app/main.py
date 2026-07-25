@@ -837,7 +837,7 @@ def _client_task(task: dict) -> dict:
     for key in ("error", "status_reason"):
         if key in safe:
             safe[key] = _client_safe_text(str(safe.get(key) or ""), model)
-    for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
+    for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
         safe.pop(key, None)
     return safe
 
@@ -2789,7 +2789,7 @@ async def batch_prompt_status(
             text = _client_safe_text(str(meta.get("error") or ("用户取消生成" if status == "canceled" else "生成失败")), str(meta.get("model") or "当前模型"))
         else:
             code = "1"
-            text = _client_safe_text(str(meta.get("queue_reason") or meta.get("error") or ""), str(meta.get("model") or "当前模型"))
+            text = _client_safe_text(str(meta.get("status_reason") or meta.get("queue_reason") or meta.get("error") or ""), str(meta.get("model") or "当前模型"))
         states.append({"id": task_id, "status": status, "code": code, "text": text, "url": url})
     return {"tasks": states}
 

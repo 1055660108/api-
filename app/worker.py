@@ -34,12 +34,12 @@ from .store import (
     MAX_TASK_RETRIES,
     MAX_INFRASTRUCTURE_RETRIES,
     record_failed_account,
-    record_execution_miss,
     record_result_watch_miss,
     record_retry,
     record_infrastructure_retry,
     reset_running_tasks,
     retry_timed_out_submitted_task,
+    set_execution_phase,
     set_active_tasks,
     STATUS_SUBMITTED,
     update_meta,
@@ -276,28 +276,40 @@ class WorkerManager:
             limit=RESULT_POLL_BATCH_SIZE,
         )
         await self._watch_unfinished_success_tasks([task_id for task_id, _ in submitted_rows])
-        if queue_backend() == "redis":
-            return
         running_ids = [task_id for task_id, _ in list_task_metas_by_statuses({"running"})]
         for task_id in running_ids:
             with suppress(FileNotFoundError):
                 meta = get_meta(task_id)
                 if str(meta.get("status") or "") != "running":
                     continue
+                now = datetime.now(timezone.utc)
                 started_at = self._parse_utc(str(meta.get("started_at") or meta.get("updated_at") or ""))
-                if started_at and datetime.now(timezone.utc) - started_at < timedelta(seconds=RUNNING_WATCH_GRACE_SECONDS):
+                phase_updated_at = self._parse_utc(str(meta.get("phase_updated_at") or "")) or started_at
+                running_age = now - started_at if started_at else timedelta.max
+                phase_age = now - phase_updated_at if phase_updated_at else timedelta.max
+                if running_age < timedelta(seconds=RUNNING_WATCH_GRACE_SECONDS):
                     continue
                 worker_id = str(meta.get("worker_id") or "")
                 task = self._workers.get(worker_id) if worker_id else None
-                if account_for_current_task(task_id) and task and not task.done():
+                if task and not task.done() and account_for_current_task(task_id):
+                    stale_after = max(240, int(load_settings().task_timeout_seconds)) + RUNNING_WATCH_GRACE_SECONDS
+                    if phase_age < timedelta(seconds=stale_after):
+                        continue
+                    reason = f"execution phase timed out: {str(meta.get('execution_phase') or 'unknown')}"
+                    retry_count = record_infrastructure_retry(task_id, reason)
+                    if retry_count > MAX_INFRASTRUCTURE_RETRIES:
+                        refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+                    task.cancel()
                     continue
-                miss_count = record_execution_miss(task_id)
+                retry_count = record_infrastructure_retry(task_id, "worker execution heartbeat missing")
                 self._claimed.discard(task_id)
                 if worker_id:
                     if task and not task.done():
                         task.cancel()
                     self._worker_task_ids.pop(worker_id, None)
-                if miss_count > MAX_TASK_RETRIES:
+                if retry_count <= MAX_INFRASTRUCTURE_RETRIES:
+                    self._queue.requeue(task_id)
+                else:
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
         set_active_tasks(self._claimed)
 
@@ -501,6 +513,8 @@ class WorkerManager:
                     clear_account_current_task(account_id, task_id)
                     refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
                     continue
+                if platform != "dola":
+                    set_execution_phase(task_id, "submitting_request", "正在提交生成请求")
                 if platform == "doubao":
                     runner = DoubaoVideoAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), str(meta.get("model") or "Seedance 2.0 Mini"), account=account)
                 elif platform == "qianwen":

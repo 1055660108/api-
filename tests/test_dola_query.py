@@ -22,6 +22,13 @@ def single_chain(conversation_id: str, messages: list[dict]) -> dict:
 
 
 class DolaQueryTests(unittest.TestCase):
+    def test_running_task_query_returns_current_execution_phase(self) -> None:
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query, "get_meta", return_value={"status": "running", "status_reason": "正在打开生成页面"}
+        ):
+            result = asyncio.run(query._query_task_once("0" * 32))
+        self.assertEqual(result, {"code": "1", "text": "正在打开生成页面", "url": ""})
+
     def test_proxy_and_browser_transport_errors_are_infrastructure_failures(self) -> None:
         for reason in (
             "mihomo controller is not available",

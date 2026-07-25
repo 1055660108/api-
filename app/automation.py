@@ -28,6 +28,7 @@ from .store import (
     release_task_submission,
     is_task_canceled,
     save_result,
+    set_execution_phase,
     task_exists,
     task_image_paths,
 )
@@ -659,6 +660,10 @@ class DolaFetchAutomation:
         if self._task_exists():
             mark_submitted(self.task_id)
 
+    def _set_phase(self, phase: str, status_reason: str) -> None:
+        if self._task_exists():
+            set_execution_phase(self.task_id, phase, status_reason)
+
     async def run(self) -> dict[str, Any]:
         try:
             timeout = max(self.settings.task_timeout_seconds, 240)
@@ -680,6 +685,7 @@ class DolaFetchAutomation:
         if not self._task_exists():
             return {"success": True, "retryable": False, "reason": ""}
         clear_transient_result(self.task_id)
+        self._set_phase("starting_browser", "正在启动生成环境")
         runtime = self.browser_pool.playwright_context() if self.browser_pool is not None else async_playwright()
         async with runtime as playwright:
             browser: Browser | None = None
@@ -688,6 +694,7 @@ class DolaFetchAutomation:
             lease: BrowserContextLease | None = None
             try:
                 executable_path = self._browser_executable_path()
+                self._set_phase("connecting_node", "正在连接生成节点")
                 proxy_config = await self._browser_proxy_config()
                 browser_args = [
                     "--disable-dev-shm-usage",
@@ -702,6 +709,7 @@ class DolaFetchAutomation:
                     "accept_downloads": False,
                 }
                 if self.browser_pool is not None:
+                    self._set_phase("allocating_browser", "正在分配浏览器资源")
                     if proxy_config:
                         context_options["proxy"] = proxy_config
                     lease = await self.browser_pool.acquire_context(
@@ -714,6 +722,7 @@ class DolaFetchAutomation:
                     browser = lease.browser
                     context = lease.context
                 else:
+                    self._set_phase("launching_browser", "正在启动浏览器")
                     browser = await playwright.chromium.launch(
                         headless=self.settings.headless,
                         executable_path=executable_path,
@@ -725,6 +734,7 @@ class DolaFetchAutomation:
                 await context.add_init_script(BROWSER_INIT_SCRIPT)
                 page = await context.new_page()
                 await self._prepare_page(page)
+                self._set_phase("opening_generation_page", "正在打开生成页面")
                 response = await page.goto(TARGET_URL, wait_until="commit", timeout=90000)
                 if response and response.status >= 500:
                     self._mark_pending(f"page load failed {response.status}")
@@ -739,7 +749,9 @@ class DolaFetchAutomation:
                     self._mark_pending("region restricted")
                     return {"success": False, "retryable": True, "reason": "region restricted"}
 
+                self._set_phase("uploading_references", "正在上传参考图" if task_image_paths(self.task_id) else "正在准备生成请求")
                 attachments = await self._upload_images_if_needed(page)
+                self._set_phase("submitting_request", "正在提交生成请求")
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
@@ -771,6 +783,7 @@ class DolaFetchAutomation:
                         "sse_timed_out": bool(result.get("sse_timed_out")),
                     },
                 )
+                self._set_phase("submission_received", "生成请求已接收，正在确认状态")
                 if result.get("service_frequent"):
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "service_frequent", "submit_phase": "submission_response"})
@@ -999,9 +1012,10 @@ class DolaFetchAutomation:
         if not paths:
             return []
         images: list[dict[str, Any]] = []
-        for path in paths:
+        for index, path in enumerate(paths, start=1):
             if not self._task_exists():
                 return []
+            self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(paths)}）")
             images.append(await self._upload_one_image_by_fetch(page, path))
         self.uploaded_images = self._unique_images(images)
         if len(self.uploaded_images) < len(paths):

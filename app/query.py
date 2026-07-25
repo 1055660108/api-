@@ -472,6 +472,8 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     expire_task_if_timeout(task_id)
     meta = get_meta(task_id)
     if meta.get("status") not in {STATUS_SUBMITTED, STATUS_SUCCESS}:
+        if meta.get("status") == "running":
+            return {"code": "1", "text": str(meta.get("status_reason") or "正在准备生成任务"), "url": ""}
         if meta.get("status") == STATUS_FAILED and str(meta.get("error") or "") in {"超时生成失败", "重试超过30分钟，生成失败"}:
             return {"code": "0", "text": str(meta.get("error") or "超时生成失败"), "url": ""}
         if meta.get("status") == "pending" and (
@@ -494,6 +496,8 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             return {"code": "0", "text": "多次生成失败", "url": ""}
         if meta.get("status") == STATUS_FAILED:
             return {"code": "0", "text": str(meta.get("error") or "失败"), "url": ""}
+        if meta.get("status") == "pending" and str(meta.get("status_reason") or meta.get("queue_reason") or ""):
+            return {"code": "1", "text": str(meta.get("status_reason") or meta.get("queue_reason") or "正在排队"), "url": ""}
         return {"code": "0", "text": "", "url": ""}
 
     result = load_result(task_id)

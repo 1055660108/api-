@@ -455,6 +455,18 @@ def update_meta_if(task_id: str, expected_statuses: set[str], **updates: Any) ->
         return meta
 
 
+def set_execution_phase(task_id: str, phase: str, status_reason: str) -> bool:
+    now = utc_now()
+    updated = update_meta_if(
+        task_id,
+        {STATUS_RUNNING},
+        execution_phase=str(phase or "")[:80],
+        status_reason=str(status_reason or "")[:200],
+        phase_updated_at=now,
+    )
+    return updated is not None
+
+
 def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int] | None = None) -> bool:
     limits = concurrency_limits or {}
     claimed_at = utc_now()
@@ -467,13 +479,13 @@ def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_PENDING or bool(meta.get("cancel_requested")):
             return False
-        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", queue_reason="", queue_category="", execution_miss_count=0, submit_phase="", submit_started_at="", updated_at=claimed_at)
+        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", queue_reason="", queue_category="", execution_miss_count=0, execution_phase="waiting_account", status_reason="正在分配生成资源", phase_updated_at=claimed_at, submit_phase="", submit_started_at="", updated_at=claimed_at)
         _write_storage_json(meta_path(task_id), meta)
         return True
 
 
 def mark_pending(task_id: str, reason: str = "") -> None:
-    update_meta_if(task_id, {STATUS_PENDING, STATUS_RUNNING}, status=STATUS_PENDING, worker_id="", queued_at=utc_now(), error=reason)
+    update_meta_if(task_id, {STATUS_PENDING, STATUS_RUNNING}, status=STATUS_PENDING, worker_id="", queued_at=utc_now(), error=reason, execution_phase="queued", status_reason="正在重新排队", phase_updated_at=utc_now())
 
 
 def defer_task(task_id: str, reason: str, category: str, delay_seconds: int = 5) -> None:
@@ -492,7 +504,7 @@ def defer_task(task_id: str, reason: str, category: str, delay_seconds: int = 5)
 
 
 def mark_failed(task_id: str, reason: str = "") -> None:
-    update_meta_if(task_id, {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED, STATUS_FAILED}, status=STATUS_FAILED, worker_id="", finished_at=utc_now(), error=reason)
+    update_meta_if(task_id, {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED, STATUS_FAILED}, status=STATUS_FAILED, worker_id="", finished_at=utc_now(), error=reason, execution_phase="failed", status_reason=reason, phase_updated_at=utc_now())
 
 
 def mark_canceled(task_id: str, reason: str = "canceled") -> None:
@@ -796,7 +808,7 @@ def mark_success(task_id: str) -> None:
     result = load_result(task_id)
     if not result.get("decoded_main_url"):
         return
-    update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED, STATUS_SUCCESS}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="")
+    update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED, STATUS_SUCCESS}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now())
 
 
 def mark_submitted(task_id: str) -> None:
@@ -813,6 +825,9 @@ def mark_submitted(task_id: str) -> None:
         error="等待生成结果",
         result_watch_miss_count=0,
         submit_phase="submitted",
+        execution_phase="waiting_result",
+        status_reason="生成请求已提交，正在等待结果",
+        phase_updated_at=submitted_at,
     )
 
 
@@ -1054,12 +1069,16 @@ def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str])
         "status": str(meta.get("status") or ""),
         "retry_count": int(meta.get("retry_count") or 0),
         "infrastructure_retry_count": int(meta.get("infrastructure_retry_count") or 0),
+        "infrastructure_error": str(meta.get("infrastructure_error") or ""),
         "queue_reason": str(meta.get("queue_reason") or ""),
         "queue_category": str(meta.get("queue_category") or ""),
         "queued_at": str(meta.get("queued_at") or meta.get("created_at") or ""),
         "claimed_at": str(meta.get("claimed_at") or ""),
         "attempt": int(meta.get("attempt") or 0),
         "worker_id": str(meta.get("worker_id") or ""),
+        "execution_phase": str(meta.get("execution_phase") or ""),
+        "status_reason": str(meta.get("status_reason") or ""),
+        "phase_updated_at": str(meta.get("phase_updated_at") or ""),
         "image_count": int(meta.get("image_count") or 0),
         "error": str(meta.get("error") or ""),
         "owner_token_hash": owner,

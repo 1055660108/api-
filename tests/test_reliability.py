@@ -180,6 +180,58 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(store.can_run_task(task["id"], "worker-file"))
         queue.release(task["id"])
 
+    def test_running_task_exposes_execution_phase(self) -> None:
+        task = self.create_task()
+        self.assertTrue(store.mark_running(task["id"], "worker-phase"))
+        listed = next(item for item in store.list_tasks() if item["id"] == task["id"])
+        self.assertEqual(listed["execution_phase"], "waiting_account")
+        self.assertEqual(listed["status_reason"], "正在分配生成资源")
+        self.assertTrue(listed["phase_updated_at"])
+
+        self.assertTrue(store.set_execution_phase(task["id"], "opening_generation_page", "正在打开生成页面"))
+        updated = store.get_meta(task["id"])
+        self.assertEqual(updated["execution_phase"], "opening_generation_page")
+        self.assertEqual(updated["status_reason"], "正在打开生成页面")
+
+    def test_watchdog_recovers_orphaned_running_task(self) -> None:
+        task = self.create_task()
+        self.assertTrue(store.mark_running(task["id"], "worker-missing"))
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.update_meta(task["id"], started_at=stale, phase_updated_at=stale)
+        manager = WorkerManager()
+        manager._queue = unittest.mock.Mock()
+
+        async def recover() -> None:
+            with patch("app.worker.account_for_current_task", return_value=None):
+                await manager._watch_running_tasks_once()
+
+        asyncio.run(recover())
+        recovered = store.get_meta(task["id"])
+        self.assertEqual(recovered["status"], store.STATUS_PENDING)
+        self.assertEqual(recovered["infrastructure_retry_count"], 1)
+        manager._queue.requeue.assert_called_once_with(task["id"])
+
+    def test_watchdog_cancels_stale_live_execution(self) -> None:
+        task = self.create_task()
+        self.assertTrue(store.mark_running(task["id"], "worker-stale"))
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.update_meta(task["id"], started_at=stale, phase_updated_at=stale, execution_phase="opening_generation_page")
+        manager = WorkerManager()
+
+        async def recover() -> None:
+            live = asyncio.create_task(asyncio.sleep(60))
+            manager._workers["worker-stale"] = live
+            with patch("app.worker.account_for_current_task", return_value={"id": "account"}):
+                await manager._watch_running_tasks_once()
+            with self.assertRaises(asyncio.CancelledError):
+                await live
+
+        asyncio.run(recover())
+        recovered = store.get_meta(task["id"])
+        self.assertEqual(recovered["status"], store.STATUS_PENDING)
+        self.assertEqual(recovered["infrastructure_retry_count"], 1)
+        self.assertIn("opening_generation_page", recovered["infrastructure_error"])
+
     def test_task_creation_enqueues_through_selected_backend(self) -> None:
         queue = unittest.mock.Mock()
         with patch("app.task_queue.get_task_queue", return_value=queue):

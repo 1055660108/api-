@@ -650,6 +650,23 @@ class WebAPIContractTests(unittest.TestCase):
         admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
         self.assertEqual(admin_task["error"], raw_error)
 
+    def test_running_task_progress_is_visible_without_client_diagnostics(self) -> None:
+        registered = self.register("progress_client")
+        token = registered["token"]
+        owner_hash = temp_access.hash_token(token)
+        task = store.create_task("测试运行阶段", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        self.assertTrue(store.mark_running(task["id"], "worker-progress"))
+        store.set_execution_phase(task["id"], "opening_generation_page", "正在打开生成页面")
+
+        client_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": token}).json()["tasks"][0]
+        self.assertEqual(client_task["status_reason"], "正在打开生成页面")
+        self.assertNotIn("execution_phase", client_task)
+        self.assertNotIn("phase_updated_at", client_task)
+
+        admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
+        self.assertEqual(admin_task["execution_phase"], "opening_generation_page")
+        self.assertTrue(admin_task["phase_updated_at"])
+
     def test_task_create_moves_blocking_storage_off_event_loop(self) -> None:
         source = inspect.getsource(main.submit_task)
         self.assertIn("await asyncio.to_thread", source)

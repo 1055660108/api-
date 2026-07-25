@@ -3033,15 +3033,18 @@ function getTaskStatus(task) {
   const resultText = String(result?.text ?? "");
   const text = clientSafeText(resultText, task);
   const queueReason = clientSafeText(task.queue_reason || "", task);
+  const statusReason = clientSafeText(task.status_reason || "", task);
+  const diagnostic = portal === "client" ? "" : String(task.infrastructure_error || "");
   if (resultCode === "2" || resultUrl) return { state: "success", label: "成功", className: "success", text, url: resultUrl };
   if (rawStatus === "success") return { state: "success", label: "成功", className: "success", text: text || clientSafeText(task.error || "", task), url: resultUrl };
   if (rawStatus === "failed") return { state: "failed", label: "失败", className: "failed", text: clientSafeText(task.error || resultText || "失败", task), url: "" };
   if (rawStatus === "canceled") return { state: "failed", label: "取消", className: "failed", text: clientSafeText(task.error || "用户取消生成", task), url: "" };
+  if (rawStatus === "pending" && queueReason && Number(task.infrastructure_retry_count || 0) > 0) return { state: "running", label: "重试中", className: "running", text: portal === "client" || !diagnostic ? queueReason : `${queueReason}；原因：${diagnostic}`, url: "" };
   if (rawStatus === "pending" && queueReason) return { state: "pending", label: "排队中", className: "unknown", text: queueReason, url: "" };
-  if (rawStatus === "pending" && Number(task.retry_count || 0) > 0) return { state: "running", label: "重试中", className: "running", text: clientSafeText(resultText || task.error || "正在重试", task), url: "" };
-  if (rawStatus === "pending") return { state: "pending", label: "待执行", className: "unknown", text: clientSafeText(resultText || task.error || "", task), url: "" };
+  if (rawStatus === "pending" && (Number(task.retry_count || 0) > 0 || Number(task.infrastructure_retry_count || 0) > 0)) return { state: "running", label: "重试中", className: "running", text: clientSafeText(resultText || task.error || statusReason || diagnostic || "正在重试", task), url: "" };
+  if (rawStatus === "pending") return { state: "pending", label: "待执行", className: "unknown", text: clientSafeText(statusReason || resultText || task.error || diagnostic || "", task), url: "" };
   if (rawStatus === "running" || rawStatus === "submitted") {
-    return { state: "running", label: rawStatus === "submitted" ? "等待结果" : "生成中", className: "running", text: clientSafeText(resultText || task.error || "", task), url: "" };
+    return { state: "running", label: rawStatus === "submitted" ? "等待结果" : "生成中", className: "running", text: clientSafeText(statusReason || resultText || task.error || diagnostic || (rawStatus === "submitted" ? "正在等待生成结果" : "正在准备生成任务"), task), url: "" };
   }
   if (!result) return { state: "unknown", label: "未查询", className: "unknown", text: "", url: "" };
   if (result.error) return { state: "unknown", label: "查询失败", className: "failed", text: clientSafeText(result.error, task), url: "" };
@@ -3065,7 +3068,7 @@ function renderTaskTable(options = {}) {
   const signature = JSON.stringify({
     page: state.page,
     totalPages: page.totalPages,
-    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.owner_name, task.status, task.error, task.queue_reason, task.queue_category, task.retry_count, task.infrastructure_retry_count, task.result_timeout_retry_count, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
+    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.owner_name, task.status, task.error, task.status_reason, task.execution_phase, task.phase_updated_at, task.queue_reason, task.queue_category, task.retry_count, task.infrastructure_retry_count, task.result_timeout_retry_count, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
   });
   if (options.skipUnchanged && signature === state.taskRenderSignature) return;
   state.taskRenderSignature = signature;

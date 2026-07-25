@@ -50,7 +50,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('proxy_auto_countries: state.proxyCountries', self.javascript)
         for status in ('"不可用"', '"已过期"', '"未检测"'):
             self.assertIn(status, self.javascript)
-        self.assertIn('timeout: refresh ? 60000 : 20000', self.javascript)
+        self.assertIn('timeout: refreshSubscription ? 60000 : 20000', self.javascript)
         self.assertIn('timeout: 90000', self.javascript)
         self.assertIn('节点已更新，延迟未完成', self.javascript)
 
@@ -77,7 +77,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("overflow-y: auto", styles)
 
     def test_proxy_settings_support_node_subscriptions(self) -> None:
-        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyAccountField", "proxyAccountScheme", "proxyAccountHost", "proxyAccountPort", "proxyAccountUsername", "proxyAccountPassword", "proxyApiUrl", "openAccountProxyImport", "accountProxyImportModal", "accountProxyImportText", "accountProxyBulkbar"):
+        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyAccountField", "proxyAccountScheme", "proxyAccountHost", "proxyAccountPort", "proxyAccountUsername", "proxyAccountPassword", "proxyApiUrl", "openAccountProxyImport", "accountProxyImportModal", "accountProxyImportText", "accountProxyBulkbar", "proxyHealthRefreshMinutes", "proxyRefreshCountdown"):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn('<option value="account">账密连接</option>', self.html)
         self.assertIn('id="proxyAccountPassword" type="password"', self.html)
@@ -95,6 +95,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('function renderAccountProxyNodes()', self.javascript)
         self.assertIn('data-account-proxy-select', self.javascript)
         self.assertIn('已过滤 ${state.proxyFilteredCount} 个高延迟或不可用节点', self.javascript)
+        self.assertIn('function updateProxyRefreshCountdown()', self.javascript)
+        self.assertNotIn('每 10 分钟自动测速；未勾选国家时使用全部节点', self.html)
 
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):
@@ -265,7 +267,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.39', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.40', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)

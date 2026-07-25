@@ -950,11 +950,14 @@ class WebAPIContractTests(unittest.TestCase):
                 "proxy_auto_select": True,
                 "proxy_auto_countries": ["日本", "美国", "日本"],
                 "proxy_latency_threshold_ms": 800,
+                "proxy_health_refresh_seconds": 120,
             },
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["proxy_auto_countries"], ["日本", "美国"])
         self.assertEqual(config.load_settings().proxy_auto_countries, ["日本", "美国"])
+        self.assertEqual(response.json()["proxy_health_refresh_seconds"], 120)
+        self.assertEqual(config.load_settings().proxy_health_refresh_seconds, 120)
 
     def test_proxy_latency_filters_threshold_and_persists_automatic_selection(self) -> None:
         self.login_admin()
@@ -967,6 +970,7 @@ class WebAPIContractTests(unittest.TestCase):
                 "proxy_source": "subscription",
                 "proxy_subscription_url": "https://subscription.example/token",
                 "proxy_auto_select": True,
+                "proxy_auto_countries": ["美国", "日本"],
                 "proxy_latency_threshold_ms": 100,
             },
         )

@@ -315,7 +315,7 @@ const els = {
   proxyNodeGrid: document.getElementById("proxyNodeGrid"),
   proxyNodesTitle: document.getElementById("proxyNodesTitle"),
   proxyNodesDescription: document.getElementById("proxyNodesDescription"),
-  proxyNodeSummaryText: document.getElementById("proxyNodeSummaryText"),
+  proxyRefreshCountdown: document.getElementById("proxyRefreshCountdown"),
   proxyCountryFilterRow: document.getElementById("proxyCountryFilterRow"),
   accountProxyBulkbar: document.getElementById("accountProxyBulkbar"),
   accountProxySelectedCount: document.getElementById("accountProxySelectedCount"),
@@ -333,6 +333,7 @@ const els = {
   proxyAutoSelect: document.getElementById("proxyAutoSelect"),
   proxyCountryFilter: document.getElementById("proxyCountryFilter"),
   proxyLatencyThreshold: document.getElementById("proxyLatencyThreshold"),
+  proxyHealthRefreshMinutes: document.getElementById("proxyHealthRefreshMinutes"),
   proxyNodeCount: document.getElementById("proxyNodeCount"),
   proxyNodesState: document.getElementById("proxyNodesState"),
   refreshProxyNodes: document.getElementById("refreshProxyNodes"),
@@ -560,6 +561,10 @@ const state = {
   proxyAccountConfigured: false,
   proxySelectedIds: [],
   proxyFilteredCount: 0,
+  proxyHealthRefreshSeconds: 600,
+  proxyNextRefreshAt: 0,
+  proxyCountdownTimer: 0,
+  proxyCountdownRefreshing: false,
   accountProxySelectionTimer: 0,
   proxyEnabled: true,
   proxyAutoSelect: true,
@@ -2497,9 +2502,11 @@ async function loadProxyConfig() {
   state.proxySelectedNode = data.proxy_selected_node || "";
   state.proxyCountries = Array.isArray(data.proxy_auto_countries) ? data.proxy_auto_countries : [];
   state.proxyLatencyThreshold = Number(data.proxy_latency_threshold_ms || 800);
+  state.proxyHealthRefreshSeconds = Number(data.proxy_health_refresh_seconds || 600);
   if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
   if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
   if (els.proxyLatencyThreshold) els.proxyLatencyThreshold.value = String(state.proxyLatencyThreshold);
+  if (els.proxyHealthRefreshMinutes) els.proxyHealthRefreshMinutes.value = String(Math.max(1, Math.round(state.proxyHealthRefreshSeconds / 60)));
   if (els.configState) els.configState.textContent = "已读取";
   return data;
 }
@@ -2516,7 +2523,6 @@ function renderProxyNodes() {
   if (els.proxyNodesDescription) els.proxyNodesDescription.textContent = accountMode
     ? "已勾选且启用的代理会用于生成任务；勾选多个代理时可按任务轮询使用。"
     : subscriptionMode ? "通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。" : "当前代理模式不使用可选择的节点列表。";
-  if (els.proxyNodeSummaryText) els.proxyNodeSummaryText.textContent = accountMode ? "导入后自动测速；不可用代理可禁用或删除" : subscriptionMode ? "每 10 分钟自动测速；未勾选国家时使用全部节点" : "可通过代理设置切换节点订阅或账密连接";
   if (els.proxyAutoSelect) {
     const labels = accountMode ? [["true", "多选轮询使用"], ["false", "固定使用首个选中代理"]] : [["true", "自动选择最低延迟"], ["false", "手动选择节点"]];
     els.proxyAutoSelect.innerHTML = labels.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
@@ -2557,6 +2563,26 @@ function accountProxyLatency(node) {
   return { text: "未测速", className: "" };
 }
 
+function updateProxyRefreshCountdown() {
+  if (!els.proxyRefreshCountdown || portal !== "admin") return;
+  if (!state.proxyNextRefreshAt) state.proxyNextRefreshAt = Date.now() + state.proxyHealthRefreshSeconds * 1000;
+  const remaining = Math.max(0, Math.ceil((state.proxyNextRefreshAt - Date.now()) / 1000));
+  const minutes = Math.floor(remaining / 60);
+  const seconds = String(remaining % 60).padStart(2, "0");
+  els.proxyRefreshCountdown.textContent = state.proxyCountdownRefreshing ? "自动测速刷新中" : `自动测速倒计时 ${minutes}:${seconds}`;
+  if (remaining > 0 || state.proxyCountdownRefreshing) return;
+  if (document.body.dataset.view !== "proxy-nodes") {
+    state.proxyNextRefreshAt = Date.now() + state.proxyHealthRefreshSeconds * 1000;
+    return;
+  }
+  state.proxyCountdownRefreshing = true;
+  loadProxyNodes(true, false).finally(() => {
+    state.proxyCountdownRefreshing = false;
+    state.proxyNextRefreshAt = Date.now() + state.proxyHealthRefreshSeconds * 1000;
+    updateProxyRefreshCountdown();
+  });
+}
+
 function renderAccountProxyNodes() {
   const selected = new Set(state.proxySelectedIds);
   if (els.proxyNodeCount) els.proxyNodeCount.textContent = `${state.proxyNodes.length} 个账密代理`;
@@ -2587,11 +2613,11 @@ function proxySubscriptionError(error) {
   return `节点读取失败：${message}`;
 }
 
-async function loadProxyNodes(refresh = false) {
+async function loadProxyNodes(refresh = false, refreshSubscription = refresh) {
   if (portal !== "admin") return;
   setBusy(els.refreshProxyNodes, true, "刷新中");
   try {
-    let data = await apiFetch(`/config/proxy-nodes${refresh ? "?refresh=true" : ""}`, { timeout: refresh ? 60000 : 20000 });
+    let data = await apiFetch(`/config/proxy-nodes${refreshSubscription ? "?refresh=true" : ""}`, { timeout: refreshSubscription ? 60000 : 20000 });
     let latencyError = null;
     if (refresh && Array.isArray(data.nodes) && data.nodes.length) {
       try {
@@ -2609,6 +2635,9 @@ async function loadProxyNodes(refresh = false) {
     state.proxyFilteredCount = Number(data.filtered_count || 0);
     state.proxyCountries = Array.isArray(data.auto_countries) ? data.auto_countries : state.proxyCountries;
     state.proxyLatencyThreshold = Number(data.latency_threshold_ms || state.proxyLatencyThreshold || 800);
+    state.proxyHealthRefreshSeconds = Number(data.health_refresh_seconds || state.proxyHealthRefreshSeconds || 600);
+    if (els.proxyHealthRefreshMinutes) els.proxyHealthRefreshMinutes.value = String(Math.max(1, Math.round(state.proxyHealthRefreshSeconds / 60)));
+    if (refresh || !state.proxyNextRefreshAt) state.proxyNextRefreshAt = Date.now() + state.proxyHealthRefreshSeconds * 1000;
     if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
     if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
     if (els.proxyLatencyThreshold) els.proxyLatencyThreshold.value = String(state.proxyLatencyThreshold);
@@ -2627,23 +2656,33 @@ async function loadProxyNodes(refresh = false) {
 async function saveProxyMode() {
   try {
     const threshold = Math.max(100, Math.min(5000, Number(els.proxyLatencyThreshold?.value || 800)));
+    const healthRefreshSeconds = Math.max(60, Math.min(86400, Math.round(Number(els.proxyHealthRefreshMinutes?.value || 10) * 60)));
+    if (state.proxySource === "subscription" && els.proxyAutoSelect.value === "true" && !state.proxyCountries.length) {
+      toast("自动选择节点前请至少勾选一个国家", "error");
+      await loadProxyNodes();
+      return;
+    }
     if (state.proxySource === "account") {
-      const configData = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_latency_threshold_ms: threshold } });
+      const configData = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_latency_threshold_ms: threshold, proxy_health_refresh_seconds: healthRefreshSeconds } });
       const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { node_ids: state.proxySelectedIds, rotation_enabled: els.proxyAutoSelect.value === "true" } });
       state.proxyEnabled = Boolean(configData.proxy_enabled);
       state.proxyLatencyThreshold = Number(configData.proxy_latency_threshold_ms || threshold);
+      state.proxyHealthRefreshSeconds = Number(configData.proxy_health_refresh_seconds || healthRefreshSeconds);
+      state.proxyNextRefreshAt = Date.now() + state.proxyHealthRefreshSeconds * 1000;
       state.proxyAutoSelect = Boolean(data.auto_select);
       state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : [];
       renderProxyNodes();
       toast(state.proxyEnabled ? (state.proxyAutoSelect ? "已启用账密代理轮询" : "已固定使用首个选中代理") : "已关闭代理");
       return;
     }
-    const data = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_auto_select: els.proxyAutoSelect.value === "true", proxy_auto_countries: state.proxyCountries, proxy_latency_threshold_ms: threshold } });
+    const data = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_auto_select: els.proxyAutoSelect.value === "true", proxy_auto_countries: state.proxyCountries, proxy_latency_threshold_ms: threshold, proxy_health_refresh_seconds: healthRefreshSeconds } });
     state.proxyEnabled = Boolean(data.proxy_enabled);
     state.proxyAutoSelect = Boolean(data.proxy_auto_select);
     state.proxyCountries = Array.isArray(data.proxy_auto_countries) ? data.proxy_auto_countries : [];
     state.proxyLatencyThreshold = Number(data.proxy_latency_threshold_ms || threshold);
-    await loadProxyNodes();
+    state.proxyHealthRefreshSeconds = Number(data.proxy_health_refresh_seconds || healthRefreshSeconds);
+    state.proxyNextRefreshAt = Date.now() + state.proxyHealthRefreshSeconds * 1000;
+    await loadProxyNodes(state.proxyAutoSelect, false);
     toast(state.proxyEnabled ? (state.proxyAutoSelect ? "已开启自动节点代理" : "已开启手动节点代理") : "已关闭节点代理");
   } catch (error) {
     toast(`代理模式保存失败：${error.message}`, "error");
@@ -5604,6 +5643,7 @@ function bindEvents() {
     await saveProxyMode();
   });
   els.proxyLatencyThreshold?.addEventListener("change", saveProxyMode);
+  els.proxyHealthRefreshMinutes?.addEventListener("change", saveProxyMode);
   els.proxyNodeGrid?.addEventListener("click", (event) => {
     const accountAction = event.target.closest("[data-account-proxy-action]");
     if (accountAction) {
@@ -5965,6 +6005,10 @@ async function init() {
     }
   }
   bindEvents();
+  if (portal === "admin" && !state.proxyCountdownTimer) {
+    state.proxyCountdownTimer = window.setInterval(updateProxyRefreshCountdown, 1000);
+    updateProxyRefreshCountdown();
+  }
   renderImages();
   renderTaskTable();
   updateAccountDetectedCount();

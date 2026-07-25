@@ -704,9 +704,9 @@ async def resolve_subscription_proxy(
             refresh_seconds=refresh_seconds,
         )
         countries = {str(item).strip() for item in selected_countries if str(item or "").strip()}
-        eligible_nodes = tuple(node for node in nodes if not auto_select or not countries or node.country in countries)
+        eligible_nodes = tuple(node for node in nodes if not auto_select or (countries and node.country in countries))
         if not eligible_nodes:
-            raise RuntimeError("selected proxy countries contain no usable nodes")
+            raise RuntimeError("automatic proxy selection requires at least one selected country" if auto_select and not countries else "selected proxy countries contain no usable nodes")
         selectable_nodes = tuple(node for node in eligible_nodes if not _node_is_cooling_down(node.id))
         if not selectable_nodes:
             raise RuntimeError("all eligible proxy nodes are temporarily unavailable")
@@ -727,9 +727,13 @@ async def resolve_subscription_proxy(
                 and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
             ]
             available = [(delay, node) for delay, node in all_available if int(delay) <= int(latency_threshold_ms)]
-            if all_available and not available:
-                raise RuntimeError("all eligible proxy nodes exceed the latency threshold")
-            chosen = min(available, key=lambda item: item[0])[1] if available else chosen or selectable_nodes[0]
+            if not available:
+                if all_available:
+                    raise RuntimeError("all eligible proxy nodes exceed the latency threshold")
+                raise RuntimeError("all eligible proxy nodes are unavailable")
+            chosen = min(available, key=lambda item: item[0])[1]
+        elif chosen is None and not selected_node:
+            chosen = selectable_nodes[0]
         elif chosen is None:
             fresh_available = [
                 (delay, node)
@@ -860,7 +864,7 @@ async def fetch_proxy_from_subscription(
     timeout_seconds: int = 20,
     scheme: str = "http",
     refresh_seconds: int = 900,
-    auto_select: bool = True,
+    auto_select: bool = False,
     selected_node: str = "",
     selected_countries: Iterable[str] = (),
 ) -> dict[str, str]:

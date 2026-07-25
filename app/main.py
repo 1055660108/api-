@@ -336,7 +336,6 @@ quota_reset_task = None
 task_cache_cleanup_task = None
 proxy_health_task = None
 LOCAL_TZ = timezone(timedelta(hours=8))
-PROXY_HEALTH_REFRESH_SECONDS = 10 * 60
 
 
 def _redis_rate_limit(key: str, limit: int, window: int) -> tuple[bool, int] | None:
@@ -470,7 +469,9 @@ async def refresh_proxy_health_once() -> dict[str, object]:
         force=True,
     )
     countries = set(settings.proxy_auto_countries)
-    eligible = tuple(node for node in nodes if not countries or node.country in countries)
+    if not countries:
+        raise RuntimeError("自动选择节点前请至少勾选一个国家")
+    eligible = tuple(node for node in nodes if node.country in countries)
     if not eligible:
         raise RuntimeError("所选国家没有可用节点")
     await measure_node_delays(eligible, settings.proxy_subscription_url, settings.proxy_api_timeout_seconds)
@@ -512,7 +513,13 @@ async def proxy_health_loop() -> None:
             raise
         except Exception:
             pass
-        await asyncio.sleep(PROXY_HEALTH_REFRESH_SECONDS)
+        refreshed_at = time.monotonic()
+        while True:
+            interval = load_settings().proxy_health_refresh_seconds
+            remaining = interval - (time.monotonic() - refreshed_at)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(5.0, remaining))
 
 
 def _batch_job_is_active(job_id: str, owner_token_hash: str) -> bool:
@@ -2028,7 +2035,7 @@ def _proxy_config_payload(settings) -> dict:
         "proxy_selected_node": settings.proxy_selected_node,
         "proxy_auto_countries": settings.proxy_auto_countries,
         "proxy_latency_threshold_ms": settings.proxy_latency_threshold_ms,
-        "proxy_health_refresh_seconds": PROXY_HEALTH_REFRESH_SECONDS,
+        "proxy_health_refresh_seconds": settings.proxy_health_refresh_seconds,
     }
 
 
@@ -2051,11 +2058,12 @@ async def proxy_nodes(refresh: bool = False):
             "selected_ids": pool["selected_ids"],
             "auto_countries": [],
             "latency_threshold_ms": settings.proxy_latency_threshold_ms,
+            "health_refresh_seconds": settings.proxy_health_refresh_seconds,
         }
     if settings.proxy_source != "subscription":
-        return {"source": settings.proxy_source, "nodes": [], "enabled": settings.proxy_enabled, "auto_select": False, "selected_node": "", "selected_ids": [], "auto_countries": [], "latency_threshold_ms": settings.proxy_latency_threshold_ms}
+        return {"source": settings.proxy_source, "nodes": [], "enabled": settings.proxy_enabled, "auto_select": False, "selected_node": "", "selected_ids": [], "auto_countries": [], "latency_threshold_ms": settings.proxy_latency_threshold_ms, "health_refresh_seconds": settings.proxy_health_refresh_seconds}
     if not settings.proxy_subscription_url:
-        return {"source": "subscription", "nodes": [], "enabled": settings.proxy_enabled, "auto_select": settings.proxy_auto_select, "selected_node": "", "selected_ids": [], "auto_countries": settings.proxy_auto_countries, "latency_threshold_ms": settings.proxy_latency_threshold_ms}
+        return {"source": "subscription", "nodes": [], "enabled": settings.proxy_enabled, "auto_select": settings.proxy_auto_select, "selected_node": "", "selected_ids": [], "auto_countries": settings.proxy_auto_countries, "latency_threshold_ms": settings.proxy_latency_threshold_ms, "health_refresh_seconds": settings.proxy_health_refresh_seconds}
     try:
         nodes = await fetch_subscription_node_list(
             settings.proxy_subscription_url,
@@ -2088,6 +2096,7 @@ async def proxy_nodes(refresh: bool = False):
         "selected_ids": [settings.proxy_selected_node] if settings.proxy_selected_node else [],
         "auto_countries": settings.proxy_auto_countries,
         "latency_threshold_ms": settings.proxy_latency_threshold_ms,
+        "health_refresh_seconds": settings.proxy_health_refresh_seconds,
     }
 
 
@@ -2130,7 +2139,7 @@ async def proxy_node_latency(request: Request):
     threshold = settings.proxy_latency_threshold_ms
     visible_nodes = [node for node in nodes if delays.get(node.id) is not None and int(delays[node.id]) <= threshold]
     countries = set(settings.proxy_auto_countries)
-    selectable = [node for node in visible_nodes if not countries or node.country in countries]
+    selectable = [node for node in visible_nodes if countries and node.country in countries]
     selected_node = settings.proxy_selected_node
     if settings.proxy_auto_select:
         selected_node = min(selectable, key=lambda node: int(delays[node.id])).id if selectable else ""
@@ -2803,6 +2812,11 @@ async def update_proxy_api_config(
             if threshold < 100 or threshold > 5000:
                 raise ValueError("proxy_latency_threshold_ms must be between 100 and 5000")
             updates["proxy_latency_threshold_ms"] = threshold
+        if "proxy_health_refresh_seconds" in payload:
+            refresh_seconds = int(payload.get("proxy_health_refresh_seconds"))
+            if refresh_seconds < 60 or refresh_seconds > 86400:
+                raise ValueError("proxy_health_refresh_seconds must be between 60 and 86400")
+            updates["proxy_health_refresh_seconds"] = refresh_seconds
         if "proxy_source" not in payload and current.proxy_source == "direct":
             if str(updates.get("proxy_subscription_url") or ""):
                 updates["proxy_source"] = "subscription"

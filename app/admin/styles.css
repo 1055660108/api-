@@ -3787,7 +3787,7 @@ body[data-portal="admin"] .client-billing-panel {
 }
 
 .node-selection-panel .node-controls {
-  grid-template-columns: repeat(3, minmax(180px, 1fr)) auto;
+  grid-template-columns: repeat(4, minmax(150px, 1fr)) auto;
   gap: 14px;
   padding: 18px;
   background: #f7f9fa;

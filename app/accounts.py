@@ -698,6 +698,7 @@ def _select_account(accounts: list[dict[str, Any]], exclude_ids: set[str] | None
     enabled_accounts = [
         item for item in accounts
         if item.get("enabled", True)
+        and str(item.get("account_status") or "normal") != "abnormal"
         and str(item.get("platform") or DEFAULT_PLATFORM) == target_platform
         and str(item.get("id") or "") not in excluded
         and not str(item.get("current_task_id") or "")

@@ -22,6 +22,7 @@ class VersionTests(unittest.TestCase):
         self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-24}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE=24", env_example)
         self.assertIn('os.environ.get("DOLA_DATABASE_POOL_SIZE") or 24', postgres_source)
+        self.assertIn("COALESCE(payload->>'account_status', 'normal') <> 'abnormal'", postgres_source)
         self.assertIn("DOLA_DATABASE_POOL_TIMEOUT: ${DOLA_DATABASE_POOL_TIMEOUT:-3}", compose)
         self.assertIn("DOLA_DATABASE_POOL_TIMEOUT=3", env_example)
         self.assertIn("DOLA_API_MAX_CONNECTIONS: ${DOLA_API_MAX_CONNECTIONS:-512}", compose)

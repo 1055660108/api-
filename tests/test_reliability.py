@@ -456,6 +456,8 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(disabled["account_status"], "abnormal")
         self.assertIn("游客模式", disabled["status_reason"])
         self.assertIsNone(accounts.account_for_worker("worker-1"))
+        accounts.set_account_enabled(created["id"], True)
+        self.assertIsNone(accounts.account_for_worker("worker-1"))
 
         restored = accounts.update_account_cookies(created["id"], accounts.parse_cookie_payload("session=fresh"))
         self.assertTrue(restored["enabled"])

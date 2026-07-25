@@ -604,7 +604,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                     return max(0, int(meta.get("retry_count") or 0))
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
                 normalized_reason = "浏览器超时" if str(reason or "") == "browser timeout" else "Dola 当前地区不可用" if str(reason or "") == "region restricted" else reason
-                meta.update(retry_count=count, worker_id="", error=normalized_reason)
+                meta.update(retry_count=count, worker_id="", error=normalized_reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > MAX_TASK_RETRIES:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
@@ -622,7 +622,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
             reason = "浏览器超时"
         if str(reason or "") == "region restricted":
             reason = "Dola 当前地区不可用"
-        meta.update(retry_count=count, worker_id="", error=reason)
+        meta.update(retry_count=count, worker_id="", error=reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > MAX_TASK_RETRIES:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
@@ -645,6 +645,9 @@ def record_infrastructure_retry(task_id: str, reason: str = "") -> int:
                 infrastructure_error=str(reason or "")[:500],
                 worker_id="",
                 error="",
+                execution_phase="retry_queued",
+                status_reason="正在重试中，请稍等！",
+                phase_updated_at=now,
                 updated_at=now,
             )
             meta.setdefault("infrastructure_retry_started_at", now)
@@ -693,7 +696,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
                 if str(meta.get("status") or "") != STATUS_SUBMITTED:
                     return max(0, int(meta.get("retry_count") or 0))
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
-                meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
+                meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
@@ -710,7 +713,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
         if str(meta.get("status") or "") != STATUS_SUBMITTED:
             return max(0, int(meta.get("retry_count") or 0))
         count = max(0, int(meta.get("retry_count") or 0)) + 1
-        meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0)
+        meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
@@ -733,7 +736,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
                 previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
                 timeout_count = previous_timeout_count + 1
                 count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
-                meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0)
+                meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
@@ -752,7 +755,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
         previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
         timeout_count = previous_timeout_count + 1
         count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
-        meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0)
+        meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())

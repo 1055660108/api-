@@ -837,6 +837,11 @@ def _client_task(task: dict) -> dict:
     for key in ("error", "status_reason"):
         if key in safe:
             safe[key] = _client_safe_text(str(safe.get(key) or ""), model)
+    if str(safe.get("status") or "") == "pending" and (
+        int(safe.get("retry_count") or 0) > 0 or int(safe.get("infrastructure_retry_count") or 0) > 0
+    ):
+        safe["error"] = "正在重试中，请稍等！"
+        safe["status_reason"] = "正在重试中，请稍等！"
     for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
         safe.pop(key, None)
     return safe
@@ -2787,6 +2792,11 @@ async def batch_prompt_status(
         elif status in {"failed", "canceled"}:
             code = "0"
             text = _client_safe_text(str(meta.get("error") or ("用户取消生成" if status == "canceled" else "生成失败")), str(meta.get("model") or "当前模型"))
+        elif status == "pending" and (
+            int(meta.get("retry_count") or 0) > 0 or int(meta.get("infrastructure_retry_count") or 0) > 0
+        ):
+            code = "1"
+            text = "正在重试中，请稍等！"
         else:
             code = "1"
             text = _client_safe_text(str(meta.get("status_reason") or meta.get("queue_reason") or meta.get("error") or ""), str(meta.get("model") or "当前模型"))

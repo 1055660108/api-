@@ -3041,7 +3041,7 @@ function getTaskStatus(task) {
   if (rawStatus === "canceled") return { state: "failed", label: "取消", className: "failed", text: clientSafeText(task.error || "用户取消生成", task), url: "" };
   if (rawStatus === "pending" && queueReason && Number(task.infrastructure_retry_count || 0) > 0) return { state: "running", label: "重试中", className: "running", text: portal === "client" || !diagnostic ? queueReason : `${queueReason}；原因：${diagnostic}`, url: "" };
   if (rawStatus === "pending" && queueReason) return { state: "pending", label: "排队中", className: "unknown", text: queueReason, url: "" };
-  if (rawStatus === "pending" && (Number(task.retry_count || 0) > 0 || Number(task.infrastructure_retry_count || 0) > 0)) return { state: "running", label: "重试中", className: "running", text: clientSafeText(resultText || task.error || statusReason || diagnostic || "正在重试", task), url: "" };
+  if (rawStatus === "pending" && (Number(task.retry_count || 0) > 0 || Number(task.infrastructure_retry_count || 0) > 0)) return { state: "running", label: "重试中", className: "running", text: portal === "client" ? "正在重试中，请稍等！" : clientSafeText(resultText || task.error || statusReason || diagnostic || "正在重试", task), url: "" };
   if (rawStatus === "pending") return { state: "pending", label: "待执行", className: "unknown", text: clientSafeText(statusReason || resultText || task.error || diagnostic || "", task), url: "" };
   if (rawStatus === "running" || rawStatus === "submitted") {
     return { state: "running", label: rawStatus === "submitted" ? "等待结果" : "生成中", className: "running", text: clientSafeText(statusReason || resultText || task.error || diagnostic || (rawStatus === "submitted" ? "正在等待生成结果" : "正在准备生成任务"), task), url: "" };

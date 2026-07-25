@@ -496,6 +496,10 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             return {"code": "0", "text": "多次生成失败", "url": ""}
         if meta.get("status") == STATUS_FAILED:
             return {"code": "0", "text": str(meta.get("error") or "失败"), "url": ""}
+        if meta.get("status") == "pending" and (
+            int(meta.get("retry_count") or 0) > 0 or int(meta.get("infrastructure_retry_count") or 0) > 0
+        ):
+            return {"code": "1", "text": "正在重试中，请稍等！", "url": ""}
         if meta.get("status") == "pending" and str(meta.get("status_reason") or meta.get("queue_reason") or ""):
             return {"code": "1", "text": str(meta.get("status_reason") or meta.get("queue_reason") or "正在排队"), "url": ""}
         return {"code": "0", "text": "", "url": ""}

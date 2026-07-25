@@ -667,6 +667,24 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(admin_task["execution_phase"], "opening_generation_page")
         self.assertTrue(admin_task["phase_updated_at"])
 
+    def test_retrying_task_hides_previous_failure_from_client(self) -> None:
+        registered = self.register("retry_text_client")
+        token = registered["token"]
+        owner_hash = temp_access.hash_token(token)
+        task = store.create_task("测试重试文案", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        self.assertTrue(store.mark_running(task["id"], "worker-retry-text"))
+        store.mark_submitted(task["id"])
+        previous_failure = "视频生成失败，生成额度未扣除。"
+        self.assertEqual(store.retry_submitted_task(task["id"], previous_failure, delay_seconds=10), 1)
+
+        client_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": token}).json()["tasks"][0]
+        self.assertEqual(client_task["status"], "pending")
+        self.assertEqual(client_task["error"], "正在重试中，请稍等！")
+        self.assertEqual(client_task["status_reason"], "正在重试中，请稍等！")
+
+        admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
+        self.assertEqual(admin_task["error"], previous_failure)
+
     def test_task_create_moves_blocking_storage_off_event_loop(self) -> None:
         source = inspect.getsource(main.submit_task)
         self.assertIn("await asyncio.to_thread", source)

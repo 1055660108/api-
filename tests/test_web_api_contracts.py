@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app import __version__, accounts, admin_auth, client_auth, config, main, package_catalog, proxy_manager, store, temp_access, users
+from app import __version__, accounts, admin_auth, client_auth, config, main, package_catalog, point_transactions, proxy_manager, store, temp_access, users
 
 
 class WebAPIContractTests(unittest.TestCase):
@@ -30,6 +30,7 @@ class WebAPIContractTests(unittest.TestCase):
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.root / "temp_tokens.json"),
             patch.object(users, "USERS_PATH", self.root / "users.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
+            patch.object(point_transactions, "TRANSACTIONS_PATH", self.root / "point_transactions.json"),
             patch.dict("os.environ", {"DOLA_ADMIN_USERNAME": "contract-admin", "DOLA_ADMIN_PASSWORD": "ContractPassword123"}),
         ]
         for patcher in self.patchers:
@@ -83,6 +84,58 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, path)
             self.assertIn(content_type, response.headers["content-type"])
             self.assertTrue(response.content)
+
+    def test_task_video_proxy_forwards_range_and_protects_task_ownership(self) -> None:
+        registered = self.register("video_owner")
+        owner_hash = temp_access.hash_token(registered["token"])
+        task = store.create_task("视频播放", "9:16", owner_token_hash=owner_hash, platform="dola")
+        store.save_result(task["id"], extra={"decoded_main_url": "https://cdn.example/video.mp4"})
+        captured: dict[str, object] = {}
+
+        class UpstreamResponse:
+            status_code = 206
+            headers = {
+                "content-type": "video/mp4",
+                "content-length": "4",
+                "content-range": "bytes 0-3/10",
+                "accept-ranges": "bytes",
+            }
+
+            async def aiter_raw(self):
+                yield b"test"
+
+            async def aclose(self):
+                captured["response_closed"] = True
+
+        class UpstreamClient:
+            def build_request(self, method, url, headers):
+                captured.update(method=method, url=url, headers=dict(headers))
+                return object()
+
+            async def send(self, request, stream=False):
+                captured["stream"] = stream
+                return UpstreamResponse()
+
+            async def aclose(self):
+                captured["client_closed"] = True
+
+        with patch.object(main.httpx, "AsyncClient", return_value=UpstreamClient()):
+            response = self.client.get(
+                f"/tasks/{task['id']}/video",
+                headers={"X-API-Token": registered["token"], "Range": "bytes=0-3"},
+            )
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.content, b"test")
+        self.assertEqual(response.headers["content-range"], "bytes 0-3/10")
+        self.assertEqual(captured["headers"]["Range"], "bytes=0-3")
+        self.assertEqual(captured["headers"]["Referer"], "https://www.dola.com/")
+        self.assertTrue(captured["response_closed"])
+        self.assertTrue(captured["client_closed"])
+
+        other = self.register("video_other")
+        denied = self.client.get(f"/tasks/{task['id']}/video", headers={"X-API-Token": other["token"]})
+        self.assertEqual(denied.status_code, 404)
 
     def test_login_contracts_keep_credentials_and_error_shapes_compatible(self) -> None:
         invalid_admin = self.client.post("/auth/admin/login", json={"username": "contract-admin", "password": "invalid"})

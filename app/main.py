@@ -11,15 +11,18 @@ import smtplib
 import subprocess
 import threading
 import time
+from urllib.parse import urljoin, urlsplit
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+import httpx
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
+from starlette.background import BackgroundTask
 
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
@@ -55,6 +58,7 @@ from .package_catalog import create_package, disable_package, list_packages, upd
 from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, get_membership, list_memberships, update_membership
 from .point_cards import delete_cards, generate_cards, list_cards, purge_legacy_cards, redeem_card
 from .point_transactions import list_transactions, record_transaction
+from .user_activity import list_activity, record_activity
 from .store import (
     active_task_ids,
     active_task_count_for_owner,
@@ -133,6 +137,24 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
     if not any(first.startswith(magic) for magic in IMAGE_MAGIC[suffix]):
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="invalid image content")
+
+
+def _video_referer(platform: str) -> str:
+    return {
+        "qianwen": "https://chat.qwen.ai/",
+        "doubao": "https://www.doubao.com/",
+    }.get(str(platform or "").lower(), "https://www.dola.com/")
+
+
+def _validate_video_url(value: str) -> str:
+    url = str(value or "").strip()
+    parsed = urlsplit(url)
+    hostname = str(parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise HTTPException(status_code=404, detail="video not found")
+    if hostname in {"localhost", "0.0.0.0", "127.0.0.1", "::1"} or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="invalid video host")
+    return url
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
@@ -243,6 +265,15 @@ async def _storage_call(function, *args, attempts: int = 3, **kwargs):
                 type(exc).__name__,
             )
             await asyncio.sleep(0.15 * (2 ** (attempt - 1)))
+
+
+async def _record_activity_safe(user_id: str, action: str, title: str, **kwargs) -> None:
+    if not str(user_id or "").strip():
+        return
+    try:
+        await asyncio.to_thread(record_activity, user_id, action, title, **kwargs)
+    except Exception:
+        logger.exception("user activity write failed (user_id=%s action=%s)", user_id, action)
 
 
 def _request_fingerprint(route: str, owner: str, payload: dict) -> str:
@@ -807,6 +838,11 @@ async def client_billing_priority(request: Request, access: Annotated[AccessCont
     refreshed = get_temp_context_by_hash(access.token_hash)
     if not refreshed:
         raise HTTPException(status_code=404, detail="用户 Token 不存在")
+    try:
+        user = user_identity_by_token_hash(access.token_hash)
+        await _record_activity_safe(str(user.get("id") or ""), "billing_priority", "修改优先扣除设置", detail=str(token["billing_priority"]))
+    except KeyError:
+        pass
     return {"ok": True, "billing_priority": token["billing_priority"], **_client_access_payload(refreshed)}
 
 
@@ -832,6 +868,7 @@ async def points_redeem(request: Request, access: Annotated[AccessContext, Depen
             video_quota_balance=int(balance.get("free_remaining") or 0),
             reference_id=str(card.get("id") or ""),
         )
+        await _record_activity_safe(str(user.get("id") or ""), "points_redeem", "使用卡密充值积分", reference_id=str(card.get("id") or ""), detail=f"充值 {card.get('points', 0)} 积分")
         return {"ok": True, "points": card.get("points", 0), "balance": balance}
     except KeyError:
         raise HTTPException(status_code=404, detail="卡密不存在")
@@ -871,6 +908,7 @@ async def purchase_membership(package_id: str, access: Annotated[AccessContext, 
             reference_id=str(package.get("id") or ""),
             detail=f"有效期 {package.get('duration_days')} 天 / 并发 {package.get('concurrency')} / 赠送视频额度 {package.get('bonus_free_uses')}",
         )
+        await _record_activity_safe(str(user.get("id") or ""), "membership_purchase", "购买会员套餐", reference_id=str(package.get("id") or ""), detail=str(package.get("name") or ""))
         return {"ok": True, "package": package, **result}
     except KeyError:
         raise HTTPException(status_code=404, detail="会员套餐或用户不存在")
@@ -1013,6 +1051,7 @@ async def client_register(request: Request):
             video_quota_change=1,
             video_quota_balance=1,
         )
+        await _record_activity_safe(str(identity.get("id") or ""), "register", "注册账号")
         response = JSONResponse({"ok": True, **registered})
         _set_client_session_cookie(response, request, hash_token(str(registered.get("token") or "")))
         return response
@@ -1058,6 +1097,16 @@ async def client_login(request: Request):
     result = await asyncio.to_thread(login_user, identifier, payload.get("password", ""))
     if not result:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    try:
+        identity = await asyncio.to_thread(user_identity_by_token_hash, hash_token(str(result.get("token") or "")))
+        await _record_activity_safe(
+            str(identity.get("id") or ""),
+            "login",
+            "登录用户端",
+            detail=f"IP：{request.client.host if request.client else 'unknown'}",
+        )
+    except KeyError:
+        pass
     response = JSONResponse({"ok": True, **result})
     _set_client_session_cookie(response, request, hash_token(str(result.get("token") or "")), request.cookies.get(CLIENT_SESSION_COOKIE_NAME, ""))
     return response
@@ -1149,6 +1198,11 @@ async def client_change_password(request: Request, access: Annotated[AccessConte
         raise HTTPException(status_code=400, detail=str(exc))
     new_token_hash = hash_token(result["token"])
     migrate_task_owner(access.token_hash, new_token_hash)
+    try:
+        identity = user_identity_by_token_hash(new_token_hash)
+        await _record_activity_safe(str(identity.get("id") or ""), "password_change", "修改登录密码")
+    except KeyError:
+        pass
     refreshed = get_temp_context(result["token"])
     payload = _health_payload(refreshed) if refreshed else {}
     response = JSONResponse({"ok": True, **result, **payload})
@@ -1187,7 +1241,10 @@ async def client_change_email(request: Request, access: Annotated[AccessContext,
     settings = load_settings()
     try:
         email = consume_registration_code(payload.get("email", ""), payload.get("email_code", ""), settings, "change_email", access.token_hash)
-        return {"ok": True, **change_user_email_by_token_hash(access.token_hash, email)}
+        result = change_user_email_by_token_hash(access.token_hash, email)
+        identity = user_identity_by_token_hash(access.token_hash)
+        await _record_activity_safe(str(identity.get("id") or ""), "email_change", "修改绑定邮箱", detail=email)
+        return {"ok": True, **result}
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在或已停用")
     except ValueError as exc:
@@ -1377,6 +1434,24 @@ async def users_list(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1
     return {"users": rows[start:start + page_size], "online": sum(bool(item.get("online")) for item in rows), "total": total, "page": current_page, "page_size": page_size, "total_pages": total_pages}
 
 
+@app.get("/users/{user_id}/details", dependencies=[Depends(require_admin)])
+async def user_details(user_id: str):
+    user = next((item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == str(user_id)), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    transactions = await asyncio.to_thread(list_transactions, user_id, 1, 100)
+    activities = await asyncio.to_thread(list_activity, user_id, 1, 100)
+    owner_hash = hash_token(str(user.get("token") or "")) if user.get("token") else ""
+    tasks = await asyncio.to_thread(list_tasks, owner_hash) if owner_hash else []
+    task_summary = {
+        "total": len(tasks),
+        "success": sum(str(item.get("status") or "") == "success" for item in tasks),
+        "failed": sum(str(item.get("status") or "") in {"failed", "canceled"} for item in tasks),
+        "active": sum(str(item.get("status") or "") in {"pending", "running", "submitted"} for item in tasks),
+    }
+    return {"user": user, "transactions": transactions, "activities": activities, "task_summary": task_summary}
+
+
 @app.post("/users/{user_id}/points", dependencies=[Depends(require_admin)])
 async def users_add_points(user_id: str, request: Request):
     payload = await _request_payload(request)
@@ -1395,6 +1470,7 @@ async def users_add_points(user_id: str, request: Request):
         raise HTTPException(status_code=404, detail="用户不存在")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    await _record_activity_safe(user_id, "admin_credit", "管理员充值积分", detail=f"增加 {payload.get('amount')} 积分", actor="admin")
     return {"ok": True, **credited}
 
 
@@ -1416,6 +1492,7 @@ async def users_deduct_points(user_id: str, request: Request):
         raise HTTPException(status_code=404, detail="用户不存在")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    await _record_activity_safe(user_id, "admin_deduct", "管理员扣除积分", detail=f"扣除 {payload.get('amount')} 积分", actor="admin")
     return {"ok": True}
 
 
@@ -1434,6 +1511,10 @@ async def users_update(user_id: str, request: Request):
         raise HTTPException(status_code=404, detail="用户不存在")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if "concurrency" in payload:
+        await _record_activity_safe(user_id, "admin_concurrency", "管理员调整并发", detail=f"并发调整为 {payload['concurrency']}", actor="admin")
+    if "enabled" in payload:
+        await _record_activity_safe(user_id, "admin_status", "管理员调整账号状态", detail="启用" if str(payload["enabled"]).lower() in {"1", "true", "yes", "on"} else "停用", actor="admin")
     return {"ok": True}
 
 
@@ -1449,10 +1530,18 @@ async def users_delete(user_id: str):
 @app.post("/users/{user_id}/status", dependencies=[Depends(require_admin)])
 async def users_status(user_id: str, request: Request):
     payload = await _request_payload(request)
+    enabled = str(payload.get("enabled") or "").lower() in {"1", "true", "yes", "on"}
     try:
-        set_user_enabled(user_id, str(payload.get("enabled") or "").lower() in {"1", "true", "yes", "on"})
+        set_user_enabled(user_id, enabled)
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
+    await _record_activity_safe(
+        user_id,
+        "admin_status",
+        "管理员调整账号状态",
+        detail="启用" if enabled else "停用",
+        actor="admin",
+    )
     return {"ok": True}
 
 
@@ -2433,6 +2522,14 @@ async def submit_task(
                 type(exc).__name__,
             )
             raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
+        if user_id:
+            await _record_activity_safe(
+                user_id,
+                "task_submit",
+                "提交视频生成任务",
+                reference_id=str(meta["id"]),
+                detail=f"{model} / {ratio}{' / 多任务第 ' + str(batch_index) + ' 条' if batch else ''}",
+            )
         response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency, "image_count": len(saved_paths)}
         if reserved_access and reserved_access.is_temp:
             try:
@@ -2620,6 +2717,79 @@ async def task_result(access: Annotated[AccessContext, Depends(require_token)], 
         return result
 
 
+@app.get("/tasks/{task_id}/video", dependencies=[Depends(require_token)])
+async def task_video(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_token)],
+    task_id: str,
+    download: bool = False,
+):
+    try:
+        validate_task_id(task_id)
+        meta = await asyncio.to_thread(get_meta, task_id)
+        result = await asyncio.to_thread(load_result, task_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="task not found")
+    if access.is_temp and str(meta.get("owner_token_hash") or "") != access.token_hash:
+        raise HTTPException(status_code=404, detail="task not found")
+    url = _validate_video_url(str(result.get("decoded_main_url") or ""))
+    headers = {
+        "Accept": "video/*,*/*;q=0.8",
+        "Accept-Encoding": "identity",
+        "Referer": _video_referer(str(meta.get("platform") or "dola")),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+    }
+    if request.headers.get("range"):
+        headers["Range"] = request.headers["range"]
+    client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0), follow_redirects=False, trust_env=False)
+    response = None
+    try:
+        current_url = url
+        for _ in range(6):
+            response = await client.send(client.build_request("GET", current_url, headers=headers), stream=True)
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                break
+            location = response.headers.get("location", "")
+            await response.aclose()
+            response = None
+            if not location:
+                break
+            current_url = _validate_video_url(urljoin(current_url, location))
+        if response is None or response.status_code not in {200, 206}:
+            status = response.status_code if response is not None else 502
+            if response is not None:
+                await response.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=502, detail=f"video upstream returned HTTP {status}")
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="video upstream unavailable") from exc
+
+    outgoing_headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() in {"accept-ranges", "content-length", "content-range", "content-type", "etag", "last-modified"}
+    }
+    outgoing_headers.setdefault("Accept-Ranges", "bytes")
+    outgoing_headers["Cache-Control"] = "private, max-age=300"
+    if download:
+        outgoing_headers["Content-Disposition"] = f'attachment; filename="{task_id}.mp4"'
+
+    async def close_stream() -> None:
+        await response.aclose()
+        await client.aclose()
+
+    return StreamingResponse(
+        response.aiter_raw(),
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type") or "video/mp4",
+        headers=outgoing_headers,
+        background=BackgroundTask(close_stream),
+    )
+
+
 @app.post("/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
 async def retry_completed_task(request: Request, access: Annotated[AccessContext, Depends(require_token)], task_id: str):
     try:
@@ -2742,6 +2912,7 @@ async def remove_task(access: Annotated[AccessContext, Depends(require_token)], 
             raise HTTPException(status_code=404, detail="task not found")
         if access.is_temp and str(meta.get("owner_token_hash") or "") != access.token_hash:
             raise HTTPException(status_code=404, detail="task not found")
+        activity_user_id = _transaction_user_id(access)
         status = str(meta.get("status") or "")
         if status == "submitted" or str(meta.get("submit_phase") or "") in {"committing", "submitted"}:
             return {"ok": False, "cancelable": False, "detail": "已提交生成，无法取消"}
@@ -2758,7 +2929,9 @@ async def remove_task(access: Annotated[AccessContext, Depends(require_token)], 
                 clear_account_current_task(account_id, task_id)
                 refund_account_quota_once(task_id, account_id, str((account or {}).get("current_quota_charge_id") or ""))
             refund_temp_quota_once(task_id, str(canceled_meta.get("owner_token_hash") or ""))
+            await _record_activity_safe(activity_user_id, "task_cancel", "取消视频生成任务", reference_id=task_id)
             return {"ok": True, "canceled": True}
         audience = "client" if access.is_temp else "admin"
         set_task_hidden(task_id, audience, True)
+        await _record_activity_safe(activity_user_id, "task_delete", "删除任务记录", reference_id=task_id)
         return {"ok": True, "deleted": True, "hidden": True, "audience": audience}

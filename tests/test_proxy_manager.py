@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app import proxy_manager
@@ -12,6 +15,9 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         proxy_manager._MIHOMO_SELECTED_NODE_ID = ""
         proxy_manager._SUBSCRIPTION_RESOLVE_LOCK = None
+        proxy_manager._NODE_DELAYS.clear()
+        proxy_manager._NODE_LAST_GOOD.clear()
+        proxy_manager._NODE_DELAYS_LOADED = True
 
     def test_parses_native_proxy_subscription(self) -> None:
         parsed = proxy_manager.parse_subscription_nodes("http://proxy.example:8080\nsocks5://127.0.0.1:1080")
@@ -57,7 +63,7 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(nodes), 1)
         self.assertEqual(nodes[0].country, "新加坡")
         payload = proxy_manager.node_payload(nodes[0])
-        self.assertEqual(set(payload), {"id", "name", "country", "protocol", "server", "port", "latency_ms", "latency_measured", "latency_status", "selected"})
+        self.assertEqual(set(payload), {"id", "name", "country", "protocol", "server", "port", "latency_ms", "latency_measured", "latency_cached", "latency_status", "selected"})
         self.assertNotIn("secret", str(payload))
 
     def test_base64_clash_yaml_nodes_are_listed(self) -> None:
@@ -239,6 +245,22 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(proxy_manager._NODE_DELAYS, {node.id: (25, proxy_manager.time.monotonic())}, clear=True):
             proxy_manager.mark_node_unavailable(node.id)
             self.assertEqual(proxy_manager.node_payload(node)["latency_status"], "unavailable")
+
+    def test_last_successful_delay_is_loaded_after_restart(self) -> None:
+        node = proxy_manager.subscription_node_list("http://jp.example.com:8080#Japan")[0]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "proxy_node_delays.json"
+            path.write_text(
+                json.dumps({"nodes": {node.id: {"latency_ms": 42, "measured_at": proxy_manager.time.time() - 600}}}),
+                encoding="utf-8",
+            )
+            with patch.object(proxy_manager, "NODE_DELAYS_PATH", path):
+                proxy_manager._NODE_DELAYS_LOADED = False
+                payload = proxy_manager.node_payload(node)
+
+        self.assertEqual(payload["latency_ms"], 42)
+        self.assertTrue(payload["latency_cached"])
+        self.assertEqual(payload["latency_status"], "cached")
 
     async def test_refresh_clears_delay_cache_before_atomic_rebuild(self) -> None:
         nodes = proxy_manager.subscription_node_list("vless://user@example.com:443#node")

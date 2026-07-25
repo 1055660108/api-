@@ -166,6 +166,16 @@ const els = {
   userPageState: document.getElementById("userPageState"),
   userPageSize: document.getElementById("userPageSize"),
   userTotalState: document.getElementById("userTotalState"),
+  userDetailsModal: document.getElementById("userDetailsModal"),
+  userDetailsTitle: document.getElementById("userDetailsTitle"),
+  userDetailsSubtitle: document.getElementById("userDetailsSubtitle"),
+  userDetailsSummary: document.getElementById("userDetailsSummary"),
+  userDetailsTransactions: document.getElementById("userDetailsTransactions"),
+  userDetailsActivities: document.getElementById("userDetailsActivities"),
+  userTransactionsCount: document.getElementById("userTransactionsCount"),
+  userActivitiesCount: document.getElementById("userActivitiesCount"),
+  closeUserDetailsModal: document.getElementById("closeUserDetailsModal"),
+  cancelUserDetailsModal: document.getElementById("cancelUserDetailsModal"),
   tokenCommand: document.getElementById("tokenCommand"),
   copyTokenCommand: document.getElementById("copyTokenCommand"),
   appShell: document.getElementById("appShell"),
@@ -2156,7 +2166,56 @@ async function loadUsers() {
   if (els.prevUserPage) els.prevUserPage.disabled = state.userPage <= 1;
   if (els.nextUserPage) els.nextUserPage.disabled = state.userPage >= state.userTotalPages;
   const users = Array.isArray(data.users) ? data.users : [];
-  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
+  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-details="${escapeHtml(item.id)}">详情</button><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
+}
+
+const userTransactionLabels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "积分充值", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
+
+function closeUserDetails() {
+  els.userDetailsModal?.classList.add("hidden");
+  els.userDetailsModal?.setAttribute("aria-hidden", "true");
+}
+
+async function openUserDetails(userId) {
+  if (!els.userDetailsModal) return;
+  els.userDetailsModal.classList.remove("hidden");
+  els.userDetailsModal.setAttribute("aria-hidden", "false");
+  els.userDetailsTitle.textContent = "用户详情";
+  els.userDetailsSubtitle.textContent = "正在读取账号记录";
+  els.userDetailsSummary.innerHTML = '<div class="empty-state">正在加载...</div>';
+  els.userDetailsTransactions.innerHTML = '<div class="empty-state">正在加载...</div>';
+  els.userDetailsActivities.innerHTML = '<div class="empty-state">正在加载...</div>';
+  try {
+    const data = await apiFetch(`/users/${encodeURIComponent(userId)}/details`);
+    const user = data.user || {};
+    const summary = data.task_summary || {};
+    const transactions = Array.isArray(data.transactions?.transactions) ? data.transactions.transactions : [];
+    const activities = Array.isArray(data.activities?.activities) ? data.activities.activities : [];
+    els.userDetailsTitle.textContent = user.username || "用户详情";
+    els.userDetailsSubtitle.textContent = user.email || `用户 ID：${user.id || userId}`;
+    els.userDetailsSummary.innerHTML = [
+      ["积分余额", user.points ?? 0],
+      ["视频额度", user.free_remaining ?? 0],
+      ["有效并发", user.concurrency ?? 1],
+      ["任务总数", summary.total ?? 0],
+      ["生成成功", summary.success ?? 0],
+      ["进行中", summary.active ?? 0],
+    ].map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+    if (els.userTransactionsCount) els.userTransactionsCount.textContent = `${Number(data.transactions?.total || transactions.length)} 条`;
+    if (els.userActivitiesCount) els.userActivitiesCount.textContent = `${Number(data.activities?.total || activities.length)} 条`;
+    els.userDetailsTransactions.innerHTML = transactions.length ? transactions.map((item) => {
+      const pointChange = Number(item.amount || 0);
+      const quotaChange = Number(item.video_quota_change || 0);
+      const changes = [];
+      if (pointChange) changes.push(`${pointChange > 0 ? "+" : ""}${pointChange} 积分`);
+      if (quotaChange) changes.push(`${quotaChange > 0 ? "+" : ""}${quotaChange} 额度`);
+      return `<article class="user-detail-entry"><div><strong>${escapeHtml(userTransactionLabels[item.kind] || item.title || "余额变动")}</strong><span class="user-detail-change ${pointChange > 0 || quotaChange > 0 ? "positive" : ""}">${escapeHtml(changes.join(" / ") || "记录")}</span></div><p>${escapeHtml(item.detail || item.title || "-")}</p>${item.reference_id ? `<code>任务 ID：${escapeHtml(item.reference_id)}</code>` : ""}<time>${escapeHtml(formatTime(item.created_at))}</time></article>`;
+    }).join("") : '<div class="empty-state">暂无消费或额度记录</div>';
+    els.userDetailsActivities.innerHTML = activities.length ? activities.map((item) => `<article class="user-detail-entry"><div><strong>${escapeHtml(item.title || "用户操作")}</strong><span>${item.actor === "admin" ? "管理员" : "用户"}</span></div>${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}${item.reference_id ? `<code>关联 ID：${escapeHtml(item.reference_id)}</code>` : ""}<time>${escapeHtml(formatTime(item.created_at))}</time></article>`).join("") : '<div class="empty-state">暂无操作日志</div>';
+  } catch (error) {
+    closeUserDetails();
+    toast(`用户详情读取失败：${error.message}`, "error");
+  }
 }
 
 async function changeClientPassword(event) {
@@ -2414,7 +2473,7 @@ function renderProxyNodes() {
     return;
   }
   els.proxyNodeGrid.innerHTML = visibleNodes.map((node) => {
-    const latency = node.latency_status === "available" ? `${node.latency_ms} ms` : node.latency_status === "unavailable" ? "不可用" : node.latency_status === "expired" ? "已过期" : "未检测";
+    const latency = ["available", "cached"].includes(node.latency_status) && node.latency_ms ? `${node.latency_ms} ms${node.latency_status === "cached" ? " · 上次" : ""}` : node.latency_status === "unavailable" ? "不可用" : node.latency_status === "expired" ? "已过期" : "未检测";
     const selected = node.selected || node.id === state.proxySelectedNode;
     return `<button class="proxy-node-card${selected ? " selected" : ""}" type="button" data-proxy-node-id="${escapeHtml(node.id)}" aria-pressed="${selected ? "true" : "false"}"><span class="proxy-node-name">${escapeHtml(node.name)}</span><span class="proxy-node-country">${escapeHtml(node.country)} · ${escapeHtml(node.protocol.toUpperCase())}</span><strong class="proxy-node-latency${node.latency_ms ? " good" : ""}">${escapeHtml(latency)}</strong></button>`;
   }).join("");
@@ -2754,10 +2813,16 @@ function closeTextModal() {
   els.textModal.setAttribute("aria-hidden", "true");
 }
 
-function openVideoModal(url) {
+function taskVideoPlaybackUrl(taskId, download = false) {
+  const id = String(taskId || "").trim();
+  return id ? `/tasks/${encodeURIComponent(id)}/video${download ? "?download=true" : ""}` : "";
+}
+
+function openVideoModal(url, taskId = "") {
   const value = String(url || "").trim();
   if (!value) return;
   state.modalVideoUrl = value;
+  const playbackUrl = taskVideoPlaybackUrl(taskId) || value;
   els.videoLoading.textContent = "正在加载视频链接...";
   els.videoLoading.classList.remove("hidden");
   els.videoPlayer.classList.add("hidden");
@@ -2767,9 +2832,7 @@ function openVideoModal(url) {
   els.videoModal.setAttribute("aria-hidden", "false");
   window.setTimeout(() => {
     if (state.modalVideoUrl !== value || els.videoModal.classList.contains("hidden")) return;
-    els.videoPlayer.src = value;
-    els.videoPlayer.classList.remove("hidden");
-    els.videoLoading.classList.add("hidden");
+    els.videoPlayer.src = playbackUrl;
     els.videoPlayer.load();
   }, 120);
 }
@@ -3099,7 +3162,7 @@ function renderVideoLibrary() {
   els.videoLibrary.innerHTML = videos.map(({ task, status }) => `
     <article class="video-library-card ${state.selectedVideoIds.has(task.id) ? "selected" : ""}">
       <label class="video-card-select"><input type="checkbox" data-video-select="${escapeHtml(task.id)}" ${state.selectedVideoIds.has(task.id) ? "checked" : ""} /> 选择</label>
-      <video src="${escapeHtml(status.url)}" controls preload="metadata"></video>
+      <video src="${escapeHtml(taskVideoPlaybackUrl(task.id))}" controls preload="metadata"></video>
       <strong>${escapeHtml(task.prompt_preview || task.prompt || "视频任务")}</strong>
       <span>${escapeHtml(task.model || "")}</span>
       <span>用户：${escapeHtml(task.owner_name || state.userName || "当前用户")}</span>
@@ -4553,7 +4616,7 @@ function downloadVideo(url, id) {
   const value = String(url || "").trim();
   if (!value) return;
   const link = document.createElement("a");
-  link.href = value;
+  link.href = taskVideoPlaybackUrl(id, true) || value;
   link.download = `${id || "video"}.mp4`;
   link.target = "_blank";
   link.rel = "noreferrer";
@@ -4854,6 +4917,8 @@ function bindEvents() {
   });
   els.userTableBody?.addEventListener("click", async (event) => {
     try {
+      const detailsButton = event.target.closest("[data-user-details]");
+      if (detailsButton) return openUserDetails(detailsButton.dataset.userDetails);
       const copyButton = event.target.closest("[data-copy-user-token]");
       if (copyButton) return copyText(copyButton.dataset.copyUserToken, "Token");
       const toggleButton = event.target.closest("[data-toggle-user]");
@@ -4891,6 +4956,11 @@ function bindEvents() {
     } catch (error) {
       toast(`用户操作失败：${error.message}`, "error");
     }
+  });
+  els.closeUserDetailsModal?.addEventListener("click", closeUserDetails);
+  els.cancelUserDetailsModal?.addEventListener("click", closeUserDetails);
+  els.userDetailsModal?.addEventListener("click", (event) => {
+    if (event.target === els.userDetailsModal) closeUserDetails();
   });
   els.copyTokenCommand?.addEventListener("click", async () => {
     await copyText(els.tokenCommand?.value?.trim() || "", "命令行");
@@ -5155,7 +5225,7 @@ function bindEvents() {
     const viewVideoButton = event.target.closest("[data-batch-video-view]");
     if (viewVideoButton) {
       const item = state.batchPrompts[Number(viewVideoButton.dataset.batchVideoView)];
-      if (item?.videoUrl) openVideoModal(item.videoUrl);
+      if (item?.videoUrl) openVideoModal(item.videoUrl, item.taskId);
       return;
     }
     const downloadVideoButton = event.target.closest("[data-batch-video-download]");
@@ -5423,6 +5493,17 @@ function bindEvents() {
   els.copyVideoUrl.addEventListener("click", async () => {
     await copyText(state.modalVideoUrl, "视频 URL");
   });
+  els.videoPlayer.addEventListener("loadedmetadata", () => {
+    if (!state.modalVideoUrl) return;
+    els.videoLoading.classList.add("hidden");
+    els.videoPlayer.classList.remove("hidden");
+  });
+  els.videoPlayer.addEventListener("error", () => {
+    if (!state.modalVideoUrl) return;
+    els.videoPlayer.classList.add("hidden");
+    els.videoLoading.textContent = "视频加载失败，请稍后重试或使用下载按钮";
+    els.videoLoading.classList.remove("hidden");
+  });
   els.videoModal.addEventListener("click", (event) => {
     if (event.target === els.videoModal) closeVideoModal();
   });
@@ -5604,7 +5685,7 @@ function bindEvents() {
     if (action === "open-video") {
       const task = state.tasks.find((item) => item.id === id);
       const url = task ? getTaskStatus(task).url : "";
-      if (url) openVideoModal(url);
+      if (url) openVideoModal(url, id);
     }
     if (action === "download-video") {
       const task = state.tasks.find((item) => item.id === id);

@@ -18,6 +18,8 @@ from typing import Any, Iterable
 import httpx
 import yaml
 
+from .config import DATA_DIR
+
 
 PROXY_LINE_RE = re.compile(r"(?:(?:https?|socks5h?)://)?([A-Za-z0-9.-]+:\d{2,5})")
 NATIVE_PROXY_LINE_RE = re.compile(r"^(https?|socks5h?)://([^\s]+)$", re.IGNORECASE)
@@ -40,6 +42,9 @@ _SUBSCRIPTION_CACHE: dict[str, Any] = {"url": "", "nodes": (), "snapshot": b"", 
 _SUBSCRIPTION_CACHE_LOCK: asyncio.Lock | None = None
 _SUBSCRIPTION_RESOLVE_LOCK: asyncio.Lock | None = None
 _NODE_DELAYS: dict[str, tuple[int | None, float]] = {}
+_NODE_LAST_GOOD: dict[str, tuple[int, float]] = {}
+_NODE_DELAYS_LOADED = False
+NODE_DELAYS_PATH = DATA_DIR / "proxy_node_delays.json"
 NODE_DELAY_TTL_SECONDS = 300
 COUNTRY_MARKERS = {
     "香港": ("香港", "hong kong", "hongkong", " hk", "🇭🇰"),
@@ -77,7 +82,52 @@ def _node_id(uri: str) -> str:
     return hashlib.sha256(uri.encode("utf-8")).hexdigest()[:16]
 
 
+def _load_persisted_node_delays() -> None:
+    global _NODE_DELAYS_LOADED
+    if _NODE_DELAYS_LOADED:
+        return
+    _NODE_DELAYS_LOADED = True
+    try:
+        payload = json.loads(NODE_DELAYS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return
+    now_wall = time.time()
+    now_mono = time.monotonic()
+    for node_id, item in (payload.get("nodes", {}) if isinstance(payload, dict) else {}).items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            delay = max(1, int(item.get("latency_ms") or 0))
+            measured_at = float(item.get("measured_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not node_id or not measured_at:
+            continue
+        age = max(0.0, now_wall - measured_at)
+        monotonic_at = now_mono - age
+        _NODE_LAST_GOOD[str(node_id)] = (delay, measured_at)
+        _NODE_DELAYS.setdefault(str(node_id), (delay, monotonic_at))
+
+
+def _persist_node_delays() -> None:
+    try:
+        NODE_DELAYS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "nodes": {
+                node_id: {"latency_ms": delay, "measured_at": measured_at}
+                for node_id, (delay, measured_at) in _NODE_LAST_GOOD.items()
+            },
+            "updated_at": time.time(),
+        }
+        temporary = NODE_DELAYS_PATH.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(NODE_DELAYS_PATH)
+    except OSError:
+        pass
+
+
 def mark_node_unavailable(node_id: str) -> None:
+    _load_persisted_node_delays()
     normalized = str(node_id or "").strip()
     if normalized:
         _NODE_DELAYS[normalized] = (None, time.monotonic())
@@ -479,6 +529,7 @@ async def _mihomo_node_delay(node: ProxyNode, timeout_seconds: float = 8.0) -> i
 
 
 async def measure_node_delays(nodes: tuple[ProxyNode, ...], subscription_url: str, timeout_seconds: int = 20) -> dict[str, int | None]:
+    _load_persisted_node_delays()
     if any(node.protocol not in {"http", "https", "socks5", "socks5h"} for node in nodes) and not await _mihomo_ready(_MIHOMO_PROCESS, _MIHOMO_PORT, _MIHOMO_CONTROLLER_PORT):
         await _proxy_from_mihomo(subscription_url, timeout_seconds, 900)
     semaphore = asyncio.Semaphore(20)
@@ -490,9 +541,13 @@ async def measure_node_delays(nodes: tuple[ProxyNode, ...], subscription_url: st
             else:
                 delay = await _mihomo_node_delay(node)
             _NODE_DELAYS[node.id] = (delay, time.monotonic())
+            if delay is not None:
+                _NODE_LAST_GOOD[node.id] = (delay, time.time())
             return node.id, delay
 
-    return dict(await asyncio.gather(*(measure(node) for node in nodes)))
+    measured = dict(await asyncio.gather(*(measure(node) for node in nodes)))
+    _persist_node_delays()
+    return measured
 
 
 async def _select_mihomo_node(node: ProxyNode) -> None:
@@ -525,8 +580,12 @@ async def rebuild_mihomo_from_snapshot(subscription_url: str, nodes: tuple[Proxy
 
 
 def node_payload(node: ProxyNode, selected_node: str = "") -> dict[str, Any]:
+    _load_persisted_node_delays()
     delay, measured_at = _NODE_DELAYS.get(node.id, (None, 0.0))
     fresh = measured_at > 0 and time.monotonic() - measured_at < NODE_DELAY_TTL_SECONDS
+    cached_delay, cached_at = _NODE_LAST_GOOD.get(node.id, (0, 0.0))
+    shown_delay = delay if fresh and delay is not None else cached_delay or None
+    cached = shown_delay is not None and not (fresh and delay is not None)
     return {
         "id": node.id,
         "name": node.name,
@@ -534,9 +593,10 @@ def node_payload(node: ProxyNode, selected_node: str = "") -> dict[str, Any]:
         "protocol": node.protocol,
         "server": node.server,
         "port": node.port,
-        "latency_ms": delay if fresh else None,
-        "latency_measured": fresh,
-        "latency_status": "available" if fresh and delay is not None else "unavailable" if fresh else "expired" if measured_at else "pending",
+        "latency_ms": shown_delay,
+        "latency_measured": fresh and delay is not None,
+        "latency_cached": cached,
+        "latency_status": "available" if fresh and delay is not None else "cached" if cached else "unavailable" if fresh else "expired" if measured_at else "pending",
         "selected": node.id == selected_node,
     }
 

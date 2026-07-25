@@ -290,8 +290,8 @@
       const aspect = width / Math.max(height, 1);
       if (mode === "landing") {
         this.targetCenter = [0.5, compact ? 0.47 : 0.455];
-        this.targetSize = Math.min(compact ? 0.14 : 0.12, aspect * 0.2);
-        this.targetStrength = 1;
+        this.targetSize = 0.001;
+        this.targetStrength = 0;
       } else if (mode === "login" || mode === "converging") {
         this.targetCenter = [0.5, compact ? 0.78 : 0.8];
         this.targetSize = Math.min(0.047, aspect * 0.1);
@@ -329,7 +329,7 @@
     }
 
     containsPoint(clientX, clientY) {
-      if (!this.active || this.mode !== "landing" || !this.lastWidth || !this.lastHeight) return false;
+      if (!this.active || this.mode === "landing" || !this.lastWidth || !this.lastHeight) return false;
       const centerX = this.center[0] * this.lastWidth;
       const centerY = (1 - this.center[1]) * this.lastHeight;
       const radius = this.size * this.lastHeight * Math.max(0.72, this.growth);
@@ -907,15 +907,6 @@
       context.lineWidth = 0.75;
       context.stroke();
 
-      for (let index = 0; index < 4; index += 1) {
-        const rotation = time * (0.7 + index * 0.17) * (index % 2 ? -1 : 1) + index * 0.9;
-        context.beginPath();
-        context.ellipse(target.x, target.y, target.radius * (1.05 + index * 0.22), target.radius * (0.3 + index * 0.055), rotation, 0.22, Math.PI * 1.62);
-        context.strokeStyle = `rgba(170, 211, 211, ${(0.12 - index * 0.015) * strength})`;
-        context.lineWidth = 0.65 + (3 - index) * 0.16;
-        context.stroke();
-      }
-
       for (const drop of this.orbitDrops) {
         const angle = drop.angle + time * drop.speed + Math.sin(time * 0.9 + drop.phase) * 0.24;
         const distance = target.radius * drop.radius * (1 + Math.sin(time * 1.7 + drop.phase) * 0.08);
@@ -1038,7 +1029,6 @@
       context.clearRect(0, 0, this.width, this.height);
       if (this.mode === "landing") {
         this.drawMist(context, now);
-        this.drawLandingSphereOrbit(context, now);
         this.drawRain(context, deltaSeconds);
         this.drawRipples(context, deltaSeconds);
         this.drawSprays(context, now);

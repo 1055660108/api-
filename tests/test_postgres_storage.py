@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
-from app import accounts, package_catalog, point_transactions, postgres, store, temp_access, users
+from app import accounts, package_catalog, point_transactions, postgres, store, temp_access, user_activity, users
 from scripts import storage_migrate
 
 
@@ -231,6 +231,26 @@ class MemoryPostgres:
         start = (current_page - 1) * page_size
         return {"transactions": rows[start:start + page_size], "total": total, "page": current_page, "page_size": page_size, "total_pages": total_pages}
 
+    def insert_user_activity(self, entry: dict) -> None:
+        with self.lock:
+            rows = self.documents.setdefault("user_activity", {"activities": []})["activities"]
+            if not any(item.get("id") == entry.get("id") for item in rows):
+                rows.append(deepcopy(entry))
+
+    def query_user_activity(self, user_id: str, page: int, page_size: int) -> dict:
+        with self.lock:
+            rows = [
+                deepcopy(item)
+                for item in self.documents.get("user_activity", {}).get("activities", [])
+                if str(item.get("user_id") or "") == str(user_id)
+            ]
+        rows.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")), reverse=True)
+        total = len(rows)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        current_page = min(max(1, page), total_pages)
+        start = (current_page - 1) * page_size
+        return {"activities": rows[start:start + page_size], "total": total, "page": current_page, "page_size": page_size, "total_pages": total_pages}
+
     def claim_available_account(self, platform: str, excluded_ids: set[str], today: str, now: str, mutator):
         with self.lock:
             rows = self.documents.get("accounts", {}).get("accounts", [])
@@ -279,6 +299,8 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
             patch.object(postgres, "delete_user", self.backend.delete_user),
             patch.object(postgres, "insert_point_transaction", self.backend.insert_point_transaction),
             patch.object(postgres, "query_point_transactions", self.backend.query_point_transactions),
+            patch.object(postgres, "insert_user_activity", self.backend.insert_user_activity),
+            patch.object(postgres, "query_user_activity", self.backend.query_user_activity),
             patch.object(postgres, "clear_all", self.backend.clear_all),
             patch.object(store, "TASKS_DIR", self.root / "tasks"),
             patch.object(store, "runtime_path", return_value=self.root / "runtime.json"),
@@ -367,6 +389,19 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
         self.assertIn("INSERT INTO dola_schema_version(version) VALUES (3)", schema)
         self.assertIn("CREATE TABLE IF NOT EXISTS dola_point_transactions", schema)
         self.assertIn("dola_point_transactions_user_created_idx", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS dola_user_activity", schema)
+        self.assertIn("dola_user_activity_user_created_idx", schema)
+        self.assertIn("INSERT INTO dola_schema_version(version) VALUES (4)", schema)
+
+    def test_user_activity_is_inserted_and_paginated_by_user(self) -> None:
+        for index in range(3):
+            user_activity.record_activity("user-1", "operation", f"operation {index}")
+        user_activity.record_activity("user-2", "operation", "other")
+        first = user_activity.list_activity("user-1", page=1, page_size=2)
+        second = user_activity.list_activity("user-1", page=2, page_size=2)
+        self.assertEqual((first["total"], first["total_pages"]), (3, 2))
+        self.assertEqual(len(first["activities"]), 2)
+        self.assertEqual(len(second["activities"]), 1)
 
     def test_task_status_claim_is_atomic_across_process_facades(self) -> None:
         task = store.create_task("并发领取", "9:16")

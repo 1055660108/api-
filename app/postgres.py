@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS dola_point_transactions (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS dola_point_transactions_user_created_idx ON dola_point_transactions (user_id, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS dola_user_activity (
+    id varchar(32) PRIMARY KEY,
+    user_id varchar(64) NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dola_user_activity_user_created_idx ON dola_user_activity (user_id, created_at DESC, id DESC);
 INSERT INTO dola_schema_version(version) VALUES (1) ON CONFLICT (version) DO NOTHING;
 INSERT INTO dola_accounts(id, payload)
 SELECT item->>'id', item
@@ -100,6 +107,7 @@ WHERE name = 'point_transactions'
   AND NOT EXISTS (SELECT 1 FROM dola_schema_version WHERE version = 3)
 ON CONFLICT (id) DO NOTHING;
 INSERT INTO dola_schema_version(version) VALUES (3) ON CONFLICT (version) DO NOTHING;
+INSERT INTO dola_schema_version(version) VALUES (4) ON CONFLICT (version) DO NOTHING;
 """
 
 
@@ -527,6 +535,29 @@ def query_point_transactions(user_id: str, page: int, page_size: int) -> dict[st
     }
 
 
+def insert_user_activity(entry: dict[str, Any]) -> None:
+    from psycopg.types.json import Jsonb
+
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO dola_user_activity(id, user_id, payload, created_at) VALUES (%s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
+            (str(entry["id"]), str(entry["user_id"]), Jsonb(entry), str(entry.get("created_at") or datetime.now(timezone.utc).isoformat())),
+        )
+
+
+def query_user_activity(user_id: str, page: int, page_size: int) -> dict[str, Any]:
+    with connection() as conn:
+        total_row = conn.execute("SELECT count(*) FROM dola_user_activity WHERE user_id = %s", (str(user_id),)).fetchone()
+        total = int(total_row[0] if total_row else 0)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        current_page = min(max(1, int(page)), total_pages)
+        rows = conn.execute(
+            "SELECT payload FROM dola_user_activity WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+            (str(user_id), page_size, (current_page - 1) * page_size),
+        ).fetchall()
+    return {"activities": [dict(row[0]) for row in rows], "total": total, "page": current_page, "page_size": page_size, "total_pages": total_pages}
+
+
 def claim_available_account(
     platform: str,
     excluded_ids: set[str],
@@ -882,4 +913,4 @@ def delete_task(task_id: str) -> None:
 
 def clear_all() -> None:
     with connection() as conn:
-        conn.execute("TRUNCATE dola_tasks, dola_documents, dola_accounts, dola_temp_tokens, dola_users, dola_point_transactions")
+        conn.execute("TRUNCATE dola_tasks, dola_documents, dola_accounts, dola_temp_tokens, dola_users, dola_point_transactions, dola_user_activity")

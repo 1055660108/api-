@@ -473,6 +473,13 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(consumed["title"], "视频任务消费")
         self.assertEqual(consumed["reference_id"], consumed["detail"].splitlines()[0].removeprefix("任务 ID："))
         self.assertIn(f"任务 ID：{consumed['reference_id']}", consumed["detail"])
+        details = self.client.get(f"/users/{user_id}/details")
+        self.assertEqual(details.status_code, 200)
+        detail_payload = details.json()
+        self.assertGreaterEqual(detail_payload["task_summary"]["total"], 4)
+        self.assertIn("admin_credit", {item["action"] for item in detail_payload["activities"]["activities"]})
+        self.assertIn("task_submit", {item["action"] for item in detail_payload["activities"]["activities"]})
+        self.assertIn("video_quota_consume", {item["kind"] for item in detail_payload["transactions"]["transactions"]})
 
 
 if __name__ == "__main__":

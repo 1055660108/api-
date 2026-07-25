@@ -92,6 +92,19 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(data["page"], 2)
         self.assertEqual(data["total_pages"], 3)
 
+    def test_admin_can_set_per_user_remote_generation_limit(self) -> None:
+        registered = self.register("remote_limit_user")
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        user = next(item for item in self.client.get("/users").json()["users"] if item["username"] == "remote_limit_user")
+        changed = self.client.patch(f"/users/{user['id']}", json={"remote_generation_limit": 37})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        refreshed = next(item for item in self.client.get("/users").json()["users"] if item["id"] == user["id"])
+        self.assertEqual(refreshed["remote_generation_limit"], 37)
+        context = temp_access.get_temp_context(registered["token"])
+        self.assertEqual(context.remote_generation_limit, 37)
+        rejected = self.client.patch(f"/users/{user['id']}", json={"remote_generation_limit": 1000})
+        self.assertEqual(rejected.status_code, 400)
+
     def test_client_can_read_and_change_verified_email(self) -> None:
         config.update_config({"registration_email_verification_enabled": True, "registration_email_domains": ["qq.com", "163.com"]})
         registered = users.register_user("email_user", "password123", email="old@qq.com")

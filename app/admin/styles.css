@@ -495,7 +495,7 @@ button:disabled {
 
 .user-details-summary {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   border: 1px solid var(--line);
   border-radius: 6px;
   overflow: hidden;

@@ -17,6 +17,7 @@ TEMP_TOKEN_COUNT = 20
 TEMP_TOKEN_LIMIT = 100
 TEMP_TOKEN_CONCURRENCY = 1
 MAX_TEMP_TOKEN_CONCURRENCY = 100
+MAX_REMOTE_GENERATION_LIMIT = 999
 DEFAULT_TASK_RETENTION_DAYS = 7
 MIN_TASK_RETENTION_DAYS = 1
 MAX_TASK_RETENTION_DAYS = 15
@@ -40,6 +41,7 @@ class AccessContext:
     used: int = 0
     remaining: int = 0
     concurrency: int = 0
+    remote_generation_limit: int = 1
     task_retention_days: int = DEFAULT_TASK_RETENTION_DAYS
     free_remaining: int = 0
     credit_units: int = 0
@@ -55,6 +57,14 @@ def normalize_billing_priority(value: Any) -> str:
 
 def normalize_retention_days(value: Any) -> int:
     return max(MIN_TASK_RETENTION_DAYS, min(MAX_TASK_RETENTION_DAYS, int(value or DEFAULT_TASK_RETENTION_DAYS)))
+
+
+def normalize_remote_generation_limit(entry: dict[str, Any]) -> int:
+    concurrency = max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY)))
+    raw = entry.get("remote_generation_limit")
+    if raw in {None, "", 0, "0"}:
+        return concurrency
+    return max(1, min(MAX_REMOTE_GENERATION_LIMIT, int(raw)))
 
 
 def hash_token(token: str) -> str:
@@ -128,6 +138,7 @@ def _public_token(token_hash: str, entry: dict[str, Any]) -> dict[str, Any]:
         "points": units_to_points(credit_units),
         "billing_priority": billing_priority,
         "concurrency": concurrency,
+        "remote_generation_limit": normalize_remote_generation_limit(entry),
         "task_retention_days": task_retention_days,
         "created_at": str(entry.get("created_at") or ""),
         "updated_at": str(entry.get("updated_at") or ""),
@@ -216,7 +227,7 @@ def ensure_temp_tokens(count: int = TEMP_TOKEN_COUNT, limit: int = TEMP_TOKEN_LI
     return [str(item.get("token") or "") for item in ordered if item.get("token")]
 
 
-def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency: int | None = None, remark: str | None = None, task_retention_days: int | None = None, billing_priority: str | None = None) -> dict[str, Any]:
+def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency: int | None = None, remote_generation_limit: int | None = None, remark: str | None = None, task_retention_days: int | None = None, billing_priority: str | None = None) -> dict[str, Any]:
     token_hash = str(token_hash or "").strip().lower()
     with _LOCK:
         if postgres.enabled():
@@ -225,6 +236,8 @@ def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency:
                     entry["limit"] = max(1, min(100000, int(limit)))
                 if concurrency is not None:
                     entry["concurrency"] = max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(concurrency)))
+                if remote_generation_limit is not None:
+                    entry["remote_generation_limit"] = max(1, min(MAX_REMOTE_GENERATION_LIMIT, int(remote_generation_limit)))
                 if task_retention_days is not None:
                     entry["task_retention_days"] = normalize_retention_days(task_retention_days)
                 if remark is not None:
@@ -243,6 +256,8 @@ def update_temp_token(token_hash: str, *, limit: int | None = None, concurrency:
             entry["limit"] = max(1, min(100000, int(limit)))
         if concurrency is not None:
             entry["concurrency"] = max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(concurrency)))
+        if remote_generation_limit is not None:
+            entry["remote_generation_limit"] = max(1, min(MAX_REMOTE_GENERATION_LIMIT, int(remote_generation_limit)))
         if task_retention_days is not None:
             entry["task_retention_days"] = normalize_retention_days(task_retention_days)
         if remark is not None:
@@ -320,6 +335,15 @@ def temp_token_concurrency_limits() -> dict[str, int]:
     return limits
 
 
+def temp_token_remote_generation_limits() -> dict[str, int]:
+    data = _read_data()
+    limits: dict[str, int] = {}
+    for token_hash, entry in data["tokens"].items():
+        if isinstance(entry, dict):
+            limits[str(token_hash)] = normalize_remote_generation_limit(entry)
+    return limits
+
+
 def delete_temp_token(token_hash: str) -> bool:
     token_hash = str(token_hash or "").strip().lower()
     with _LOCK:
@@ -377,6 +401,7 @@ def get_temp_context(token: str) -> AccessContext | None:
         used=used,
         remaining=max(0, limit - used),
         concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))),
+        remote_generation_limit=normalize_remote_generation_limit(entry),
         task_retention_days=normalize_retention_days(entry.get("task_retention_days")),
         free_remaining=max(0, int(entry.get("free_remaining") or 0)),
         credit_units=max(0, int(entry.get("credit_units") or 0)),
@@ -561,7 +586,7 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
 def get_temp_context_from_entry(token_hash: str, entry: dict[str, Any]) -> AccessContext:
     free_remaining = max(0, int(entry.get("free_remaining") or 0))
     credit_units = max(0, int(entry.get("credit_units") or 0))
-    return AccessContext(token_hash=token_hash, is_admin=False, is_temp=True, limit=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, used=0, remaining=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))), task_retention_days=normalize_retention_days(entry.get("task_retention_days")), free_remaining=free_remaining, credit_units=credit_units, billing_priority=normalize_billing_priority(entry.get("billing_priority")))
+    return AccessContext(token_hash=token_hash, is_admin=False, is_temp=True, limit=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, used=0, remaining=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))), remote_generation_limit=normalize_remote_generation_limit(entry), task_retention_days=normalize_retention_days(entry.get("task_retention_days")), free_remaining=free_remaining, credit_units=credit_units, billing_priority=normalize_billing_priority(entry.get("billing_priority")))
 
 
 def set_temp_billing_priority(token_hash: str, priority: str) -> dict[str, Any]:

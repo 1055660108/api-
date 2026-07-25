@@ -45,7 +45,7 @@ from .query import query_task
 from .resilience import PlatformGuard, adaptive_worker_limit
 from .task_queue import get_task_queue, queue_backend
 from .temp_access import refund_temp_quota_hash
-from .temp_access import temp_token_concurrency_limits
+from .temp_access import temp_token_concurrency_limits, temp_token_remote_generation_limits
 
 
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
@@ -108,6 +108,9 @@ class WorkerManager:
         self._result_poll_active = 0
         self._token_concurrency_limits: dict[str, int] = {}
         self._token_concurrency_refreshed_at = 0.0
+        self._remote_owner_counts: dict[str, int] = {}
+        self._remote_owner_limits: dict[str, int] = {}
+        self._remote_owner_refreshed_at = 0.0
         self._claimed: set[str] = set()
         self._stopping = False
         self._worker_seq = 0
@@ -118,7 +121,7 @@ class WorkerManager:
         self._platform_guard = PlatformGuard(getattr(self._queue, "client", None))
         self._resource_snapshot: dict[str, object] = {}
         self._dola_browser_pool = ReusableBrowserPool(max_processes=8, contexts_per_process=4)
-        self._remote_generation_reservations: set[str] = set()
+        self._remote_generation_reservations: dict[str, str] = {}
 
     async def start(self) -> None:
         if self._supervisor and not self._supervisor.done():
@@ -154,7 +157,6 @@ class WorkerManager:
         await self._dola_browser_pool.stop()
 
     def health_snapshot(self) -> dict:
-        settings = load_settings()
         configured = self._dola_browser_pool.capacity
         effective, resource = adaptive_worker_limit(configured, self._dola_browser_pool.capacity)
         resource = {**resource, "effective_workers": effective, "browser_pool_capacity": self._dola_browser_pool.capacity}
@@ -175,7 +177,7 @@ class WorkerManager:
             "result_poll_concurrency": RESULT_POLL_CONCURRENCY,
             "result_poll_rate_per_second": RESULT_POLL_RATE_PER_SECOND,
             "browser_pool": self._dola_browser_pool.snapshot(),
-            "remote_generation_limit": settings.remote_generation_limit,
+            "remote_generation_limit": 0,
             "remote_generation_active": remote_generating,
             "restart_count": self._restart_count,
             "last_error": self._last_error,
@@ -394,13 +396,35 @@ class WorkerManager:
         try:
             return len(list_task_metas_by_statuses({STATUS_SUBMITTED}, platform="dola"))
         except Exception:
-            return load_settings().remote_generation_limit if fail_closed else 0
+            return 0
 
-    def _reserve_remote_generation_slot(self, task_id: str) -> bool:
-        limit = load_settings().remote_generation_limit
-        if self._remote_generation_count(fail_closed=True) + len(self._remote_generation_reservations) >= limit:
+    def _remote_generation_owner_state(self) -> tuple[dict[str, int], dict[str, int]]:
+        now = asyncio.get_running_loop().time()
+        if now - self._remote_owner_refreshed_at >= 1.0:
+            try:
+                counts: dict[str, int] = {}
+                for _, meta in list_task_metas_by_statuses({STATUS_SUBMITTED}, platform="dola"):
+                    owner = str(meta.get("owner_token_hash") or "")
+                    if owner:
+                        counts[owner] = counts.get(owner, 0) + 1
+                self._remote_owner_counts = counts
+                self._remote_owner_limits = temp_token_remote_generation_limits()
+                self._remote_owner_refreshed_at = now
+            except Exception as exc:
+                self._last_error = str(exc)[:500]
+        return self._remote_owner_counts, self._remote_owner_limits
+
+    def _reserve_remote_generation_slot(self, task_id: str, meta: dict) -> bool:
+        owner = str(meta.get("owner_token_hash") or "")
+        if not owner:
+            self._remote_generation_reservations[task_id] = ""
+            return True
+        counts, limits = self._remote_generation_owner_state()
+        limit = max(1, min(999, int(limits.get(owner) or 1)))
+        reserved = sum(reserved_owner == owner for reserved_owner in self._remote_generation_reservations.values())
+        if counts.get(owner, 0) + reserved >= limit:
             return False
-        self._remote_generation_reservations.add(task_id)
+        self._remote_generation_reservations[task_id] = owner
         return True
 
     async def _worker_loop(self, worker_id: str) -> None:
@@ -412,17 +436,21 @@ class WorkerManager:
                         owner = str(get_meta(claimed_id).get("owner_token_hash") or "")
                         if owner:
                             active_counts[owner] = active_counts.get(owner, 0) + 1
-                task_id = self._queue.claim(worker_id, self._claimed, active_counts, self._owner_concurrency_limits())
-                if task_id:
-                    claimed_meta = get_meta(task_id)
-                    if str(claimed_meta.get("platform") or "dola") == "dola" and not self._reserve_remote_generation_slot(task_id):
-                        mark_pending(task_id, "远端生成任务已达上限，继续排队")
-                        update_meta(task_id, next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat())
-                        self._queue.release(task_id, worker_id)
-                        task_id = None
-                    else:
-                        self._claimed.add(task_id)
-                        self._worker_task_ids[worker_id] = task_id
+                task_id = None
+                for _ in range(20):
+                    candidate_id = self._queue.claim(worker_id, self._claimed, active_counts, self._owner_concurrency_limits())
+                    if not candidate_id:
+                        break
+                    claimed_meta = get_meta(candidate_id)
+                    if str(claimed_meta.get("platform") or "dola") == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
+                        mark_pending(candidate_id, "当前用户远端生成任务已达上限，继续排队")
+                        update_meta(candidate_id, next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat())
+                        self._queue.release(candidate_id, worker_id)
+                        continue
+                    task_id = candidate_id
+                    self._claimed.add(task_id)
+                    self._worker_task_ids[worker_id] = task_id
+                    break
             if not task_id:
                 await asyncio.sleep(2)
                 continue
@@ -543,7 +571,9 @@ class WorkerManager:
             finally:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
-                self._remote_generation_reservations.discard(task_id)
+                reserved_owner = self._remote_generation_reservations.pop(task_id, None)
+                if reserved_owner:
+                    self._remote_owner_refreshed_at = 0.0
                 self._worker_task_ids.pop(worker_id, None)
                 set_active_tasks(self._claimed)
                 settings = load_settings()

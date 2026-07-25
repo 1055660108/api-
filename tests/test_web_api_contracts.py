@@ -5,6 +5,7 @@ import json
 import inspect
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -308,7 +309,7 @@ class WebAPIContractTests(unittest.TestCase):
     def test_batch_shared_reference_is_uploaded_once_and_copied_to_following_tasks(self) -> None:
         registered = self.register("batch_shared_ref")
         owner_hash = temp_access.hash_token(registered["token"])
-        temp_access.add_temp_credit_units(owner_hash, 20)
+        temp_access.add_temp_credit_units(owner_hash, 500)
         temp_access.set_temp_billing_priority(owner_hash, "points_first")
         headers = {"X-API-Token": registered["token"]}
         common = {
@@ -321,43 +322,75 @@ class WebAPIContractTests(unittest.TestCase):
         }
         shared_image = b"\x89PNG\r\n\x1a\nshared-reference"
         row_image = b"\x89PNG\r\n\x1a\nrow-reference"
-        first = self.client.post(
-            "/tasks",
-            headers={**headers, "Idempotency-Key": "batch-shared-reference-0001"},
-            data={**common, "prompt": "第一条", "batch_index": "1", "batch_row": "2"},
+        uploaded = self.client.post(
+            "/batch-prompts/references",
+            headers=headers,
+            data={"batch_id": common["batch_id"]},
             files=[("images", ("shared.png", shared_image, "image/png"))],
         )
-        self.assertEqual(first.status_code, 200, first.text)
-        self.assertEqual(first.json()["image_count"], 1)
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        reference_id = uploaded.json()["reference_id"]
+        self.assertEqual(uploaded.json()["image_count"], 1)
 
-        second = self.client.post(
-            "/tasks",
-            headers={**headers, "Idempotency-Key": "batch-shared-reference-0002"},
-            data={
-                **common,
-                "prompt": "第二条",
-                "batch_index": "2",
-                "batch_row": "3",
-                "batch_reference_task_id": first.json()["id"],
-                "batch_reference_image_count": "1",
-            },
-            files=[("images", ("row.png", row_image, "image/png"))],
-        )
-        self.assertEqual(second.status_code, 200, second.text)
-        self.assertEqual(second.json()["image_count"], 2)
-        copied = [path.read_bytes() for path in store.task_image_paths(second.json()["id"])]
-        self.assertEqual(copied, [shared_image, row_image])
-        store.save_result(second.json()["id"], extra={"decoded_main_url": "https://example.com/batch-result.mp4"})
-        store.mark_success(second.json()["id"])
+        created = []
+        for index in range(1, 21):
+            files = [("images", ("row.png", row_image, "image/png"))] if index == 2 else []
+            response = self.client.post(
+                "/tasks",
+                headers={**headers, "Idempotency-Key": f"batch-shared-reference-{index:04d}"},
+                data={**common, "prompt": f"第{index}条", "batch_index": str(index), "batch_row": str(index + 1), "batch_reference_id": reference_id, "batch_reference_image_count": "1"},
+                files=files,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            created.append(response.json()["id"])
+            copied = [path.read_bytes() for path in store.task_image_paths(response.json()["id"])]
+            self.assertEqual(copied, [shared_image, row_image] if index == 2 else [shared_image])
+        second_id = created[1]
+        self.assertEqual(self.client.delete(f"/batch-prompts/references/{reference_id}", headers=headers).status_code, 200)
+        store.save_result(second_id, extra={"decoded_main_url": "https://example.com/batch-result.mp4"})
+        store.mark_success(second_id)
         statuses = self.client.post(
             "/batch-prompts/status",
             headers=headers,
-            json={"task_ids": [first.json()["id"], second.json()["id"]]},
+            json={"task_ids": created},
         )
         self.assertEqual(statuses.status_code, 200, statuses.text)
         by_id = {item["id"]: item for item in statuses.json()["tasks"]}
-        self.assertEqual(by_id[second.json()["id"]]["code"], "2")
-        self.assertEqual(by_id[second.json()["id"]]["url"], "https://example.com/batch-result.mp4")
+        self.assertEqual(by_id[second_id]["code"], "2")
+        self.assertEqual(by_id[second_id]["url"], "https://example.com/batch-result.mp4")
+
+    def test_task_creation_semaphore_is_isolated_per_user(self) -> None:
+        first = temp_access.AccessContext(token_hash="owner-a", is_admin=False, is_temp=True)
+        second = temp_access.AccessContext(token_hash="owner-b", is_admin=False, is_temp=True)
+        main._OWNER_CREATE_SEMAPHORES.clear()
+        self.assertIs(main._owner_create_semaphore(first), main._owner_create_semaphore(first))
+        self.assertIsNot(main._owner_create_semaphore(first), main._owner_create_semaphore(second))
+
+    def test_large_batch_from_one_user_does_not_make_another_user_busy(self) -> None:
+        first = self.register("busy_owner_a")
+        second = self.register("busy_owner_b")
+        first_hash = temp_access.hash_token(first["token"])
+        second_hash = temp_access.hash_token(second["token"])
+        temp_access.add_temp_credit_units(first_hash, 500)
+        temp_access.add_temp_credit_units(second_hash, 50)
+        temp_access.set_temp_billing_priority(first_hash, "points_first")
+        temp_access.set_temp_billing_priority(second_hash, "points_first")
+
+        def submit(owner: dict, index: int):
+            return self.client.post(
+                "/tasks",
+                headers={"X-API-Token": owner["token"], "Idempotency-Key": f"fair-{owner['username']}-{index}"},
+                data={"prompt": f"并发公平任务 {index}", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video", "batch": "true", "batch_id": f"fair-{owner['username']}", "batch_index": str(index)},
+            )
+
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            first_futures = [executor.submit(submit, first, index) for index in range(1, 11)]
+            second_future = executor.submit(submit, second, 1)
+            second_response = second_future.result(timeout=20)
+            first_responses = [future.result(timeout=30) for future in first_futures]
+
+        self.assertEqual(second_response.status_code, 200, second_response.text)
+        self.assertTrue(all(response.status_code == 200 for response in first_responses), [response.text for response in first_responses])
 
     def test_successful_and_failed_tasks_can_be_retried_as_new_charged_tasks(self) -> None:
         registered = self.register("retry_completed_client")
@@ -732,7 +765,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.json()["proxy_auto_countries"], ["日本", "美国"])
         self.assertEqual(config.load_settings().proxy_auto_countries, ["日本", "美国"])
 
-    def test_global_worker_configuration_accepts_999_and_rejects_1000(self) -> None:
+    def test_global_worker_configuration_keeps_remote_generation_unlimited(self) -> None:
         headers = {"X-API-Token": self.admin_token}
         accepted = self.client.post("/config/workers", headers=headers, json={"browser_workers": 999, "max_effective_workers": 200, "remote_generation_limit": 150})
         self.assertEqual(accepted.status_code, 200)
@@ -741,20 +774,20 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["max_effective_workers"], 32)
         self.assertEqual(payload["capacity_limit"], 32)
         self.assertEqual(payload["effective_browser_workers"], 32)
-        self.assertEqual(payload["remote_generation_limit"], 150)
+        self.assertEqual(payload["remote_generation_limit"], 0)
         self.assertEqual((payload["browser_pool_processes"], payload["browser_contexts_per_process"], payload["submission_concurrency"]), (8, 4, 32))
         remote_only = self.client.post("/config/workers", headers=headers, json={"remote_generation_limit": 175})
         self.assertEqual(remote_only.status_code, 200)
-        self.assertEqual(remote_only.json()["remote_generation_limit"], 175)
+        self.assertEqual(remote_only.json()["remote_generation_limit"], 0)
         rejected = self.client.post("/config/workers", headers=headers, json={"browser_workers": 1000})
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(config.load_settings().browser_workers, 32)
         rejected_capacity = self.client.post("/config/workers", headers=headers, json={"browser_workers": 100, "max_effective_workers": 1000})
         self.assertEqual(rejected_capacity.status_code, 400)
         self.assertEqual(config.load_settings().max_effective_workers, 32)
-        rejected_remote = self.client.post("/config/workers", headers=headers, json={"browser_workers": 32, "max_effective_workers": 32, "remote_generation_limit": 1000})
-        self.assertEqual(rejected_remote.status_code, 400)
-        self.assertEqual(config.load_settings().remote_generation_limit, 175)
+        ignored_remote = self.client.post("/config/workers", headers=headers, json={"browser_workers": 32, "max_effective_workers": 32, "remote_generation_limit": 1000})
+        self.assertEqual(ignored_remote.status_code, 200)
+        self.assertEqual(config.load_settings().remote_generation_limit, 0)
 
     def test_proxy_node_apis_list_measure_select_and_switch(self) -> None:
         self.client.post(

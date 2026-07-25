@@ -594,6 +594,7 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "free_remaining": free_remaining, "points": points,
                 "used": used, "enabled": bool(entry.get("enabled", True)), "token": str(q.get("token") or entry.get("token") or ""),
                 "concurrency": max(1, int(q.get("concurrency") or 1)),
+                "remote_generation_limit": max(1, min(999, int(q.get("remote_generation_limit") or q.get("concurrency") or 1))),
                 "base_concurrency": max(1, int(entry.get("base_concurrency") or q.get("concurrency") or 1)),
                 "membership": dict(membership) if membership else None,
             })
@@ -884,6 +885,23 @@ def set_user_concurrency(user_id: str, concurrency: int) -> None:
             raise KeyError(user_id)
         effective_concurrency = _set_effective_concurrency(entry, concurrency)
         _write(data)
+
+
+def set_user_remote_generation_limit(user_id: str, remote_generation_limit: int) -> int:
+    requested = max(1, min(999, int(remote_generation_limit)))
+    with _LOCK:
+        if postgres.enabled():
+            candidate = _read_user_entry("id", user_id)
+            if not candidate:
+                raise KeyError(user_id)
+            update_temp_token(str(candidate[1].get("token_hash") or ""), remote_generation_limit=requested)
+            return requested
+        data = _read()
+        entry = next((item for item in data["users"].values() if item.get("id") == user_id), None)
+        if not entry:
+            raise KeyError(user_id)
+        update_temp_token(str(entry.get("token_hash") or ""), remote_generation_limit=requested)
+        return requested
 
 
 def _set_effective_concurrency(entry: dict[str, Any], concurrency: int) -> int:

@@ -444,7 +444,6 @@ const els = {
   workersInput: document.getElementById("workersInput"),
   effectiveWorkersInput: document.getElementById("effectiveWorkersInput"),
   submissionConcurrencyInput: document.getElementById("submissionConcurrencyInput"),
-  remoteGenerationLimitInput: document.getElementById("remoteGenerationLimitInput"),
   workersModalState: document.getElementById("workersModalState"),
   closeWorkersModal: document.getElementById("closeWorkersModal"),
   cancelWorkersModal: document.getElementById("cancelWorkersModal"),
@@ -506,6 +505,7 @@ const state = {
   batchPage: 1,
   batchPageSize: 10,
   batchSubmitting: false,
+  batchStopRequested: false,
   batchAutoRunning: false,
   batchAutoStopRequested: false,
   batchDraftOwner: "",
@@ -552,7 +552,6 @@ const state = {
   browserPoolProcesses: 8,
   browserContextsPerProcess: 4,
   submissionConcurrency: 32,
-  remoteGenerationLimit: 100,
   billingPriority: "video_first",
   version: "",
   selectedVideoIds: new Set(),
@@ -2166,7 +2165,7 @@ async function loadUsers() {
   if (els.prevUserPage) els.prevUserPage.disabled = state.userPage <= 1;
   if (els.nextUserPage) els.nextUserPage.disabled = state.userPage >= state.userTotalPages;
   const users = Array.isArray(data.users) ? data.users : [];
-  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-details="${escapeHtml(item.id)}">详情</button><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
+  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}<br>远端 ${item.remote_generation_limit || item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-details="${escapeHtml(item.id)}">详情</button><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="secondary-button" data-user-remote-limit="${escapeHtml(item.id)}" data-current-remote-limit="${Number(item.remote_generation_limit || item.concurrency || 1)}">远端上限</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
 }
 
 const userTransactionLabels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "积分充值", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
@@ -2197,6 +2196,7 @@ async function openUserDetails(userId) {
       ["积分余额", user.points ?? 0],
       ["视频额度", user.free_remaining ?? 0],
       ["有效并发", user.concurrency ?? 1],
+      ["远端上限", user.remote_generation_limit ?? user.concurrency ?? 1],
       ["任务总数", summary.total ?? 0],
       ["生成成功", summary.success ?? 0],
       ["进行中", summary.active ?? 0],
@@ -2419,10 +2419,9 @@ async function refreshHealth() {
   state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 8);
   state.browserContextsPerProcess = Number(data.components?.browser?.contexts_per_process || 4);
   state.submissionConcurrency = Number(data.components?.browser?.submission_capacity || effectiveWorkers || 32);
-  state.remoteGenerationLimit = Number(data.remote_generation_limit || state.remoteGenerationLimit || 100);
   if (portal === "admin") {
-    els.metricWorkers.textContent = `${state.submissionConcurrency} / ${state.remoteGenerationLimit}`;
-    if (els.metricWorkersNote) els.metricWorkersNote.textContent = "提交 / 远端上限";
+    els.metricWorkers.textContent = String(state.submissionConcurrency);
+    if (els.metricWorkersNote) els.metricWorkersNote.textContent = `提交并发 · 远端运行 ${Number(data.remote_generation_active || 0)}`;
   } else {
     els.metricWorkers.textContent = configuredWorkers ? `${effectiveWorkers} / ${configuredWorkers}` : "-";
     if (els.metricWorkersNote) els.metricWorkersNote.textContent = "有效 / 配置";
@@ -2780,12 +2779,10 @@ function openWorkersModal() {
   els.workersInput.value = String(state.browserPoolProcesses || 8);
   els.effectiveWorkersInput.value = String(state.browserContextsPerProcess || 4);
   els.submissionConcurrencyInput.value = String(state.submissionConcurrency || 32);
-  els.remoteGenerationLimitInput.value = String(Math.max(1, Number(state.remoteGenerationLimit || 100)));
   els.workersModalState.textContent = "";
   els.workersModal.classList.remove("hidden");
   els.workersModal.setAttribute("aria-hidden", "false");
-  els.remoteGenerationLimitInput.focus();
-  els.remoteGenerationLimitInput.select();
+  els.saveWorkers.focus();
 }
 
 function closeWorkersModal() {
@@ -2848,26 +2845,19 @@ function closeVideoModal() {
 
 async function saveWorkersConfig() {
   const submissionConcurrency = Math.max(1, Number(state.submissionConcurrency || 32));
-  const remoteGenerationLimit = Number.parseInt(els.remoteGenerationLimitInput.value, 10);
-  if (!Number.isInteger(remoteGenerationLimit) || remoteGenerationLimit < 1 || remoteGenerationLimit > 999) {
-    els.workersModalState.textContent = "请输入 1 - 999";
-    toast("远端生成任务上限范围是 1 - 999", "error");
-    return;
-  }
   setBusy(els.saveWorkers, true, "保存中");
   try {
     const data = await apiFetch("/config/workers", {
       method: "POST",
-      body: { browser_workers: submissionConcurrency, max_effective_workers: submissionConcurrency, remote_generation_limit: remoteGenerationLimit },
+      body: { browser_workers: submissionConcurrency, max_effective_workers: submissionConcurrency },
     });
     state.configuredWorkers = Number(data.browser_workers ?? submissionConcurrency);
     state.maxEffectiveWorkers = Number(data.max_effective_workers ?? data.capacity_limit ?? submissionConcurrency);
     state.browserPoolProcesses = Number(data.browser_pool_processes || 8);
     state.browserContextsPerProcess = Number(data.browser_contexts_per_process || 4);
     state.submissionConcurrency = Number(data.submission_concurrency || 32);
-    state.remoteGenerationLimit = Number(data.remote_generation_limit || remoteGenerationLimit);
-    els.metricWorkers.textContent = `${state.submissionConcurrency} / ${state.remoteGenerationLimit}`;
-    els.workersModalState.textContent = `已保存，远端生成上限 ${state.remoteGenerationLimit}`;
+    els.metricWorkers.textContent = String(state.submissionConcurrency);
+    els.workersModalState.textContent = "已保存，全局远端不限制";
     toast("并发配置已更新");
     closeWorkersModal();
     await refreshHealth();
@@ -3848,7 +3838,6 @@ const BATCH_IMAGE_DB_NAME = "dfyue_batch_images";
 const BATCH_IMAGE_DB_VERSION = 1;
 const BATCH_IMAGE_STORE = "drafts";
 let batchImageDatabasePromise = null;
-const batchSharedUploadSources = new Map();
 
 function batchConcurrencyLimit() {
   return Math.max(1, Math.trunc(portal === "client" ? Number(state.concurrency || 1) : Number(state.batchPrompts.length || 1)));
@@ -4198,14 +4187,16 @@ function renderBatchPrompts() {
     els.batchPromptList.innerHTML = visiblePrompts.map(({ item, index }) => {
       const locked = state.batchSubmitting || batchItemIsCreated(item);
       const images = item.images || [];
-      const previews = images.slice(0, 3).map((entry) => `<img src="${escapeHtml(entry.previewUrl)}" alt="" />`).join("");
+      const displayImages = [...state.batchSharedImages, ...images];
+      const previews = displayImages.slice(0, 3).map((entry) => `<img src="${escapeHtml(entry.previewUrl)}" alt="" />`).join("");
+      const referenceText = state.batchSharedImages.length && images.length ? `共用 ${state.batchSharedImages.length} + 单独 ${images.length} 张` : state.batchSharedImages.length ? `共用 ${state.batchSharedImages.length} 张` : images.length ? `${images.length} 张` : "未添加";
       const videoActions = item.videoUrl ? `<div class="batch-video-actions"><button type="button" data-batch-video-view="${index}" title="查看视频"><i data-lucide="play" aria-hidden="true"></i>查看</button><button type="button" data-batch-video-download="${index}" title="下载视频"><i data-lucide="download" aria-hidden="true"></i>下载</button></div>` : "";
       return `
       <article class="batch-prompt-row${item.status ? ` is-${escapeHtml(item.status)}` : ""}" data-batch-prompt-row="${index}">
         <input type="checkbox" data-batch-prompt-select="${index}" ${item.selected ? "checked" : ""} ${locked ? "disabled" : ""} aria-label="选择表格第 ${escapeHtml(item.row)} 行" />
         <span class="batch-prompt-index">第 ${escapeHtml(item.row)} 行</span>
         <textarea data-batch-prompt-text="${index}" maxlength="4000" ${locked ? "readonly" : ""}>${escapeHtml(item.prompt)}</textarea>
-        <div class="batch-prompt-reference"><div class="batch-row-thumbs">${previews}</div><button class="text-button" type="button" data-batch-image-index="${index}" ${locked ? "disabled" : ""}>参考图</button><span title="${escapeHtml(images.map((entry) => entry.file.name).join("、"))}">${images.length ? `${images.length} 张` : "未添加"}</span>${images.length ? `<button class="batch-image-clear" type="button" data-batch-image-clear="${index}" aria-label="清除第 ${escapeHtml(item.row)} 行参考图" ${locked ? "disabled" : ""}>×</button>` : ""}</div>
+        <div class="batch-prompt-reference"><div class="batch-row-thumbs">${previews}</div><button class="text-button" type="button" data-batch-image-index="${index}" ${locked ? "disabled" : ""}>参考图</button><span title="${escapeHtml(displayImages.map((entry) => entry.file.name).join("、"))}">${escapeHtml(referenceText)}</span>${images.length ? `<button class="batch-image-clear" type="button" data-batch-image-clear="${index}" aria-label="清除第 ${escapeHtml(item.row)} 行单独参考图" ${locked ? "disabled" : ""}>×</button>` : ""}</div>
         <div class="batch-prompt-result"><span class="batch-prompt-status">${escapeHtml(batchItemStatusText(item))}</span>${videoActions}</div>
         <button class="batch-prompt-delete" type="button" data-delete-batch-prompt="${index}" aria-label="删除表格第 ${escapeHtml(item.row)} 行提示词" title="删除提示词" ${state.batchSubmitting ? "disabled" : ""}><i data-lucide="trash-2" aria-hidden="true"></i></button>
       </article>`;
@@ -4228,7 +4219,10 @@ function renderBatchPrompts() {
     els.selectAllBatchPrompts.disabled = state.batchSubmitting || !selectable.length;
   }
   if (els.batchSelectionLimit) els.batchSelectionLimit.max = String(Math.max(1, selectable.length));
-  if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selected.length;
+  if (els.submitBatchTasks) {
+    els.submitBatchTasks.disabled = state.batchAutoRunning || (!state.batchSubmitting && !selected.length);
+    els.submitBatchTasks.textContent = state.batchSubmitting && !state.batchAutoRunning ? (state.batchStopRequested ? "正在停止" : "停止提交") : "生成所选任务";
+  }
   if (els.autoSubmitBatchTasks) {
     els.autoSubmitBatchTasks.disabled = !state.batchAutoRunning && (state.batchSubmitting || !selected.length);
     els.autoSubmitBatchTasks.textContent = state.batchAutoRunning ? "停止自动生成" : "自动生成";
@@ -4310,10 +4304,20 @@ async function parseBatchSpreadsheet() {
   }
 }
 
-async function createBatchTask(entry, sessionId, ratio) {
+async function prepareBatchReferenceBundle(sessionId) {
+  if (!state.batchSharedImages.length) return null;
+  const form = new FormData();
+  form.append("batch_id", sessionId);
+  state.batchSharedImages.forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
+  if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在上传 ${state.batchSharedImages.length} 张共用参考图`;
+  const data = await apiFetch("/batch-prompts/references", { method: "POST", body: form, timeout: 60000 });
+  if (!data.reference_id || Number(data.image_count || 0) !== state.batchSharedImages.length) throw new Error("共用参考图上传不完整，请重新选择");
+  return { id: String(data.reference_id), count: Number(data.image_count) };
+}
+
+async function createBatchTask(entry, sessionId, ratio, referenceBundle = null) {
   const { item, index } = entry;
   const generation = dolaBatchGenerationSelection();
-  const sharedSourceTaskId = String(batchSharedUploadSources.get(sessionId) || "");
   const form = new FormData();
   form.append("prompt", item.prompt.trim());
   form.append("ratio", ratio);
@@ -4324,25 +4328,22 @@ async function createBatchTask(entry, sessionId, ratio) {
   form.append("batch_row", String(item.row));
   form.append("platform", generation.platform);
   form.append("model", generation.model);
-  if (sharedSourceTaskId && state.batchSharedImages.length) {
-    form.append("batch_reference_task_id", sharedSourceTaskId);
-    form.append("batch_reference_image_count", String(state.batchSharedImages.length));
-  } else {
-    state.batchSharedImages.forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
+  if (referenceBundle?.id) {
+    form.append("batch_reference_id", referenceBundle.id);
+    form.append("batch_reference_image_count", String(referenceBundle.count));
   }
   (item.images || []).forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
-  const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 90000 };
+  const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 20000 };
   let lastError = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const data = await apiFetch("/tasks", options);
-      if (!sharedSourceTaskId && state.batchSharedImages.length && data?.id) batchSharedUploadSources.set(sessionId, String(data.id));
       return data;
     } catch (error) {
       lastError = error;
       const status = Number(error.status || 0);
       const transient = error.code === "REQUEST_TIMEOUT" || [500, 502, 503, 504].includes(status) || (!status && /fetch|network|load failed/i.test(String(error.message || "")));
-      if (!transient || attempt >= 4) break;
+      if (!transient || attempt >= 1 || state.batchStopRequested || state.batchAutoStopRequested) break;
       await waitForBatchPoll(Math.min(8000, 800 * (2 ** attempt)));
     }
   }
@@ -4423,26 +4424,42 @@ function validateBatchSelection() {
 }
 
 async function submitBatchTasks() {
-  if (state.batchSubmitting) return;
+  if (state.batchSubmitting) {
+    if (!state.batchAutoRunning) {
+      state.batchStopRequested = true;
+      if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，当前任务确认后停止";
+      renderBatchPrompts();
+    }
+    return;
+  }
   const selected = validateBatchSelection();
   if (!selected.length || !window.confirm(`确定生成已选择的 ${selected.length} 条视频任务吗？每条任务会分别扣除视频额度或积分。`)) return;
   state.batchSubmitting = true;
+  state.batchStopRequested = false;
   const ratio = els.batchTaskRatio?.value || "9:16";
   const sessionId = window.crypto?.randomUUID?.() || `batch-${Date.now().toString(36)}`;
   let succeeded = 0;
   let stopped = "";
-  setBusy(els.submitBatchTasks, true, "提交中");
+  let referenceBundle = null;
+  selected.forEach(({ item }) => { item.status = "queued"; item.error = ""; });
   renderBatchPrompts();
   try {
+    referenceBundle = await prepareBatchReferenceBundle(sessionId);
     for (let current = 0; current < selected.length; current += 1) {
       const { item } = selected[current];
+      if (state.batchStopRequested) {
+        selected.slice(current).forEach(({ item: pendingItem }) => {
+          if (pendingItem.status === "queued") pendingItem.status = "";
+        });
+        break;
+      }
       if (stopped) {
         item.status = "failed";
         item.error = `未继续提交：${stopped}`;
         continue;
       }
       try {
-        const data = await createBatchTask(selected[current], sessionId, ratio);
+        const data = await createBatchTask(selected[current], sessionId, ratio, referenceBundle);
         item.status = "running";
         item.taskId = data.id || "";
         item.videoUrl = "";
@@ -4457,14 +4474,18 @@ async function submitBatchTasks() {
       if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在提交 ${current + 1} / ${selected.length}`;
       renderBatchPrompts();
     }
-    const failed = selected.length - succeeded;
-    if (els.batchTaskProgress) els.batchTaskProgress.textContent = `提交完成：成功 ${succeeded} 条${failed ? `，失败 ${failed} 条` : ""}`;
-    toast(failed ? `批量提交完成，成功 ${succeeded} 条，失败 ${failed} 条` : `已提交 ${succeeded} 条视频任务`, failed ? "error" : "success");
+    const failed = selected.filter(({ item }) => item.status === "failed").length;
+    const remaining = selected.filter(({ item }) => !batchItemIsCreated(item) && item.status !== "failed").length;
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchStopRequested ? `已停止：创建 ${succeeded} 条，保留 ${remaining} 条待生成` : `提交完成：成功 ${succeeded} 条${failed ? `，失败 ${failed} 条` : ""}`;
+    toast(state.batchStopRequested ? `已停止提交，未创建的 ${remaining} 条可继续生成` : failed ? `批量提交完成，成功 ${succeeded} 条，失败 ${failed} 条` : `已提交 ${succeeded} 条视频任务`, failed && !state.batchStopRequested ? "error" : "success");
     await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
+  } catch (error) {
+    selected.forEach(({ item }) => { if (item.status === "queued") item.status = ""; });
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "批量提交未开始";
+    toast(`批量提交失败：${batchFriendlyError(error.message)}`, "error");
   } finally {
     state.batchSubmitting = false;
-    setBusy(els.submitBatchTasks, false);
-    batchSharedUploadSources.delete(sessionId);
+    state.batchStopRequested = false;
     renderBatchPrompts();
   }
 }
@@ -4491,6 +4512,7 @@ async function autoSubmitBatchTasks() {
   selected.forEach(({ item }) => { item.status = "queued"; item.error = ""; });
   const ratio = els.batchTaskRatio?.value || "9:16";
   const sessionId = window.crypto?.randomUUID?.() || `batch-auto-${Date.now().toString(36)}`;
+  let referenceBundle = null;
   const active = new Map();
   let cursor = 0;
   let finished = 0;
@@ -4506,7 +4528,7 @@ async function autoSubmitBatchTasks() {
       const entry = selected[cursor];
       cursor += 1;
       try {
-        const data = await createBatchTask(entry, sessionId, ratio);
+        const data = await createBatchTask(entry, sessionId, ratio, referenceBundle);
         entry.item.status = "running";
         entry.item.taskId = data.id || "";
         entry.item.selected = false;
@@ -4526,6 +4548,7 @@ async function autoSubmitBatchTasks() {
   };
 
   try {
+    referenceBundle = await prepareBatchReferenceBundle(sessionId);
     await launchNext();
     while (active.size && !state.batchAutoStopRequested) {
       if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成中：已完成 ${finished} / ${selected.length}，运行 ${active.size} 条`;
@@ -4564,11 +4587,14 @@ async function autoSubmitBatchTasks() {
       if (els.batchTaskProgress) els.batchTaskProgress.textContent = `自动生成完成：成功 ${completed} 条，失败 ${failed} 条`;
       toast(`自动生成已完成：成功 ${completed} 条，失败 ${failed} 条`, failed ? "error" : "success");
     }
+  } catch (error) {
+    selected.slice(cursor).forEach(({ item }) => { if (item.status === "queued") item.status = ""; });
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "自动生成未开始";
+    toast(`自动生成失败：${batchFriendlyError(error.message)}`, "error");
   } finally {
     state.batchSubmitting = false;
     state.batchAutoRunning = false;
     state.batchAutoStopRequested = false;
-    batchSharedUploadSources.delete(sessionId);
     await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
     renderBatchPrompts();
   }
@@ -4921,6 +4947,15 @@ function bindEvents() {
       if (detailsButton) return openUserDetails(detailsButton.dataset.userDetails);
       const copyButton = event.target.closest("[data-copy-user-token]");
       if (copyButton) return copyText(copyButton.dataset.copyUserToken, "Token");
+      const remoteLimitButton = event.target.closest("[data-user-remote-limit]");
+      if (remoteLimitButton) {
+        const current = Number(remoteLimitButton.dataset.currentRemoteLimit || 1);
+        const value = Number(window.prompt("请输入单用户远端生成任务上限（1-999）", String(current)));
+        if (!Number.isInteger(value) || value < 1 || value > 999) return toast("远端上限范围是 1-999", "error");
+        await apiFetch(`/users/${remoteLimitButton.dataset.userRemoteLimit}`, { method: "PATCH", body: { remote_generation_limit: value } });
+        toast(`单用户远端上限已调整为 ${value}`);
+        return loadUsers();
+      }
       const toggleButton = event.target.closest("[data-toggle-user]");
       if (toggleButton) {
         await apiFetch(`/users/${toggleButton.dataset.toggleUser}/status`, { method: "POST", body: { enabled: toggleButton.dataset.enabled !== "true" } });
@@ -5279,7 +5314,7 @@ function bindEvents() {
     const selectedCount = batchSelectedEntries().length;
     const availableCount = state.batchPrompts.filter((item) => !batchItemIsCreated(item) && item.prompt.trim()).length;
     if (els.batchSelectionState) els.batchSelectionState.textContent = `已选择 ${selectedCount} / ${availableCount} 条`;
-    if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchSubmitting || !selectedCount;
+    if (els.submitBatchTasks) els.submitBatchTasks.disabled = state.batchAutoRunning || (!state.batchSubmitting && !selectedCount);
     scheduleBatchDraftSave();
   });
   els.submitBatchTasks?.addEventListener("click", submitBatchTasks);
@@ -5512,10 +5547,6 @@ function bindEvents() {
     if (event.key === "Escape") closeWorkersModal();
   });
   els.effectiveWorkersInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") saveWorkersConfig();
-    if (event.key === "Escape") closeWorkersModal();
-  });
-  els.remoteGenerationLimitInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveWorkersConfig();
     if (event.key === "Escape") closeWorkersModal();
   });

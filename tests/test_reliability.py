@@ -129,15 +129,11 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(store.get_meta(canceled["id"])["status"], store.STATUS_PENDING)
         self.assertEqual(store.get_meta(limited["id"])["status"], store.STATUS_PENDING)
 
-    def test_queued_owner_task_starts_after_submitted_task_finishes(self) -> None:
+    def test_submitted_task_does_not_hold_browser_submission_concurrency(self) -> None:
         submitted = self.create_task("owner")
         queued = self.create_task("owner")
         self.assertTrue(store.mark_running(submitted["id"], "worker-existing"))
         store.mark_submitted(submitted["id"])
-        self.assertIsNone(store.claim_next_pending("worker-waiting", set(), {}, {"owner": 1}))
-        self.assertEqual(store.get_meta(queued["id"])["status"], store.STATUS_PENDING)
-        store.save_result(submitted["id"], extra={"decoded_main_url": "https://example.com/video.mp4"})
-        store.mark_success(submitted["id"])
         self.assertEqual(store.claim_next_pending("worker-next", set(), {}, {"owner": 1}), queued["id"])
 
     def test_submission_barrier_prevents_cancel_refund_window(self) -> None:
@@ -651,17 +647,22 @@ class ReliabilityTests(unittest.TestCase):
 
         asyncio.run(start_twice())
 
-    def test_remote_generation_limit_reserves_slots_before_browser_submission(self) -> None:
+    def test_remote_generation_limit_is_enforced_per_user(self) -> None:
         manager = WorkerManager()
-        settings = unittest.mock.Mock(remote_generation_limit=2)
-        submitted = [("submitted-task", {"status": "submitted", "platform": "dola"})]
-        with patch("app.worker.load_settings", return_value=settings), patch(
-            "app.worker.list_task_metas_by_statuses", return_value=submitted
-        ):
-            self.assertTrue(manager._reserve_remote_generation_slot("new-task-1"))
-            self.assertFalse(manager._reserve_remote_generation_slot("new-task-2"))
-        manager._remote_generation_reservations.discard("new-task-1")
-        self.assertEqual(manager._remote_generation_reservations, set())
+        submitted = [("submitted-task", {"status": "submitted", "platform": "dola", "owner_token_hash": "owner-a"})]
+
+        async def check_limits() -> None:
+            with patch("app.worker.list_task_metas_by_statuses", return_value=submitted), patch(
+                "app.worker.temp_token_remote_generation_limits", return_value={"owner-a": 2, "owner-b": 1}
+            ):
+                self.assertTrue(manager._reserve_remote_generation_slot("new-task-1", {"owner_token_hash": "owner-a"}))
+                self.assertFalse(manager._reserve_remote_generation_slot("new-task-2", {"owner_token_hash": "owner-a"}))
+                self.assertTrue(manager._reserve_remote_generation_slot("other-user-task", {"owner_token_hash": "owner-b"}))
+
+        asyncio.run(check_limits())
+        manager._remote_generation_reservations.pop("new-task-1")
+        manager._remote_generation_reservations.pop("other-user-task")
+        self.assertEqual(manager._remote_generation_reservations, {})
 
     def test_deduct_points_is_atomic_and_preserves_free_quota(self) -> None:
         self.tokens_path.write_text(

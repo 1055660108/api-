@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 from starlette.background import BackgroundTask
 
+from . import config as app_config
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_quota
@@ -158,16 +159,102 @@ def _validate_video_url(value: str) -> str:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, sync_user_membership_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, set_user_remote_generation_limit, sync_user_membership_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
 query_sem = None
 list_sem = None
 delete_sem = None
+_OWNER_CREATE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+OWNER_TASK_CREATION_CONCURRENCY = 1
+MAX_BATCH_REFERENCE_AGE_SECONDS = 24 * 60 * 60
 _RATE_LOCK = threading.RLock()
 _RATE_BUCKETS: dict[str, list[float]] = {}
 _RATE_BUCKET_LIMIT = 10_000
+
+
+def _owner_create_semaphore(access: AccessContext) -> asyncio.Semaphore:
+    key = access.token_hash if access.is_temp else "admin"
+    semaphore = _OWNER_CREATE_SEMAPHORES.get(key)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(OWNER_TASK_CREATION_CONCURRENCY)
+        _OWNER_CREATE_SEMAPHORES[key] = semaphore
+    return semaphore
+
+
+def _batch_reference_path(reference_id: str) -> Path:
+    normalized = str(reference_id or "").strip().lower()
+    if len(normalized) != 32 or any(character not in "0123456789abcdef" for character in normalized):
+        raise ValueError("invalid batch reference id")
+    return app_config.DATA_DIR / "batch_references" / normalized
+
+
+def _cleanup_batch_references() -> None:
+    references_dir = app_config.DATA_DIR / "batch_references"
+    if not references_dir.exists():
+        return
+    cutoff = time.time() - MAX_BATCH_REFERENCE_AGE_SECONDS
+    for path in references_dir.iterdir():
+        try:
+            if path.is_dir() and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path)
+        except OSError:
+            continue
+
+
+def _save_batch_reference_bundle(owner_token_hash: str, batch_id: str, uploads: list[UploadFile]) -> dict:
+    _cleanup_batch_references()
+    reference_id = secrets.token_hex(16)
+    target_dir = _batch_reference_path(reference_id)
+    target_dir.mkdir(parents=True, exist_ok=False)
+    saved: list[str] = []
+    try:
+        for index, upload in enumerate(uploads, start=1):
+            suffix = Path(upload.filename or "").suffix.lower()
+            if suffix not in IMAGE_MAGIC:
+                raise HTTPException(status_code=400, detail="unsupported image type")
+            filename = f"{index:02d}{suffix}"
+            _save_uploaded_image(upload, target_dir / filename)
+            saved.append(filename)
+        metadata = {
+            "id": reference_id,
+            "owner_token_hash": owner_token_hash,
+            "batch_id": str(batch_id or "")[:100],
+            "images": saved,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (target_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        return metadata
+    except Exception:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
+
+
+def _batch_reference_paths(reference_id: str, owner_token_hash: str, batch_id: str) -> list[Path]:
+    try:
+        target_dir = _batch_reference_path(reference_id)
+        metadata = json.loads((target_dir / "metadata.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="批量共用参考图已失效，请重新上传")
+    if str(metadata.get("owner_token_hash") or "") != owner_token_hash or str(metadata.get("batch_id") or "") != batch_id:
+        raise HTTPException(status_code=400, detail="批量共用参考图不可用，请重新上传")
+    paths = [target_dir / str(name) for name in metadata.get("images", []) if str(name)]
+    if not paths or any(not path.is_file() for path in paths):
+        raise HTTPException(status_code=400, detail="批量共用参考图不完整，请重新上传")
+    return paths
+
+
+def _delete_batch_reference_bundle(reference_id: str, owner_token_hash: str) -> bool:
+    try:
+        target_dir = _batch_reference_path(reference_id)
+        metadata = json.loads((target_dir / "metadata.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if str(metadata.get("owner_token_hash") or "") != owner_token_hash:
+        return False
+    shutil.rmtree(target_dir, ignore_errors=True)
+    return True
 _RATE_LIMIT_SCRIPT = """
 local key = KEYS[1]
 local now = tonumber(ARGV[1])
@@ -365,6 +452,7 @@ async def lifespan(app: FastAPI):
     global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
+    _OWNER_CREATE_SEMAPHORES.clear()
     validate_startup_credentials(ensure_config())
     if postgres_enabled():
         ensure_postgres_schema()
@@ -400,6 +488,7 @@ async def lifespan(app: FastAPI):
             proxy_health_task.cancel()
             with suppress(asyncio.CancelledError):
                 await proxy_health_task
+        _OWNER_CREATE_SEMAPHORES.clear()
 
 
 app = FastAPI(title="Fetch Task Service", version=__version__, lifespan=lifespan)
@@ -645,7 +734,7 @@ def _health_payload(access: AccessContext) -> dict:
     }
     if access.is_admin:
         data["admin_username"] = settings.admin_username
-        data["remote_generation_limit"] = settings.remote_generation_limit
+        data["remote_generation_limit"] = 0
         try:
             data["remote_generation_active"] = len(list_task_metas_by_statuses({"submitted"}, platform="dola"))
         except Exception:
@@ -673,6 +762,7 @@ def _client_access_payload(access: AccessContext) -> dict:
             **balance,
         },
         "token_concurrency": access.concurrency,
+        "remote_generation_limit": access.remote_generation_limit,
         "task_retention_days": access.task_retention_days,
         "billing_priority": access.billing_priority,
         "user_name": user_name,
@@ -1507,6 +1597,11 @@ async def users_update(user_id: str, request: Request):
             if concurrency < 1 or concurrency > 100:
                 raise ValueError("并发数量需为1-100")
             set_user_concurrency(user_id, concurrency)
+        if "remote_generation_limit" in payload:
+            remote_generation_limit = int(payload["remote_generation_limit"])
+            if remote_generation_limit < 1 or remote_generation_limit > 999:
+                raise ValueError("单用户远端上限需为1-999")
+            set_user_remote_generation_limit(user_id, remote_generation_limit)
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
     except ValueError as exc:
@@ -1515,6 +1610,8 @@ async def users_update(user_id: str, request: Request):
         await _record_activity_safe(user_id, "admin_concurrency", "管理员调整并发", detail=f"并发调整为 {payload['concurrency']}", actor="admin")
     if "enabled" in payload:
         await _record_activity_safe(user_id, "admin_status", "管理员调整账号状态", detail="启用" if str(payload["enabled"]).lower() in {"1", "true", "yes", "on"} else "停用", actor="admin")
+    if "remote_generation_limit" in payload:
+        await _record_activity_safe(user_id, "admin_remote_limit", "管理员调整远端上限", detail=f"远端生成上限调整为 {payload['remote_generation_limit']}", actor="admin")
     return {"ok": True}
 
 
@@ -1984,7 +2081,6 @@ async def update_workers_config(
     payload = await _request_payload(request)
     raw_workers = payload.get("browser_workers") or payload.get("workers") or browser_workers or BROWSER_SUBMISSION_CONCURRENCY
     raw_capacity = payload.get("max_effective_workers") or payload.get("capacity_limit") or BROWSER_SUBMISSION_CONCURRENCY
-    raw_remote_limit = payload.get("remote_generation_limit")
     try:
         workers = int(raw_workers)
     except (TypeError, ValueError):
@@ -1998,13 +2094,7 @@ async def update_workers_config(
     if capacity < 1 or capacity > 999:
         raise HTTPException(status_code=400, detail="max_effective_workers must be between 1 and 999")
     try:
-        remote_limit = int(raw_remote_limit) if raw_remote_limit is not None else load_settings().remote_generation_limit
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="remote_generation_limit must be an integer")
-    if remote_limit < 1 or remote_limit > 999:
-        raise HTTPException(status_code=400, detail="remote_generation_limit must be between 1 and 999")
-    try:
-        update_config({"browser_workers": BROWSER_SUBMISSION_CONCURRENCY, "max_effective_workers": BROWSER_SUBMISSION_CONCURRENCY, "remote_generation_limit": remote_limit})
+        update_config({"browser_workers": BROWSER_SUBMISSION_CONCURRENCY, "max_effective_workers": BROWSER_SUBMISSION_CONCURRENCY, "remote_generation_limit": 0})
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     settings = load_settings()
@@ -2018,7 +2108,7 @@ async def update_workers_config(
         "browser_pool_processes": BROWSER_POOL_PROCESSES,
         "browser_contexts_per_process": BROWSER_CONTEXTS_PER_PROCESS,
         "submission_concurrency": BROWSER_SUBMISSION_CONCURRENCY,
-        "remote_generation_limit": settings.remote_generation_limit,
+        "remote_generation_limit": 0,
     }
 
 
@@ -2345,6 +2435,32 @@ async def temp_tokens_delete_action(token_id: str):
     return {"ok": True}
 
 
+@app.post("/batch-prompts/references", dependencies=[Depends(require_temp)])
+async def create_batch_references(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_temp)],
+    batch_id: Annotated[str, Form()],
+    images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
+):
+    normalized_batch_id = str(batch_id or "").strip()[:100]
+    uploads = [item for item in (images or []) if item and item.filename]
+    if not normalized_batch_id:
+        raise HTTPException(status_code=400, detail="批次 ID 不能为空")
+    if not uploads:
+        raise HTTPException(status_code=400, detail="请选择共用参考图")
+    if len(uploads) > load_settings().max_image_count:
+        raise HTTPException(status_code=400, detail="too many images")
+    await _rate_limit(request, "batch-reference-upload", 30, 60, access.token_hash)
+    metadata = await asyncio.to_thread(_save_batch_reference_bundle, access.token_hash, normalized_batch_id, uploads)
+    return {"ok": True, "reference_id": metadata["id"], "image_count": len(metadata["images"])}
+
+
+@app.delete("/batch-prompts/references/{reference_id}", dependencies=[Depends(require_temp)])
+async def delete_batch_references(reference_id: str, access: Annotated[AccessContext, Depends(require_temp)]):
+    deleted = await asyncio.to_thread(_delete_batch_reference_bundle, reference_id, access.token_hash)
+    return {"ok": True, "deleted": deleted}
+
+
 @app.post("/tasks", dependencies=[Depends(require_token)])
 async def submit_task(
     request: Request,
@@ -2360,12 +2476,13 @@ async def submit_task(
     batch_index: Annotated[int, Form()] = 0,
     batch_row: Annotated[int, Form()] = 0,
     batch_reference_task_id: Annotated[str, Form()] = "",
+    batch_reference_id: Annotated[str, Form()] = "",
     batch_reference_image_count: Annotated[int, Form()] = 0,
     images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     assert create_sem is not None
-    async with create_sem:
+    async with _owner_create_semaphore(access), create_sem:
         _admit_task_creation()
         prompt = repair_text((prompt or "").strip())
         ratio = (ratio or DEFAULT_RATIO).strip()
@@ -2379,6 +2496,7 @@ async def submit_task(
         batch_index = max(0, min(1000, int(batch_index or 0))) if batch else 0
         batch_row = max(0, min(1_000_000, int(batch_row or 0))) if batch else 0
         batch_reference_task_id = str(batch_reference_task_id or "").strip() if batch else ""
+        batch_reference_id = str(batch_reference_id or "").strip() if batch else ""
         batch_reference_image_count = max(0, min(load_settings().max_image_count, int(batch_reference_image_count or 0))) if batch else 0
         platform, model = validate_task_platform_model(platform, model)
         if platform == "qianwen" and task_type != "video":
@@ -2387,7 +2505,17 @@ async def submit_task(
         if len(uploads) + batch_reference_image_count > load_settings().max_image_count:
             raise HTTPException(status_code=400, detail="too many images")
         shared_reference_paths: list[Path] = []
-        if batch_reference_task_id:
+        if batch_reference_id:
+            shared_reference_paths = await asyncio.to_thread(
+                _batch_reference_paths,
+                batch_reference_id,
+                access.token_hash,
+                batch_id,
+            )
+            if batch_reference_image_count <= 0 or len(shared_reference_paths) < batch_reference_image_count:
+                raise HTTPException(status_code=400, detail="批量共用参考图数量无效，请重新上传")
+            shared_reference_paths = shared_reference_paths[:batch_reference_image_count]
+        elif batch_reference_task_id:
             try:
                 validate_task_id(batch_reference_task_id)
                 reference_meta = await asyncio.to_thread(get_meta, batch_reference_task_id)
@@ -2407,7 +2535,7 @@ async def submit_task(
             raise HTTPException(status_code=400, detail="批量共用参考图参数无效")
         await _rate_limit(request, "task-create-batch" if batch else "task-create", 2400 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
-        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "images": [Path(item.filename or "").name for item in uploads]})
+        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_id": batch_reference_id, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "images": [Path(item.filename or "").name for item in uploads]})
 
         try:
             if key:
@@ -2443,7 +2571,8 @@ async def submit_task(
                     batch_row=batch_row,
                 )
                 created = True
-            if not created:
+            resumed_initializing = not created and str(meta.get("status") or "") == "initializing"
+            if not created and not resumed_initializing:
                 return {"id": meta["id"], "replayed": True, "image_count": int(meta.get("image_count") or 0)}
             queued_for_concurrency = False
             if access.is_temp:
@@ -2531,6 +2660,8 @@ async def submit_task(
                 detail=f"{model} / {ratio}{' / 多任务第 ' + str(batch_index) + ' 条' if batch else ''}",
             )
         response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency, "image_count": len(saved_paths)}
+        if resumed_initializing:
+            response["replayed"] = True
         if reserved_access and reserved_access.is_temp:
             try:
                 balance = await _storage_call(user_balance_by_token_hash, reserved_access.token_hash)

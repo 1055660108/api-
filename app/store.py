@@ -1262,7 +1262,6 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
             if owner
         }
         running_counts: dict[str, int] = {}
-        detached_counts: dict[str, int] = {}
         candidates: list[dict[str, Any]] = []
         for item in list_tasks():
             task_id = str(item["id"])
@@ -1274,15 +1273,11 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
             status = str(meta.get("status") or "")
             if status == STATUS_RUNNING and owner:
                 running_counts[owner] = running_counts.get(owner, 0) + 1
-            elif status == STATUS_SUBMITTED and owner:
-                detached_counts[owner] = detached_counts.get(owner, 0) + 1
-            elif status == STATUS_SUCCESS and owner and not task_has_video(task_id):
-                detached_counts[owner] = detached_counts.get(owner, 0) + 1
             if task_id not in claimed_ids and str(meta.get("status") or "") == STATUS_PENDING:
                 candidates.append(meta)
         active_counts = {
-            owner: max(supplied_counts.get(owner, 0), running_counts.get(owner, 0)) + detached_counts.get(owner, 0)
-            for owner in set(supplied_counts) | set(running_counts) | set(detached_counts)
+            owner: max(supplied_counts.get(owner, 0), running_counts.get(owner, 0))
+            for owner in set(supplied_counts) | set(running_counts)
         }
         candidates.sort(key=lambda meta: (str(meta.get("queued_at") or meta.get("created_at") or ""), str(meta.get("created_at") or ""), str(meta.get("id") or "")))
         for meta in candidates:

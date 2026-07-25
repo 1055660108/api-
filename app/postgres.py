@@ -723,9 +723,8 @@ def claim_task(task_id: str, worker_id: str, owner_token_hash: str, concurrency_
             return False
         if owner_token_hash and concurrency_limit is not None:
             active = conn.execute(
-                "SELECT count(*) FROM dola_tasks WHERE meta->>'owner_token_hash' = %s AND ("
-                "meta->>'status' IN ('running', 'submitted') OR ("
-                "meta->>'status' = 'success' AND COALESCE(result->>'decoded_main_url', '') = ''))",
+                "SELECT count(*) FROM dola_tasks WHERE meta->>'owner_token_hash' = %s "
+                "AND meta->>'status' = 'running'",
                 (owner_token_hash,),
             ).fetchone()
             if int(active[0]) >= max(1, int(concurrency_limit)):

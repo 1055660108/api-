@@ -246,7 +246,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.23', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.24', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -463,7 +463,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('downloadVideo(item.videoUrl, item.taskId)', self.javascript)
         self.assertIn('item.videoUrl = String(result.url || "")', self.javascript)
         self.assertIn('return "服务暂时繁忙，请重新生成"', self.javascript)
-        self.assertIn('for (let attempt = 0; attempt < 5; attempt += 1)', self.javascript)
+        self.assertIn('for (let attempt = 0; attempt < 2; attempt += 1)', self.javascript)
+        self.assertIn('apiFetch("/batch-prompts/references"', self.javascript)
+        self.assertIn('form.append("batch_reference_id", referenceBundle.id)', self.javascript)
+        self.assertIn('"停止提交"', self.javascript)
         self.assertIn('while (active.size && !state.batchAutoStopRequested)', self.javascript)
         self.assertIn('active.size < concurrency', self.javascript)
         self.assertIn('const maxConsecutiveSystemErrors = 3', self.javascript)
@@ -548,7 +551,6 @@ class AdminUITests(unittest.TestCase):
             "announcementHistoryModal",
             "effectiveWorkersInput",
             "submissionConcurrencyInput",
-            "remoteGenerationLimitInput",
         ):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertGreaterEqual(self.html.count('class="nav-icon" data-lucide='), 16)
@@ -565,9 +567,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="criticalPortalStyles"', self.html)
         self.assertIn('body[data-portal="client"] #pointCardsNavItem', self.html)
         self.assertIn('body[data-portal="client"] .admin-credential-field', self.html)
-        self.assertIn('remote_generation_limit: remoteGenerationLimit', self.javascript)
-        self.assertIn('body: { browser_workers: submissionConcurrency, max_effective_workers: submissionConcurrency, remote_generation_limit: remoteGenerationLimit }', self.javascript)
-        self.assertIn('提交 / 远端上限', self.javascript)
+        self.assertNotIn('id="remoteGenerationLimitInput"', self.html)
+        self.assertIn('body: { browser_workers: submissionConcurrency, max_effective_workers: submissionConcurrency }', self.javascript)
+        self.assertIn('每个用户的远端上限在用户管理中单独设置', self.html)
+        self.assertIn('data-user-remote-limit=', self.javascript)
         self.assertIn('浏览器提交池固定为 8 × 4', self.html)
         self.assertIn('Number(item.task_discount_points || 0) > 0', self.javascript)
         self.assertNotIn('id="pointCardDeleteMode"', self.html)

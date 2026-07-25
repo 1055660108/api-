@@ -817,7 +817,7 @@ def _client_safe_text(value: str, model: str) -> str:
     replacement = str(model or "当前模型")
     text = str(value or "")
     if re.search(
-        r"Page\.(?:goto|click|waitFor|wait_for)|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
+        r"Page\.(?:goto|click|evaluate|waitFor|wait_for)|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
         text,
         flags=re.IGNORECASE,
     ):
@@ -2787,7 +2787,7 @@ async def batch_prompt_status(
             text = _client_safe_text(str(meta.get("error") or ("用户取消生成" if status == "canceled" else "生成失败")), str(meta.get("model") or "当前模型"))
         else:
             code = "1"
-            text = _client_safe_text(str(meta.get("error") or ""), str(meta.get("model") or "当前模型"))
+            text = _client_safe_text(str(meta.get("queue_reason") or meta.get("error") or ""), str(meta.get("model") or "当前模型"))
         states.append({"id": task_id, "status": status, "code": code, "text": text, "url": url})
     return {"tasks": states}
 

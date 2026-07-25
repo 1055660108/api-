@@ -199,6 +199,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('timeoutError.code = "REQUEST_TIMEOUT"', self.javascript)
         self.assertIn('els.submitState.textContent = "正在确认提交结果"', self.javascript)
         self.assertIn("你的输入可能包含违规内容请重试！", self.javascript)
+        self.assertIn("goto|click|evaluate|waitFor", self.javascript)
+        self.assertIn('label: "排队中"', self.javascript)
+        self.assertIn("task.queue_reason", self.javascript)
 
     def test_task_table_uses_stable_operational_layout(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
@@ -246,7 +249,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.26', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.27', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)

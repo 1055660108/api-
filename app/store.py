@@ -26,6 +26,7 @@ STATUS_CANCELED = "canceled"
 TASK_TIMEOUT_HOURS = 3
 TASK_RETRY_TIMEOUT_MINUTES = 30
 MAX_TASK_RETRIES = 2
+MAX_INFRASTRUCTURE_RETRIES = 6
 LOCAL_TZ = timezone(timedelta(hours=8))
 _TASK_LOCKS_LOCK = threading.RLock()
 _TASK_LOCKS: dict[str, threading.RLock] = {}
@@ -466,13 +467,28 @@ def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_PENDING or bool(meta.get("cancel_requested")):
             return False
-        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", execution_miss_count=0, submit_phase="", submit_started_at="", updated_at=claimed_at)
+        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", queue_reason="", queue_category="", execution_miss_count=0, submit_phase="", submit_started_at="", updated_at=claimed_at)
         _write_storage_json(meta_path(task_id), meta)
         return True
 
 
 def mark_pending(task_id: str, reason: str = "") -> None:
     update_meta_if(task_id, {STATUS_PENDING, STATUS_RUNNING}, status=STATUS_PENDING, worker_id="", queued_at=utc_now(), error=reason)
+
+
+def defer_task(task_id: str, reason: str, category: str, delay_seconds: int = 5) -> None:
+    now = utc_now()
+    update_meta_if(
+        task_id,
+        {STATUS_PENDING, STATUS_RUNNING},
+        status=STATUS_PENDING,
+        worker_id="",
+        queued_at=now,
+        error="",
+        queue_reason=str(reason or "任务排队中")[:200],
+        queue_category=str(category or "queue")[:40],
+        next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=max(1, int(delay_seconds)))).isoformat(),
+    )
 
 
 def mark_failed(task_id: str, reason: str = "") -> None:
@@ -601,6 +617,48 @@ def record_retry(task_id: str, reason: str = "") -> int:
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
         meta["updated_at"] = utc_now()
+        _write_storage_json(meta_path(task_id), meta)
+        return count
+
+
+def record_infrastructure_retry(task_id: str, reason: str = "") -> int:
+    with task_lock(task_id):
+        def mutate(meta: dict[str, Any]) -> int:
+            if str(meta.get("status") or "") in {STATUS_SUCCESS, STATUS_SUBMITTED, STATUS_FAILED, STATUS_CANCELED}:
+                return max(0, int(meta.get("infrastructure_retry_count") or 0))
+            count = max(0, int(meta.get("infrastructure_retry_count") or 0)) + 1
+            now = utc_now()
+            meta.update(
+                infrastructure_retry_count=count,
+                infrastructure_error=str(reason or "")[:500],
+                worker_id="",
+                error="",
+                updated_at=now,
+            )
+            meta.setdefault("infrastructure_retry_started_at", now)
+            if count > MAX_INFRASTRUCTURE_RETRIES:
+                meta.update(
+                    status=STATUS_FAILED,
+                    finished_at=now,
+                    error="可用节点连续连接失败，请稍后重新提交",
+                    queue_reason="",
+                    queue_category="",
+                )
+            else:
+                delay = min(120, 10 * (2 ** (count - 1)))
+                meta.update(
+                    status=STATUS_PENDING,
+                    finished_at="",
+                    queue_reason="节点连接异常，正在切换节点",
+                    queue_category="infrastructure",
+                    next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(),
+                )
+            return count
+
+        if postgres.enabled():
+            return postgres.mutate_task_part(task_id, "meta", mutate)
+        meta = get_meta(task_id)
+        count = mutate(meta)
         _write_storage_json(meta_path(task_id), meta)
         return count
 
@@ -995,6 +1053,9 @@ def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str])
         "completed_today": is_local_today(str(meta.get("finished_at") or "")),
         "status": str(meta.get("status") or ""),
         "retry_count": int(meta.get("retry_count") or 0),
+        "infrastructure_retry_count": int(meta.get("infrastructure_retry_count") or 0),
+        "queue_reason": str(meta.get("queue_reason") or ""),
+        "queue_category": str(meta.get("queue_category") or ""),
         "queued_at": str(meta.get("queued_at") or meta.get("created_at") or ""),
         "claimed_at": str(meta.get("claimed_at") or ""),
         "attempt": int(meta.get("attempt") or 0),

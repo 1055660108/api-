@@ -19,6 +19,7 @@ from .store import (
     count_pending_tasks,
     can_run_task,
     clear_transient_result,
+    defer_task,
     get_meta,
     has_pending_tasks,
     expire_task_if_timeout,
@@ -31,10 +32,12 @@ from .store import (
     mark_submitted,
     mark_result_once,
     MAX_TASK_RETRIES,
+    MAX_INFRASTRUCTURE_RETRIES,
     record_failed_account,
     record_execution_miss,
     record_result_watch_miss,
     record_retry,
+    record_infrastructure_retry,
     reset_running_tasks,
     retry_timed_out_submitted_task,
     set_active_tasks,
@@ -91,6 +94,19 @@ def consume_failed_account_quota(task_id: str, account: dict, platform: str) -> 
 
 def should_consume_retry_account_quota(outcome: dict) -> bool:
     return bool(outcome.get("retryable")) and not bool(outcome.get("infrastructure_fault"))
+
+
+def release_account_after_retryable_failure(task_id: str, account: dict, platform: str, outcome: dict) -> None:
+    account_id = str(account.get("id") or "")
+    if not account_id:
+        return
+    clear_account_current_task(account_id, task_id)
+    if outcome.get("infrastructure_fault"):
+        refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
+    elif outcome.get("account_fault"):
+        record_failed_account(task_id, account_id)
+    if should_consume_retry_account_quota(outcome):
+        consume_failed_account_quota(task_id, account, platform)
 
 
 class WorkerManager:
@@ -380,9 +396,7 @@ class WorkerManager:
             mark_failed(task_id, "重试等待可用账号超时，请重新提交")
             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
             return True
-        mark_pending(task_id, f"等待可用{platform}账号")
-        retry_at = datetime.now(timezone.utc) + timedelta(seconds=5 + secrets.randbelow(6))
-        update_meta(task_id, next_attempt_at=retry_at.isoformat())
+        defer_task(task_id, f"等待可用{platform}账号", "account_wait", 5 + secrets.randbelow(6))
         return False
 
     def _owner_concurrency_limits(self) -> dict[str, int]:
@@ -443,8 +457,7 @@ class WorkerManager:
                         break
                     claimed_meta = get_meta(candidate_id)
                     if str(claimed_meta.get("platform") or "dola") == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
-                        mark_pending(candidate_id, "当前用户远端生成任务已达上限，继续排队")
-                        update_meta(candidate_id, next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat())
+                        defer_task(candidate_id, "当前用户远端生成任务已达上限，继续排队", "remote_limit", 5)
                         self._queue.release(candidate_id, worker_id)
                         continue
                     task_id = candidate_id
@@ -481,9 +494,7 @@ class WorkerManager:
                     account_id = str(account.get("id") or "")
                     clear_account_current_task(account_id, task_id)
                     refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
-                    retry_at = datetime.now(timezone.utc) + timedelta(seconds=max(1, admission.retry_after))
-                    mark_pending(task_id, "平台服务繁忙，任务已自动排队")
-                    update_meta(task_id, next_attempt_at=retry_at.isoformat())
+                    defer_task(task_id, "平台服务繁忙，任务已自动排队", "platform_guard", max(1, admission.retry_after))
                     continue
                 if not can_run_task(task_id, worker_id):
                     account_id = str(account.get("id") or "")
@@ -520,16 +531,19 @@ class WorkerManager:
                         await asyncio.sleep(20)
                         continue
                     if account:
-                        clear_account_current_task(str(account.get("id") or ""), task_id)
                         if outcome.get("retryable"):
-                            if outcome.get("account_fault"):
-                                record_failed_account(task_id, str(account.get("id") or ""))
-                            if should_consume_retry_account_quota(outcome):
-                                consume_failed_account_quota(task_id, account, platform)
+                            release_account_after_retryable_failure(task_id, account, platform, outcome)
+                        else:
+                            clear_account_current_task(str(account.get("id") or ""), task_id)
                     if outcome.get("retryable"):
                         reason = str(outcome.get("reason") or "")[:500]
-                        retry_count = record_retry(task_id, reason)
-                        if retry_count > MAX_TASK_RETRIES:
+                        if outcome.get("infrastructure_fault"):
+                            retry_count = record_infrastructure_retry(task_id, reason)
+                            retry_limit = MAX_INFRASTRUCTURE_RETRIES
+                        else:
+                            retry_count = record_retry(task_id, reason)
+                            retry_limit = MAX_TASK_RETRIES
+                        if retry_count > retry_limit:
                             meta = get_meta(task_id)
                             refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     else:
@@ -555,16 +569,22 @@ class WorkerManager:
                             refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
                 raise
             except Exception as exc:
+                reason = str(exc)[:500]
+                infrastructure_fault = is_infrastructure_failure(reason)
                 if "platform" in locals():
-                    self._platform_guard.record_failure(platform)
+                    if not infrastructure_fault:
+                        self._platform_guard.record_failure(platform)
                 with suppress(FileNotFoundError):
-                    retry_count = record_retry(task_id, str(exc)[:500])
-                    if retry_count > MAX_TASK_RETRIES:
+                    retry_count = record_infrastructure_retry(task_id, reason) if infrastructure_fault else record_retry(task_id, reason)
+                    retry_limit = MAX_INFRASTRUCTURE_RETRIES if infrastructure_fault else MAX_TASK_RETRIES
+                    if retry_count > retry_limit:
                         meta = get_meta(task_id)
                         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                 if account:
                     clear_account_current_task(str(account.get("id") or ""), task_id)
-                    if not is_infrastructure_failure(str(exc)) and (platform == "dola" or not is_final_generation_failure(str(exc))):
+                    if infrastructure_fault:
+                        refund_account_quota_once(task_id, str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
+                    elif platform == "dola" or not is_final_generation_failure(reason):
                         record_failed_account(task_id, str(account.get("id") or ""))
                         consume_failed_account_quota(task_id, account, platform)
                 await asyncio.sleep(2)

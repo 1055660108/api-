@@ -246,6 +246,32 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
             proxy_manager.mark_node_unavailable(node.id)
             self.assertEqual(proxy_manager.node_payload(node)["latency_status"], "unavailable")
 
+    async def test_auto_selection_skips_recently_failed_node(self) -> None:
+        nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
+        delays = {nodes[0].id: (20, proxy_manager.time.monotonic()), nodes[1].id: (40, proxy_manager.time.monotonic())}
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.dict(
+            proxy_manager._NODE_DELAYS, delays, clear=True
+        ):
+            proxy_manager.mark_node_unavailable(nodes[0].id)
+            result = await proxy_manager.resolve_subscription_proxy("https://subscription.example/token")
+
+        self.assertEqual(result["node_id"], nodes[1].id)
+
+    async def test_manual_selection_falls_back_when_selected_node_failed(self) -> None:
+        nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
+        delays = {nodes[0].id: (20, proxy_manager.time.monotonic()), nodes[1].id: (40, proxy_manager.time.monotonic())}
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.dict(
+            proxy_manager._NODE_DELAYS, delays, clear=True
+        ):
+            proxy_manager.mark_node_unavailable(nodes[0].id)
+            result = await proxy_manager.resolve_subscription_proxy(
+                "https://subscription.example/token",
+                auto_select=False,
+                selected_node=nodes[0].id,
+            )
+
+        self.assertEqual(result["node_id"], nodes[1].id)
+
     def test_last_successful_delay_is_loaded_after_restart(self) -> None:
         node = proxy_manager.subscription_node_list("http://jp.example.com:8080#Japan")[0]
         with tempfile.TemporaryDirectory() as temporary_directory:

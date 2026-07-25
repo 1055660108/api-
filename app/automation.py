@@ -53,6 +53,7 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "all connection attempts failed",
     "failed to fetch",
     "proxy connection",
+    "proxy node",
     "proxy subscription",
     "connection refused",
     "connection reset",

@@ -46,6 +46,7 @@ _NODE_LAST_GOOD: dict[str, tuple[int, float]] = {}
 _NODE_DELAYS_LOADED = False
 NODE_DELAYS_PATH = DATA_DIR / "proxy_node_delays.json"
 NODE_DELAY_TTL_SECONDS = 300
+NODE_FAILURE_COOLDOWN_SECONDS = 90
 COUNTRY_MARKERS = {
     "香港": ("香港", "hong kong", "hongkong", " hk", "🇭🇰"),
     "台湾": ("台湾", "taiwan", " taipei", " tw", "🇹🇼"),
@@ -131,6 +132,11 @@ def mark_node_unavailable(node_id: str) -> None:
     normalized = str(node_id or "").strip()
     if normalized:
         _NODE_DELAYS[normalized] = (None, time.monotonic())
+
+
+def _node_is_cooling_down(node_id: str) -> bool:
+    delay, checked_at = _NODE_DELAYS.get(str(node_id or ""), (0, 0.0))
+    return delay is None and checked_at > 0 and time.monotonic() - checked_at < NODE_FAILURE_COOLDOWN_SECONDS
 
 
 def identify_country(name: str, server: str = "") -> str:
@@ -624,25 +630,43 @@ async def resolve_subscription_proxy(
         eligible_nodes = tuple(node for node in nodes if not auto_select or not countries or node.country in countries)
         if not eligible_nodes:
             raise RuntimeError("selected proxy countries contain no usable nodes")
-        chosen = next((node for node in eligible_nodes if node.id == selected_node), None)
+        selectable_nodes = tuple(node for node in eligible_nodes if not _node_is_cooling_down(node.id))
+        if not selectable_nodes:
+            raise RuntimeError("all eligible proxy nodes are temporarily unavailable")
+        chosen = next((node for node in selectable_nodes if node.id == selected_node), None)
         if auto_select:
             fresh_delays = {
                 node.id: delay
-                for node in eligible_nodes
+                for node in selectable_nodes
                 if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
                 and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
             }
             if not fresh_delays:
-                await measure_node_delays(eligible_nodes, subscription_url, timeout_seconds)
+                await measure_node_delays(selectable_nodes, subscription_url, timeout_seconds)
             available = [
                 (delay, node)
-                for node in eligible_nodes
+                for node in selectable_nodes
                 if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
                 and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
             ]
-            chosen = min(available, key=lambda item: item[0])[1] if available else chosen or eligible_nodes[0]
+            chosen = min(available, key=lambda item: item[0])[1] if available else chosen or selectable_nodes[0]
         elif chosen is None:
-            raise RuntimeError("selected proxy node is unavailable")
+            fresh_available = [
+                (delay, node)
+                for node in selectable_nodes
+                if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+                and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+            ]
+            if not fresh_available:
+                await measure_node_delays(selectable_nodes, subscription_url, timeout_seconds)
+                fresh_available = [
+                    (delay, node)
+                    for node in selectable_nodes
+                    if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+                ]
+            if not fresh_available:
+                raise RuntimeError("selected proxy node is unavailable")
+            chosen = min(fresh_available, key=lambda item: item[0])[1]
         if chosen.protocol in {"http", "https", "socks5", "socks5h"}:
             server = chosen.uri.split("#", 1)[0]
             return {

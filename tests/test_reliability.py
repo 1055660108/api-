@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app import accounts, config, store, task_queue, temp_access
-from app.worker import WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once, should_consume_retry_account_quota
+from app.automation import is_infrastructure_failure
+from app.worker import WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -339,6 +340,47 @@ class ReliabilityTests(unittest.TestCase):
     def test_infrastructure_retry_does_not_consume_account_quota(self) -> None:
         self.assertFalse(should_consume_retry_account_quota({"retryable": True, "infrastructure_fault": True}))
         self.assertTrue(should_consume_retry_account_quota({"retryable": True, "infrastructure_fault": False}))
+        self.assertTrue(is_infrastructure_failure("all eligible proxy nodes are temporarily unavailable"))
+
+    def test_infrastructure_failure_refunds_claimed_account_quota(self) -> None:
+        account = accounts.add_account("Dola", "session=value", quota_limit=2)
+        task = self.create_task("owner")
+        claimed = accounts.claim_account_for_worker("worker-1", task["id"])
+        self.assertIsNotNone(claimed)
+        self.assertEqual(accounts.list_accounts()[0]["quota_used"], 1)
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "dola",
+            {"retryable": True, "infrastructure_fault": True},
+        )
+
+        self.assertEqual(accounts.list_accounts()[0]["quota_used"], 0)
+        self.assertIsNone(accounts.account_for_current_task(task["id"]))
+
+    def test_queue_deferral_does_not_consume_generation_retry(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.defer_task(task["id"], "当前用户远端生成任务已达上限，继续排队", "remote_limit", 5)
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
+        self.assertEqual(meta.get("retry_count", 0), 0)
+        self.assertEqual(meta["queue_category"], "remote_limit")
+        self.assertEqual(meta["error"], "")
+
+    def test_infrastructure_retry_has_separate_budget_and_queue_state(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        count = store.record_infrastructure_retry(task["id"], "Page.goto: net::ERR_PROXY_CONNECTION_FAILED")
+        meta = store.get_meta(task["id"])
+        self.assertEqual(count, 1)
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
+        self.assertEqual(meta.get("retry_count", 0), 0)
+        self.assertEqual(meta["infrastructure_retry_count"], 1)
+        self.assertEqual(meta["queue_category"], "infrastructure")
+        self.assertEqual(meta["queue_reason"], "节点连接异常，正在切换节点")
+        self.assertEqual(meta["error"], "")
 
     def test_reconciliation_repairs_quota_used_from_charge_ledger(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=3)

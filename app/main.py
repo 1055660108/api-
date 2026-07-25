@@ -169,6 +169,8 @@ delete_sem = None
 _OWNER_CREATE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 OWNER_TASK_CREATION_CONCURRENCY = 1
 MAX_BATCH_REFERENCE_AGE_SECONDS = 24 * 60 * 60
+_CANCELED_BATCHES: dict[tuple[str, str], float] = {}
+_CANCELED_BATCHES_LOCK = threading.RLock()
 _RATE_LOCK = threading.RLock()
 _RATE_BUCKETS: dict[str, list[float]] = {}
 _RATE_BUCKET_LIMIT = 10_000
@@ -181,6 +183,35 @@ def _owner_create_semaphore(access: AccessContext) -> asyncio.Semaphore:
         semaphore = asyncio.Semaphore(OWNER_TASK_CREATION_CONCURRENCY)
         _OWNER_CREATE_SEMAPHORES[key] = semaphore
     return semaphore
+
+
+def _batch_owner(access: AccessContext) -> str:
+    return access.token_hash if access.is_temp else "admin"
+
+
+def _set_batch_canceled(access: AccessContext, batch_id: str) -> None:
+    normalized = str(batch_id or "").strip()[:100]
+    if not normalized:
+        return
+    now = time.monotonic()
+    with _CANCELED_BATCHES_LOCK:
+        expired = [key for key, canceled_at in _CANCELED_BATCHES.items() if now - canceled_at > MAX_BATCH_REFERENCE_AGE_SECONDS]
+        for key in expired:
+            _CANCELED_BATCHES.pop(key, None)
+        _CANCELED_BATCHES[(_batch_owner(access), normalized)] = now
+
+
+def _batch_is_canceled(access: AccessContext, batch_id: str) -> bool:
+    normalized = str(batch_id or "").strip()[:100]
+    if not normalized:
+        return False
+    with _CANCELED_BATCHES_LOCK:
+        return (_batch_owner(access), normalized) in _CANCELED_BATCHES
+
+
+def _ensure_batch_active(access: AccessContext, batch_id: str) -> None:
+    if batch_id and _batch_is_canceled(access, batch_id):
+        raise HTTPException(status_code=409, detail="批量提交已停止")
 
 
 def _batch_reference_path(reference_id: str) -> Path:
@@ -2461,6 +2492,18 @@ async def delete_batch_references(reference_id: str, access: Annotated[AccessCon
     return {"ok": True, "deleted": deleted}
 
 
+@app.post("/batch-prompts/{batch_id}/cancel", dependencies=[Depends(require_token)])
+async def cancel_batch_prompt_submission(
+    batch_id: str,
+    access: Annotated[AccessContext, Depends(require_token)],
+):
+    normalized = str(batch_id or "").strip()[:100]
+    if not normalized:
+        raise HTTPException(status_code=400, detail="batch id is required")
+    _set_batch_canceled(access, normalized)
+    return {"ok": True, "batch_id": normalized}
+
+
 @app.post("/tasks", dependencies=[Depends(require_token)])
 async def submit_task(
     request: Request,
@@ -2483,7 +2526,7 @@ async def submit_task(
 ):
     assert create_sem is not None
     async with _owner_create_semaphore(access), create_sem:
-        _admit_task_creation()
+        await asyncio.to_thread(_admit_task_creation)
         prompt = repair_text((prompt or "").strip())
         ratio = (ratio or DEFAULT_RATIO).strip()
         if not prompt:
@@ -2498,6 +2541,7 @@ async def submit_task(
         batch_reference_task_id = str(batch_reference_task_id or "").strip() if batch else ""
         batch_reference_id = str(batch_reference_id or "").strip() if batch else ""
         batch_reference_image_count = max(0, min(load_settings().max_image_count, int(batch_reference_image_count or 0))) if batch else 0
+        _ensure_batch_active(access, batch_id)
         platform, model = validate_task_platform_model(platform, model)
         if platform == "qianwen" and task_type != "video":
             raise HTTPException(status_code=400, detail="千问当前仅支持视频任务")
@@ -2576,13 +2620,13 @@ async def submit_task(
                 return {"id": meta["id"], "replayed": True, "image_count": int(meta.get("image_count") or 0)}
             queued_for_concurrency = False
             if access.is_temp:
-                access = await _storage_call(get_temp_context_by_hash, access.token_hash) or access
                 queued_for_concurrency = await _storage_call(active_task_count_for_owner, access.token_hash) >= access.concurrency
             base_cost_units = model_cost_units(platform, model, task_type)
             discount_units = await _storage_call(membership_task_discount_units_by_token_hash, access.token_hash) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
             reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            _ensure_batch_active(access, batch_id)
             reservation = await _storage_call(get_temp_reservation, access.token_hash, str(meta["id"])) if access.is_temp else {}
             charged_units = int(reservation.get("units") or 0)
             if user_id and reservation:
@@ -2600,6 +2644,11 @@ async def submit_task(
                     detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
                     transaction_id=f"task-{str(meta['id'])[:27]}",
                 )
+        except HTTPException:
+            if "meta" in locals():
+                await _storage_call(refund_temp_quota_hash, access.token_hash, str(meta["id"]), attempts=2)
+                await _storage_call(delete_task, str(meta["id"]), attempts=2)
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         except QuotaExceeded as exc:
@@ -2632,7 +2681,8 @@ async def submit_task(
                 await asyncio.to_thread(_save_uploaded_image, upload, target)
                 saved_paths.append(target)
             await _storage_call(set_task_images, meta["id"], saved_paths)
-            await asyncio.to_thread(finalize_task_creation, str(meta["id"]))
+            _ensure_batch_active(access, batch_id)
+            await _storage_call(finalize_task_creation, str(meta["id"]))
         except HTTPException:
             if reserved_access:
                 await asyncio.to_thread(refund_temp_quota_hash, reserved_access.token_hash, str(meta["id"]))

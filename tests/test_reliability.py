@@ -41,6 +41,13 @@ class ReliabilityTests(unittest.TestCase):
     def create_task(self, owner: str = "") -> dict:
         return store.create_task("测试任务", "9:16", owner_token_hash=owner)
 
+    def test_postgres_active_task_count_uses_database_aggregate(self) -> None:
+        with patch.object(store.postgres, "enabled", return_value=True), patch.object(
+            store.postgres, "count_active_tasks_for_owner", return_value=37
+        ) as count:
+            self.assertEqual(store.active_task_count_for_owner("owner-fast-count"), 37)
+        count.assert_called_once_with("owner-fast-count")
+
     def write_account(self, account_id: str = "account1") -> None:
         self.accounts_path.write_text(
             json.dumps(

@@ -916,6 +916,8 @@ def active_task_count_for_owner(owner_token_hash: str) -> int:
     owner_token_hash = str(owner_token_hash or "")
     if not owner_token_hash:
         return 0
+    if postgres.enabled() and hasattr(postgres, "count_active_tasks_for_owner"):
+        return postgres.count_active_tasks_for_owner(owner_token_hash)
     count = 0
     for item in list_tasks(owner_token_hash=owner_token_hash):
         task_id = str(item.get("id") or "")

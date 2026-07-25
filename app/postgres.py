@@ -162,7 +162,8 @@ def _connection_pool():
     global _pool, _pool_signature
     url = database_url()
     max_size = max(2, int(os.environ.get("DOLA_DATABASE_POOL_SIZE") or 24))
-    signature = f"{url}|{max_size}"
+    timeout = max(1.0, min(30.0, float(os.environ.get("DOLA_DATABASE_POOL_TIMEOUT") or 3)))
+    signature = f"{url}|{max_size}|{timeout}"
     with _pool_lock:
         if _pool is None or _pool_signature != signature:
             if _pool is not None:
@@ -171,7 +172,7 @@ def _connection_pool():
                 from psycopg_pool import ConnectionPool
             except ImportError:
                 return None
-            _pool = ConnectionPool(url, min_size=min(4, max_size), max_size=max_size, timeout=8, open=True)
+            _pool = ConnectionPool(url, min_size=min(4, max_size), max_size=max_size, timeout=timeout, open=True)
             _pool_signature = signature
         return _pool
 
@@ -776,6 +777,24 @@ def list_task_metas(owner_token_hash: str | None = None) -> list[tuple[str, dict
     with connection() as conn:
         rows = conn.execute(query, params).fetchall()
     return [(str(row[0]), dict(row[1])) for row in rows]
+
+
+def count_active_tasks_for_owner(owner_token_hash: str) -> int:
+    owner = str(owner_token_hash or "")
+    if not owner:
+        return 0
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM dola_tasks "
+            "WHERE meta->>'owner_token_hash' = %s AND ("
+            "meta->>'status' = ANY(%s) OR ("
+            "meta->>'status' = 'success' "
+            "AND COALESCE(result->>'decoded_main_url', '') = '' "
+            "AND COALESCE(result->>'main_url', '') = ''"
+            "))",
+            (owner, ["pending", "running", "submitted"]),
+        ).fetchone()
+    return int(row[0] if row else 0)
 
 
 def _task_scope_conditions(owner_token_hash: str | None, audience: str | None) -> tuple[list[str], list[Any]]:

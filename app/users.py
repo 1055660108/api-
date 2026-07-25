@@ -762,24 +762,26 @@ def sync_user_membership_by_token_hash(token_hash: str) -> bool:
         if postgres.enabled():
             context = get_temp_context_by_hash(token_hash)
 
-            def mutate(entry: dict[str, Any]) -> bool:
+            def mutate(entry: dict[str, Any]) -> tuple[bool, int, bool]:
                 concurrency_migrated = _reconcile_membership_concurrency(entry)
                 active, membership_changed = _sync_membership_state(entry)
                 token_concurrency = max(1, int(context.concurrency if context else 1))
                 base_concurrency = max(1, int(entry.get("base_concurrency") or token_concurrency))
                 effective_concurrency = _membership_concurrency(active) if active else base_concurrency
                 if not concurrency_migrated and not membership_changed and int(entry.get("effective_concurrency") or 0) == effective_concurrency and token_concurrency == effective_concurrency and entry.get("base_concurrency"):
-                    return False
-                update_temp_token(str(token_hash or ""), concurrency=effective_concurrency)
+                    return False, effective_concurrency, False
                 entry["effective_concurrency"] = effective_concurrency
                 entry["base_concurrency"] = base_concurrency
                 entry["updated_at"] = _now()
-                return True
+                return True, effective_concurrency, token_concurrency != effective_concurrency
 
             try:
-                return postgres.mutate_user("token_hash", token_hash, mutate)
+                changed, effective_concurrency, update_token = postgres.mutate_user("token_hash", token_hash, mutate)
             except KeyError:
                 return False
+            if update_token:
+                update_temp_token(str(token_hash or ""), concurrency=effective_concurrency)
+            return changed
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)
         if not isinstance(entry, dict):
@@ -803,19 +805,16 @@ def sync_user_membership_by_token_hash(token_hash: str) -> bool:
 def membership_task_discount_units_by_token_hash(token_hash: str) -> int:
     with _LOCK:
         if postgres.enabled():
-            def mutate(entry: dict[str, Any]) -> int:
-                active, _ = _sync_membership_state(entry)
-                if not active:
-                    return 0
-                try:
-                    raw_discount = active.get("task_discount_points")
-                    return nonnegative_points_to_units(0.1 if raw_discount is None else raw_discount)
-                except ValueError:
-                    return 0
-
+            candidate = postgres.read_user("token_hash", token_hash)
+            if not candidate:
+                return 0
+            active, _ = _sync_membership_state(candidate[1])
+            if not active:
+                return 0
             try:
-                return postgres.mutate_user("token_hash", token_hash, mutate)
-            except KeyError:
+                raw_discount = active.get("task_discount_points")
+                return nonnegative_points_to_units(0.1 if raw_discount is None else raw_discount)
+            except ValueError:
                 return 0
         data = _read()
         entry = next((item for item in data["users"].values() if str(item.get("token_hash") or "") == str(token_hash or "")), None)

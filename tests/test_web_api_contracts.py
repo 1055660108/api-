@@ -366,6 +366,34 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertIs(main._owner_create_semaphore(first), main._owner_create_semaphore(first))
         self.assertIsNot(main._owner_create_semaphore(first), main._owner_create_semaphore(second))
 
+    def test_canceled_batch_does_not_create_or_charge_following_tasks(self) -> None:
+        registered = self.register("cancel_batch_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 10)
+        headers = {"X-API-Token": registered["token"]}
+        batch_id = "batch-stop-before-create"
+
+        canceled = self.client.post(f"/batch-prompts/{batch_id}/cancel", headers=headers)
+        self.assertEqual(canceled.status_code, 200, canceled.text)
+        response = self.client.post(
+            "/tasks",
+            headers={**headers, "Idempotency-Key": "canceled-batch-task"},
+            data={
+                "prompt": "不应创建的任务",
+                "ratio": "9:16",
+                "duration": "15",
+                "batch": "true",
+                "batch_id": batch_id,
+                "batch_index": "1",
+                "platform": "dola",
+                "model": "Seedance 2.0",
+            },
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"], "批量提交已停止")
+        self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
+        self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).credit_units, 10)
+
     def test_large_batch_from_one_user_does_not_make_another_user_busy(self) -> None:
         first = self.register("busy_owner_a")
         second = self.register("busy_owner_b")

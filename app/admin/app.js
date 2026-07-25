@@ -508,6 +508,7 @@ const state = {
   batchStopRequested: false,
   batchAutoRunning: false,
   batchAutoStopRequested: false,
+  batchSessionId: "",
   batchDraftOwner: "",
   batchDraftSaveTimer: 0,
   batchImagePersistenceFailed: false,
@@ -769,6 +770,7 @@ async function requestJson(path, token, options = {}) {
     const detail = data?.detail || data?.message || text || `HTTP ${response.status}`;
     const error = new Error(clientSafeText(detail, { model: state.model }));
     error.status = response.status;
+    error.retryAfter = Math.max(0, Number(response.headers.get("Retry-After") || 0));
     throw error;
   }
   return data || {};
@@ -4333,9 +4335,9 @@ async function createBatchTask(entry, sessionId, ratio, referenceBundle = null) 
     form.append("batch_reference_image_count", String(referenceBundle.count));
   }
   (item.images || []).forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
-  const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 20000 };
+  const options = { method: "POST", body: form, headers: { "Idempotency-Key": `${sessionId}-${String(index + 1).padStart(4, "0")}` }, timeout: 15000 };
   let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const data = await apiFetch("/tasks", options);
       return data;
@@ -4343,13 +4345,20 @@ async function createBatchTask(entry, sessionId, ratio, referenceBundle = null) 
       lastError = error;
       const status = Number(error.status || 0);
       const transient = error.code === "REQUEST_TIMEOUT" || [500, 502, 503, 504].includes(status) || (!status && /fetch|network|load failed/i.test(String(error.message || "")));
-      if (!transient || attempt >= 1 || state.batchStopRequested || state.batchAutoStopRequested) break;
-      await waitForBatchPoll(Math.min(8000, 800 * (2 ** attempt)));
+      if (!transient || attempt >= 2 || state.batchStopRequested || state.batchAutoStopRequested) break;
+      const retryDelay = Math.max(Number(error.retryAfter || 0) * 1000, 800 * (2 ** attempt));
+      await waitForBatchPoll(Math.min(5000, retryDelay));
     }
   }
   if (!lastError) lastError = new Error("提交失败，请重试");
   lastError.message = batchFriendlyError(lastError.message);
   throw lastError;
+}
+
+function requestBatchSubmissionStop() {
+  const sessionId = String(state.batchSessionId || "").trim();
+  if (!sessionId) return;
+  apiFetch(`/batch-prompts/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", timeout: 5000 }).catch(() => {});
 }
 
 function applyBatchTaskResult(item, result) {
@@ -4427,6 +4436,7 @@ async function submitBatchTasks() {
   if (state.batchSubmitting) {
     if (!state.batchAutoRunning) {
       state.batchStopRequested = true;
+      requestBatchSubmissionStop();
       if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，当前任务确认后停止";
       renderBatchPrompts();
     }
@@ -4438,6 +4448,7 @@ async function submitBatchTasks() {
   state.batchStopRequested = false;
   const ratio = els.batchTaskRatio?.value || "9:16";
   const sessionId = window.crypto?.randomUUID?.() || `batch-${Date.now().toString(36)}`;
+  state.batchSessionId = sessionId;
   let succeeded = 0;
   let stopped = "";
   let referenceBundle = null;
@@ -4467,6 +4478,11 @@ async function submitBatchTasks() {
         succeeded += 1;
         if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
       } catch (error) {
+        if (state.batchStopRequested || (Number(error.status || 0) === 409 && /停止/.test(String(error.message || "")))) {
+          item.status = "";
+          item.error = "";
+          break;
+        }
         item.status = "failed";
         item.error = batchFriendlyError(error.message || "提交失败");
         if (Number(error.status || 0) === 429) stopped = item.error;
@@ -4486,6 +4502,7 @@ async function submitBatchTasks() {
   } finally {
     state.batchSubmitting = false;
     state.batchStopRequested = false;
+    state.batchSessionId = "";
     renderBatchPrompts();
   }
 }
@@ -4497,6 +4514,7 @@ function waitForBatchPoll(milliseconds) {
 async function autoSubmitBatchTasks() {
   if (state.batchAutoRunning) {
     state.batchAutoStopRequested = true;
+    requestBatchSubmissionStop();
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，已创建的任务继续生成";
     return;
   }
@@ -4512,6 +4530,7 @@ async function autoSubmitBatchTasks() {
   selected.forEach(({ item }) => { item.status = "queued"; item.error = ""; });
   const ratio = els.batchTaskRatio?.value || "9:16";
   const sessionId = window.crypto?.randomUUID?.() || `batch-auto-${Date.now().toString(36)}`;
+  state.batchSessionId = sessionId;
   let referenceBundle = null;
   const active = new Map();
   let cursor = 0;
@@ -4536,6 +4555,11 @@ async function autoSubmitBatchTasks() {
         consecutiveSystemErrors = 0;
         if (data.quota) applyAccessScope({ ...data, task_retention_days: state.taskRetentionDays, user_name: state.userName });
       } catch (error) {
+        if (state.batchAutoStopRequested || (Number(error.status || 0) === 409 && /停止/.test(String(error.message || "")))) {
+          entry.item.status = "";
+          entry.item.error = "";
+          break;
+        }
         entry.item.status = "failed";
         entry.item.error = batchFriendlyError(error.message || "提交失败");
         finished += 1;
@@ -4595,6 +4619,7 @@ async function autoSubmitBatchTasks() {
     state.batchSubmitting = false;
     state.batchAutoRunning = false;
     state.batchAutoStopRequested = false;
+    state.batchSessionId = "";
     await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
     renderBatchPrompts();
   }

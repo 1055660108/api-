@@ -313,6 +313,22 @@ const els = {
   proxyNodesNavItem: document.getElementById("proxyNodesNavItem"),
   proxyNodesView: document.getElementById("proxy-nodesView"),
   proxyNodeGrid: document.getElementById("proxyNodeGrid"),
+  proxyNodesTitle: document.getElementById("proxyNodesTitle"),
+  proxyNodesDescription: document.getElementById("proxyNodesDescription"),
+  proxyNodeSummaryText: document.getElementById("proxyNodeSummaryText"),
+  proxyCountryFilterRow: document.getElementById("proxyCountryFilterRow"),
+  accountProxyBulkbar: document.getElementById("accountProxyBulkbar"),
+  accountProxySelectedCount: document.getElementById("accountProxySelectedCount"),
+  openAccountProxyImport: document.getElementById("openAccountProxyImport"),
+  accountProxyImportModal: document.getElementById("accountProxyImportModal"),
+  closeAccountProxyImport: document.getElementById("closeAccountProxyImport"),
+  cancelAccountProxyImport: document.getElementById("cancelAccountProxyImport"),
+  accountProxyImportText: document.getElementById("accountProxyImportText"),
+  submitAccountProxyImport: document.getElementById("submitAccountProxyImport"),
+  testSelectedAccountProxies: document.getElementById("testSelectedAccountProxies"),
+  enableSelectedAccountProxies: document.getElementById("enableSelectedAccountProxies"),
+  disableSelectedAccountProxies: document.getElementById("disableSelectedAccountProxies"),
+  deleteSelectedAccountProxies: document.getElementById("deleteSelectedAccountProxies"),
   proxyEnabledSelect: document.getElementById("proxyEnabledSelect"),
   proxyAutoSelect: document.getElementById("proxyAutoSelect"),
   proxyCountryFilter: document.getElementById("proxyCountryFilter"),
@@ -540,6 +556,10 @@ const state = {
   countdownTimer: 0,
   nextQuotaResetAt: "",
   proxyNodes: [],
+  proxySource: "direct",
+  proxyAccountConfigured: false,
+  proxySelectedIds: [],
+  accountProxySelectionTimer: 0,
   proxyEnabled: true,
   proxyAutoSelect: true,
   proxySelectedNode: "",
@@ -2454,6 +2474,8 @@ async function loadProxyConfig() {
   els.proxyApiUrl.value = data.proxy_api_url || "";
   if (els.proxySubscriptionUrl) els.proxySubscriptionUrl.value = "";
   if (els.proxySource) els.proxySource.value = data.proxy_source || "direct";
+  state.proxySource = data.proxy_source || "direct";
+  state.proxyAccountConfigured = Boolean(data.proxy_account_configured);
   if (els.proxySubscriptionHint) els.proxySubscriptionHint.textContent = data.proxy_subscription_configured ? "订阅已安全保存，留空保持不变；输入新链接可替换" : "支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅";
   if (els.proxyAccountScheme) els.proxyAccountScheme.value = data.proxy_account_scheme || "socks5";
   if (els.proxyAccountHost) els.proxyAccountHost.value = data.proxy_account_host || "";
@@ -2483,6 +2505,26 @@ async function loadProxyConfig() {
 
 function renderProxyNodes() {
   if (!els.proxyNodeGrid) return;
+  const accountMode = state.proxySource === "account";
+  const subscriptionMode = state.proxySource === "subscription";
+  els.proxyNodeGrid.classList.toggle("account-mode", accountMode);
+  els.openAccountProxyImport?.classList.toggle("hidden", !accountMode);
+  els.accountProxyBulkbar?.classList.toggle("hidden", !accountMode);
+  els.proxyCountryFilterRow?.classList.toggle("hidden", accountMode || state.proxySource !== "subscription");
+  if (els.proxyNodesTitle) els.proxyNodesTitle.textContent = accountMode ? "账密代理列表" : subscriptionMode ? "节点选择" : "代理状态";
+  if (els.proxyNodesDescription) els.proxyNodesDescription.textContent = accountMode
+    ? "已勾选且启用的代理会用于生成任务；勾选多个代理时可按任务轮询使用。"
+    : subscriptionMode ? "通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。" : "当前代理模式不使用可选择的节点列表。";
+  if (els.proxyNodeSummaryText) els.proxyNodeSummaryText.textContent = accountMode ? "导入后自动测速；不可用代理可禁用或删除" : subscriptionMode ? "每 10 分钟自动测速；未勾选国家时使用全部节点" : "可通过代理设置切换节点订阅或账密连接";
+  if (els.proxyAutoSelect) {
+    const labels = accountMode ? [["true", "多选轮询使用"], ["false", "固定使用首个选中代理"]] : [["true", "自动选择最低延迟"], ["false", "手动选择节点"]];
+    els.proxyAutoSelect.innerHTML = labels.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+    els.proxyAutoSelect.value = String(state.proxyAutoSelect);
+  }
+  if (accountMode) {
+    renderAccountProxyNodes();
+    return;
+  }
   const countries = [...new Set(state.proxyNodes.map((node) => node.country || "未知"))].sort((left, right) => left.localeCompare(right, "zh-CN"));
   if (els.proxyCountryFilter) {
     els.proxyCountryFilter.innerHTML = countries.length
@@ -2492,7 +2534,7 @@ function renderProxyNodes() {
   const visibleNodes = state.proxyCountries.length ? state.proxyNodes.filter((node) => state.proxyCountries.includes(node.country)) : state.proxyNodes;
   if (els.proxyNodeCount) els.proxyNodeCount.textContent = `${visibleNodes.length} / ${state.proxyNodes.length} 个节点`;
   if (!state.proxyNodes.length) {
-    els.proxyNodeGrid.innerHTML = '<div class="empty-state">暂无可用节点，请配置订阅后刷新</div>';
+    els.proxyNodeGrid.innerHTML = subscriptionMode ? '<div class="empty-state">暂无可用节点，请配置订阅后刷新</div>' : '<div class="empty-state">当前模式无需选择节点</div>';
     return;
   }
   if (!visibleNodes.length) {
@@ -2503,6 +2545,32 @@ function renderProxyNodes() {
     const latency = ["available", "cached"].includes(node.latency_status) && node.latency_ms ? `${node.latency_ms} ms${node.latency_status === "cached" ? " · 上次" : ""}` : node.latency_status === "unavailable" ? "不可用" : node.latency_status === "expired" ? "已过期" : "未检测";
     const selected = node.selected || node.id === state.proxySelectedNode;
     return `<button class="proxy-node-card${selected ? " selected" : ""}" type="button" data-proxy-node-id="${escapeHtml(node.id)}" aria-pressed="${selected ? "true" : "false"}"><span class="proxy-node-name">${escapeHtml(node.name)}</span><span class="proxy-node-country">${escapeHtml(node.country)} · ${escapeHtml(node.protocol.toUpperCase())}</span><strong class="proxy-node-latency${node.latency_ms ? " good" : ""}">${escapeHtml(latency)}</strong></button>`;
+  }).join("");
+}
+
+function accountProxyLatency(node) {
+  if (node.latency_status === "available" && node.latency_ms) return { text: `${node.latency_ms} ms`, className: "good" };
+  if (node.latency_status === "unavailable") return { text: "不可用", className: "bad" };
+  return { text: "未测速", className: "" };
+}
+
+function renderAccountProxyNodes() {
+  const selected = new Set(state.proxySelectedIds);
+  if (els.proxyNodeCount) els.proxyNodeCount.textContent = `${state.proxyNodes.length} 个账密代理`;
+  if (els.accountProxySelectedCount) els.accountProxySelectedCount.textContent = `已选择 ${selected.size} 个`;
+  if (!state.proxyNodes.length) {
+    els.proxyNodeGrid.innerHTML = '<div class="empty-state">暂无账密代理，请点击“添加代理”批量导入</div>';
+    return;
+  }
+  els.proxyNodeGrid.innerHTML = state.proxyNodes.map((node) => {
+    const latency = accountProxyLatency(node);
+    return `<div class="account-proxy-row${node.enabled ? "" : " disabled"}${selected.has(node.id) ? " selected" : ""}" data-account-proxy-id="${escapeHtml(node.id)}">
+      <label class="account-proxy-select" title="选择使用"><input type="checkbox" data-account-proxy-select="${escapeHtml(node.id)}" ${selected.has(node.id) ? "checked" : ""} ${node.enabled ? "" : "disabled"} aria-label="选择 ${escapeHtml(node.name)}" /></label>
+      <span class="account-proxy-identity"><strong>${escapeHtml(node.name)}</strong><small>${escapeHtml(node.protocol.toUpperCase())} · ${escapeHtml(node.username_masked || "***")}</small></span>
+      <span class="account-proxy-country">${escapeHtml(node.country || "未知")}</span>
+      <strong class="account-proxy-latency ${latency.className}">${escapeHtml(latency.text)}</strong>
+      <span class="account-proxy-actions"><button class="secondary-button" type="button" data-account-proxy-action="test" data-account-proxy-id="${escapeHtml(node.id)}">测速</button><button class="secondary-button" type="button" data-account-proxy-action="${node.enabled ? "disable" : "enable"}" data-account-proxy-id="${escapeHtml(node.id)}">${node.enabled ? "禁用" : "启用"}</button><button class="danger-button" type="button" data-account-proxy-action="delete" data-account-proxy-id="${escapeHtml(node.id)}">删除</button></span>
+    </div>`;
   }).join("");
 }
 
@@ -2530,9 +2598,11 @@ async function loadProxyNodes(refresh = false) {
       }
     }
     state.proxyNodes = Array.isArray(data.nodes) ? data.nodes : [];
+    state.proxySource = data.source || state.proxySource || "subscription";
     state.proxyEnabled = Boolean(data.enabled);
     state.proxyAutoSelect = Boolean(data.auto_select);
     state.proxySelectedNode = data.selected_node || "";
+    state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : state.proxySelectedNode ? [state.proxySelectedNode] : [];
     state.proxyCountries = Array.isArray(data.auto_countries) ? data.auto_countries : state.proxyCountries;
     state.proxyLatencyThreshold = Number(data.latency_threshold_ms || state.proxyLatencyThreshold || 800);
     if (els.proxyEnabledSelect) els.proxyEnabledSelect.value = String(state.proxyEnabled);
@@ -2553,6 +2623,17 @@ async function loadProxyNodes(refresh = false) {
 async function saveProxyMode() {
   try {
     const threshold = Math.max(100, Math.min(5000, Number(els.proxyLatencyThreshold?.value || 800)));
+    if (state.proxySource === "account") {
+      const configData = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_latency_threshold_ms: threshold } });
+      const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { node_ids: state.proxySelectedIds, rotation_enabled: els.proxyAutoSelect.value === "true" } });
+      state.proxyEnabled = Boolean(configData.proxy_enabled);
+      state.proxyLatencyThreshold = Number(configData.proxy_latency_threshold_ms || threshold);
+      state.proxyAutoSelect = Boolean(data.auto_select);
+      state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : [];
+      renderProxyNodes();
+      toast(state.proxyEnabled ? (state.proxyAutoSelect ? "已启用账密代理轮询" : "已固定使用首个选中代理") : "已关闭代理");
+      return;
+    }
     const data = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_auto_select: els.proxyAutoSelect.value === "true", proxy_auto_countries: state.proxyCountries, proxy_latency_threshold_ms: threshold } });
     state.proxyEnabled = Boolean(data.proxy_enabled);
     state.proxyAutoSelect = Boolean(data.proxy_auto_select);
@@ -2563,6 +2644,77 @@ async function saveProxyMode() {
   } catch (error) {
     toast(`代理模式保存失败：${error.message}`, "error");
     await loadProxyNodes();
+  }
+}
+
+async function saveAccountProxySelection(ids) {
+  try {
+    const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { node_ids: ids, rotation_enabled: els.proxyAutoSelect?.value === "true" } });
+    state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : [];
+    state.proxyAutoSelect = Boolean(data.auto_select);
+    state.proxyNodes = Array.isArray(data.nodes) ? data.nodes : state.proxyNodes;
+    renderProxyNodes();
+  } catch (error) {
+    toast(`代理选择保存失败：${error.message}`, "error");
+    await loadProxyNodes();
+  }
+}
+
+async function accountProxyAction(action, proxyIds) {
+  window.clearTimeout(state.accountProxySelectionTimer);
+  const ids = [...new Set((proxyIds || []).filter(Boolean))];
+  if (!ids.length) {
+    toast("请先选择账密代理", "error");
+    return;
+  }
+  if (action === "test") {
+    setBusy(els.refreshProxyNodes, true, "测速中");
+    try {
+      const data = await apiFetch("/config/proxy-nodes/latency", { method: "POST", body: { proxy_ids: ids }, timeout: 90000 });
+      state.proxyNodes = Array.isArray(data.nodes) ? data.nodes : state.proxyNodes;
+      renderProxyNodes();
+      toast("代理测速已完成");
+    } catch (error) {
+      toast(`代理测速失败：${error.message}`, "error");
+    } finally {
+      setBusy(els.refreshProxyNodes, false);
+    }
+    return;
+  }
+  if (action === "delete" && !window.confirm(`确认删除选中的 ${ids.length} 个账密代理吗？`)) return;
+  try {
+    const data = await apiFetch("/config/account-proxies/action", { method: "POST", body: { action, proxy_ids: ids } });
+    state.proxyNodes = Array.isArray(data.proxies) ? data.proxies : [];
+    state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : [];
+    state.proxyAutoSelect = Boolean(data.rotation_enabled);
+    renderProxyNodes();
+    toast(action === "delete" ? "代理已删除" : action === "disable" ? "代理已禁用" : "代理已启用");
+  } catch (error) {
+    toast(`操作失败：${error.message}`, "error");
+  }
+}
+
+async function importAccountProxyList() {
+  const text = els.accountProxyImportText?.value.trim() || "";
+  if (!text) {
+    toast("请粘贴账密代理", "error");
+    return;
+  }
+  setBusy(els.submitAccountProxyImport, true, "解析并测速中");
+  try {
+    const data = await apiFetch("/config/account-proxies/import", { method: "POST", body: { text }, timeout: 120000 });
+    state.proxyNodes = Array.isArray(data.proxies) ? data.proxies : [];
+    state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : [];
+    state.proxyAutoSelect = Boolean(data.rotation_enabled);
+    state.proxyAccountConfigured = state.proxyNodes.length > 0;
+    els.accountProxyImportText.value = "";
+    closeSettingsModal(els.accountProxyImportModal);
+    renderProxyNodes();
+    toast(`已添加 ${Number(data.added || 0)} 个代理${data.duplicates ? `，忽略 ${data.duplicates} 个重复项` : ""}`);
+  } catch (error) {
+    toast(`导入失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.submitAccountProxyImport, false);
   }
 }
 
@@ -2607,35 +2759,18 @@ async function saveProxyConfig() {
     toast("请输入节点订阅链接", "error");
     return;
   }
-  if (source === "account" && (!accountHost || !accountPort)) {
-    toast("请输入账密代理的主机和端口", "error");
-    return;
-  }
-  if (source === "account" && !accountUsername && els.proxyAccountHint?.textContent.startsWith("密码仅")) {
-    toast("请输入账密代理用户名", "error");
-    return;
-  }
-  if (source === "account" && !accountPassword && els.proxyAccountHint?.textContent.startsWith("密码仅")) {
-    toast("请输入账密代理密码", "error");
-    return;
-  }
   setBusy(els.saveProxyConfig, true, "保存中");
   try {
     const body = { proxy_source: source };
     if (source === "subscription") Object.assign(body, { proxy_subscription_scheme: "http", proxy_subscription_refresh_seconds: 900 });
     if (source === "api") Object.assign(body, { proxy_api_url: apiUrl, proxy_api_scheme: "http" });
-    if (source === "account") Object.assign(body, {
-      proxy_account_scheme: els.proxyAccountScheme?.value || "socks5",
-      proxy_account_host: accountHost,
-      proxy_account_port: accountPort,
-    });
+    if (source === "account" && accountHost && accountPort && accountUsername && accountPassword) Object.assign(body, { proxy_account_scheme: els.proxyAccountScheme?.value || "socks5", proxy_account_host: accountHost, proxy_account_port: accountPort, proxy_account_username: accountUsername, proxy_account_password: accountPassword });
     if (source === "subscription" && subscriptionUrl) body.proxy_subscription_url = subscriptionUrl;
-    if (source === "account" && accountUsername) body.proxy_account_username = accountUsername;
-    if (source === "account" && accountPassword) body.proxy_account_password = accountPassword;
     await apiFetch("/config/proxy-api", {
       method: "POST",
       body,
     });
+    state.proxySource = source;
     if (els.configState) els.configState.textContent = "已保存";
     if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = proxySourceLabel(source);
     toast(source === "direct" ? "已切换为直连运行" : "代理配置已更新");
@@ -5148,7 +5283,7 @@ function bindEvents() {
       toast(`会员套餐读取失败：${error.message}`, "error");
     }
   });
-  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.notificationHistoryModal, els.closeNotificationHistory, els.cancelNotificationHistory], [els.announcementHistoryModal, els.closeAnnouncementHistory, els.cancelAnnouncementHistory], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal], [els.batchAutoModal, els.closeBatchAutoModal, els.cancelBatchAutoModal]].forEach(([modal, closeButton, cancelButton]) => {
+  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.notificationHistoryModal, els.closeNotificationHistory, els.cancelNotificationHistory], [els.announcementHistoryModal, els.closeAnnouncementHistory, els.cancelAnnouncementHistory], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.accountProxyImportModal, els.closeAccountProxyImport, els.cancelAccountProxyImport], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal], [els.batchAutoModal, els.closeBatchAutoModal, els.cancelBatchAutoModal]].forEach(([modal, closeButton, cancelButton]) => {
     if (closeButton) closeButton.onclick = (event) => {
       event.preventDefault();
       closeSettingsModal(modal);
@@ -5466,9 +5601,31 @@ function bindEvents() {
   });
   els.proxyLatencyThreshold?.addEventListener("change", saveProxyMode);
   els.proxyNodeGrid?.addEventListener("click", (event) => {
+    const accountAction = event.target.closest("[data-account-proxy-action]");
+    if (accountAction) {
+      accountProxyAction(accountAction.dataset.accountProxyAction, [accountAction.dataset.accountProxyId]);
+      return;
+    }
     const card = event.target.closest("[data-proxy-node-id]");
     if (card) selectProxyNode(card.dataset.proxyNodeId);
   });
+  els.proxyNodeGrid?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-account-proxy-select]");
+    if (!checkbox) return;
+    const ids = new Set(state.proxySelectedIds);
+    if (checkbox.checked) ids.add(checkbox.dataset.accountProxySelect);
+    else ids.delete(checkbox.dataset.accountProxySelect);
+    state.proxySelectedIds = [...ids];
+    renderProxyNodes();
+    window.clearTimeout(state.accountProxySelectionTimer);
+    state.accountProxySelectionTimer = window.setTimeout(() => saveAccountProxySelection([...state.proxySelectedIds]), 250);
+  });
+  els.openAccountProxyImport?.addEventListener("click", () => openSettingsModal(els.accountProxyImportModal, els.accountProxyImportText));
+  els.submitAccountProxyImport?.addEventListener("click", importAccountProxyList);
+  els.testSelectedAccountProxies?.addEventListener("click", () => accountProxyAction("test", state.proxySelectedIds));
+  els.enableSelectedAccountProxies?.addEventListener("click", () => accountProxyAction("enable", state.proxySelectedIds));
+  els.disableSelectedAccountProxies?.addEventListener("click", () => accountProxyAction("disable", state.proxySelectedIds));
+  els.deleteSelectedAccountProxies?.addEventListener("click", () => accountProxyAction("delete", state.proxySelectedIds));
   els.saveModelConfig?.addEventListener("click", saveModelConfig);
   els.syncQianwenModels?.addEventListener("click", syncQianwenModels);
   els.modelConfigList?.addEventListener("click", (event) => {

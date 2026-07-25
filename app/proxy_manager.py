@@ -570,6 +570,10 @@ async def dola_proxy_available(server: str, timeout_seconds: float = 8.0) -> boo
     return available
 
 
+async def probe_dola_proxy(server: str, timeout_seconds: float = 8.0) -> tuple[bool, int | None]:
+    return await _probe_dola_proxy(server, timeout_seconds)
+
+
 async def _node_dola_available(node_id: str, server: str, timeout_seconds: float = 8.0) -> bool:
     normalized = str(node_id or "")
     cached = _NODE_DOLA_HEALTH.get(normalized)

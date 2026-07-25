@@ -9,8 +9,8 @@
       body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.37" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.37" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.38" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.38" />
   </head>
   <body>
     <script>
@@ -22,7 +22,7 @@
       <canvas class="client-ink-canvas" id="clientInkCanvas" aria-hidden="true"></canvas>
       <div class="client-entry-home" aria-hidden="false">
         <header class="client-entry-header">
-          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.37" alt="HS" />
+          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.38" alt="HS" />
           <div class="client-entry-actions">
             <button class="secondary-button" id="returnClientLanding" type="button">返回</button>
             <button class="primary-button" id="openClientLogin" type="button">登录</button>
@@ -34,7 +34,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.37" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.38" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -97,7 +97,7 @@
       <canvas class="client-workspace-ink" id="clientWorkspaceInk" aria-hidden="true"></canvas>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.37" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.38" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -296,8 +296,8 @@
         <section class="view" id="proxy-nodesView" data-title="节点选择">
           <section class="panel node-selection-panel">
             <div class="panel-header">
-              <div><h2>节点选择</h2><p>通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。</p></div>
-              <div class="node-toolbar"><button class="secondary-button" id="openProxyModalFromNodes" type="button">配置订阅</button><button class="secondary-button" id="refreshProxyNodes" type="button">刷新延迟</button></div>
+              <div><h2 id="proxyNodesTitle">节点选择</h2><p id="proxyNodesDescription">通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。</p></div>
+              <div class="node-toolbar"><button class="primary-button hidden" id="openAccountProxyImport" type="button"><i data-lucide="plus" aria-hidden="true"></i>添加代理</button><button class="secondary-button" id="openProxyModalFromNodes" type="button">代理设置</button><button class="secondary-button" id="refreshProxyNodes" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新延迟</button></div>
             </div>
             <div class="node-controls">
               <label class="field"><span>代理状态</span><select id="proxyEnabledSelect"><option value="true">自动开启</option><option value="false">关闭代理</option></select></label>
@@ -305,8 +305,9 @@
               <label class="field"><span>高延迟阈值</span><input id="proxyLatencyThreshold" type="number" min="100" max="5000" step="50" value="800" /></label>
               <span class="settings-state" id="proxyNodesState">等待读取</span>
             </div>
-            <div class="proxy-country-filter"><span>自动切换国家</span><div class="proxy-country-options" id="proxyCountryFilter"><span class="muted">读取节点后可勾选</span></div></div>
-            <div class="node-summary"><span id="proxyNodeCount">0 个节点</span><span>每 10 分钟自动测速；未勾选国家时使用全部节点</span></div>
+            <div class="proxy-country-filter" id="proxyCountryFilterRow"><span>自动切换国家</span><div class="proxy-country-options" id="proxyCountryFilter"><span class="muted">读取节点后可勾选</span></div></div>
+            <div class="account-proxy-bulkbar hidden" id="accountProxyBulkbar"><span id="accountProxySelectedCount">已选择 0 个</span><div><button class="secondary-button" id="testSelectedAccountProxies" type="button"><i data-lucide="gauge" aria-hidden="true"></i>测速</button><button class="secondary-button" id="enableSelectedAccountProxies" type="button">启用</button><button class="secondary-button" id="disableSelectedAccountProxies" type="button">禁用</button><button class="danger-button" id="deleteSelectedAccountProxies" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>删除</button></div></div>
+            <div class="node-summary"><span id="proxyNodeCount">0 个节点</span><span id="proxyNodeSummaryText">每 10 分钟自动测速；未勾选国家时使用全部节点</span></div>
             <div class="node-grid" id="proxyNodeGrid"><div class="empty-state">请先配置节点订阅</div></div>
           </section>
         </section>
@@ -1013,6 +1014,13 @@
         <div class="modal-actions"><button class="secondary-button" id="loadProxyConfig" type="button">重新读取</button><button class="secondary-button" id="cancelProxyModal" type="button">取消</button><button class="primary-button" id="saveProxyConfig" type="button">保存</button></div>
       </section>
     </div>
+    <div class="modal-backdrop hidden" id="accountProxyImportModal" aria-hidden="true">
+      <section class="modal-panel account-proxy-import-modal" role="dialog" aria-modal="true" aria-labelledby="accountProxyImportTitle">
+        <div class="modal-header"><h2 id="accountProxyImportTitle">添加账密代理</h2><button class="modal-close" id="closeAccountProxyImport" type="button" aria-label="关闭">×</button></div>
+        <label class="field"><span>代理列表</span><textarea id="accountProxyImportText" rows="11" spellcheck="false" autocomplete="off" placeholder="每行一条，例如：&#10;socks5://用户名:密码@代理主机:端口&#10;代理主机:端口:用户名:密码"></textarea><small>导入后自动测速，重复代理不会再次添加</small></label>
+        <div class="modal-actions"><button class="secondary-button" id="cancelAccountProxyImport" type="button">取消</button><button class="primary-button" id="submitAccountProxyImport" type="button">解析并导入</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="emailModal" aria-hidden="true">
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="emailModalTitle">
         <div class="modal-header"><h2 id="emailModalTitle">注册邮箱验证</h2><button class="modal-close" id="closeEmailModal" type="button" aria-label="关闭">×</button></div>
@@ -1174,7 +1182,7 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/ink-bg.js?v=1.4.37"></script>
-    <script src="/admin/assets/app.js?v=1.4.37"></script>
+    <script src="/admin/assets/ink-bg.js?v=1.4.38"></script>
+    <script src="/admin/assets/app.js?v=1.4.38"></script>
   </body>
 </html>

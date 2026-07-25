@@ -3845,6 +3845,77 @@ body[data-portal="admin"] .client-billing-panel {
   text-align: center;
 }
 
+.account-proxy-bulkbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #f7f9fa;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.account-proxy-bulkbar > span {
+  color: #425058;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.account-proxy-bulkbar > div,
+.account-proxy-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.account-proxy-bulkbar button,
+.account-proxy-actions button {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.node-grid.account-mode {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.account-proxy-row {
+  display: grid;
+  grid-template-columns: 34px minmax(180px, 1fr) 110px 110px minmax(190px, auto);
+  align-items: center;
+  gap: 12px;
+  min-height: 68px;
+  padding: 10px 14px;
+  color: var(--ink);
+  border-top: 1px solid var(--line);
+}
+
+.account-proxy-row:first-child { border-top: 0; }
+.account-proxy-row:hover { background: #f8faf9; }
+.account-proxy-row.disabled { color: #8a9490; background: #fafafa; }
+.account-proxy-row.selected { box-shadow: inset 3px 0 #171a19; }
+.account-proxy-select { display: grid; place-items: center; }
+.account-proxy-select input { width: 17px; height: 17px; accent-color: #171a19; }
+.account-proxy-identity { display: grid; gap: 4px; min-width: 0; }
+.account-proxy-identity strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.account-proxy-identity small { color: var(--muted); font-size: 11px; }
+.account-proxy-country { color: #37444a; font-size: 12px; font-weight: 700; }
+.account-proxy-latency { justify-self: end; color: var(--muted); font-size: 12px; font-weight: 800; }
+.account-proxy-latency.good { color: #17745b; }
+.account-proxy-latency.bad { color: #a33a35; }
+.account-proxy-actions { justify-content: flex-end; }
+.account-proxy-import-modal { width: min(680px, calc(100vw - 32px)); }
+.account-proxy-import-modal textarea { min-height: 260px; resize: vertical; font-family: "Cascadia Mono", Consolas, "Microsoft YaHei", monospace; line-height: 1.6; }
+
 @media (max-width: 900px) {
   .announcement-level-picker,
   .node-selection-panel .node-controls {
@@ -3853,6 +3924,19 @@ body[data-portal="admin"] .client-billing-panel {
 
   .node-selection-panel #proxyNodesState {
     justify-self: stretch;
+  }
+
+  .account-proxy-row {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+  }
+
+  .account-proxy-country { grid-column: 2; }
+  .account-proxy-latency { grid-column: 3; grid-row: 1 / 3; }
+  .account-proxy-actions { grid-column: 2 / 4; justify-content: flex-start; }
+
+  .account-proxy-bulkbar {
+    align-items: flex-start;
+    flex-direction: column;
   }
   .proxy-country-filter { grid-template-columns: 1fr; }
 }

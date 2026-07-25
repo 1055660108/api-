@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app import automation, config, proxy_manager
+from app import account_proxies, automation, config, proxy_manager
 
 
 def proxy_settings(primary: str) -> SimpleNamespace:
@@ -40,7 +42,15 @@ def automation_instance() -> automation.DolaFetchAutomation:
 
 class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.data_patch = patch.object(config, "DATA_DIR", Path(self.temporary_directory.name))
+        self.data_patch.start()
+        account_proxies._ROTATION_CURSOR = 0
         proxy_manager._PROXY_SOURCE_FAILURES.clear()
+
+    def tearDown(self) -> None:
+        self.data_patch.stop()
+        self.temporary_directory.cleanup()
 
     async def test_subscription_failure_falls_back_to_authenticated_proxy(self) -> None:
         instance = automation_instance()
@@ -79,6 +89,32 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"server": "http://127.0.0.1:7890"})
         self.assertEqual(instance.active_proxy_source, "subscription")
         self.assertEqual(instance.proxy_node_id, "node-1")
+
+    async def test_authenticated_pool_tries_next_selected_proxy_before_other_mode(self) -> None:
+        settings = proxy_settings("account")
+        settings.proxy_account_host = ""
+        settings.proxy_account_port = 0
+        settings.proxy_account_username = ""
+        settings.proxy_account_password = ""
+        imported = account_proxies.import_account_proxies(
+            "\n".join([
+                "socks5://fake-region-JP:first@jp.example.com:3010",
+                "socks5://fake-region-US:second@us.example.com:3020",
+            ]),
+            settings,
+        )
+        instance = automation_instance()
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "dola_proxy_available", new=AsyncMock(side_effect=[False, True])
+        ) as probe, patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock()
+        ) as subscription:
+            result = await instance._browser_proxy_config()
+
+        self.assertEqual(probe.await_count, 2)
+        subscription.assert_not_awaited()
+        self.assertEqual(result["server"], "socks5://us.example.com:3020")
+        self.assertEqual(instance.proxy_node_id, imported["selected_ids"][1])
 
     def test_authenticated_proxy_helpers_keep_browser_credentials_separate(self) -> None:
         probe_url = config.account_proxy_url_for("socks5", "proxy.example.com", 3010, "fake user", "p@ss:word")

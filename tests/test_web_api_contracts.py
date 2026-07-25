@@ -906,7 +906,7 @@ class WebAPIContractTests(unittest.TestCase):
         platforms = self.client.get("/config/platforms").json()
         self.assertEqual(set(workers), {"browser_workers", "max_effective_workers", "effective_browser_workers", "capacity_limit", "browser_pool_processes", "browser_contexts_per_process", "submission_concurrency", "remote_generation_limit"})
         self.assertEqual((workers["browser_pool_processes"], workers["browser_contexts_per_process"], workers["submission_concurrency"]), (8, 4, 32))
-        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_source", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_account_configured", "proxy_account_scheme", "proxy_account_host", "proxy_account_port", "proxy_account_username_masked", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
+        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_source", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_account_configured", "proxy_account_count", "proxy_account_scheme", "proxy_account_host", "proxy_account_port", "proxy_account_username_masked", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
         self.assertNotIn("proxy_subscription_url", proxy)
         self.assertNotIn("proxy_account_password", proxy)
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
@@ -919,6 +919,7 @@ class WebAPIContractTests(unittest.TestCase):
     def test_proxy_health_refresh_switches_within_checked_countries(self) -> None:
         nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
         config.update_config({
+            "proxy_source": "subscription",
             "proxy_subscription_url": "https://subscription.example/token",
             "proxy_auto_select": True,
             "proxy_auto_countries": ["日本"],
@@ -992,6 +993,11 @@ class WebAPIContractTests(unittest.TestCase):
 
     def test_authenticated_proxy_requires_valid_complete_configuration(self) -> None:
         self.login_admin()
+        empty_pool = self.client.post(
+            "/config/proxy-api",
+            json={"proxy_source": "account"},
+        )
+        self.assertEqual(empty_pool.status_code, 200)
         missing = self.client.post(
             "/config/proxy-api",
             json={"proxy_source": "account", "proxy_account_host": "proxy.example.com", "proxy_account_port": 3010},
@@ -1007,6 +1013,42 @@ class WebAPIContractTests(unittest.TestCase):
             json={"proxy_source": "account", "proxy_account_host": "localhost", "proxy_account_port": 3010, "proxy_account_username": "fake", "proxy_account_password": "fake"},
         )
         self.assertEqual(invalid_host.status_code, 400)
+
+    def test_authenticated_proxy_pool_import_measure_select_disable_and_delete(self) -> None:
+        self.login_admin()
+        lines = "\n".join([
+            "socks5://fake-region-JP:fake-pass-1@jp-proxy.example.com:3010",
+            "us-proxy.example.com:3020:fake-region-US:fake-pass-2",
+        ])
+        with patch("app.main.probe_dola_proxy", new=AsyncMock(side_effect=[(True, 48), (False, None)])):
+            imported = self.client.post("/config/account-proxies/import", json={"text": lines})
+        self.assertEqual(imported.status_code, 200, imported.text)
+        payload = imported.json()
+        self.assertEqual(payload["added"], 2)
+        self.assertEqual(len(payload["proxies"]), 2)
+        self.assertEqual(payload["selected_ids"], [item["id"] for item in payload["proxies"]])
+        self.assertEqual([item["country"] for item in payload["proxies"]], ["日本", "美国"])
+        self.assertEqual([item["latency_status"] for item in payload["proxies"]], ["available", "unavailable"])
+        self.assertNotIn("fake-pass", imported.text)
+        self.assertNotIn("username\"", imported.text)
+
+        switched = self.client.post("/config/proxy-api", json={"proxy_source": "account"})
+        self.assertEqual(switched.status_code, 200, switched.text)
+        listed = self.client.get("/config/proxy-nodes")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()["source"], "account")
+        self.assertEqual(len(listed.json()["nodes"]), 2)
+
+        first_id, second_id = payload["selected_ids"]
+        selected = self.client.post("/config/proxy-nodes/select", json={"node_ids": [first_id], "rotation_enabled": False})
+        self.assertEqual(selected.status_code, 200, selected.text)
+        self.assertEqual(selected.json()["selected_ids"], [first_id])
+        disabled = self.client.post("/config/account-proxies/action", json={"action": "disable", "proxy_ids": [first_id]})
+        self.assertEqual(disabled.status_code, 200, disabled.text)
+        self.assertEqual(disabled.json()["selected_ids"], [])
+        deleted = self.client.post("/config/account-proxies/action", json={"action": "delete", "proxy_ids": [second_id]})
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(len(deleted.json()["proxies"]), 1)
 
     def test_global_worker_configuration_keeps_remote_generation_unlimited(self) -> None:
         headers = {"X-API-Token": self.admin_token}

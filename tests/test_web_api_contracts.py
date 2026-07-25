@@ -70,6 +70,9 @@ class WebAPIContractTests(unittest.TestCase):
     def test_region_restriction_is_hidden_for_all_client_task_states(self) -> None:
         for reason in ("Dola 当前地区不可用", "region restricted", "country restricted"):
             self.assertEqual(main._client_safe_text(reason, "Seedance 2.0"), "正在重试中，请稍等！")
+        self.assertEqual(main._client_safe_text("正在分配浏览器资源", "Seedance 2.0"), "正在分配服务资源")
+        self.assertEqual(main._client_safe_text("正在启动浏览器", "Seedance 2.0"), "正在启动服务")
+        self.assertEqual(main._client_safe_text("浏览器超时", "Seedance 2.0"), "服务超时")
 
     def test_admin_and_client_entries_publish_the_same_static_bundle(self) -> None:
         admin = self.client.get("/admin")
@@ -763,7 +766,7 @@ class WebAPIContractTests(unittest.TestCase):
         store.set_execution_phase(task["id"], "opening_generation_page", "正在打开生成页面")
 
         client_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": token}).json()["tasks"][0]
-        self.assertEqual(client_task["status_reason"], "正在打开生成页面")
+        self.assertEqual(client_task["status_reason"], "正在启动服务")
         self.assertNotIn("execution_phase", client_task)
         self.assertNotIn("phase_updated_at", client_task)
 

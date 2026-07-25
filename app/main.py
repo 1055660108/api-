@@ -1092,6 +1092,9 @@ def _client_safe_text(value: str, model: str) -> str:
 
     replacement = str(model or "当前模型")
     text = str(value or "")
+    if "正在打开生成页面" in text:
+        return "正在启动服务"
+    text = text.replace("浏览器", "服务")
     if re.search(r"当前地区不可用|所在的国家/地区不可用|region restricted|country restricted", text, flags=re.IGNORECASE):
         return "正在重试中，请稍等！"
     if re.search(

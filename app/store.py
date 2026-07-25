@@ -142,6 +142,13 @@ def images_dir(task_id: str) -> Path:
     return task_dir(task_id) / "images"
 
 
+def ensure_task_directories(task_id: str) -> Path:
+    root = task_dir(task_id)
+    root.mkdir(parents=True, exist_ok=True)
+    images_dir(task_id).mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def meta_path(task_id: str) -> Path:
     return task_dir(task_id) / "meta.json"
 
@@ -252,8 +259,7 @@ def create_task(prompt: str, ratio: str, owner_token_hash: str = "", platform: s
         root = task_dir(task_id)
         if not task_exists(task_id):
             with task_lock(task_id):
-                root.mkdir(parents=True, exist_ok=True)
-                images_dir(task_id).mkdir(exist_ok=True)
+                ensure_task_directories(task_id)
                 now = utc_now()
                 meta = {
                     "id": task_id,
@@ -329,7 +335,9 @@ def find_or_create_task(prompt: str, ratio: str, owner_token_hash: str, platform
                 "request_fingerprint": request_fingerprint,
                 "request_route": request_route,
             }
-            return postgres.find_or_create_idempotent_task(task_id, meta)
+            stored_meta, created = postgres.find_or_create_idempotent_task(task_id, meta)
+            ensure_task_directories(str(stored_meta["id"]))
+            return stored_meta, created
         for item in list_tasks(owner_token_hash=owner_token_hash or None):
             if str(item.get("idempotency_hash") or "") != key_hash or str(item.get("request_route") or "") != request_route:
                 continue

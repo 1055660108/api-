@@ -429,6 +429,19 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
         self.assertEqual(sum(1 for _, created in results if created), 1)
         self.assertEqual(len({meta["id"] for meta, _ in results}), 1)
         self.assertEqual(len(self.backend.tasks), 1)
+        task_id = results[0][0]["id"]
+        self.assertTrue(store.task_dir(task_id).is_dir())
+        self.assertTrue(store.images_dir(task_id).is_dir())
+        reference = store.images_dir(task_id) / "01.png"
+        reference.write_bytes(b"postgres-reference-image")
+        self.assertEqual(store.task_image_paths(task_id), [reference])
+        reference.unlink()
+        store.images_dir(task_id).rmdir()
+        store.task_dir(task_id).rmdir()
+        replayed, replay_created = create(99)
+        self.assertFalse(replay_created)
+        self.assertEqual(replayed["id"], task_id)
+        self.assertTrue(store.images_dir(task_id).is_dir())
 
     def test_account_claim_and_refund_are_atomic_across_process_facades(self) -> None:
         self.backend.documents["accounts"] = {

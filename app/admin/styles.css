@@ -7296,9 +7296,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
   border-color: #252b29;
   box-shadow: 0 0 0 3px rgba(32, 38, 36, .08);
 }
-.batch-count-field > div { display: grid; grid-template-columns: minmax(70px, 1fr) auto; gap: 7px; }
 .batch-count-field input { min-width: 0; }
-.batch-count-field button { min-height: 42px; padding-inline: 16px; }
 .batch-select-all {
   display: inline-flex;
   align-items: center;

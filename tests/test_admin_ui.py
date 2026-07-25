@@ -268,7 +268,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.43', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.44', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)
@@ -449,7 +449,6 @@ class AdminUITests(unittest.TestCase):
             "parseBatchSpreadsheet",
             "batchTaskRatio",
             "batchSelectionLimit",
-            "applyBatchSelectionLimit",
             "batchAutoConcurrency",
             "batchAutoModal",
             "confirmBatchAutoSubmit",
@@ -492,7 +491,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('/batch-prompts/${encodeURIComponent(sessionId)}/cancel', self.javascript)
         self.assertIn('apiFetch("/batch-prompts/references"', self.javascript)
         self.assertIn('reference_id: referenceBundle?.id || ""', self.javascript)
-        self.assertIn('"停止提交"', self.javascript)
+        self.assertIn('"停止生成"', self.javascript)
         self.assertNotIn('while ((active.size || cursor < selected.length) && !state.batchAutoStopRequested && !stopped)', self.javascript)
         self.assertIn('批次排队 ${queued} 条', self.javascript)
         self.assertIn('批次已进入后台公平队列', self.javascript)
@@ -527,8 +526,20 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('state.batchConcurrencyCustomized = true', self.javascript)
         self.assertIn('state.concurrency !== previousConcurrency', self.javascript)
         self.assertIn('id="autoSubmitBatchTasks" type="button" disabled>生成设置</button>', self.html)
+        self.assertIn('<span>批量提交</span>', self.html)
         self.assertIn('<h2 id="batchAutoModalTitle">生成设置</h2>', self.html)
+        self.assertIn('<span>生成数量</span><input id="batchSelectionLimit"', self.html)
         self.assertIn('<span>生成并发</span><input id="batchAutoConcurrency"', self.html)
+        self.assertIn('id="confirmBatchAutoSubmit" type="button">保存</button>', self.html)
+        self.assertNotIn('id="confirmBatchAutoSubmit" type="button">开始生成</button>', self.html)
+        self.assertNotIn('id="applyBatchSelectionLimit"', self.html)
+        self.assertIn('toast("生成设置已保存")', self.javascript)
+        settings_save_body = self.javascript.split('els.confirmBatchAutoSubmit?.addEventListener("click", () => {', 1)[1].split('els.batchAutoConcurrency?', 1)[0]
+        self.assertNotIn('autoSubmitBatchTasks()', settings_save_body)
+        self.assertIn('item.taskId = ""', windowed_submit_body)
+        self.assertIn('item.batchJobId = ""', windowed_submit_body)
+        self.assertIn('String(entry.batchJobId || "") === jobId', self.javascript)
+        self.assertNotIn('state.batchPrompts[index] || state.batchPrompts.find', self.javascript)
         self.assertIn('if (status === "queued" && taskId) status = "running"', self.javascript)
         self.assertIn('const BATCH_DRAFT_VERSION = 1', self.javascript)
         self.assertIn('localStorage.setItem(key, JSON.stringify({', self.javascript)

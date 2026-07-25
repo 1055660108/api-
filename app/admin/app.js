@@ -277,7 +277,6 @@ const els = {
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
   batchTaskRatio: document.getElementById("batchTaskRatio"),
   batchSelectionLimit: document.getElementById("batchSelectionLimit"),
-  applyBatchSelectionLimit: document.getElementById("applyBatchSelectionLimit"),
   selectAllBatchPrompts: document.getElementById("selectAllBatchPrompts"),
   batchSelectionState: document.getElementById("batchSelectionState"),
   batchAutoConcurrency: document.getElementById("batchAutoConcurrency"),
@@ -4214,6 +4213,8 @@ function saveBatchDraft() {
       error: item.error ? batchFriendlyError(item.error).slice(0, 500) : "",
       taskId: String(item.taskId || "").slice(0, 80),
       videoUrl: String(item.videoUrl || "").slice(0, 4000),
+      batchJobId: String(item.batchJobId || "").slice(0, 80),
+      batchRowIndex: Math.max(0, Number(item.batchRowIndex || 0)),
     }));
     localStorage.setItem(key, JSON.stringify({
       version: BATCH_DRAFT_VERSION,
@@ -4266,6 +4267,8 @@ async function loadBatchDraft() {
         error: item?.error ? batchFriendlyError(item.error).slice(0, 500) : "",
         taskId,
         videoUrl: String(item?.videoUrl || "").slice(0, 4000),
+        batchJobId: String(item?.batchJobId || "").slice(0, 80),
+        batchRowIndex: Math.max(0, Number(item?.batchRowIndex || 0)),
         images: [],
       };
     }).filter((item) => item.prompt.trim());
@@ -4473,12 +4476,15 @@ function renderBatchPrompts() {
   }
   if (els.batchSelectionLimit) els.batchSelectionLimit.max = String(Math.max(1, selectable.length));
   if (els.submitBatchTasks) {
-    els.submitBatchTasks.disabled = state.batchAutoRunning || (!state.batchSubmitting && !selected.length);
-    els.submitBatchTasks.textContent = state.batchSubmitting && !state.batchAutoRunning ? (state.batchStopRequested ? "正在停止" : "停止提交") : "生成所选任务";
+    els.submitBatchTasks.disabled = !state.batchAutoRunning && !state.batchSubmitting && !selected.length;
+    els.submitBatchTasks.textContent = state.batchAutoRunning || state.batchSubmitting
+      ? (state.batchAutoStopRequested ? "正在停止" : "停止生成")
+      : "生成所选任务";
   }
   if (els.autoSubmitBatchTasks) {
-    els.autoSubmitBatchTasks.disabled = !state.batchAutoRunning && (state.batchSubmitting || !selected.length);
-    els.autoSubmitBatchTasks.textContent = state.batchAutoRunning ? "停止生成" : "生成设置";
+    const configurable = state.batchPrompts.some((item) => !batchItemIsCreated(item) && item.prompt.trim());
+    els.autoSubmitBatchTasks.disabled = state.batchAutoRunning || state.batchSubmitting || !configurable;
+    els.autoSubmitBatchTasks.textContent = "生成设置";
   }
   if (els.refreshBatchTasks) els.refreshBatchTasks.disabled = !state.batchJobId && !state.batchPrompts.some((item) => item.taskId);
   const assigned = state.batchPrompts.filter((item) => item.images?.length).length;
@@ -4540,8 +4546,9 @@ async function parseBatchSpreadsheet() {
   try {
     const data = await apiFetch("/batch-prompts/parse", { method: "POST", body: form, timeout: 60000 });
     state.batchPrompts.forEach((item) => releaseBatchImageEntries(item.images));
-    state.batchPrompts = (data.prompts || []).map((item) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: true, status: "", error: "", taskId: "", videoUrl: "", images: [] }));
+    state.batchPrompts = (data.prompts || []).map((item) => ({ row: Number(item.row || 0), prompt: String(item.prompt || ""), selected: true, status: "", error: "", taskId: "", videoUrl: "", batchJobId: "", batchRowIndex: 0, images: [] }));
     state.batchPage = 1;
+    if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(Math.max(1, state.batchPrompts.length));
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `已解析 ${state.batchPrompts.length} 条提示词`;
     renderBatchPrompts();
     persistBatchReferenceImages();
@@ -4641,7 +4648,8 @@ async function refreshBatchTaskStatuses(options = {}) {
 
 function applyPersistentBatchJob(job) {
   if (!job?.id || !Array.isArray(job.rows)) return false;
-  state.batchJobId = String(job.id);
+  const jobId = String(job.id);
+  state.batchJobId = jobId;
   state.batchSessionId = state.batchJobId;
   if (!state.batchPrompts.length) {
     state.batchPrompts = job.rows.map((row, index) => ({
@@ -4652,17 +4660,28 @@ function applyPersistentBatchJob(job) {
       error: batchFriendlyError(row.error || ""),
       taskId: String(row.task_id || ""),
       videoUrl: String(row.video_url || ""),
+      batchJobId: jobId,
+      batchRowIndex: Math.max(1, Number(row.index || index + 1)),
       images: [],
     }));
   } else {
     job.rows.forEach((row) => {
-      const index = Number(row.client_index);
-      const item = state.batchPrompts[index] || state.batchPrompts.find((entry) => Number(entry.row) === Number(row.sheet_row));
+      const rowIndex = Math.max(1, Number(row.index || 0));
+      const taskId = String(row.task_id || "");
+      const sheetRow = Number(row.sheet_row || 0);
+      const prompt = String(row.prompt || "");
+      const item = state.batchPrompts.find((entry) => (
+        String(entry.batchJobId || "") === jobId && Number(entry.batchRowIndex || 0) === rowIndex
+      )) || (taskId ? state.batchPrompts.find((entry) => String(entry.taskId || "") === taskId) : null) || state.batchPrompts.find((entry) => (
+        !String(entry.batchJobId || "") && Number(entry.row) === sheetRow && String(entry.prompt || "") === prompt
+      ));
       if (!item) return;
       item.status = String(row.status || "queued");
       item.error = row.error ? batchFriendlyError(row.error) : "";
-      item.taskId = String(row.task_id || "");
+      item.taskId = taskId;
       item.videoUrl = String(row.video_url || "");
+      item.batchJobId = jobId;
+      item.batchRowIndex = rowIndex;
       item.selected = false;
     });
   }
@@ -4735,7 +4754,7 @@ function validateBatchSelection() {
 }
 
 async function submitBatchTasks() {
-  if (state.batchSubmitting) {
+  if (state.batchAutoRunning || state.batchSubmitting) {
     state.batchAutoStopRequested = true;
     requestBatchSubmissionStop();
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，已创建的任务继续生成";
@@ -4759,16 +4778,23 @@ async function autoSubmitBatchTasks() {
     return;
   }
   if (state.batchSubmitting) return;
-  await Promise.allSettled([refreshHealth(), refreshBatchTaskStatuses({ quiet: true })]);
   const selected = validateBatchSelection();
   if (!selected.length) return;
+  await Promise.allSettled([refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);
   const concurrency = Math.max(1, Math.min(batchConcurrencyLimit(), Math.trunc(Number(els.batchAutoConcurrency?.value || batchConcurrencyLimit()))));
   if (els.batchAutoConcurrency) els.batchAutoConcurrency.value = String(concurrency);
 
   state.batchSubmitting = true;
   state.batchAutoRunning = true;
   state.batchAutoStopRequested = false;
-  selected.forEach(({ item }) => { item.status = "queued"; item.error = ""; });
+  selected.forEach(({ item }) => {
+    item.status = "queued";
+    item.error = "";
+    item.taskId = "";
+    item.videoUrl = "";
+    item.batchJobId = "";
+    item.batchRowIndex = 0;
+  });
   const ratio = els.batchTaskRatio?.value || "9:16";
   const sessionId = window.crypto?.randomUUID?.() || `batch-auto-${Date.now().toString(36)}`;
   state.batchSessionId = sessionId;
@@ -5403,6 +5429,8 @@ function bindEvents() {
     state.batchSpreadsheetName = state.batchSpreadsheet?.name || "";
     state.batchPrompts = [];
     state.batchPage = 1;
+    state.batchJobId = "";
+    state.batchSessionId = "";
     if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheet?.name || "未选择文件";
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchSpreadsheet ? "文件已导入，等待解析" : "等待导入";
     renderBatchPrompts();
@@ -5444,7 +5472,6 @@ function bindEvents() {
     state.batchPage += 1;
     renderBatchPrompts();
   });
-  els.applyBatchSelectionLimit?.addEventListener("click", applyBatchSelectionCount);
   els.batchSelectionLimit?.addEventListener("keydown", (event) => { if (event.key === "Enter") applyBatchSelectionCount(); });
   els.selectAllBatchPrompts?.addEventListener("change", () => {
     const selected = Boolean(els.selectAllBatchPrompts.checked);
@@ -5528,22 +5555,20 @@ function bindEvents() {
   els.submitBatchTasks?.addEventListener("click", submitBatchTasks);
   els.refreshBatchTasks?.addEventListener("click", () => refreshBatchTaskStatuses());
   els.autoSubmitBatchTasks?.addEventListener("click", () => {
-    if (state.batchAutoRunning) {
-      autoSubmitBatchTasks();
-      return;
-    }
-    const selected = batchSelectedEntries();
-    if (!selected.length || state.batchSubmitting) return;
-    if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(selected.length);
+    if (state.batchAutoRunning || state.batchSubmitting) return;
+    const available = state.batchPrompts.filter((item) => !batchItemIsCreated(item) && item.prompt.trim());
+    if (!available.length) return;
+    const selectedCount = available.filter((item) => item.selected).length;
+    if (els.batchSelectionLimit) els.batchSelectionLimit.value = String(selectedCount || available.length);
     syncBatchConcurrencyControls();
     openSettingsModal(els.batchAutoModal, els.batchSelectionLimit);
   });
   els.confirmBatchAutoSubmit?.addEventListener("click", () => {
     applyBatchSelectionCount();
     syncBatchConcurrencyControls();
-    if (!validateBatchSelection().length) return;
     closeSettingsModal(els.batchAutoModal);
-    autoSubmitBatchTasks();
+    saveBatchDraft();
+    toast("生成设置已保存");
   });
   els.batchAutoConcurrency?.addEventListener("change", () => {
     state.batchConcurrencyCustomized = true;

@@ -1029,6 +1029,7 @@ function clientSafeText(value, task = {}) {
   let text = String(value || "");
   if (portal !== "client") return text;
   const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
+  if (/当前地区不可用|所在的国家\/地区不可用|region restricted|country restricted/i.test(text)) return "正在重试中，请稍等！";
   if (/Page\.(?:goto|click|evaluate|waitFor|wait_for)|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷/i.test(text)) {
     return "你的输入可能包含违规内容请重试！";
   }

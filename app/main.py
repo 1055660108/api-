@@ -816,6 +816,8 @@ def _client_safe_text(value: str, model: str) -> str:
 
     replacement = str(model or "当前模型")
     text = str(value or "")
+    if re.search(r"当前地区不可用|所在的国家/地区不可用|region restricted|country restricted", text, flags=re.IGNORECASE):
+        return "正在重试中，请稍等！"
     if re.search(
         r"Page\.(?:goto|click|evaluate|waitFor|wait_for)|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
         text,

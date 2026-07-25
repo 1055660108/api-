@@ -67,6 +67,10 @@ class WebAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_region_restriction_is_hidden_for_all_client_task_states(self) -> None:
+        for reason in ("Dola 当前地区不可用", "region restricted", "country restricted"):
+            self.assertEqual(main._client_safe_text(reason, "Seedance 2.0"), "正在重试中，请稍等！")
+
     def test_admin_and_client_entries_publish_the_same_static_bundle(self) -> None:
         admin = self.client.get("/admin")
         client = self.client.get("/client/")

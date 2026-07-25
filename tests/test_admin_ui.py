@@ -77,9 +77,14 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("overflow-y: auto", styles)
 
     def test_proxy_settings_support_node_subscriptions(self) -> None:
-        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyApiUrl"):
+        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyAccountField", "proxyAccountScheme", "proxyAccountHost", "proxyAccountPort", "proxyAccountUsername", "proxyAccountPassword", "proxyApiUrl"):
             self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('<option value="account">账密连接</option>', self.html)
+        self.assertIn('id="proxyAccountPassword" type="password"', self.html)
+        self.assertIn('autocomplete="new-password"', self.html)
         self.assertIn('proxy_subscription_url', self.javascript)
+        self.assertIn('proxy_account_password', self.javascript)
+        self.assertIn('proxy_source: source', self.javascript)
         self.assertIn('proxy_subscription_refresh_seconds: 900', self.javascript)
         self.assertIn('toast("请输入节点订阅链接", "error")', self.javascript)
         self.assertIn('els.proxySource?.addEventListener("change", updateProxySourceFields)', self.javascript)
@@ -255,7 +260,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="clientInkSplatters"', self.html)
         self.assertIn('<canvas class="client-ink-splatters"', self.html)
         self.assertIn('<span class="client-register-prompt">还没有账户？</span>', self.html)
-        self.assertIn('/admin/assets/ink-bg.js?v=1.4.36', self.html)
+        self.assertIn('/admin/assets/ink-bg.js?v=1.4.37', self.html)
         self.assertIn('data-client-stage="landing"', self.html)
         self.assertIn('id="loginButton" type="submit">登录</button>', self.html)
         self.assertIn('id="clientRegisterTab" type="button">注册</button>', self.html)

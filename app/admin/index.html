@@ -9,8 +9,8 @@
       body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.36" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.36" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.37" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.37" />
   </head>
   <body>
     <script>
@@ -22,7 +22,7 @@
       <canvas class="client-ink-canvas" id="clientInkCanvas" aria-hidden="true"></canvas>
       <div class="client-entry-home" aria-hidden="false">
         <header class="client-entry-header">
-          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.36" alt="HS" />
+          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.37" alt="HS" />
           <div class="client-entry-actions">
             <button class="secondary-button" id="returnClientLanding" type="button">返回</button>
             <button class="primary-button" id="openClientLogin" type="button">登录</button>
@@ -34,7 +34,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.36" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.37" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -97,7 +97,7 @@
       <canvas class="client-workspace-ink" id="clientWorkspaceInk" aria-hidden="true"></canvas>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.36" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.37" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -999,8 +999,16 @@
     <div class="modal-backdrop hidden" id="proxyModal" aria-hidden="true">
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="proxyModalTitle">
         <div class="modal-header"><h2 id="proxyModalTitle">编辑网络代理</h2><button class="modal-close" id="closeProxyModal" type="button" aria-label="关闭">×</button></div>
-        <label class="field"><span>代理来源</span><select id="proxySource"><option value="subscription">节点订阅</option><option value="api">代理提取 API</option><option value="direct">直连</option></select></label>
+        <label class="field"><span>首选代理模式</span><select id="proxySource"><option value="subscription">节点订阅</option><option value="account">账密连接</option><option value="api">代理提取 API</option><option value="direct">直连</option></select><small>节点订阅与账密连接会保留配置，首选模式不可用时自动切换备用模式</small></label>
         <label class="field" id="proxySubscriptionField"><span>节点订阅链接</span><input id="proxySubscriptionUrl" type="url" placeholder="https://example.com/subscribe?token=..." /><small id="proxySubscriptionHint">支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅</small></label>
+        <div class="compact-form-grid hidden" id="proxyAccountField">
+          <label class="field"><span>连接协议</span><select id="proxyAccountScheme"><option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5H</option><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
+          <label class="field"><span>端口</span><input id="proxyAccountPort" type="number" min="1" max="65535" placeholder="3010" /></label>
+          <label class="field field-wide"><span>代理主机</span><input id="proxyAccountHost" type="text" maxlength="253" placeholder="proxy.example.com" autocomplete="off" /></label>
+          <label class="field"><span>用户名</span><input id="proxyAccountUsername" type="text" maxlength="300" placeholder="请输入用户名" autocomplete="off" /></label>
+          <label class="field"><span>密码</span><input id="proxyAccountPassword" type="password" maxlength="500" placeholder="请输入密码" autocomplete="new-password" /></label>
+          <small class="field-wide" id="proxyAccountHint">密码仅保存在服务器本地，后台页面不会回显</small>
+        </div>
         <label class="field" id="proxyApiField"><span>代理提取 API</span><input id="proxyApiUrl" type="url" placeholder="https://example.com/get-proxy" /><small>接口必须返回可用的 ip:port</small></label>
         <div class="modal-actions"><button class="secondary-button" id="loadProxyConfig" type="button">重新读取</button><button class="secondary-button" id="cancelProxyModal" type="button">取消</button><button class="primary-button" id="saveProxyConfig" type="button">保存</button></div>
       </section>
@@ -1166,7 +1174,7 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/ink-bg.js?v=1.4.36"></script>
-    <script src="/admin/assets/app.js?v=1.4.36"></script>
+    <script src="/admin/assets/ink-bg.js?v=1.4.37"></script>
+    <script src="/admin/assets/app.js?v=1.4.37"></script>
   </body>
 </html>

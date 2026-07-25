@@ -906,8 +906,9 @@ class WebAPIContractTests(unittest.TestCase):
         platforms = self.client.get("/config/platforms").json()
         self.assertEqual(set(workers), {"browser_workers", "max_effective_workers", "effective_browser_workers", "capacity_limit", "browser_pool_processes", "browser_contexts_per_process", "submission_concurrency", "remote_generation_limit"})
         self.assertEqual((workers["browser_pool_processes"], workers["browser_contexts_per_process"], workers["submission_concurrency"]), (8, 4, 32))
-        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
+        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_source", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_account_configured", "proxy_account_scheme", "proxy_account_host", "proxy_account_port", "proxy_account_username_masked", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
         self.assertNotIn("proxy_subscription_url", proxy)
+        self.assertNotIn("proxy_account_password", proxy)
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
         self.assertEqual({item["id"] for item in platforms["platforms"]}, {"dola", "doubao", "qianwen"})
         for platform in platforms["platforms"]:
@@ -953,6 +954,59 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["proxy_auto_countries"], ["日本", "美国"])
         self.assertEqual(config.load_settings().proxy_auto_countries, ["日本", "美国"])
+
+    def test_authenticated_proxy_is_saved_without_returning_credentials(self) -> None:
+        self.login_admin()
+        saved = self.client.post(
+            "/config/proxy-api",
+            json={
+                "proxy_source": "account",
+                "proxy_account_scheme": "socks5",
+                "proxy_account_host": "proxy.example.com",
+                "proxy_account_port": 3010,
+                "proxy_account_username": "fake-region-JP",
+                "proxy_account_password": "fake-password",
+            },
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        payload = saved.json()
+        self.assertTrue(payload["proxy_account_configured"])
+        self.assertEqual(payload["proxy_source"], "account")
+        self.assertEqual(payload["proxy_account_username_masked"], "fak***JP")
+        self.assertNotIn("proxy_account_password", payload)
+        self.assertNotIn("fake-password", saved.text)
+
+        preserved = self.client.post(
+            "/config/proxy-api",
+            json={
+                "proxy_source": "account",
+                "proxy_account_scheme": "socks5",
+                "proxy_account_host": "proxy.example.com",
+                "proxy_account_port": 3010,
+                "proxy_account_password": "",
+            },
+        )
+        self.assertEqual(preserved.status_code, 200, preserved.text)
+        self.assertEqual(config.load_settings().proxy_account_password, "fake-password")
+        self.assertNotIn("fake-password", self.client.get("/config/proxy-api").text)
+
+    def test_authenticated_proxy_requires_valid_complete_configuration(self) -> None:
+        self.login_admin()
+        missing = self.client.post(
+            "/config/proxy-api",
+            json={"proxy_source": "account", "proxy_account_host": "proxy.example.com", "proxy_account_port": 3010},
+        )
+        self.assertEqual(missing.status_code, 400)
+        invalid_port = self.client.post(
+            "/config/proxy-api",
+            json={"proxy_source": "account", "proxy_account_host": "proxy.example.com", "proxy_account_port": 70000, "proxy_account_username": "fake", "proxy_account_password": "fake"},
+        )
+        self.assertEqual(invalid_port.status_code, 400)
+        invalid_host = self.client.post(
+            "/config/proxy-api",
+            json={"proxy_source": "account", "proxy_account_host": "localhost", "proxy_account_port": 3010, "proxy_account_username": "fake", "proxy_account_password": "fake"},
+        )
+        self.assertEqual(invalid_host.status_code, 400)
 
     def test_global_worker_configuration_keeps_remote_generation_unlimited(self) -> None:
         headers = {"X-API-Token": self.admin_token}

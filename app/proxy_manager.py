@@ -47,10 +47,12 @@ _MIHOMO_ACTIVE_PROXY: dict[str, str] = {}
 _NODE_DELAYS: dict[str, tuple[int | None, float]] = {}
 _NODE_LAST_GOOD: dict[str, tuple[int, float]] = {}
 _NODE_DOLA_HEALTH: dict[str, tuple[bool, float]] = {}
+_PROXY_SOURCE_FAILURES: dict[str, float] = {}
 _NODE_DELAYS_LOADED = False
 NODE_DELAYS_PATH = DATA_DIR / "proxy_node_delays.json"
 NODE_DELAY_TTL_SECONDS = 300
 NODE_FAILURE_COOLDOWN_SECONDS = 90
+PROXY_SOURCE_FAILURE_COOLDOWN_SECONDS = 90
 DOLA_HEALTH_TTL_SECONDS = 300
 DOLA_HEALTHCHECK_URL = "https://www.dola.com/"
 DOLA_HEALTHCHECK_HEADERS = {
@@ -143,6 +145,21 @@ def mark_node_unavailable(node_id: str) -> None:
     if normalized:
         _NODE_DELAYS[normalized] = (None, time.monotonic())
         _NODE_DOLA_HEALTH[normalized] = (False, time.monotonic())
+
+
+def mark_proxy_source_unavailable(source: str) -> None:
+    normalized = str(source or "").strip().lower()
+    if normalized in {"subscription", "account", "api"}:
+        _PROXY_SOURCE_FAILURES[normalized] = time.monotonic()
+
+
+def mark_proxy_source_available(source: str) -> None:
+    _PROXY_SOURCE_FAILURES.pop(str(source or "").strip().lower(), None)
+
+
+def proxy_source_available(source: str) -> bool:
+    failed_at = _PROXY_SOURCE_FAILURES.get(str(source or "").strip().lower(), 0.0)
+    return not failed_at or time.monotonic() - failed_at >= PROXY_SOURCE_FAILURE_COOLDOWN_SECONDS
 
 
 def _node_is_cooling_down(node_id: str) -> bool:

@@ -331,6 +331,13 @@ const els = {
   proxySubscriptionField: document.getElementById("proxySubscriptionField"),
   proxySubscriptionUrl: document.getElementById("proxySubscriptionUrl"),
   proxySubscriptionHint: document.getElementById("proxySubscriptionHint"),
+  proxyAccountField: document.getElementById("proxyAccountField"),
+  proxyAccountScheme: document.getElementById("proxyAccountScheme"),
+  proxyAccountHost: document.getElementById("proxyAccountHost"),
+  proxyAccountPort: document.getElementById("proxyAccountPort"),
+  proxyAccountUsername: document.getElementById("proxyAccountUsername"),
+  proxyAccountPassword: document.getElementById("proxyAccountPassword"),
+  proxyAccountHint: document.getElementById("proxyAccountHint"),
   proxyApiField: document.getElementById("proxyApiField"),
   proxyApiUrl: document.getElementById("proxyApiUrl"),
   saveProxyConfig: document.getElementById("saveProxyConfig"),
@@ -2446,10 +2453,22 @@ async function loadProxyConfig() {
   const data = await apiFetch("/config/proxy-api");
   els.proxyApiUrl.value = data.proxy_api_url || "";
   if (els.proxySubscriptionUrl) els.proxySubscriptionUrl.value = "";
-  if (els.proxySource) els.proxySource.value = data.proxy_subscription_configured ? "subscription" : data.proxy_api_url ? "api" : "direct";
+  if (els.proxySource) els.proxySource.value = data.proxy_source || "direct";
   if (els.proxySubscriptionHint) els.proxySubscriptionHint.textContent = data.proxy_subscription_configured ? "订阅已安全保存，留空保持不变；输入新链接可替换" : "支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅";
+  if (els.proxyAccountScheme) els.proxyAccountScheme.value = data.proxy_account_scheme || "socks5";
+  if (els.proxyAccountHost) els.proxyAccountHost.value = data.proxy_account_host || "";
+  if (els.proxyAccountPort) els.proxyAccountPort.value = data.proxy_account_port || "";
+  if (els.proxyAccountUsername) {
+    els.proxyAccountUsername.value = "";
+    els.proxyAccountUsername.placeholder = data.proxy_account_configured ? `${data.proxy_account_username_masked || "已配置"}，留空保持不变` : "请输入用户名";
+  }
+  if (els.proxyAccountPassword) {
+    els.proxyAccountPassword.value = "";
+    els.proxyAccountPassword.placeholder = data.proxy_account_configured ? "已安全保存，留空保持不变" : "请输入密码";
+  }
+  if (els.proxyAccountHint) els.proxyAccountHint.textContent = data.proxy_account_configured ? "账密代理已安全保存；密码不会回显" : "密码仅保存在服务器本地，后台页面不会回显";
   updateProxySourceFields();
-  if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = data.proxy_subscription_configured ? "节点订阅" : data.proxy_api_url ? "代理提取 API" : "直连";
+  if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = proxySourceLabel(data.proxy_source);
   state.proxyEnabled = data.proxy_enabled !== false;
   state.proxyAutoSelect = data.proxy_auto_select !== false;
   state.proxySelectedNode = data.proxy_selected_node || "";
@@ -2563,7 +2582,12 @@ async function selectProxyNode(nodeId) {
 function updateProxySourceFields() {
   const source = els.proxySource?.value || "direct";
   els.proxySubscriptionField?.classList.toggle("hidden", source !== "subscription");
+  els.proxyAccountField?.classList.toggle("hidden", source !== "account");
   els.proxyApiField?.classList.toggle("hidden", source !== "api");
+}
+
+function proxySourceLabel(source) {
+  return source === "subscription" ? "节点订阅" : source === "account" ? "账密连接" : source === "api" ? "代理提取 API" : "直连";
 }
 
 async function saveProxyConfig() {
@@ -2571,6 +2595,10 @@ async function saveProxyConfig() {
   const source = els.proxySource?.value || "direct";
   const apiUrl = els.proxyApiUrl?.value.trim() || "";
   const subscriptionUrl = els.proxySubscriptionUrl?.value.trim() || "";
+  const accountHost = els.proxyAccountHost?.value.trim() || "";
+  const accountPort = Number(els.proxyAccountPort?.value || 0);
+  const accountUsername = els.proxyAccountUsername?.value.trim() || "";
+  const accountPassword = els.proxyAccountPassword?.value || "";
   if (source === "api" && !apiUrl) {
     toast("请输入代理提取 API", "error");
     return;
@@ -2579,20 +2607,37 @@ async function saveProxyConfig() {
     toast("请输入节点订阅链接", "error");
     return;
   }
+  if (source === "account" && (!accountHost || !accountPort)) {
+    toast("请输入账密代理的主机和端口", "error");
+    return;
+  }
+  if (source === "account" && !accountUsername && els.proxyAccountHint?.textContent.startsWith("密码仅")) {
+    toast("请输入账密代理用户名", "error");
+    return;
+  }
+  if (source === "account" && !accountPassword && els.proxyAccountHint?.textContent.startsWith("密码仅")) {
+    toast("请输入账密代理密码", "error");
+    return;
+  }
   setBusy(els.saveProxyConfig, true, "保存中");
   try {
-    const body = source === "subscription"
-      ? { proxy_api_url: "", proxy_subscription_scheme: "http", proxy_subscription_refresh_seconds: 900 }
-      : source === "api"
-        ? { proxy_api_url: apiUrl, proxy_subscription_url: "", proxy_api_scheme: "http" }
-        : { proxy_api_url: "", proxy_subscription_url: "" };
+    const body = { proxy_source: source };
+    if (source === "subscription") Object.assign(body, { proxy_subscription_scheme: "http", proxy_subscription_refresh_seconds: 900 });
+    if (source === "api") Object.assign(body, { proxy_api_url: apiUrl, proxy_api_scheme: "http" });
+    if (source === "account") Object.assign(body, {
+      proxy_account_scheme: els.proxyAccountScheme?.value || "socks5",
+      proxy_account_host: accountHost,
+      proxy_account_port: accountPort,
+    });
     if (source === "subscription" && subscriptionUrl) body.proxy_subscription_url = subscriptionUrl;
+    if (source === "account" && accountUsername) body.proxy_account_username = accountUsername;
+    if (source === "account" && accountPassword) body.proxy_account_password = accountPassword;
     await apiFetch("/config/proxy-api", {
       method: "POST",
       body,
     });
     if (els.configState) els.configState.textContent = "已保存";
-    if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = source === "subscription" ? "节点订阅" : source === "api" ? "代理提取 API" : "直连";
+    if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = proxySourceLabel(source);
     toast(source === "direct" ? "已切换为直连运行" : "代理配置已更新");
     closeSettingsModal(els.proxyModal);
     await loadProxyConfig();
@@ -5051,7 +5096,7 @@ function bindEvents() {
   els.openProxyModal?.addEventListener("click", async () => {
     try {
       await loadProxyConfig();
-      openSettingsModal(els.proxyModal, els.proxyApiUrl);
+      openSettingsModal(els.proxyModal, els.proxySource);
     } catch (error) {
       toast(`读取失败：${error.message}`, "error");
     }
@@ -5059,7 +5104,7 @@ function bindEvents() {
   els.openProxyModalFromNodes?.addEventListener("click", async () => {
     try {
       await loadProxyConfig();
-      openSettingsModal(els.proxyModal, els.proxySubscriptionUrl);
+      openSettingsModal(els.proxyModal, els.proxySource);
     } catch (error) {
       toast(`读取失败：${error.message}`, "error");
     }

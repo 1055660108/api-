@@ -268,12 +268,20 @@ docker compose up -d api worker
   "proxy_api_url": "https://example.com/get-proxy?num=1&type=txt",
   "proxy_api_scheme": "http",
   "proxy_api_timeout_seconds": 20,
+  "proxy_source": "direct",
+  "proxy_account_scheme": "socks5",
+  "proxy_account_host": "",
+  "proxy_account_port": 0,
+  "proxy_account_username": "",
+  "proxy_account_password": "",
   "reclaim_memory_after_task": true,
   "drop_os_cache_when_idle": false
 }
 ```
 
 `proxy_api_url` 应返回单个 `ip:port`。服务会在每个任务启动前直接请求代理提取 API，然后只把这个代理传给 Chromium。
+
+`proxy_source` 可设为 `subscription`、`account`、`api` 或 `direct`。节点订阅与账密代理可同时保留配置，首选代理不可用于 Dola 时会自动尝试另一种已配置模式。账密代理密码只保存在服务器本地 `config.json`，管理接口只返回是否已配置和脱敏用户名，不会回传密码。
 
 也可以用环境变量指定默认代理提取 API：
 
@@ -384,21 +392,21 @@ curl -X POST -H "X-API-Token: $API_TOKEN" \
 
 ### POST /config/proxy-api
 
-修改代理提取 API。
+修改代理模式。账密连接示例使用虚拟凭据；密码留空时保留服务器中已有密码。
 
 请求示例：
 
 ```bash
 curl -X POST -H "X-API-Token: $API_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"proxy_api_url":"https://example.com/get","proxy_api_scheme":"http"}' \
+  -d '{"proxy_source":"account","proxy_account_scheme":"socks5","proxy_account_host":"proxy.example.com","proxy_account_port":3010,"proxy_account_username":"example-user","proxy_account_password":"example-password"}' \
   http://SERVER_IP:8088/config/proxy-api
 ```
 
 响应示例：
 
 ```json
-{"ok":true,"proxy_api_url":"https://example.com/get","proxy_api_scheme":"http","proxy_api_timeout_seconds":20}
+{"ok":true,"proxy_source":"account","proxy_account_configured":true,"proxy_account_scheme":"socks5","proxy_account_host":"proxy.example.com","proxy_account_port":3010,"proxy_account_username_masked":"exa***er"}
 ```
 
 ### POST /tasks

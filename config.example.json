@@ -20,9 +20,15 @@
   "proxy_api_url": "https://example.com/get-proxy?num=1&type=txt",
   "proxy_api_scheme": "http",
   "proxy_api_timeout_seconds": 20,
+  "proxy_source": "direct",
   "proxy_subscription_url": "",
   "proxy_subscription_scheme": "http",
   "proxy_subscription_refresh_seconds": 900,
+  "proxy_account_scheme": "socks5",
+  "proxy_account_host": "",
+  "proxy_account_port": 0,
+  "proxy_account_username": "",
+  "proxy_account_password": "",
   "reclaim_memory_after_task": true,
   "drop_os_cache_when_idle": false
 }

@@ -50,6 +50,7 @@ from .config import (
     ensure_config,
     load_settings,
     update_config,
+    validate_proxy_account_host,
     validate_proxy_api_scheme,
     validate_proxy_api_url,
     validate_startup_credentials,
@@ -1987,16 +1988,27 @@ async def client_panel():
     return FileResponse(index_path, headers={"Cache-Control": "no-store"})
 
 
-@app.get("/config/proxy-api", dependencies=[Depends(require_admin)])
-async def proxy_api_config():
-    settings = load_settings()
+def _masked_proxy_username(username: str) -> str:
+    value = str(username or "")
+    if not value:
+        return ""
+    return f"{value[:3]}***{value[-2:]}" if len(value) > 5 else "***"
+
+
+def _proxy_config_payload(settings) -> dict:
     return {
         "proxy_api_url": settings.proxy_api_url,
         "proxy_api_scheme": settings.proxy_api_scheme,
         "proxy_api_timeout_seconds": settings.proxy_api_timeout_seconds,
+        "proxy_source": settings.proxy_source,
         "proxy_subscription_configured": bool(settings.proxy_subscription_url),
         "proxy_subscription_scheme": settings.proxy_subscription_scheme,
         "proxy_subscription_refresh_seconds": settings.proxy_subscription_refresh_seconds,
+        "proxy_account_configured": bool(settings.proxy_account_host and settings.proxy_account_port and settings.proxy_account_username and settings.proxy_account_password),
+        "proxy_account_scheme": settings.proxy_account_scheme,
+        "proxy_account_host": settings.proxy_account_host,
+        "proxy_account_port": settings.proxy_account_port,
+        "proxy_account_username_masked": _masked_proxy_username(settings.proxy_account_username),
         "proxy_enabled": settings.proxy_enabled,
         "proxy_auto_select": settings.proxy_auto_select,
         "proxy_selected_node": settings.proxy_selected_node,
@@ -2004,6 +2016,11 @@ async def proxy_api_config():
         "proxy_latency_threshold_ms": settings.proxy_latency_threshold_ms,
         "proxy_health_refresh_seconds": PROXY_HEALTH_REFRESH_SECONDS,
     }
+
+
+@app.get("/config/proxy-api", dependencies=[Depends(require_admin)])
+async def proxy_api_config():
+    return _proxy_config_payload(load_settings())
 
 
 @app.get("/config/proxy-nodes", dependencies=[Depends(require_admin)])
@@ -2590,6 +2607,7 @@ async def update_proxy_api_config(
     proxy_api_scheme: Annotated[str | None, Query()] = None,
 ):
     payload = await _request_payload(request)
+    current = load_settings()
     if "proxy_api_url" in payload:
         next_url = payload.get("proxy_api_url")
     elif "url" in payload:
@@ -2599,6 +2617,11 @@ async def update_proxy_api_config(
     next_scheme = payload.get("proxy_api_scheme") or payload.get("scheme") or proxy_api_scheme or scheme
     try:
         updates = {}
+        if "proxy_source" in payload:
+            proxy_source = str(payload.get("proxy_source") or "").strip().lower()
+            if proxy_source not in {"subscription", "account", "api", "direct"}:
+                raise ValueError("proxy_source must be one of subscription, account, api, direct")
+            updates["proxy_source"] = proxy_source
         if next_url is not None:
             updates["proxy_api_url"] = validate_proxy_api_url(next_url)
         if next_scheme:
@@ -2612,6 +2635,33 @@ async def update_proxy_api_config(
             if refresh_seconds < 60 or refresh_seconds > 86400:
                 raise ValueError("proxy_subscription_refresh_seconds must be between 60 and 86400")
             updates["proxy_subscription_refresh_seconds"] = refresh_seconds
+        if str(payload.get("proxy_account_clear") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            updates.update({
+                "proxy_account_host": "",
+                "proxy_account_port": 0,
+                "proxy_account_username": "",
+                "proxy_account_password": "",
+            })
+        else:
+            if "proxy_account_scheme" in payload:
+                updates["proxy_account_scheme"] = validate_proxy_api_scheme(payload.get("proxy_account_scheme"))
+            if "proxy_account_host" in payload and str(payload.get("proxy_account_host") or "").strip():
+                updates["proxy_account_host"] = validate_proxy_account_host(payload.get("proxy_account_host"))
+            if "proxy_account_port" in payload and str(payload.get("proxy_account_port") or "").strip():
+                account_port = int(payload.get("proxy_account_port"))
+                if account_port < 1 or account_port > 65535:
+                    raise ValueError("proxy_account_port must be between 1 and 65535")
+                updates["proxy_account_port"] = account_port
+            if "proxy_account_username" in payload and str(payload.get("proxy_account_username") or "").strip():
+                account_username = str(payload.get("proxy_account_username") or "").strip()
+                if len(account_username) > 300 or any(char in account_username for char in "\r\n\0"):
+                    raise ValueError("proxy_account_username is invalid")
+                updates["proxy_account_username"] = account_username
+            if "proxy_account_password" in payload and str(payload.get("proxy_account_password") or ""):
+                account_password = str(payload.get("proxy_account_password") or "")
+                if len(account_password) > 500 or any(char in account_password for char in "\r\n\0"):
+                    raise ValueError("proxy_account_password is invalid")
+                updates["proxy_account_password"] = account_password
         if "proxy_enabled" in payload:
             updates["proxy_enabled"] = str(payload.get("proxy_enabled")).strip().lower() in {"1", "true", "yes", "on"}
         if "proxy_auto_select" in payload:
@@ -2630,28 +2680,35 @@ async def update_proxy_api_config(
             if threshold < 100 or threshold > 5000:
                 raise ValueError("proxy_latency_threshold_ms must be between 100 and 5000")
             updates["proxy_latency_threshold_ms"] = threshold
+        if "proxy_source" not in payload and current.proxy_source == "direct":
+            if str(updates.get("proxy_subscription_url") or ""):
+                updates["proxy_source"] = "subscription"
+            elif str(updates.get("proxy_account_host") or ""):
+                updates["proxy_source"] = "account"
+            elif str(updates.get("proxy_api_url") or ""):
+                updates["proxy_source"] = "api"
         if not updates:
             raise ValueError("proxy configuration is required")
+        selected_source = str(updates.get("proxy_source", current.proxy_source))
+        if selected_source == "account":
+            account_values = {
+                "host": updates.get("proxy_account_host", current.proxy_account_host),
+                "port": updates.get("proxy_account_port", current.proxy_account_port),
+                "username": updates.get("proxy_account_username", current.proxy_account_username),
+                "password": updates.get("proxy_account_password", current.proxy_account_password),
+            }
+            if not all(account_values.values()):
+                raise ValueError("authenticated proxy host, port, username and password are required")
+        if selected_source == "subscription" and not str(updates.get("proxy_subscription_url", current.proxy_subscription_url)):
+            raise ValueError("proxy subscription is not configured")
+        if selected_source == "api" and not str(updates.get("proxy_api_url", current.proxy_api_url)):
+            raise ValueError("proxy api is not configured")
         update_config(updates)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     settings = load_settings()
-    return {
-        "ok": True,
-        "proxy_api_url": settings.proxy_api_url,
-        "proxy_api_scheme": settings.proxy_api_scheme,
-        "proxy_api_timeout_seconds": settings.proxy_api_timeout_seconds,
-        "proxy_subscription_configured": bool(settings.proxy_subscription_url),
-        "proxy_subscription_scheme": settings.proxy_subscription_scheme,
-        "proxy_subscription_refresh_seconds": settings.proxy_subscription_refresh_seconds,
-        "proxy_enabled": settings.proxy_enabled,
-        "proxy_auto_select": settings.proxy_auto_select,
-        "proxy_selected_node": settings.proxy_selected_node,
-        "proxy_auto_countries": settings.proxy_auto_countries,
-        "proxy_latency_threshold_ms": settings.proxy_latency_threshold_ms,
-        "proxy_health_refresh_seconds": PROXY_HEALTH_REFRESH_SECONDS,
-    }
+    return {"ok": True, **_proxy_config_payload(settings)}
 
 
 @app.post("/config/registration-email", dependencies=[Depends(require_admin)])

@@ -9,7 +9,7 @@ import ipaddress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from .admin_auth import hash_password, validate_username
 from .platforms import DEFAULT_MODELS, DEFAULT_PLATFORM, normalize_platform
@@ -98,9 +98,15 @@ def default_config() -> dict[str, Any]:
         "proxy_api_url": "",
         "proxy_api_scheme": "http",
         "proxy_api_timeout_seconds": 20,
+        "proxy_source": "direct",
         "proxy_subscription_url": "",
         "proxy_subscription_scheme": "http",
         "proxy_subscription_refresh_seconds": 900,
+        "proxy_account_scheme": "socks5",
+        "proxy_account_host": "",
+        "proxy_account_port": 0,
+        "proxy_account_username": "",
+        "proxy_account_password": "",
         "proxy_enabled": True,
         "proxy_auto_select": True,
         "proxy_selected_node": "",
@@ -144,6 +150,13 @@ def _load_config_dict() -> dict[str, Any]:
 
     defaults = default_config()
     data = {key: raw.get(key, value) for key, value in defaults.items()}
+    if "proxy_source" not in raw:
+        if str(raw.get("proxy_subscription_url") or "").strip():
+            data["proxy_source"] = "subscription"
+        elif str(raw.get("proxy_account_host") or "").strip():
+            data["proxy_source"] = "account"
+        elif str(raw.get("proxy_api_url") or "").strip():
+            data["proxy_source"] = "api"
     changed = data != raw
     if not data.get("api_token"):
         data["api_token"] = secrets.token_urlsafe(32)
@@ -213,6 +226,24 @@ def validate_proxy_api_scheme(value: str | None) -> str:
     return scheme
 
 
+def validate_proxy_account_host(value: str | None) -> str:
+    host = str(value or "").strip().lower().rstrip(".")
+    if not host or len(host) > 253 or any(char in host for char in "\r\n\0/@?#:") or any(char.isspace() for char in host):
+        raise ValueError("proxy_account_host is invalid")
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("proxy_account_host is not allowed")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        labels = host.split(".")
+        if any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-") or not all(char.isalnum() or char == "-" for char in label) for label in labels):
+            raise ValueError("proxy_account_host is invalid")
+    else:
+        if address.is_loopback or address.is_unspecified or address.is_link_local:
+            raise ValueError("proxy_account_host is not allowed")
+    return host
+
+
 def update_config(updates: Mapping[str, Any]) -> dict[str, Any]:
     defaults = default_config()
     unknown = sorted(set(updates) - set(defaults))
@@ -271,9 +302,15 @@ class Settings:
     proxy_api_url: str
     proxy_api_scheme: str
     proxy_api_timeout_seconds: int
+    proxy_source: str
     proxy_subscription_url: str
     proxy_subscription_scheme: str
     proxy_subscription_refresh_seconds: int
+    proxy_account_scheme: str
+    proxy_account_host: str
+    proxy_account_port: int
+    proxy_account_username: str
+    proxy_account_password: str
     proxy_enabled: bool
     proxy_auto_select: bool
     proxy_selected_node: str
@@ -311,6 +348,12 @@ def load_settings() -> Settings:
     proxy_api_scheme = str(data.get("proxy_api_scheme") or "http").strip().lower()
     if proxy_api_scheme not in VALID_PROXY_SERVER_SCHEMES:
         proxy_api_scheme = "http"
+    proxy_source = str(data.get("proxy_source") or "direct").strip().lower()
+    if proxy_source not in {"subscription", "account", "api", "direct"}:
+        proxy_source = "direct"
+    proxy_account_scheme = str(data.get("proxy_account_scheme") or "socks5").strip().lower()
+    if proxy_account_scheme not in VALID_PROXY_SERVER_SCHEMES:
+        proxy_account_scheme = "socks5"
     try:
         default_platform = normalize_platform(str(data.get("default_platform") or DEFAULT_PLATFORM))
     except ValueError:
@@ -365,9 +408,15 @@ def load_settings() -> Settings:
         proxy_api_url=str(data.get("proxy_api_url") or "").strip(),
         proxy_api_scheme=proxy_api_scheme,
         proxy_api_timeout_seconds=max(3, int(data.get("proxy_api_timeout_seconds") or 20)),
+        proxy_source=proxy_source,
         proxy_subscription_url=str(data.get("proxy_subscription_url") or "").strip(),
         proxy_subscription_scheme=proxy_api_scheme if str(data.get("proxy_subscription_scheme") or "").strip().lower() not in VALID_PROXY_SERVER_SCHEMES else str(data.get("proxy_subscription_scheme")).strip().lower(),
         proxy_subscription_refresh_seconds=max(60, min(86400, int(data.get("proxy_subscription_refresh_seconds") or 900))),
+        proxy_account_scheme=proxy_account_scheme,
+        proxy_account_host=str(data.get("proxy_account_host") or "").strip(),
+        proxy_account_port=max(0, min(65535, int(data.get("proxy_account_port") or 0))),
+        proxy_account_username=str(data.get("proxy_account_username") or "").strip(),
+        proxy_account_password=str(data.get("proxy_account_password") or ""),
         proxy_enabled=_as_bool(data.get("proxy_enabled"), True),
         proxy_auto_select=_as_bool(data.get("proxy_auto_select"), True),
         proxy_selected_node=str(data.get("proxy_selected_node") or "").strip()[:200],
@@ -407,3 +456,24 @@ def browser_proxy_config_for(server: str, default_scheme: str = "http") -> dict[
     if not proxy_server:
         return None
     return {"server": proxy_server}
+
+
+def account_proxy_url_for(scheme: str, host: str, port: int, username: str, password: str) -> str:
+    normalized_scheme = validate_proxy_api_scheme(scheme)
+    normalized_host = str(host or "").strip()
+    if not normalized_host or not int(port or 0) or not str(username or "") or not str(password or ""):
+        return ""
+    credentials = f"{quote(str(username), safe='')}:{quote(str(password), safe='')}"
+    return f"{normalized_scheme}://{credentials}@{normalized_host}:{int(port)}"
+
+
+def account_browser_proxy_config_for(scheme: str, host: str, port: int, username: str, password: str) -> dict[str, str] | None:
+    normalized_scheme = validate_proxy_api_scheme(scheme)
+    normalized_host = str(host or "").strip()
+    if not normalized_host or not int(port or 0) or not str(username or "") or not str(password or ""):
+        return None
+    return {
+        "server": f"{normalized_scheme}://{normalized_host}:{int(port)}",
+        "username": str(username),
+        "password": str(password),
+    }

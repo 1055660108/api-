@@ -17,8 +17,8 @@ import httpx
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .browser_runtime import BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
-from .config import TARGET_URL, browser_proxy_config_for, load_settings
-from .proxy_manager import acquire_dola_subscription_proxy, dola_proxy_available, fetch_proxy_from_api, mark_node_unavailable, release_dola_subscription_proxy
+from .config import TARGET_URL, account_browser_proxy_config_for, account_proxy_url_for, browser_proxy_config_for, load_settings
+from .proxy_manager import acquire_dola_subscription_proxy, dola_proxy_available, fetch_proxy_from_api, mark_node_unavailable, mark_proxy_source_available, mark_proxy_source_unavailable, proxy_source_available, release_dola_subscription_proxy
 from .store import (
     begin_task_submission,
     clear_transient_result,
@@ -644,6 +644,7 @@ class DolaFetchAutomation:
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
+        self.active_proxy_source = ""
         self.subscription_proxy: dict[str, str] | None = None
 
     def _task_exists(self) -> bool:
@@ -671,6 +672,7 @@ class DolaFetchAutomation:
             return await asyncio.wait_for(self._run_once(), timeout=timeout)
         except asyncio.TimeoutError:
             mark_node_unavailable(self.proxy_node_id)
+            mark_proxy_source_unavailable(self.active_proxy_source)
             self._mark_pending("browser timeout")
             return {"success": False, "retryable": True, "reason": "browser timeout"}
         except Exception as exc:
@@ -679,6 +681,7 @@ class DolaFetchAutomation:
             infrastructure_fault = is_infrastructure_failure(reason)
             if infrastructure_fault:
                 mark_node_unavailable(self.proxy_node_id)
+                mark_proxy_source_unavailable(self.active_proxy_source)
                 self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
             return {"success": False, "retryable": True, "reason": reason, "infrastructure_fault": infrastructure_fault}
 
@@ -747,6 +750,7 @@ class DolaFetchAutomation:
                 await page.wait_for_timeout(5000)
                 if self._is_region_restricted(page.url):
                     mark_node_unavailable(self.proxy_node_id)
+                    mark_proxy_source_unavailable(self.active_proxy_source)
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "page_navigation"})
                     self._mark_pending("region restricted")
                     return {"success": False, "retryable": True, "reason": "region restricted"}
@@ -793,12 +797,14 @@ class DolaFetchAutomation:
                     return {"success": False, "retryable": True, "reason": "service frequent"}
                 if result.get("country_restricted"):
                     mark_node_unavailable(self.proxy_node_id)
+                    mark_proxy_source_unavailable(self.active_proxy_source)
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "country_restricted", "submit_phase": "submission_response"})
                     self._mark_pending("country restricted")
                     return {"success": False, "retryable": True, "reason": "country restricted"}
                 if self._is_region_restricted(str(result.get("location_href") or page.url)):
                     mark_node_unavailable(self.proxy_node_id)
+                    mark_proxy_source_unavailable(self.active_proxy_source)
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "submission_response"})
                     self._mark_pending("region restricted")
@@ -824,48 +830,100 @@ class DolaFetchAutomation:
 
     async def _browser_proxy_config(self) -> dict[str, str] | None:
         self.settings = load_settings()
+        self.active_proxy_source = ""
+        self.proxy_node_id = ""
         if not self.settings.proxy_enabled:
             self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
             return None
-        if self.settings.proxy_subscription_url:
-            proxy = await acquire_dola_subscription_proxy(
-                self.settings.proxy_subscription_url,
-                timeout_seconds=self.settings.proxy_api_timeout_seconds,
-                scheme=self.settings.proxy_subscription_scheme,
-                refresh_seconds=self.settings.proxy_subscription_refresh_seconds,
-                auto_select=self.settings.proxy_auto_select,
-                selected_node=self.settings.proxy_selected_node,
-                selected_countries=self.settings.proxy_auto_countries,
-            )
-            self.subscription_proxy = proxy
-            self.proxy_node_id = str(proxy.get("node_id") or "")
-            self._save_result(
-                extra={
-                    "proxy_source": "subscription",
-                    "proxy_server": proxy["server"],
-                    "proxy_node_count": int(proxy["node_count"]) if proxy["node_count"].isdigit() else proxy["node_count"],
-                    "proxy_node_id": self.proxy_node_id,
-                    "proxy_node_name": str(proxy.get("node_name") or ""),
-                },
-            )
-            return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_subscription_scheme)
-        if not self.settings.proxy_api_url:
+        if self.settings.proxy_source == "direct":
             self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
             return None
-        proxy = await fetch_proxy_from_api(
-            self.settings.proxy_api_url,
-            timeout_seconds=self.settings.proxy_api_timeout_seconds,
-            scheme=self.settings.proxy_api_scheme,
+
+        account_configured = bool(
+            self.settings.proxy_account_host
+            and self.settings.proxy_account_port
+            and self.settings.proxy_account_username
+            and self.settings.proxy_account_password
         )
-        if not await dola_proxy_available(str(proxy.get("server") or ""), min(12.0, float(self.settings.proxy_api_timeout_seconds))):
-            raise RuntimeError("proxy api returned an exit that is unavailable for Dola")
-        self._save_result(
-            extra={
-                "proxy_source": "api",
-                "proxy_server": proxy["server"],
-            },
-        )
-        return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_api_scheme)
+        configured = {
+            "subscription": bool(self.settings.proxy_subscription_url),
+            "account": account_configured,
+            "api": bool(self.settings.proxy_api_url),
+        }
+        fallback_order = [self.settings.proxy_source, "subscription", "account", "api"]
+        candidates = list(dict.fromkeys(source for source in fallback_order if configured.get(source)))
+        errors: list[str] = []
+        for source in candidates:
+            if not proxy_source_available(source):
+                errors.append(f"{source}: cooling down")
+                continue
+            try:
+                if source == "subscription":
+                    proxy = await acquire_dola_subscription_proxy(
+                        self.settings.proxy_subscription_url,
+                        timeout_seconds=self.settings.proxy_api_timeout_seconds,
+                        scheme=self.settings.proxy_subscription_scheme,
+                        refresh_seconds=self.settings.proxy_subscription_refresh_seconds,
+                        auto_select=self.settings.proxy_auto_select,
+                        selected_node=self.settings.proxy_selected_node,
+                        selected_countries=self.settings.proxy_auto_countries,
+                    )
+                    self.subscription_proxy = proxy
+                    self.proxy_node_id = str(proxy.get("node_id") or "")
+                    self.active_proxy_source = source
+                    mark_proxy_source_available(source)
+                    self._save_result(
+                        extra={
+                            "proxy_source": source,
+                            "proxy_server": proxy["server"],
+                            "proxy_node_count": int(proxy["node_count"]) if proxy["node_count"].isdigit() else proxy["node_count"],
+                            "proxy_node_id": self.proxy_node_id,
+                            "proxy_node_name": str(proxy.get("node_name") or ""),
+                        },
+                    )
+                    return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_subscription_scheme)
+                if source == "account":
+                    probe_url = account_proxy_url_for(
+                        self.settings.proxy_account_scheme,
+                        self.settings.proxy_account_host,
+                        self.settings.proxy_account_port,
+                        self.settings.proxy_account_username,
+                        self.settings.proxy_account_password,
+                    )
+                    if not probe_url or not await dola_proxy_available(probe_url, min(12.0, float(self.settings.proxy_api_timeout_seconds))):
+                        raise RuntimeError("authenticated proxy is unavailable for Dola")
+                    config = account_browser_proxy_config_for(
+                        self.settings.proxy_account_scheme,
+                        self.settings.proxy_account_host,
+                        self.settings.proxy_account_port,
+                        self.settings.proxy_account_username,
+                        self.settings.proxy_account_password,
+                    )
+                    self.active_proxy_source = source
+                    mark_proxy_source_available(source)
+                    self._save_result(extra={"proxy_source": source, "proxy_server": config["server"] if config else ""})
+                    return config
+                proxy = await fetch_proxy_from_api(
+                    self.settings.proxy_api_url,
+                    timeout_seconds=self.settings.proxy_api_timeout_seconds,
+                    scheme=self.settings.proxy_api_scheme,
+                )
+                if not await dola_proxy_available(str(proxy.get("server") or ""), min(12.0, float(self.settings.proxy_api_timeout_seconds))):
+                    raise RuntimeError("proxy api returned an exit that is unavailable for Dola")
+                self.active_proxy_source = source
+                mark_proxy_source_available(source)
+                self._save_result(extra={"proxy_source": source, "proxy_server": proxy["server"]})
+                return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_api_scheme)
+            except Exception as exc:
+                mark_proxy_source_unavailable(source)
+                errors.append(f"{source}: {str(exc)[:160]}")
+                if source == "subscription":
+                    await release_dola_subscription_proxy(self.subscription_proxy)
+                    self.subscription_proxy = None
+                    self.proxy_node_id = ""
+        if not candidates:
+            raise RuntimeError("selected proxy mode is not configured")
+        raise RuntimeError(f"all configured proxy modes are unavailable ({'; '.join(errors)})")
 
     async def _inject_account(self, context: BrowserContext) -> None:
         cookies = self.account.get("cookies")

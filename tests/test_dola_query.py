@@ -212,7 +212,9 @@ class DolaQueryTests(unittest.TestCase):
         ) as record_failed, patch.object(query, "mark_failed"
         ) as mark_failed, patch.object(query, "refund_temp_quota_once") as refund_temp, patch.object(
             query, "retry_submitted_task", return_value=1
-        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result:
+        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result, patch.object(
+            query, "invalidate_reference_attachment_keys"
+        ) as invalidate_cache, patch.object(query, "update_meta") as update_meta:
             response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "1", "text": query.REFERENCE_IMAGE_RETRY_TEXT, "url": ""})
         self.assertTrue(
@@ -226,6 +228,8 @@ class DolaQueryTests(unittest.TestCase):
         record_failed.assert_called_once_with(task_id, "account-reference")
         retry_task.assert_called_once_with(task_id, query.REFERENCE_IMAGE_RETRY_TEXT, max_retries=2, delay_seconds=10)
         clear_result.assert_called_once_with(task_id)
+        invalidate_cache.assert_called_once_with([])
+        update_meta.assert_called_once_with(task_id, reference_upload_cache_bypass=True)
         mark_failed.assert_not_called()
         refund_temp.assert_not_called()
 
@@ -248,7 +252,7 @@ class DolaQueryTests(unittest.TestCase):
             query, "mark_failed"
         ) as mark_failed, patch.object(query, "refund_temp_quota_once") as refund_temp, patch.object(
             query, "retry_submitted_task"
-        ) as retry_task:
+        ) as retry_task, patch.object(query, "invalidate_reference_attachment_keys"), patch.object(query, "update_meta"):
             response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "0", "text": query.REFERENCE_IMAGE_REQUIRED_TEXT, "url": ""})
         clear_account.assert_called_once_with("account-reference", task_id)

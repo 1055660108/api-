@@ -786,17 +786,26 @@ class WebAPIContractTests(unittest.TestCase):
         owner_hash = temp_access.hash_token(token)
         owned = store.create_task("Dola 账号生成测试", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
         other = store.create_task("管理员任务", "16:9", model="Seedance 2.0")
-        store.update_meta(owned["id"], worker_id="worker-secret", failed_account_ids=["account-secret"])
+        store.update_meta(
+            owned["id"],
+            worker_id="worker-secret",
+            failed_account_ids=["account-secret"],
+            attempt_history=[{"at": "2026-07-27T00:00:00+00:00", "kind": "execution_retry", "reason": "ApplyImageUpload HTTP 429"}],
+            last_attempt_error="ApplyImageUpload HTTP 429",
+            last_attempt_kind="execution_retry",
+            last_attempt_at="2026-07-27T00:00:00+00:00",
+        )
         client_list = self.client.get("/tasks", headers={"X-API-Token": token}).json()["tasks"]
         self.assertEqual([item["id"] for item in client_list], [owned["id"]])
         client_task = client_list[0]
         self.assertTrue({"id", "prompt", "prompt_preview", "model", "status", "image_count", "error", "owner_name", "video_hidden_for_client"} <= set(client_task))
-        for key in ("owner_token_hash", "worker_id", "failed_account_ids", "account_id", "platform", "video_hidden_for_admin"):
+        for key in ("owner_token_hash", "worker_id", "failed_account_ids", "account_id", "platform", "video_hidden_for_admin", "attempt_history", "last_attempt_error", "last_attempt_kind", "last_attempt_at"):
             self.assertNotIn(key, client_task)
         admin_tasks = self.client.get("/tasks", headers={"X-API-Token": self.admin_token}).json()["tasks"]
         self.assertEqual({item["id"] for item in admin_tasks}, {owned["id"], other["id"]})
         admin_owned = next(item for item in admin_tasks if item["id"] == owned["id"])
         self.assertEqual(admin_owned["owner_token_hash"], owner_hash)
+        self.assertEqual(admin_owned["attempt_history"][0]["reason"], "ApplyImageUpload HTTP 429")
         with patch("app.main.query_task", new=AsyncMock(return_value={"code": "0", "text": "Dola 账号等待中", "url": ""})):
             detail = self.client.get(f"/tasks/{owned['id']}", headers={"X-API-Token": token})
         self.assertEqual(detail.status_code, 200)

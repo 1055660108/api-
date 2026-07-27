@@ -9,8 +9,8 @@ from typing import Any
 import httpx
 
 from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, refund_account_quota, settle_account_quota
-from .automation import is_final_generation_failure
-from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, record_failed_account, retry_submitted_task, save_result
+from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
+from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, record_failed_account, retry_submitted_task, save_result, update_meta
 from .temp_access import refund_temp_quota_hash
 
 
@@ -605,6 +605,8 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     )
     account_id = str(result.get("account_id") or "")
     if is_missing_reference_image_request(text):
+        invalidate_reference_attachment_keys([str(item) for item in result.get("reference_image_cache_keys") or []])
+        update_meta(task_id, reference_upload_cache_bypass=True)
         if account_id:
             clear_account_current_task(account_id, task_id)
             refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))

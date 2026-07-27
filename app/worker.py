@@ -43,6 +43,7 @@ from .store import (
     set_execution_phase,
     set_active_tasks,
     STATUS_SUBMITTED,
+    task_image_paths,
     update_meta,
     utc_now,
 )
@@ -71,6 +72,7 @@ RESULT_POLL_RATE_PER_SECOND = _bounded_env_int("DOLA_RESULT_POLL_RATE_PER_SECOND
 RESULT_POLL_BATCH_SIZE = _bounded_env_int("DOLA_RESULT_POLL_BATCH_SIZE", 256, RESULT_POLL_CONCURRENCY, 2000)
 RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_SECONDS", 20, 10, 120)
 RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
+IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 4, 1, 16)
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -120,6 +122,9 @@ class WorkerManager:
         self._claim_lock = asyncio.Lock()
         self._dola_submit_lock = asyncio.Lock()
         self._last_dola_submit_at = 0.0
+        self._image_submission_semaphore = asyncio.Semaphore(IMAGE_SUBMISSION_CONCURRENCY)
+        self._image_submission_active = 0
+        self._image_submission_reservations: set[str] = set()
         self._result_poll_semaphore = asyncio.Semaphore(RESULT_POLL_CONCURRENCY)
         self._result_poll_pace_lock = asyncio.Lock()
         self._last_result_poll_at = 0.0
@@ -186,6 +191,7 @@ class WorkerManager:
             await asyncio.gather(self._watchdog, return_exceptions=True)
         self._claimed.clear()
         self._remote_generation_reservations.clear()
+        self._image_submission_reservations.clear()
         self._worker_task_ids.clear()
         set_active_tasks([])
         await self._dola_browser_pool.stop()
@@ -210,6 +216,9 @@ class WorkerManager:
             "result_poll_active": self._result_poll_active,
             "result_poll_concurrency": RESULT_POLL_CONCURRENCY,
             "result_poll_rate_per_second": RESULT_POLL_RATE_PER_SECOND,
+            "image_upload_active": self._image_submission_active,
+            "image_upload_concurrency": IMAGE_SUBMISSION_CONCURRENCY,
+            "image_upload_reserved": len(self._image_submission_reservations),
             "browser_pool": self._dola_browser_pool.snapshot(),
             "remote_generation_limit": 0,
             "remote_generation_active": remote_generating,
@@ -494,6 +503,14 @@ class WorkerManager:
         self._remote_generation_reservations[task_id] = owner
         return True
 
+    async def _wait_for_dola_submit_slot(self) -> None:
+        async with self._dola_submit_lock:
+            submit_interval = load_settings().dola_submit_interval_seconds
+            delay = submit_interval - (asyncio.get_running_loop().time() - self._last_dola_submit_at)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last_dola_submit_at = asyncio.get_running_loop().time()
+
     async def _worker_loop(self, worker_id: str) -> None:
         while not self._stopping:
             async with self._claim_lock:
@@ -509,10 +526,18 @@ class WorkerManager:
                     if not candidate_id:
                         break
                     claimed_meta = get_meta(candidate_id)
-                    if str(claimed_meta.get("platform") or "dola") == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
+                    candidate_platform = str(claimed_meta.get("platform") or "dola")
+                    is_image_submission = candidate_platform == "dola" and int(claimed_meta.get("image_count") or 0) > 0
+                    if is_image_submission and len(self._image_submission_reservations) >= IMAGE_SUBMISSION_CONCURRENCY:
+                        defer_task(candidate_id, "等待参考图上传资源", "image_upload_limit", 2)
+                        self._queue.release(candidate_id, worker_id)
+                        continue
+                    if candidate_platform == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
                         defer_task(candidate_id, "当前用户远端生成任务已达上限，继续排队", "remote_limit", 5)
                         self._queue.release(candidate_id, worker_id)
                         continue
+                    if is_image_submission:
+                        self._image_submission_reservations.add(candidate_id)
                     task_id = candidate_id
                     self._claimed.add(task_id)
                     self._worker_task_ids[worker_id] = task_id
@@ -542,14 +567,6 @@ class WorkerManager:
                     continue
                 if meta.get("retry_queued_at"):
                     update_meta(task_id, retry_queued_at="")
-                if platform == "dola":
-                    set_execution_phase(task_id, "waiting_submit_slot", "等待提交时段")
-                    async with self._dola_submit_lock:
-                        submit_interval = load_settings().dola_submit_interval_seconds
-                        delay = submit_interval - (asyncio.get_running_loop().time() - self._last_dola_submit_at)
-                        if delay > 0:
-                            await asyncio.sleep(delay)
-                        self._last_dola_submit_at = asyncio.get_running_loop().time()
                 if platform != "dola":
                     admission = self._platform_guard.admit(platform)
                     if not admission.allowed:
@@ -571,7 +588,21 @@ class WorkerManager:
                     runner = QianwenVideoAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), str(meta.get("model") or "万相 2.7"), str(meta.get("task_type") or "video"), account=account)
                 else:
                     runner = DolaFetchAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), int(meta.get("duration") or 0), account=account, browser_pool=self._dola_browser_pool)
-                outcome = await runner.run()
+                if platform == "dola" and task_image_paths(task_id):
+                    set_execution_phase(task_id, "waiting_image_upload_slot", "等待参考图上传时段")
+                    async with self._image_submission_semaphore:
+                        self._image_submission_active += 1
+                        try:
+                            set_execution_phase(task_id, "waiting_submit_slot", "等待提交时段")
+                            await self._wait_for_dola_submit_slot()
+                            outcome = await runner.run()
+                        finally:
+                            self._image_submission_active = max(0, self._image_submission_active - 1)
+                else:
+                    if platform == "dola":
+                        set_execution_phase(task_id, "waiting_submit_slot", "等待提交时段")
+                        await self._wait_for_dola_submit_slot()
+                    outcome = await runner.run()
                 if platform != "dola":
                     if outcome.get("success"):
                         self._platform_guard.record_success(platform)
@@ -650,6 +681,7 @@ class WorkerManager:
             finally:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
+                self._image_submission_reservations.discard(task_id)
                 reserved_owner = self._remote_generation_reservations.pop(task_id, None)
                 if reserved_owner:
                     self._remote_owner_refreshed_at = 0.0

@@ -3281,6 +3281,26 @@ function getTaskStatus(task) {
   return { state: "unknown", label: resultCode ? `code ${resultCode}` : "未知", className: "unknown", text, url: "" };
 }
 
+function taskResultDetail(task, status = getTaskStatus(task)) {
+  const primary = String(status?.text || task?.error || "").trim();
+  if (portal === "client") return primary;
+  const history = Array.isArray(task?.attempt_history) ? task.attempt_history : [];
+  if (!history.length) return primary;
+  const kindLabels = {
+    execution_retry: "执行重试",
+    infrastructure_retry: "节点重试",
+    result_retry: "结果重试",
+    result_timeout: "结果超时",
+    terminal: "最终失败",
+  };
+  const attempts = history.map((item, index) => {
+    const label = kindLabels[String(item.kind || "")] || "失败记录";
+    const phase = item.phase ? ` · ${item.phase}` : "";
+    return `${index + 1}. ${formatTime(item.at)} · ${label}${phase}\n${String(item.reason || "未知原因")}`;
+  }).join("\n\n");
+  return `${primary || "任务失败"}\n\n后台尝试记录\n${attempts}`;
+}
+
 function pageTasks() {
   return {
     tasks: state.tasks,
@@ -3294,7 +3314,7 @@ function renderTaskTable(options = {}) {
   const signature = JSON.stringify({
     page: state.page,
     totalPages: page.totalPages,
-    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.owner_name, task.status, task.error, task.status_reason, task.execution_phase, task.phase_updated_at, task.queue_reason, task.queue_category, task.retry_count, task.infrastructure_retry_count, task.result_timeout_retry_count, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
+    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.owner_name, task.status, task.error, task.status_reason, task.execution_phase, task.phase_updated_at, task.queue_reason, task.queue_category, task.retry_count, task.infrastructure_retry_count, task.result_timeout_retry_count, task.attempt_history, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
   });
   if (options.skipUnchanged && signature === state.taskRenderSignature) return;
   state.taskRenderSignature = signature;
@@ -3311,7 +3331,8 @@ function renderTaskTable(options = {}) {
   els.taskTableBody.innerHTML = page.tasks.map((task) => {
     const status = getTaskStatus(task);
     const resultText = status.text || task.error || "-";
-    const canOpenResult = resultText && resultText !== "-";
+    const resultDetail = taskResultDetail(task, status);
+    const canOpenResult = Boolean(resultDetail && resultDetail !== "-");
     const retryCount = Math.max(0, Number(task.retry_count || 0));
     const statusMeta = retryCount > 0 && ["pending", "running", "submitted"].includes(String(task.status || "").toLowerCase()) ? `第 ${Math.min(retryCount, 2)} / 2 次重试` : "";
     const fullPrompt = String(task.prompt || task.prompt_preview || "").trim();
@@ -5941,7 +5962,7 @@ function bindEvents() {
     if (action === "show-result") {
       const task = state.tasks.find((item) => item.id === id);
       const status = task ? getTaskStatus(task) : null;
-      const text = status?.text || task?.error || "";
+      const text = task ? taskResultDetail(task, status) : "";
       openTextModal(text);
       return;
     }

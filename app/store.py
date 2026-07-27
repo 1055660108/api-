@@ -27,6 +27,7 @@ TASK_TIMEOUT_HOURS = 3
 TASK_RETRY_TIMEOUT_MINUTES = 30
 MAX_TASK_RETRIES = 2
 MAX_INFRASTRUCTURE_RETRIES = 6
+MAX_ATTEMPT_HISTORY = 20
 LOCAL_TZ = timezone(timedelta(hours=8))
 _TASK_LOCKS_LOCK = threading.RLock()
 _TASK_LOCKS: dict[str, threading.RLock] = {}
@@ -455,6 +456,29 @@ def update_meta_if(task_id: str, expected_statuses: set[str], **updates: Any) ->
         return meta
 
 
+def _append_attempt_history(meta: dict[str, Any], reason: str, kind: str) -> None:
+    normalized = str(reason or "").strip()[:1000]
+    if not normalized:
+        return
+    now = utc_now()
+    history = [dict(item) for item in meta.get("attempt_history") or [] if isinstance(item, dict)]
+    entry = {
+        "at": now,
+        "kind": str(kind or "failure")[:40],
+        "reason": normalized,
+        "phase": str(meta.get("execution_phase") or meta.get("submit_phase") or "")[:80],
+        "worker_id": str(meta.get("worker_id") or "")[:120],
+        "retry_count": max(0, int(meta.get("retry_count") or 0)),
+        "infrastructure_retry_count": max(0, int(meta.get("infrastructure_retry_count") or 0)),
+    }
+    if not history or any(entry[key] != history[-1].get(key) for key in ("kind", "reason", "phase")):
+        history.append(entry)
+    meta["attempt_history"] = history[-MAX_ATTEMPT_HISTORY:]
+    meta["last_attempt_error"] = normalized
+    meta["last_attempt_kind"] = entry["kind"]
+    meta["last_attempt_at"] = now
+
+
 def set_execution_phase(task_id: str, phase: str, status_reason: str) -> bool:
     now = utc_now()
     updated = update_meta_if(
@@ -517,7 +541,21 @@ def defer_task(task_id: str, reason: str, category: str, delay_seconds: int = 5)
 
 
 def mark_failed(task_id: str, reason: str = "") -> None:
-    update_meta_if(task_id, {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED, STATUS_FAILED}, status=STATUS_FAILED, worker_id="", finished_at=utc_now(), error=reason, execution_phase="failed", status_reason=reason, phase_updated_at=utc_now())
+    with task_lock(task_id):
+        def mutate(meta: dict[str, Any]) -> bool:
+            if str(meta.get("status") or "") not in {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED, STATUS_FAILED}:
+                return False
+            _append_attempt_history(meta, reason, "terminal")
+            now = utc_now()
+            meta.update(status=STATUS_FAILED, worker_id="", finished_at=now, error=reason, execution_phase="failed", status_reason=reason, phase_updated_at=now, updated_at=now)
+            return True
+
+        if postgres.enabled():
+            postgres.mutate_task_part(task_id, "meta", mutate)
+            return
+        meta = get_meta(task_id)
+        if mutate(meta):
+            _write_storage_json(meta_path(task_id), meta)
 
 
 def mark_canceled(task_id: str, reason: str = "canceled") -> None:
@@ -617,6 +655,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                     return max(0, int(meta.get("retry_count") or 0))
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
                 normalized_reason = "浏览器超时" if str(reason or "") == "browser timeout" else "Dola 当前地区不可用" if str(reason or "") == "region restricted" else reason
+                _append_attempt_history(meta, str(normalized_reason or ""), "execution_retry")
                 meta.update(retry_count=count, worker_id="", error=normalized_reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > MAX_TASK_RETRIES:
@@ -635,6 +674,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
             reason = "浏览器超时"
         if str(reason or "") == "region restricted":
             reason = "Dola 当前地区不可用"
+        _append_attempt_history(meta, str(reason or ""), "execution_retry")
         meta.update(retry_count=count, worker_id="", error=reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > MAX_TASK_RETRIES:
@@ -653,6 +693,7 @@ def record_infrastructure_retry(task_id: str, reason: str = "") -> int:
                 return max(0, int(meta.get("infrastructure_retry_count") or 0))
             count = max(0, int(meta.get("infrastructure_retry_count") or 0)) + 1
             now = utc_now()
+            _append_attempt_history(meta, str(reason or ""), "infrastructure_retry")
             meta.update(
                 infrastructure_retry_count=count,
                 infrastructure_error=str(reason or "")[:500],
@@ -712,6 +753,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
                 if str(meta.get("status") or "") != STATUS_SUBMITTED:
                     return max(0, int(meta.get("retry_count") or 0))
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
+                _append_attempt_history(meta, str(reason or ""), "result_retry")
                 meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
@@ -729,6 +771,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
         if str(meta.get("status") or "") != STATUS_SUBMITTED:
             return max(0, int(meta.get("retry_count") or 0))
         count = max(0, int(meta.get("retry_count") or 0)) + 1
+        _append_attempt_history(meta, str(reason or ""), "result_retry")
         meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
@@ -752,6 +795,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
                 previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
                 timeout_count = previous_timeout_count + 1
                 count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
+                _append_attempt_history(meta, str(reason or ""), "result_timeout")
                 meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
@@ -771,6 +815,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
         previous_timeout_count = max(0, int(meta.get("result_timeout_retry_count") or 0))
         timeout_count = previous_timeout_count + 1
         count = max(max(0, int(meta.get("retry_count") or 0)), previous_timeout_count) + 1
+        _append_attempt_history(meta, str(reason or ""), "result_timeout")
         meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
@@ -1088,7 +1133,12 @@ def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str])
         "status": str(meta.get("status") or ""),
         "retry_count": int(meta.get("retry_count") or 0),
         "infrastructure_retry_count": int(meta.get("infrastructure_retry_count") or 0),
+        "result_timeout_retry_count": int(meta.get("result_timeout_retry_count") or 0),
         "infrastructure_error": str(meta.get("infrastructure_error") or ""),
+        "attempt_history": [dict(item) for item in meta.get("attempt_history") or [] if isinstance(item, dict)],
+        "last_attempt_error": str(meta.get("last_attempt_error") or ""),
+        "last_attempt_kind": str(meta.get("last_attempt_kind") or ""),
+        "last_attempt_at": str(meta.get("last_attempt_at") or ""),
         "queue_reason": str(meta.get("queue_reason") or ""),
         "queue_category": str(meta.get("queue_category") or ""),
         "queued_at": str(meta.get("queued_at") or meta.get("created_at") or ""),

@@ -6,8 +6,11 @@ import hashlib
 import hmac
 import json
 import mimetypes
+import os
 import secrets
 import string
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +35,8 @@ from .store import (
     set_execution_phase,
     task_exists,
     task_image_paths,
+    get_meta,
+    update_meta,
 )
 
 
@@ -62,6 +67,19 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "net::err_proxy",
     "net::err_connection",
 )
+REFERENCE_UPLOAD_ERROR_MARKERS = (
+    "prepare_upload",
+    "applyimageupload",
+    "direct image upload",
+    "commitimageupload",
+    "image upload",
+    "upload address",
+    "upload config",
+)
+REFERENCE_CACHE_TTL_SECONDS = max(60, min(86400, int(os.environ.get("DOLA_REFERENCE_CACHE_TTL_SECONDS") or 1800)))
+REFERENCE_CACHE_MAX_ENTRIES = max(16, min(4096, int(os.environ.get("DOLA_REFERENCE_CACHE_MAX_ENTRIES") or 512)))
+_REFERENCE_CACHE_LOCK = threading.RLock()
+_REFERENCE_ATTACHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def is_final_generation_failure(text: str) -> bool:
@@ -71,6 +89,52 @@ def is_final_generation_failure(text: str) -> bool:
 def is_infrastructure_failure(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     return any(marker in normalized for marker in INFRASTRUCTURE_ERROR_MARKERS)
+
+
+def is_reference_upload_failure(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(marker in normalized for marker in REFERENCE_UPLOAD_ERROR_MARKERS)
+
+
+def reference_image_cache_key(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def cached_reference_attachment(key: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _REFERENCE_CACHE_LOCK:
+        expired = [item for item, (expires_at, _) in _REFERENCE_ATTACHMENT_CACHE.items() if expires_at <= now]
+        for item in expired:
+            _REFERENCE_ATTACHMENT_CACHE.pop(item, None)
+        cached = _REFERENCE_ATTACHMENT_CACHE.get(str(key or ""))
+        return dict(cached[1]) if cached else None
+
+
+def cache_reference_attachment(key: str, attachment: dict[str, Any]) -> None:
+    normalized = str(key or "")
+    if not normalized or not attachment.get("uri"):
+        return
+    with _REFERENCE_CACHE_LOCK:
+        _REFERENCE_ATTACHMENT_CACHE[normalized] = (time.monotonic() + REFERENCE_CACHE_TTL_SECONDS, dict(attachment))
+        if len(_REFERENCE_ATTACHMENT_CACHE) > REFERENCE_CACHE_MAX_ENTRIES:
+            oldest = sorted(_REFERENCE_ATTACHMENT_CACHE.items(), key=lambda item: item[1][0])
+            for item, _ in oldest[:len(_REFERENCE_ATTACHMENT_CACHE) - REFERENCE_CACHE_MAX_ENTRIES]:
+                _REFERENCE_ATTACHMENT_CACHE.pop(item, None)
+
+
+def invalidate_reference_attachment_keys(keys: list[str] | tuple[str, ...]) -> None:
+    with _REFERENCE_CACHE_LOCK:
+        for key in keys:
+            _REFERENCE_ATTACHMENT_CACHE.pop(str(key or ""), None)
+
+
+def clear_reference_attachment_cache() -> None:
+    with _REFERENCE_CACHE_LOCK:
+        _REFERENCE_ATTACHMENT_CACHE.clear()
 
 
 BROWSER_INIT_SCRIPT = r"""
@@ -684,7 +748,9 @@ class DolaFetchAutomation:
             reason = str(exc)[:500]
             self._mark_pending(reason)
             infrastructure_fault = is_infrastructure_failure(reason)
-            if infrastructure_fault:
+            if is_reference_upload_failure(reason):
+                self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
+            elif infrastructure_fault:
                 self._mark_active_proxy_unavailable()
                 self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
             return {"success": False, "retryable": True, "reason": reason, "infrastructure_fault": infrastructure_fault}
@@ -1072,16 +1138,47 @@ class DolaFetchAutomation:
         paths = task_image_paths(self.task_id)
         if not paths:
             return []
+        try:
+            bypass_cache = bool(get_meta(self.task_id).get("reference_upload_cache_bypass"))
+        except FileNotFoundError:
+            return []
+        unique_paths: list[tuple[Path, str]] = []
+        seen_keys: set[str] = set()
+        for path in paths:
+            cache_key = reference_image_cache_key(path)
+            if cache_key in seen_keys:
+                continue
+            seen_keys.add(cache_key)
+            unique_paths.append((path, cache_key))
+        keys = [cache_key for _, cache_key in unique_paths]
+        if bypass_cache:
+            invalidate_reference_attachment_keys(keys)
         images: list[dict[str, Any]] = []
-        for index, path in enumerate(paths, start=1):
+        cache_hits = 0
+        cache_misses = 0
+        for index, (path, cache_key) in enumerate(unique_paths, start=1):
             if not self._task_exists():
                 return []
-            self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(paths)}）")
-            images.append(await self._upload_one_image_by_fetch(page, path))
+            cached = None if bypass_cache else cached_reference_attachment(cache_key)
+            if cached:
+                images.append(cached)
+                cache_hits += 1
+                continue
+            self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
+            uploaded = await self._upload_one_image_by_fetch(page, path)
+            cache_reference_attachment(cache_key, uploaded)
+            images.append(uploaded)
+            cache_misses += 1
         self.uploaded_images = self._unique_images(images)
-        if len(self.uploaded_images) < len(paths):
+        if len(self.uploaded_images) < len(unique_paths):
             raise RuntimeError("image upload did not return uri")
-        return self.uploaded_images[: len(paths)]
+        update_meta(self.task_id, reference_upload_cache_bypass=False)
+        self._save_result(extra={
+            "reference_image_cache_keys": keys,
+            "reference_image_cache_hits": cache_hits,
+            "reference_image_cache_misses": cache_misses,
+        })
+        return self.uploaded_images[: len(unique_paths)]
 
     @staticmethod
     def _unique_images(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

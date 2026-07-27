@@ -16,10 +16,12 @@ class VersionTests(unittest.TestCase):
         postgres_source = (root / "app" / "postgres.py").read_text(encoding="utf-8")
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.44")
+        self.assertEqual(version, "1.4.45")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-24}", compose)
+        self.assertIn("DOLA_IMAGE_UPLOAD_CONCURRENCY: ${DOLA_IMAGE_UPLOAD_CONCURRENCY:-4}", compose)
+        self.assertIn("DOLA_REFERENCE_CACHE_TTL_SECONDS: ${DOLA_REFERENCE_CACHE_TTL_SECONDS:-1800}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE=24", env_example)
         self.assertIn('os.environ.get("DOLA_DATABASE_POOL_SIZE") or 24', postgres_source)
         self.assertIn("COALESCE(payload->>'account_status', 'normal') <> 'abnormal'", postgres_source)

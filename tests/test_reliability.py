@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from app import accounts, config, store, task_queue, temp_access
-from app.automation import is_infrastructure_failure
-from app.worker import WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
+from app import accounts, automation, config, store, task_queue, temp_access
+from app.automation import DolaFetchAutomation, is_infrastructure_failure
+from app.worker import IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -487,6 +487,59 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["queue_category"], "infrastructure")
         self.assertEqual(meta["queue_reason"], "节点连接异常，正在切换节点")
         self.assertEqual(meta["error"], "")
+
+    def test_retry_attempt_history_preserves_real_backend_errors(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.set_execution_phase(task["id"], "uploading_reference_1", "正在上传参考图（1/1）")
+        self.assertEqual(store.record_retry(task["id"], "ApplyImageUpload failed with HTTP 429"), 1)
+        self.assertTrue(store.mark_running(task["id"], "worker-2"))
+        self.assertEqual(store.record_infrastructure_retry(task["id"], "proxy connection reset"), 1)
+        store.mark_failed(task["id"], "多次生成失败")
+        history = store.get_meta(task["id"])["attempt_history"]
+        self.assertEqual([item["kind"] for item in history], ["execution_retry", "infrastructure_retry", "terminal"])
+        self.assertIn("ApplyImageUpload", history[0]["reason"])
+        self.assertEqual(history[-1]["reason"], "多次生成失败")
+
+    def test_reference_attachment_cache_reuses_identical_images(self) -> None:
+        automation.clear_reference_attachment_cache()
+        first = self.create_task("owner-a")
+        second = self.create_task("owner-b")
+        for task in (first, second):
+            image = store.images_dir(task["id"]) / "01.png"
+            image.write_bytes(b"same-reference-image")
+            store.set_task_images(task["id"], [image])
+        attachment = {"uri": "tos/example", "name": "01.png", "width": 10, "height": 10, "size": 20, "mime": "image/png"}
+        upload = AsyncMock(return_value=attachment)
+
+        async def run() -> None:
+            first_runner = DolaFetchAutomation(first["id"], "first", "9:16")
+            second_runner = DolaFetchAutomation(second["id"], "second", "9:16")
+            first_runner._upload_one_image_by_fetch = upload
+            second_runner._upload_one_image_by_fetch = upload
+            self.assertEqual(await first_runner._upload_images_if_needed(object()), [attachment])
+            self.assertEqual(await second_runner._upload_images_if_needed(object()), [attachment])
+
+        asyncio.run(run())
+        self.assertEqual(upload.await_count, 1)
+        second_result = store.load_result(second["id"])
+        self.assertEqual(second_result["reference_image_cache_hits"], 1)
+        self.assertEqual(second_result["reference_image_cache_misses"], 0)
+
+        store.update_meta(second["id"], reference_upload_cache_bypass=True)
+        asyncio.run(run())
+        self.assertEqual(upload.await_count, 2)
+        self.assertFalse(store.get_meta(second["id"])["reference_upload_cache_bypass"])
+        automation.clear_reference_attachment_cache()
+
+    def test_worker_has_independent_image_submission_limit(self) -> None:
+        manager = WorkerManager()
+        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 4)
+        self.assertEqual(manager._image_submission_semaphore._value, 4)
+        self.assertEqual(manager._image_submission_reservations, set())
+        snapshot = manager.health_snapshot()
+        self.assertEqual(snapshot["image_upload_concurrency"], 4)
+        self.assertEqual(snapshot["image_upload_reserved"], 0)
 
     def test_reconciliation_repairs_quota_used_from_charge_ledger(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=3)

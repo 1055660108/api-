@@ -1152,7 +1152,7 @@ def _client_task(task: dict) -> dict:
     ):
         safe["error"] = "正在重试中，请稍等！"
         safe["status_reason"] = str(safe.get("status_reason") or "正在重试中，请稍等！")
-    for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
+    for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "attempt_history", "last_attempt_error", "last_attempt_kind", "last_attempt_at", "reference_upload_cache_bypass", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
         safe.pop(key, None)
     return safe
 

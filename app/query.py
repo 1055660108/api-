@@ -34,6 +34,8 @@ POLICY_RETRYING_TEXT = "检测到内容异常，正在自动重试..."
 ACCOUNT_QUOTA_RETRY_TEXT = "当前账号额度不足，正在切换账号重试"
 REFERENCE_IMAGE_REQUIRED_TEXT = "未收到可用参考图，请重新上传参考图后再提交"
 REFERENCE_IMAGE_RETRY_TEXT = "参考图识别异常，正在更换账号重新上传"
+REFERENCE_IMAGE_INVALID_TEXT = "参考图异常，请重试！"
+PORTRAIT_PROTECTION_RETRY_TEXT = "参考图触发肖像保护，正在更换账号重试"
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -118,6 +120,15 @@ def is_account_quota_insufficient(text: str) -> bool:
 def is_missing_reference_image_request(text: str) -> bool:
     value = re.sub(r"\s+", "", repair_text(str(text or "")))
     return "请上传" in value and any(marker in value for marker in ("参考图", "参考图片", "图片", "图像"))
+
+
+def is_portrait_protection_rejection(text: str) -> bool:
+    value = re.sub(r"\s+", "", repair_text(str(text or "")))
+    return (
+        "肖像保护" in value
+        and any(marker in value for marker in ("真实人物照片", "真人照片", "真人图片", "人物照片"))
+        and any(marker in value for marker in ("无法使用", "不能使用", "不支持"))
+    )
 
 
 def sanitize_query_diagnostic(value: Any) -> str:
@@ -587,7 +598,9 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
 
     text = tts_content or "没有文本"
     query_classification = "generating"
-    if is_missing_reference_image_request(text):
+    if is_portrait_protection_rejection(text):
+        query_classification = "portrait_protection"
+    elif is_missing_reference_image_request(text):
         query_classification = "missing_reference_image"
     elif is_account_quota_insufficient(text):
         query_classification = "account_quota_insufficient"
@@ -604,6 +617,29 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         },
     )
     account_id = str(result.get("account_id") or "")
+    if is_portrait_protection_rejection(text):
+        invalidate_reference_attachment_keys([str(item) for item in result.get("reference_image_cache_keys") or []])
+        update_meta(task_id, reference_upload_cache_bypass=True)
+        if account_id:
+            clear_account_current_task(account_id, task_id)
+            refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+            record_failed_account(task_id, account_id)
+        portrait_retry_count = max(0, int(meta.get("portrait_protection_retry_count") or 0))
+        if int(meta.get("image_count") or 0) > 0 and portrait_retry_count < 1:
+            update_meta(task_id, portrait_protection_retry_count=portrait_retry_count + 1)
+            retry_count = retry_submitted_task(
+                task_id,
+                PORTRAIT_PROTECTION_RETRY_TEXT,
+                max_retries=MAX_TASK_RETRIES,
+                delay_seconds=10,
+            )
+            if retry_count <= MAX_TASK_RETRIES:
+                clear_transient_result(task_id)
+                return {"code": "1", "text": "正在重试中，请稍等！", "url": ""}
+        mark_failed(task_id, REFERENCE_IMAGE_INVALID_TEXT)
+        meta = get_meta(task_id)
+        refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+        return {"code": "0", "text": REFERENCE_IMAGE_INVALID_TEXT, "url": ""}
     if is_missing_reference_image_request(text):
         invalidate_reference_attachment_keys([str(item) for item in result.get("reference_image_cache_keys") or []])
         update_meta(task_id, reference_upload_cache_bypass=True)

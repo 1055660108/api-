@@ -895,6 +895,33 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertNotIn("账号", detail.json()["text"])
         self.assertEqual(self.client.get(f"/tasks/{other['id']}", headers={"X-API-Token": token}).status_code, 404)
 
+    def test_task_reference_endpoint_returns_only_the_owned_original_image(self) -> None:
+        owner = self.register("reference_owner")
+        other = self.register("reference_other")
+        owner_hash = temp_access.hash_token(owner["token"])
+        task = store.create_task("带参考图任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        original = b"\x89PNG\r\n\x1a\noriginal-user-reference"
+        reference = store.images_dir(task["id"]) / "01.png"
+        reference.write_bytes(original)
+        store.set_task_images(task["id"], [reference])
+
+        response = self.client.get(
+            f"/tasks/{task['id']}/references/1",
+            headers={"X-API-Token": owner["token"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, original)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertIn("inline", response.headers["content-disposition"])
+        self.assertEqual(
+            self.client.get(f"/tasks/{task['id']}/references/1", headers={"X-API-Token": other["token"]}).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(f"/tasks/{task['id']}/references/2", headers={"X-API-Token": owner["token"]}).status_code,
+            404,
+        )
+
     def test_task_pagination_search_statistics_and_legacy_contract(self) -> None:
         registered = self.register()
         token = registered["token"]

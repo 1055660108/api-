@@ -510,6 +510,11 @@ const els = {
   closeTextModal: document.getElementById("closeTextModal"),
   confirmTextModal: document.getElementById("confirmTextModal"),
   copyTextModal: document.getElementById("copyTextModal"),
+  referenceModal: document.getElementById("referenceModal"),
+  referenceModalTitle: document.getElementById("referenceModalTitle"),
+  referenceGallery: document.getElementById("referenceGallery"),
+  closeReferenceModal: document.getElementById("closeReferenceModal"),
+  confirmReferenceModal: document.getElementById("confirmReferenceModal"),
   videoModal: document.getElementById("videoModal"),
   videoLoading: document.getElementById("videoLoading"),
   videoPlayer: document.getElementById("videoPlayer"),
@@ -3193,6 +3198,25 @@ function closeTextModal() {
   els.textModal.setAttribute("aria-hidden", "true");
 }
 
+function openReferenceModal(task) {
+  const taskId = String(task?.id || "").trim();
+  const imageCount = Math.max(0, Math.min(MAX_IMAGE_COUNT, Number(task?.image_count || 0)));
+  if (!taskId || !imageCount) return;
+  els.referenceModalTitle.textContent = `任务参考图 · ${shortId(taskId)}`;
+  els.referenceGallery.innerHTML = Array.from({ length: imageCount }, (_, index) => {
+    const imageUrl = `/tasks/${encodeURIComponent(taskId)}/references/${index + 1}`;
+    return `<figure class="reference-gallery-item"><img src="${imageUrl}" alt="参考图 ${index + 1}" loading="lazy" /><figcaption>参考图 ${index + 1}</figcaption></figure>`;
+  }).join("");
+  els.referenceModal.classList.remove("hidden");
+  els.referenceModal.setAttribute("aria-hidden", "false");
+}
+
+function closeReferenceModal() {
+  els.referenceModal.classList.add("hidden");
+  els.referenceModal.setAttribute("aria-hidden", "true");
+  els.referenceGallery.innerHTML = "";
+}
+
 function taskVideoPlaybackUrl(taskId, download = false) {
   const id = String(taskId || "").trim();
   return id ? `/tasks/${encodeURIComponent(id)}/video${download ? "?download=true" : ""}` : "";
@@ -3531,6 +3555,7 @@ function renderTaskTable(options = {}) {
         <td>
           <div class="row-actions">
             <button class="icon-button" type="button" data-action="query" data-id="${escapeHtml(task.id)}" ${isQuerying ? "disabled" : ""}>${isQuerying ? "查询中" : "查询"}</button>
+            ${Number(task.image_count || 0) > 0 ? `<button class="icon-button" type="button" data-action="open-references" data-id="${escapeHtml(task.id)}">参考图</button>` : ""}
             ${canRetry ? `<button class="icon-button" type="button" data-action="retry" data-id="${escapeHtml(task.id)}" ${isRetrying ? "disabled" : ""}>${isRetrying ? "提交中" : "重试"}</button>` : ""}
             <button class="icon-button" type="button" data-action="copy-id" data-id="${escapeHtml(task.id)}">复制ID</button>
             <button class="danger-button" type="button" data-action="delete" data-id="${escapeHtml(task.id)}" ${isDeleting ? "disabled" : ""}>${isDeleting ? "处理中" : (status.className === "running" ? "取消" : "删除")}</button>
@@ -6028,6 +6053,16 @@ function bindEvents() {
   els.textModal.addEventListener("click", (event) => {
     if (event.target === els.textModal) closeTextModal();
   });
+  els.closeReferenceModal.addEventListener("click", closeReferenceModal);
+  els.confirmReferenceModal.addEventListener("click", closeReferenceModal);
+  els.referenceModal.addEventListener("click", (event) => {
+    if (event.target === els.referenceModal) closeReferenceModal();
+  });
+  els.referenceGallery.addEventListener("error", (event) => {
+    const image = event.target.closest("img");
+    if (!image) return;
+    image.closest(".reference-gallery-item")?.classList.add("unavailable");
+  }, true);
   els.closeVideoModal.addEventListener("click", closeVideoModal);
   els.confirmVideoModal.addEventListener("click", closeVideoModal);
   els.copyVideoUrl.addEventListener("click", async () => {
@@ -6204,6 +6239,10 @@ function bindEvents() {
     }
     if (action === "retry") {
       await retryTask(id);
+    }
+    if (action === "open-references") {
+      const task = state.tasks.find((item) => item.id === id);
+      if (task) openReferenceModal(task);
     }
     if (action === "copy-id") {
       await copyText(id, "任务 ID");

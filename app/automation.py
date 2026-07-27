@@ -38,6 +38,7 @@ from .store import (
     get_meta,
     update_meta,
 )
+from .reference_images import prepare_task_reference_images
 
 
 REGION_RESTRICTED_URL = "https://www.dola.com/security/region-restricted?source=1"
@@ -1135,7 +1136,7 @@ class DolaFetchAutomation:
     async def _upload_images_if_needed(self, page: Page) -> list[dict[str, Any]]:
         if not self._task_exists():
             return []
-        paths = task_image_paths(self.task_id)
+        paths = await asyncio.to_thread(prepare_task_reference_images, self.task_id)
         if not paths:
             return []
         try:

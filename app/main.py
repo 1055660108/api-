@@ -1169,7 +1169,7 @@ def _client_task(task: dict) -> dict:
     ):
         safe["error"] = "正在重试中，请稍等！"
         safe["status_reason"] = str(safe.get("status_reason") or "正在重试中，请稍等！")
-    for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "attempt_history", "last_attempt_error", "last_attempt_kind", "last_attempt_at", "reference_upload_cache_bypass", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
+    for key in ("failed_account_ids", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "attempt_history", "last_attempt_error", "last_attempt_kind", "last_attempt_at", "reference_upload_cache_bypass", "reference_face_detection_completed", "reference_face_count", "reference_face_processing_errors", "portrait_protection_retry_count", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
         safe.pop(key, None)
     return safe
 
@@ -3775,6 +3775,39 @@ async def task_video(
         status_code=response.status_code,
         media_type=response.headers.get("content-type") or "video/mp4",
         headers=outgoing_headers,
+    )
+
+
+@app.get("/tasks/{task_id}/references/{image_index}", dependencies=[Depends(require_token)])
+async def task_reference_image(
+    access: Annotated[AccessContext, Depends(require_token)],
+    task_id: str,
+    image_index: int,
+):
+    try:
+        validate_task_id(task_id)
+        meta = await asyncio.to_thread(get_meta, task_id)
+        paths = await asyncio.to_thread(task_image_paths, task_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="task not found")
+    if access.is_temp and str(meta.get("owner_token_hash") or "") != access.token_hash:
+        raise HTTPException(status_code=404, detail="task not found")
+    audience = "client" if access.is_temp else "admin"
+    if bool(meta.get(f"task_hidden_for_{audience}", False)):
+        raise HTTPException(status_code=404, detail="task not found")
+    if image_index < 1 or image_index > len(paths):
+        raise HTTPException(status_code=404, detail="reference image not found")
+    path = paths[image_index - 1]
+    media_types = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+    media_type = media_types.get(path.suffix.lower())
+    if not media_type:
+        raise HTTPException(status_code=404, detail="reference image not found")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
     )
 
 

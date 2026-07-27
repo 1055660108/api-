@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.49" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.50" />
   </head>
   <body>
     <script>
@@ -1196,6 +1196,18 @@
         </div>
       </section>
     </div>
+    <div class="modal-backdrop hidden" id="referenceModal" aria-hidden="true">
+      <section class="modal-panel reference-modal-panel" role="dialog" aria-modal="true" aria-labelledby="referenceModalTitle">
+        <div class="modal-header">
+          <h2 id="referenceModalTitle">任务参考图</h2>
+          <button class="modal-close" id="closeReferenceModal" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="reference-gallery" id="referenceGallery"></div>
+        <div class="modal-actions">
+          <button class="primary-button" id="confirmReferenceModal" type="button">关闭</button>
+        </div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="videoModal" aria-hidden="true">
       <section class="modal-panel video-modal-panel" role="dialog" aria-modal="true" aria-labelledby="videoModalTitle">
         <div class="modal-header">
@@ -1220,6 +1232,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.49"></script>
+    <script src="/admin/assets/app.js?v=1.4.50"></script>
   </body>
 </html>

@@ -61,6 +61,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('/retry`, { method: "POST"', self.javascript)
         self.assertIn('data-batch-image-index', self.javascript)
         self.assertIn('form.append("images", file, file.name)', self.javascript)
+        for element_id in ("referenceModal", "referenceGallery", "closeReferenceModal", "confirmReferenceModal"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('data-action="open-references"', self.javascript)
+        self.assertIn('/references/${index + 1}', self.javascript)
 
     def test_release_version_is_displayed_in_sidebar_and_admin_update_panel(self) -> None:
         self.assertIn('id="sidebarVersion"', self.html)

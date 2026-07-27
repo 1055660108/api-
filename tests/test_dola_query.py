@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import httpx
 
@@ -260,6 +260,76 @@ class DolaQueryTests(unittest.TestCase):
         mark_failed.assert_called_once_with(task_id, query.REFERENCE_IMAGE_REQUIRED_TEXT)
         refund_temp.assert_called_once_with(task_id, "owner-hash")
         retry_task.assert_not_called()
+
+    def test_portrait_protection_retries_once_with_another_account(self) -> None:
+        task_id = "0" * 32
+        rejection = "出于肖像保护考虑，视频无法使用真实人物照片生成。你可以尝试换其他参考图或文生视频。"
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "conversation_id": "12345678901234567",
+            "account_id": "account-portrait",
+            "account_quota_charge_id": "charge-portrait",
+            "reference_image_cache_keys": ["cached-reference"],
+        }
+        meta = {"status": query.STATUS_SUBMITTED, "owner_token_hash": "owner-hash", "image_count": 1}
+        with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=("", rejection))
+        ), patch.object(query, "save_result"), patch.object(
+            query, "invalidate_reference_attachment_keys"
+        ) as invalidate_cache, patch.object(query, "update_meta") as update_meta, patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(query, "refund_account_quota_once") as refund_account, patch.object(
+            query, "record_failed_account"
+        ) as record_failed, patch.object(query, "retry_submitted_task", return_value=1) as retry_task, patch.object(
+            query, "clear_transient_result"
+        ) as clear_result:
+            response = asyncio.run(query._query_task_once(task_id))
+
+        self.assertEqual(response, {"code": "1", "text": "正在重试中，请稍等！", "url": ""})
+        invalidate_cache.assert_called_once_with(["cached-reference"])
+        self.assertIn(call(task_id, reference_upload_cache_bypass=True), update_meta.call_args_list)
+        self.assertIn(call(task_id, portrait_protection_retry_count=1), update_meta.call_args_list)
+        clear_account.assert_called_once_with("account-portrait", task_id)
+        refund_account.assert_called_once_with(task_id, "account-portrait", "charge-portrait")
+        record_failed.assert_called_once_with(task_id, "account-portrait")
+        retry_task.assert_called_once_with(task_id, query.PORTRAIT_PROTECTION_RETRY_TEXT, max_retries=2, delay_seconds=10)
+        clear_result.assert_called_once_with(task_id)
+
+    def test_second_portrait_protection_rejection_returns_reference_error(self) -> None:
+        task_id = "0" * 32
+        rejection = "出于肖像保护考虑，视频无法使用真实人物照片生成。"
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "conversation_id": "12345678901234567",
+            "account_id": "account-second",
+        }
+        meta = {
+            "status": query.STATUS_SUBMITTED,
+            "owner_token_hash": "owner-hash",
+            "image_count": 1,
+            "portrait_protection_retry_count": 1,
+        }
+        with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=("", rejection))
+        ), patch.object(query, "save_result"), patch.object(
+            query, "invalidate_reference_attachment_keys"
+        ), patch.object(query, "update_meta"), patch.object(
+            query, "clear_account_current_task"
+        ), patch.object(query, "refund_account_quota_once"), patch.object(
+            query, "record_failed_account"
+        ), patch.object(query, "retry_submitted_task") as retry_task, patch.object(
+            query, "mark_failed"
+        ) as mark_failed, patch.object(query, "refund_temp_quota_once") as refund_temp:
+            response = asyncio.run(query._query_task_once(task_id))
+
+        self.assertEqual(response, {"code": "0", "text": query.REFERENCE_IMAGE_INVALID_TEXT, "url": ""})
+        retry_task.assert_not_called()
+        mark_failed.assert_called_once_with(task_id, query.REFERENCE_IMAGE_INVALID_TEXT)
+        refund_temp.assert_called_once_with(task_id, "owner-hash")
 
     def test_policy_text_uses_client_message(self) -> None:
         self.assertEqual(query.POLICY_RETRY_TEXT, "你的输入可能包含违规内容请重试！")

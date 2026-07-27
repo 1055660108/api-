@@ -15,6 +15,8 @@ httptools==0.8.0
 httpx==0.28.1
 idna==3.18
 odfpy==1.4.1
+numpy==2.2.6
+opencv-python-headless==4.12.0.88
 openpyxl==3.1.5
 playwright==1.61.0
 psycopg==3.3.4

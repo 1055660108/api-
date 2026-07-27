@@ -7,7 +7,7 @@ import socket
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import account_for_current_task, claim_account_for_worker, clear_account_current_task, exhaust_timed_out_account, refund_account_quota, settle_account_quota
+from .accounts import account_for_current_task, claim_account_for_worker, clear_account_current_task, refund_account_quota, settle_account_quota
 from .automation import DolaFetchAutomation, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import ReusableBrowserPool
 from .doubao_automation import DoubaoVideoAutomation
@@ -18,7 +18,6 @@ from .store import (
     claim_next_pending,
     count_pending_tasks,
     can_run_task,
-    clear_transient_result,
     defer_task,
     get_meta,
     has_pending_tasks,
@@ -39,7 +38,6 @@ from .store import (
     record_retry,
     record_infrastructure_retry,
     reset_running_tasks,
-    retry_timed_out_submitted_task,
     set_execution_phase,
     set_active_tasks,
     STATUS_SUBMITTED,
@@ -56,7 +54,7 @@ from .temp_access import temp_token_concurrency_limits, temp_token_remote_genera
 
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
-RESULT_WATCH_DEADLINE_MINUTES = 8
+RESULT_WATCH_DEADLINE_MINUTES = 20
 RETRY_ACCOUNT_WAIT_MINUTES = 5
 
 
@@ -397,16 +395,9 @@ class WorkerManager:
                 if submitted_at and datetime.now(timezone.utc) - submitted_at >= timedelta(minutes=RESULT_WATCH_DEADLINE_MINUTES):
                     account_id = str(result.get("account_id") or "")
                     if account_id:
-                        exhaust_timed_out_account(account_id, str(result.get("account_quota_charge_id") or ""))
+                        settle_account_quota(account_id, str(result.get("account_quota_charge_id") or ""))
                         clear_account_current_task(account_id, task_id)
-                    if not bool(meta.get("cancel_requested")):
-                        if account_id:
-                            record_failed_account(task_id, account_id)
-                        retry_count = retry_timed_out_submitted_task(task_id, "生成超过8分钟，正在重试", max_retries=MAX_TASK_RETRIES)
-                        if retry_count <= MAX_TASK_RETRIES:
-                            clear_transient_result(task_id)
-                            return
-                    mark_failed(task_id, "生成超过8分钟，两次重试后仍未返回结果")
+                    mark_failed(task_id, "生成超过20分钟，仍未返回结果")
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     return
                 await self._pace_result_poll()

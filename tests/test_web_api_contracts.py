@@ -76,6 +76,8 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("浏览器超时", "Seedance 2.0"), "服务超时")
         self.assertEqual(main._client_safe_text("游客模式暂不支持生成图片和视频，请登录后再试", "Seedance 2.0"), "正在重试中，请稍等！")
         self.assertEqual(main._client_safe_text("游客模式暂不支持生成图片和视频，请登录后再试", "Seedance 2.0", terminal=True), "生成失败，请重试！")
+        self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0"), "正在生成中，请稍等！")
+        self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0", terminal=True), "生成失败，请重试！")
 
     def test_failed_region_task_never_displays_retrying_text(self) -> None:
         registered = self.register("failed_region_client")
@@ -90,6 +92,28 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(listed["status"], "failed")
         self.assertEqual(listed["error"], "生成失败，请重试！")
         self.assertEqual(result, {"code": "0", "text": "生成失败，请重试！", "url": ""})
+
+    def test_result_timeout_reason_is_visible_only_to_admin(self) -> None:
+        registered = self.register("timeout_reason_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        task = store.create_task("超时原因隔离", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        store.mark_failed(task["id"], "生成超过20分钟，仍未返回结果")
+
+        client_task = self.client.get(
+            "/tasks?page=1&page_size=20",
+            headers={"X-API-Token": registered["token"]},
+        ).json()["tasks"][0]
+        admin_task = next(
+            item
+            for item in self.client.get(
+                "/tasks?page=1&page_size=20",
+                headers={"X-API-Token": self.admin_token},
+            ).json()["tasks"]
+            if item["id"] == task["id"]
+        )
+
+        self.assertEqual(client_task["error"], "生成失败，请重试！")
+        self.assertEqual(admin_task["error"], "生成超过20分钟，仍未返回结果")
 
     def test_admin_and_client_entries_publish_the_same_static_bundle(self) -> None:
         admin = self.client.get("/admin")

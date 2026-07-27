@@ -30,14 +30,15 @@ x-app-environment: &app-environment
   DOLA_REFERENCE_CACHE_TTL_SECONDS: ${DOLA_REFERENCE_CACHE_TTL_SECONDS:-1800}
   DOLA_REFERENCE_CACHE_MAX_ENTRIES: ${DOLA_REFERENCE_CACHE_MAX_ENTRIES:-512}
   DOLA_API_MAX_CONNECTIONS: ${DOLA_API_MAX_CONNECTIONS:-512}
-  DOLA_API_HEALTH_FAILURES_BEFORE_RESTART: ${DOLA_API_HEALTH_FAILURES_BEFORE_RESTART:-3}
+  DOLA_API_HEALTH_FAILURES_BEFORE_RESTART: ${DOLA_API_HEALTH_FAILURES_BEFORE_RESTART:-5}
+  DOLA_API_HEALTH_TIMEOUT_SECONDS: ${DOLA_API_HEALTH_TIMEOUT_SECONDS:-4}
   DOLA_API_FD_RESTART_THRESHOLD: ${DOLA_API_FD_RESTART_THRESHOLD:-4096}
   DOLA_UPDATE_CONTROLLER_SOCKET: /run/dola-update/controller.sock
 
 x-app-base: &app-base
   build:
     context: .
-  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.50}
+  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.51}
   init: true
   restart: unless-stopped
   ulimits:
@@ -65,7 +66,7 @@ services:
     healthcheck:
       test: ["CMD", "python", "-m", "app.api_healthcheck"]
       interval: 15s
-      timeout: 5s
+      timeout: 7s
       retries: 5
       start_period: 30s
     deploy:

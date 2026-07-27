@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app import admin_auth, config, feedback, main, membership_catalog, notifications, package_catalog, point_cards, point_transactions, store, temp_access, users
+from app import admin_auth, config, feedback, invitation_codes, main, membership_catalog, notifications, package_catalog, point_cards, point_transactions, store, temp_access, users
 
 
 class ClientFeatureTests(unittest.TestCase):
@@ -25,6 +25,7 @@ class ClientFeatureTests(unittest.TestCase):
             patch.object(store, "runtime_path", return_value=self.root / "runtime.json"),
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.root / "temp_tokens.json"),
             patch.object(users, "USERS_PATH", self.root / "users.json"),
+            patch.object(invitation_codes, "INVITATION_CODES_PATH", self.root / "invitation_codes.json"),
             patch.object(feedback, "FEEDBACK_PATH", self.root / "feedback.json"),
             patch.object(notifications, "NOTIFICATIONS_PATH", self.root / "notifications.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
@@ -40,6 +41,7 @@ class ClientFeatureTests(unittest.TestCase):
             main._RATE_BUCKETS.clear()
         config.ensure_config()
         config.update_config({"registration_email_verification_enabled": False})
+        invitation_codes.set_registration_required(False)
         self.client = TestClient(main.app)
 
     def tearDown(self) -> None:
@@ -53,6 +55,58 @@ class ClientFeatureTests(unittest.TestCase):
         response = self.client.post("/auth/register", json={"username": username, "password": password, "confirm_password": password})
         self.assertEqual(response.status_code, 200)
         return response.json()
+
+    def test_invitation_code_registration_can_be_required_and_disabled(self) -> None:
+        invitation_codes.set_registration_required(True)
+        missing = self.client.post(
+            "/auth/register",
+            json={"username": "invite_missing", "password": "password123", "confirm_password": "password123"},
+        )
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(missing.json()["detail"], "请输入邀请码")
+
+        logged_in = self.client.post(
+            "/auth/admin/login",
+            json={"username": "chosen-admin", "password": "StrongPassword123"},
+        )
+        self.assertEqual(logged_in.status_code, 200, logged_in.text)
+        generated = self.client.post("/admin/invitation-codes", json={"count": 1})
+        self.assertEqual(generated.status_code, 201, generated.text)
+        code = generated.json()["generated"][0]["code"]
+        registered = self.client.post(
+            "/auth/register",
+            json={"username": "invited_user", "password": "password123", "confirm_password": "password123", "invitation_code": code},
+        )
+        self.assertEqual(registered.status_code, 200, registered.text)
+        reused = self.client.post(
+            "/auth/register",
+            json={"username": "invite_reuse", "password": "password123", "confirm_password": "password123", "invitation_code": code},
+        )
+        self.assertEqual(reused.status_code, 200, reused.text)
+
+        user = next(item for item in self.client.get("/users?page=1&page_size=20").json()["users"] if item["username"] == "invited_user")
+        details = self.client.get(f"/users/{user['id']}/details").json()["user"]
+        self.assertEqual(details["invitation_code"], code)
+        state = self.client.get("/admin/invitation-codes").json()
+        self.assertEqual(state["counts"], {"total": 1, "uses": 2})
+        self.assertEqual(state["codes"][0]["use_count"], 2)
+
+        deleted = self.client.delete(f"/admin/invitation-codes/{state['codes'][0]['id']}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        rejected = self.client.post(
+            "/auth/register",
+            json={"username": "invite_deleted", "password": "password123", "confirm_password": "password123", "invitation_code": code},
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.json()["detail"], "邀请码无效")
+
+        disabled = self.client.patch("/admin/invitation-codes/settings", json={"required": False})
+        self.assertEqual(disabled.status_code, 200)
+        open_registration = self.client.post(
+            "/auth/register",
+            json={"username": "invite_disabled", "password": "password123", "confirm_password": "password123"},
+        )
+        self.assertEqual(open_registration.status_code, 200, open_registration.text)
 
     def test_registration_rejects_case_insensitive_duplicate_username(self) -> None:
         self.register("UniqueUser")

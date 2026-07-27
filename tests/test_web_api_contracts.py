@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app import __version__, accounts, admin_auth, batch_jobs, client_auth, config, main, package_catalog, point_transactions, proxy_manager, store, temp_access, users
+from app import __version__, accounts, admin_auth, batch_jobs, client_auth, config, invitation_codes, main, package_catalog, point_transactions, proxy_manager, store, temp_access, users
 
 
 class WebAPIContractTests(unittest.TestCase):
@@ -30,6 +30,7 @@ class WebAPIContractTests(unittest.TestCase):
             patch.object(accounts, "ACCOUNTS_PATH", self.root / "accounts.json"),
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.root / "temp_tokens.json"),
             patch.object(users, "USERS_PATH", self.root / "users.json"),
+            patch.object(invitation_codes, "INVITATION_CODES_PATH", self.root / "invitation_codes.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
             patch.object(point_transactions, "TRANSACTIONS_PATH", self.root / "point_transactions.json"),
             patch.dict("os.environ", {"DOLA_ADMIN_USERNAME": "contract-admin", "DOLA_ADMIN_PASSWORD": "ContractPassword123"}),
@@ -40,6 +41,7 @@ class WebAPIContractTests(unittest.TestCase):
         client_auth.clear_client_sessions()
         config.ensure_config()
         config.update_config({"registration_email_verification_enabled": False})
+        invitation_codes.set_registration_required(False)
         self.client_context = TestClient(main.app)
         self.client = self.client_context.__enter__()
         self.admin_token = config.load_settings().api_token
@@ -1036,6 +1038,14 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["stats"]["total"], 1)
         self.assertEqual(payload["stats"]["normal"], 1)
         self.assertEqual(payload["stats"]["by_platform"], {"dola": 1, "doubao": 1, "qianwen": 0})
+        accounts.disable_account_for_login(dola["id"], "登录失效")
+        abnormal = self.client.get("/accounts?page=1&page_size=20&status=abnormal").json()
+        self.assertEqual([item["id"] for item in abnormal["accounts"]], [dola["id"]])
+        disabled_account = self.client.post("/accounts", json={"name": "停用账号", "cookie_data": "session=disabled", "platform": "dola", "enabled": False}).json()["account"]
+        self.assertFalse(disabled_account["enabled"])
+        disabled = self.client.get("/accounts?page=1&page_size=20&status=disabled").json()
+        self.assertEqual([item["id"] for item in disabled["accounts"]], [disabled_account["id"]])
+        self.assertEqual(self.client.get("/accounts?page=1&status=unknown").status_code, 422)
         self.assertEqual(self.client.get("/accounts?page=1&platform=unknown").status_code, 422)
 
     def test_account_user_and_configuration_responses_keep_web_contracts(self) -> None:

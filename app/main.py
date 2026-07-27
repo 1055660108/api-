@@ -57,6 +57,7 @@ from .config import (
 )
 from .email_verification import consume_registration_code, normalize_domains, normalize_email, send_registration_code, validate_allowed_email
 from .feedback import create_feedback, delete_feedback, list_feedback, list_feedback_for_user, update_feedback
+from .invitation_codes import complete_reservation as complete_invitation_reservation, delete_code as delete_invitation_code, generate_codes as generate_invitation_codes, invitation_state, registration_required as invitation_registration_required, release_reservation as release_invitation_reservation, reserve_code as reserve_invitation_code, set_registration_required as set_invitation_registration_required
 from .notifications import create_announcement, create_notifications, delete_announcement, delete_notification, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, update_announcement
 from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, normalize_platform
 from .query import query_task
@@ -1475,13 +1476,31 @@ async def client_register(request: Request):
     await _rate_limit(request, "register", 5, 60)
     if payload.get("password") != payload.get("confirm_password"):
         raise HTTPException(status_code=400, detail="两次输入的密码不一致")
+    invitation_reservation = None
     try:
         settings = load_settings()
+        invitation_code = str(payload.get("invitation_code") or "").strip()
+        if invitation_registration_required() and not invitation_code:
+            raise ValueError("请输入邀请码")
+        if invitation_code:
+            invitation_reservation = reserve_invitation_code(invitation_code)
         email = ""
         if settings.registration_email_verification_enabled:
             email = consume_registration_code(payload.get("email", ""), payload.get("email_code", ""), settings)
-        registered = register_user(payload.get("username", ""), payload.get("password", ""), email)
+        registered = register_user(
+            payload.get("username", ""),
+            payload.get("password", ""),
+            email,
+            str((invitation_reservation or {}).get("code") or ""),
+        )
         identity = user_identity_by_token_hash(hash_token(str(registered.get("token") or "")))
+        if invitation_reservation:
+            complete_invitation_reservation(
+                str(invitation_reservation.get("reservation_id") or ""),
+                str(identity.get("id") or ""),
+                str(identity.get("username") or ""),
+            )
+            invitation_reservation = None
         record_transaction(
             str(identity.get("id") or ""),
             "video_quota_credit",
@@ -1496,7 +1515,13 @@ async def client_register(request: Request):
         _set_client_session_cookie(response, request, hash_token(str(registered.get("token") or "")))
         return response
     except ValueError as exc:
+        if invitation_reservation:
+            release_invitation_reservation(str(invitation_reservation.get("reservation_id") or ""))
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        if invitation_reservation:
+            release_invitation_reservation(str(invitation_reservation.get("reservation_id") or ""))
+        raise
 
 
 @app.post("/auth/register/email-code")
@@ -1523,6 +1548,7 @@ async def client_registration_email_domains():
     return {
         "enabled": settings.registration_email_verification_enabled,
         "domains": [f"@{item}" for item in settings.registration_email_domains],
+        "invitation_required": invitation_registration_required(),
     }
 
 
@@ -2279,6 +2305,37 @@ async def registration_email_config():
     }
 
 
+@app.get("/admin/invitation-codes", dependencies=[Depends(require_admin)])
+async def admin_invitation_codes(limit: int = Query(200, ge=1, le=1000)):
+    return invitation_state(limit=limit)
+
+
+@app.post("/admin/invitation-codes", dependencies=[Depends(require_admin)], status_code=201)
+async def admin_generate_invitation_codes(request: Request):
+    payload = await _request_payload(request)
+    try:
+        cards = generate_invitation_codes(int(payload.get("count") or 1))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "count": len(cards), "generated": cards, **invitation_state()}
+
+
+@app.patch("/admin/invitation-codes/settings", dependencies=[Depends(require_admin)])
+async def admin_invitation_code_settings(request: Request):
+    payload = await _request_payload(request)
+    raw_required = payload.get("required")
+    if not isinstance(raw_required, bool):
+        raise HTTPException(status_code=400, detail="required must be a boolean")
+    return {"ok": True, **set_invitation_registration_required(raw_required)}
+
+
+@app.delete("/admin/invitation-codes/{code_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_invitation_code(code_id: str):
+    if not delete_invitation_code(code_id):
+        raise HTTPException(status_code=404, detail="邀请码不存在")
+    return {"ok": True, **invitation_state()}
+
+
 @app.get("/config/workers", dependencies=[Depends(require_token)])
 async def workers_config():
     settings = load_settings()
@@ -2597,6 +2654,7 @@ async def accounts_list(
     page_size: int | None = Query(None, ge=1, le=100),
     q: str | None = Query(None, max_length=200),
     platform: str | None = Query(None),
+    status: str | None = Query(None),
 ):
     reset_daily_account_quotas_if_needed()
     reconcile_account_quotas()
@@ -2637,7 +2695,7 @@ async def accounts_list(
         },
         "next_quota_reset_at": next_quota_reset_at(),
     }
-    if page is None and page_size is None and q is None and platform is None:
+    if page is None and page_size is None and q is None and platform is None and status is None:
         return response
     selected_platform = str(platform or "").strip().lower()
     if selected_platform and selected_platform != "all":
@@ -2648,9 +2706,20 @@ async def accounts_list(
     else:
         selected_platform = ""
     platform_accounts = [item for item in accounts if not selected_platform or str(item.get("platform") or DEFAULT_PLATFORM) == selected_platform]
+    selected_status = str(status or "").strip().lower()
+    if selected_status not in {"", "all", "normal", "abnormal", "disabled"}:
+        raise HTTPException(status_code=422, detail="账号状态筛选无效")
+    if selected_status in {"", "all"}:
+        status_accounts = platform_accounts
+    elif selected_status == "normal":
+        status_accounts = [item for item in platform_accounts if item.get("enabled") is not False and item.get("account_status") != "abnormal"]
+    elif selected_status == "abnormal":
+        status_accounts = [item for item in platform_accounts if item.get("account_status") == "abnormal"]
+    else:
+        status_accounts = [item for item in platform_accounts if item.get("enabled") is False and item.get("account_status") != "abnormal"]
     keyword = str(q or "").strip().lower()
     filtered = [
-        item for item in platform_accounts
+        item for item in status_accounts
         if not keyword or any(
             keyword in str(value or "").lower()
             for value in (
@@ -2695,7 +2764,7 @@ async def accounts_create(request: Request):
         platform = normalize_platform(payload.get("platform") or DEFAULT_PLATFORM)
         default_quota_limit = 1 if platform == "dola" else 5 if platform == "qianwen" else 2
         quota_limit = int(payload.get("quota_limit") if payload.get("quota_limit") not in {None, ""} else default_quota_limit)
-        enabled = str(payload.get("enabled") or "true").lower() not in {"0", "false", "no", "off"}
+        enabled = str(payload.get("enabled") if payload.get("enabled") is not None else "true").lower() not in {"0", "false", "no", "off"}
         if bulk:
             result = await asyncio.to_thread(add_accounts_bulk_result, cookie_data, quota_limit, enabled, platform)
             return {"ok": True, **result}

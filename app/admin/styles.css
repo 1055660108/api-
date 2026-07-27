@@ -5964,6 +5964,27 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .announcement-lock-control > input:checked + .switch-track { background: #b6403a; }
 .announcement-lock-control > input:checked + .switch-track > span { transform: translateX(18px); }
 .announcement-lock-control > input:focus-visible + .switch-track { outline: 2px solid #4da59d; outline-offset: 2px; }
+.invitation-config-controls { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(110px, 140px) auto; gap: 12px; align-items: end; }
+.invitation-toggle-control { display: flex; align-items: center; gap: 10px; min-height: 42px; cursor: pointer; }
+.invitation-toggle-control > input { position: absolute; opacity: 0; pointer-events: none; }
+.invitation-toggle-control > span:last-child { display: grid; gap: 2px; }
+.invitation-toggle-control small { color: #737b78; font-size: 12px; }
+.invitation-toggle-control > input:checked + .switch-track { background: #202423; }
+.invitation-toggle-control > input:checked + .switch-track > span { transform: translateX(18px); }
+.invitation-toggle-control > input:focus-visible + .switch-track { outline: 2px solid #202423; outline-offset: 2px; }
+#generatedInvitationCodes { margin-top: 14px; }
+.invitation-code-list { display: grid; max-height: 300px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.invitation-code-row { display: grid; grid-template-columns: minmax(180px, 1fr) 100px 170px auto; gap: 12px; align-items: center; min-height: 52px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.invitation-code-row:last-child { border-bottom: 0; }
+.invitation-code-row code { color: #1f2523; font-weight: 700; }
+.invitation-code-row > span { color: var(--muted); font-size: 12px; }
+.invitation-code-empty { min-height: 92px; }
+@media (max-width: 760px) {
+  .invitation-config-controls { grid-template-columns: 1fr; }
+  .invitation-code-row { grid-template-columns: 1fr auto; }
+  .invitation-code-row > span { grid-column: 1; }
+  .invitation-code-row > button { grid-column: 2; grid-row: 1 / span 3; }
+}
 .announcement-lock-copy { display: grid; gap: 3px; }
 .announcement-lock-copy strong { color: #782c29; font-size: 13px; }
 .announcement-lock-copy small { color: #7a6260; line-height: 1.4; }

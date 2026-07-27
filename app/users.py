@@ -240,7 +240,7 @@ def _password_hash(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 310000).hex()
 
 
-def register_user(username: str, password: str, email: str = "") -> dict[str, Any]:
+def register_user(username: str, password: str, email: str = "", invitation_code: str = "") -> dict[str, Any]:
     username = str(username or "").strip()
     if not _USERNAME_RE.fullmatch(username):
         raise ValueError("用户名需为3-24位中文、字母、数字或下划线")
@@ -268,6 +268,7 @@ def register_user(username: str, password: str, email: str = "") -> dict[str, An
             "username": username,
             "email": normalized_email,
             "email_verified_at": now if normalized_email else "",
+            "invitation_code": str(invitation_code or "").strip().upper()[:80],
             "password_salt": salt.hex(),
             "password_hash": _password_hash(password, salt),
             "token_hash": token_entry["id"],
@@ -589,6 +590,7 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             rows.append({
                 "id": entry["id"], "username": entry["username"], "created_at": entry["created_at"],
                 "email": str(entry.get("email") or ""), "email_verified_at": str(entry.get("email_verified_at") or ""),
+                "invitation_code": str(entry.get("invitation_code") or ""),
                 "last_login_at": entry.get("last_login_at", ""), "last_seen_at": entry.get("last_seen_at", ""),
                 "online": now - seen.astimezone(timezone.utc) <= timedelta(seconds=75),
                 "free_remaining": free_remaining, "points": points,

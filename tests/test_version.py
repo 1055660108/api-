@@ -16,7 +16,7 @@ class VersionTests(unittest.TestCase):
         postgres_source = (root / "app" / "postgres.py").read_text(encoding="utf-8")
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.47")
+        self.assertEqual(version, "1.4.48")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-24}", compose)

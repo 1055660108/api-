@@ -21,6 +21,7 @@ const els = {
   clientUsername: document.getElementById("clientUsername"),
   clientPassword: document.getElementById("clientPassword"),
   clientConfirmPassword: document.getElementById("clientConfirmPassword"),
+  clientInvitationCode: document.getElementById("clientInvitationCode"),
   clientEmailLocal: document.getElementById("clientEmailLocal"),
   clientEmailDomain: document.getElementById("clientEmailDomain"),
   clientEmailCode: document.getElementById("clientEmailCode"),
@@ -454,6 +455,15 @@ const els = {
   selectAllVideos: document.getElementById("selectAllVideos"),
   deleteSelectedVideos: document.getElementById("deleteSelectedVideos"),
   accountPlatformFilter: document.getElementById("accountPlatformFilter"),
+  accountStatusFilter: document.getElementById("accountStatusFilter"),
+  registrationInvitationRequired: document.getElementById("registrationInvitationRequired"),
+  invitationCodeCount: document.getElementById("invitationCodeCount"),
+  generateInvitationCodes: document.getElementById("generateInvitationCodes"),
+  invitationConfigState: document.getElementById("invitationConfigState"),
+  generatedInvitationCodes: document.getElementById("generatedInvitationCodes"),
+  generatedInvitationCodeList: document.getElementById("generatedInvitationCodeList"),
+  copyGeneratedInvitationCodes: document.getElementById("copyGeneratedInvitationCodes"),
+  invitationCodeList: document.getElementById("invitationCodeList"),
   clientEntryUrl: document.getElementById("clientEntryUrl"),
   copyClientEntryUrl: document.getElementById("copyClientEntryUrl"),
   refreshTempTokens: document.getElementById("refreshTempTokens"),
@@ -548,6 +558,7 @@ const state = {
   accountTotalPages: 1,
   accountStats: null,
   accountPlatformFilter: "all",
+  accountStatusFilter: "all",
   accountPage: 1,
   accountPageSize: 20,
   accountQuotaSummary: null,
@@ -583,6 +594,7 @@ const state = {
   editingPromptId: "",
   clientRegisterMode: false,
   registrationEmailVerificationEnabled: true,
+  registrationInvitationRequired: true,
   freeRemaining: 0,
   points: 0,
   concurrency: 1,
@@ -1538,11 +1550,12 @@ async function login(event) {
     if (portal === "client") {
       if (!els.clientUsername.value.trim() || !els.clientPassword.value) throw new Error("请填写用户名和密码");
       if (state.clientRegisterMode && els.clientPassword.value !== els.clientConfirmPassword.value) throw new Error("两次输入的密码不一致");
+      if (state.clientRegisterMode && state.registrationInvitationRequired && !els.clientInvitationCode?.value.trim()) throw new Error("请输入邀请码");
       const emailVerificationRequired = state.clientRegisterMode && state.registrationEmailVerificationEnabled;
       const email = emailVerificationRequired ? `${els.clientEmailLocal.value.trim()}${els.clientEmailDomain.value}` : "";
       if (emailVerificationRequired && (!els.clientEmailLocal.value.trim() || !els.clientEmailCode.value.trim())) throw new Error("请填写邮箱和验证码");
       const data = await requestJson(state.clientRegisterMode ? "/auth/register" : "/auth/login", "", {
-        method: "POST", body: { identifier: els.clientUsername.value.trim(), username: els.clientUsername.value.trim(), password: els.clientPassword.value, confirm_password: els.clientConfirmPassword.value, email, email_code: emailVerificationRequired ? els.clientEmailCode.value.trim() : "" },
+        method: "POST", body: { identifier: els.clientUsername.value.trim(), username: els.clientUsername.value.trim(), password: els.clientPassword.value, confirm_password: els.clientConfirmPassword.value, invitation_code: state.clientRegisterMode ? els.clientInvitationCode?.value.trim() || "" : "", email, email_code: emailVerificationRequired ? els.clientEmailCode.value.trim() : "" },
       });
       token = data.token;
     } else {
@@ -2243,6 +2256,7 @@ async function openUserDetails(userId) {
       ["视频额度", user.free_remaining ?? 0],
       ["有效并发", user.concurrency ?? 1],
       ["远端上限", user.remote_generation_limit ?? user.concurrency ?? 1],
+      ["注册邀请码", user.invitation_code || "-"],
       ["任务总数", summary.total ?? 0],
       ["生成成功", summary.success ?? 0],
       ["进行中", summary.active ?? 0],
@@ -2296,10 +2310,81 @@ async function changeClientPassword(event) {
 async function loadEmailDomains() {
   const data = await requestJson("/auth/register/email-domains", "");
   state.registrationEmailVerificationEnabled = data.enabled !== false;
+  state.registrationInvitationRequired = data.invitation_required !== false;
+  if (els.clientInvitationCode) els.clientInvitationCode.required = state.registrationInvitationRequired;
   const domains = Array.isArray(data.domains) ? data.domains : [];
   const options = domains.map((domain) => `<option value="${escapeHtml(domain)}">${escapeHtml(domain)}</option>`).join("");
   if (els.clientEmailDomain) els.clientEmailDomain.innerHTML = options;
   if (els.changeEmailDomain) els.changeEmailDomain.innerHTML = options;
+}
+
+async function loadInvitationConfig() {
+  if (portal !== "admin" || !els.registrationInvitationRequired) return;
+  const data = await apiFetch("/admin/invitation-codes?limit=200");
+  state.registrationInvitationRequired = data.required !== false;
+  els.registrationInvitationRequired.checked = state.registrationInvitationRequired;
+  const counts = data.counts || {};
+  if (els.invitationConfigState) els.invitationConfigState.textContent = `${state.registrationInvitationRequired ? "已启用" : "已关闭"} · 邀请码 ${Number(counts.total || 0)} 个 · 累计使用 ${Number(counts.uses || 0)} 次`;
+  renderInvitationCodes(data.codes || []);
+}
+
+function renderInvitationCodes(codes) {
+  if (!els.invitationCodeList) return;
+  const rows = Array.isArray(codes) ? codes : [];
+  els.invitationCodeList.innerHTML = rows.length ? rows.map((item) => `
+    <div class="invitation-code-row">
+      <code>${escapeHtml(item.code || "-")}</code>
+      <span>使用 ${Number(item.use_count || 0)} 次</span>
+      <span>${escapeHtml(formatTime(item.created_at))}</span>
+      <button class="danger-button compact-button" type="button" data-delete-invitation-code="${escapeHtml(item.id || "")}">删除</button>
+    </div>
+  `).join("") : '<div class="empty-state invitation-code-empty">暂无邀请码</div>';
+}
+
+async function deleteRegistrationInvitationCode(codeId) {
+  if (!codeId || !window.confirm("确认删除这个邀请码？删除后该邀请码将立即失效。")) return;
+  try {
+    await apiFetch(`/admin/invitation-codes/${encodeURIComponent(codeId)}`, { method: "DELETE" });
+    await loadInvitationConfig();
+    toast("邀请码已删除");
+  } catch (error) {
+    toast(`邀请码删除失败：${error.message}`, "error");
+  }
+}
+
+async function saveInvitationRequirement() {
+  if (!els.registrationInvitationRequired) return;
+  const required = Boolean(els.registrationInvitationRequired.checked);
+  els.registrationInvitationRequired.disabled = true;
+  try {
+    const data = await apiFetch("/admin/invitation-codes/settings", { method: "PATCH", body: { required } });
+    state.registrationInvitationRequired = data.required !== false;
+    await loadInvitationConfig();
+    toast(state.registrationInvitationRequired ? "已启用邀请码注册" : "已关闭邀请码注册");
+  } catch (error) {
+    els.registrationInvitationRequired.checked = !required;
+    toast(`邀请码设置失败：${error.message}`, "error");
+  } finally {
+    els.registrationInvitationRequired.disabled = false;
+  }
+}
+
+async function generateRegistrationInvitationCodes() {
+  const count = Math.trunc(Number(els.invitationCodeCount?.value || 1));
+  if (count < 1 || count > 200) return toast("邀请码生成数量需为 1-200", "error");
+  setBusy(els.generateInvitationCodes, true, "生成中");
+  try {
+    const data = await apiFetch("/admin/invitation-codes", { method: "POST", body: { count } });
+    const codes = (data.generated || []).map((item) => String(item.code || "")).filter(Boolean).join("\n");
+    if (els.generatedInvitationCodeList) els.generatedInvitationCodeList.textContent = codes;
+    els.generatedInvitationCodes?.classList.toggle("hidden", !codes);
+    await loadInvitationConfig();
+    toast(`已生成 ${Number(data.count || 0)} 个邀请码`);
+  } catch (error) {
+    toast(`邀请码生成失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.generateInvitationCodes, false);
+  }
 }
 
 async function loadClientProfile() {
@@ -2898,6 +2983,7 @@ async function refreshAccounts(options = {}) {
     const keyword = (els.accountTaskSearch?.value || "").trim();
     if (keyword) params.set("q", keyword);
     if (state.accountPlatformFilter !== "all") params.set("platform", state.accountPlatformFilter);
+    if (state.accountStatusFilter !== "all") params.set("status", state.accountStatusFilter);
     const data = await apiFetch(`/accounts?${params}`);
     if (requestId !== state.accountRefreshRequestId) return;
     state.accounts = Array.isArray(data.accounts) ? data.accounts : [];
@@ -3205,7 +3291,7 @@ async function refreshDashboard() {
   try {
     await refreshHealth();
     const jobs = [refreshTasks({ quiet: true }), loadPlatforms()];
-    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }));
+    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }), loadInvitationConfig());
     if (portal === "client") jobs.push(loadClientNotifications(), loadMemberships(), loadClientProfile());
     const results = await Promise.allSettled(jobs);
     const rejected = results.find((item) => item.status === "rejected");
@@ -5117,6 +5203,13 @@ function bindEvents() {
     updateNotificationRecipientState();
   });
   els.packageForm?.addEventListener("submit", createPointPackage);
+  els.registrationInvitationRequired?.addEventListener("change", saveInvitationRequirement);
+  els.generateInvitationCodes?.addEventListener("click", generateRegistrationInvitationCodes);
+  els.copyGeneratedInvitationCodes?.addEventListener("click", () => copyText(els.generatedInvitationCodeList?.textContent || "", "邀请码"));
+  els.invitationCodeList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-delete-invitation-code]");
+    if (button) deleteRegistrationInvitationCode(button.dataset.deleteInvitationCode);
+  });
   const setClientMode = (register) => {
     state.clientRegisterMode = register;
     els.clientLoginTab?.classList.toggle("active", !register);
@@ -5803,6 +5896,11 @@ function bindEvents() {
   });
   els.accountPlatformFilter?.addEventListener("change", () => {
     state.accountPlatformFilter = els.accountPlatformFilter.value || "all";
+    state.accountPage = 1;
+    refreshAccounts({ quiet: true });
+  });
+  els.accountStatusFilter?.addEventListener("change", () => {
+    state.accountStatusFilter = els.accountStatusFilter.value || "all";
     state.accountPage = 1;
     refreshAccounts({ quiet: true });
   });

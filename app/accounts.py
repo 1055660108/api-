@@ -298,7 +298,7 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
         "platform": str(account.get("platform") or DEFAULT_PLATFORM),
         "name": str(account.get("name") or ""),
         "enabled": bool(account.get("enabled", True)),
-        "account_status": str(account.get("account_status") or ("normal" if account.get("enabled", True) else "abnormal")),
+        "account_status": str(account.get("account_status") or "normal"),
         "status_reason": str(account.get("disabled_reason") or account.get("status_reason") or ""),
         "quota_limit": quota_limit,
         "quota_used": quota_used,

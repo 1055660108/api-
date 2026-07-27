@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from . import config as app_config
+from .admin_audit import list_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_quota
@@ -65,6 +66,7 @@ from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
 from .proxy_manager import activate_mihomo_node, fetch_subscription_node_list, measure_node_delays, node_payload, probe_dola_proxy, rebuild_mihomo_from_snapshot
 from .resilience import PlatformGuard, adaptive_worker_limit, queue_admission
+from .registration_security import block_retry_after as registration_block_retry_after, clear_local_state as clear_registration_security_state, record_failure as record_registration_failure, reset_failures as reset_registration_failures
 from .repository_update import repository_status, update_repository
 from .spreadsheet_import import MAX_SPREADSHEET_BYTES, SUPPORTED_SPREADSHEET_SUFFIXES, SpreadsheetImportError, parse_spreadsheet
 from .postgres import ensure_schema as ensure_postgres_schema
@@ -421,6 +423,17 @@ async def _record_activity_safe(user_id: str, action: str, title: str, **kwargs)
         logger.exception("user activity write failed (user_id=%s action=%s)", user_id, action)
 
 
+async def _record_admin_action_safe(action: str, title: str, **kwargs) -> None:
+    try:
+        await asyncio.to_thread(record_admin_action, action, title, **kwargs)
+    except Exception:
+        logger.exception("admin audit write failed (action=%s)", action)
+
+
+def _request_client_key(request: Request) -> str:
+    return str(request.client.host if request.client else "unknown")[:80]
+
+
 def _request_fingerprint(route: str, owner: str, payload: dict) -> str:
     raw = json.dumps({"route": route, "owner": owner, "payload": payload}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -773,6 +786,7 @@ async def lifespan(app: FastAPI):
     global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task, batch_scheduler_task
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
+    clear_registration_security_state()
     _OWNER_CREATE_SEMAPHORES.clear()
     validate_startup_credentials(ensure_config())
     if postgres_enabled():
@@ -1472,12 +1486,20 @@ async def admin_disable_membership(package_id: str):
 
 @app.post("/auth/register")
 async def client_register(request: Request):
+    client_key = _request_client_key(request)
+    blocked_for = await asyncio.to_thread(registration_block_retry_after, client_key)
+    if blocked_for > 0:
+        raise HTTPException(
+            status_code=429,
+            detail="连续异常注册次数过多，已暂时拦截，请稍后重试",
+            headers={"Retry-After": str(blocked_for)},
+        )
     payload = await _request_payload(request)
     await _rate_limit(request, "register", 5, 60)
-    if payload.get("password") != payload.get("confirm_password"):
-        raise HTTPException(status_code=400, detail="两次输入的密码不一致")
     invitation_reservation = None
     try:
+        if payload.get("password") != payload.get("confirm_password"):
+            raise ValueError("两次输入的密码不一致")
         settings = load_settings()
         invitation_code = str(payload.get("invitation_code") or "").strip()
         if invitation_registration_required() and not invitation_code:
@@ -1511,12 +1533,29 @@ async def client_register(request: Request):
             video_quota_balance=1,
         )
         await _record_activity_safe(str(identity.get("id") or ""), "register", "注册账号")
+        await asyncio.to_thread(reset_registration_failures, client_key)
         response = JSONResponse({"ok": True, **registered})
         _set_client_session_cookie(response, request, hash_token(str(registered.get("token") or "")))
         return response
     except ValueError as exc:
         if invitation_reservation:
             release_invitation_reservation(str(invitation_reservation.get("reservation_id") or ""))
+        failure = await asyncio.to_thread(record_registration_failure, client_key)
+        retry_after = int(failure.get("retry_after") or 0)
+        if failure.get("blocked_now"):
+            await _record_admin_action_safe(
+                "registration_block",
+                "异常注册已临时拦截",
+                detail=f"连续 {int(failure.get('failures') or 0)} 次注册异常，临时拦截 15 分钟",
+                actor="系统",
+                ip_address=client_key,
+            )
+        if retry_after > 0:
+            raise HTTPException(
+                status_code=429,
+                detail="连续异常注册次数过多，已暂时拦截，请稍后重试",
+                headers={"Retry-After": str(retry_after)},
+            )
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         if invitation_reservation:
@@ -2306,17 +2345,32 @@ async def registration_email_config():
 
 
 @app.get("/admin/invitation-codes", dependencies=[Depends(require_admin)])
-async def admin_invitation_codes(limit: int = Query(200, ge=1, le=1000)):
-    return invitation_state(limit=limit)
+async def admin_invitation_codes(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=10, le=100),
+    q: str = Query("", max_length=80),
+    usage: str = Query("all"),
+):
+    try:
+        return await asyncio.to_thread(invitation_state, None, page, page_size, q, usage)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.post("/admin/invitation-codes", dependencies=[Depends(require_admin)], status_code=201)
 async def admin_generate_invitation_codes(request: Request):
     payload = await _request_payload(request)
     try:
-        cards = generate_invitation_codes(int(payload.get("count") or 1))
+        cards = await asyncio.to_thread(generate_invitation_codes, int(payload.get("count") or 1))
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    await _record_admin_action_safe(
+        "invitation_generate",
+        "生成邀请码",
+        detail=f"生成 {len(cards)} 个长期邀请码",
+        actor=load_settings().admin_username,
+        ip_address=_request_client_key(request),
+    )
     return {"ok": True, "count": len(cards), "generated": cards, **invitation_state()}
 
 
@@ -2326,14 +2380,44 @@ async def admin_invitation_code_settings(request: Request):
     raw_required = payload.get("required")
     if not isinstance(raw_required, bool):
         raise HTTPException(status_code=400, detail="required must be a boolean")
-    return {"ok": True, **set_invitation_registration_required(raw_required)}
+    state = await asyncio.to_thread(set_invitation_registration_required, raw_required)
+    await _record_admin_action_safe(
+        "invitation_setting",
+        "修改邀请码注册设置",
+        detail="启用强制邀请码注册" if raw_required else "关闭强制邀请码注册",
+        actor=load_settings().admin_username,
+        ip_address=_request_client_key(request),
+    )
+    return {"ok": True, **state}
 
 
 @app.delete("/admin/invitation-codes/{code_id}", dependencies=[Depends(require_admin)])
-async def admin_delete_invitation_code(code_id: str):
-    if not delete_invitation_code(code_id):
+async def admin_delete_invitation_code(code_id: str, request: Request):
+    try:
+        deleted = await asyncio.to_thread(delete_invitation_code, code_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not deleted:
         raise HTTPException(status_code=404, detail="邀请码不存在")
+    await _record_admin_action_safe(
+        "invitation_delete",
+        "删除邀请码",
+        detail=str(deleted.get("code") or ""),
+        actor=load_settings().admin_username,
+        ip_address=_request_client_key(request),
+        reference_id=code_id,
+    )
     return {"ok": True, **invitation_state()}
+
+
+@app.get("/admin/audit-logs", dependencies=[Depends(require_admin)])
+async def admin_audit_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=10, le=100),
+    q: str = Query("", max_length=100),
+    action: str = Query("all", max_length=60),
+):
+    return await asyncio.to_thread(list_admin_actions, page, page_size, q, action)
 
 
 @app.get("/config/workers", dependencies=[Depends(require_token)])

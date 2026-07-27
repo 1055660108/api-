@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app import __version__, accounts, admin_auth, batch_jobs, client_auth, config, invitation_codes, main, package_catalog, point_transactions, proxy_manager, store, temp_access, users
+from app import __version__, accounts, admin_audit, admin_auth, batch_jobs, client_auth, config, invitation_codes, main, package_catalog, point_transactions, proxy_manager, registration_security, store, temp_access, users
 
 
 class WebAPIContractTests(unittest.TestCase):
@@ -31,6 +31,7 @@ class WebAPIContractTests(unittest.TestCase):
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.root / "temp_tokens.json"),
             patch.object(users, "USERS_PATH", self.root / "users.json"),
             patch.object(invitation_codes, "INVITATION_CODES_PATH", self.root / "invitation_codes.json"),
+            patch.object(admin_audit, "ADMIN_AUDIT_PATH", self.root / "admin_audit.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
             patch.object(point_transactions, "TRANSACTIONS_PATH", self.root / "point_transactions.json"),
             patch.dict("os.environ", {"DOLA_ADMIN_USERNAME": "contract-admin", "DOLA_ADMIN_PASSWORD": "ContractPassword123"}),
@@ -42,6 +43,7 @@ class WebAPIContractTests(unittest.TestCase):
         config.ensure_config()
         config.update_config({"registration_email_verification_enabled": False})
         invitation_codes.set_registration_required(False)
+        registration_security.clear_local_state()
         self.client_context = TestClient(main.app)
         self.client = self.client_context.__enter__()
         self.admin_token = config.load_settings().api_token
@@ -50,6 +52,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.client_context.__exit__(None, None, None)
         admin_auth.clear_sessions()
         client_auth.clear_client_sessions()
+        registration_security.clear_local_state()
         for patcher in reversed(self.patchers):
             patcher.stop()
         self.temporary_directory.cleanup()

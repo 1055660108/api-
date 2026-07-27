@@ -464,6 +464,20 @@ const els = {
   generatedInvitationCodeList: document.getElementById("generatedInvitationCodeList"),
   copyGeneratedInvitationCodes: document.getElementById("copyGeneratedInvitationCodes"),
   invitationCodeList: document.getElementById("invitationCodeList"),
+  invitationSearch: document.getElementById("invitationSearch"),
+  invitationUsageFilter: document.getElementById("invitationUsageFilter"),
+  invitationPageSize: document.getElementById("invitationPageSize"),
+  invitationPageState: document.getElementById("invitationPageState"),
+  prevInvitationPage: document.getElementById("prevInvitationPage"),
+  nextInvitationPage: document.getElementById("nextInvitationPage"),
+  adminAuditState: document.getElementById("adminAuditState"),
+  adminAuditSearch: document.getElementById("adminAuditSearch"),
+  adminAuditAction: document.getElementById("adminAuditAction"),
+  adminAuditPageSize: document.getElementById("adminAuditPageSize"),
+  adminAuditList: document.getElementById("adminAuditList"),
+  adminAuditPageState: document.getElementById("adminAuditPageState"),
+  prevAdminAuditPage: document.getElementById("prevAdminAuditPage"),
+  nextAdminAuditPage: document.getElementById("nextAdminAuditPage"),
   clientEntryUrl: document.getElementById("clientEntryUrl"),
   copyClientEntryUrl: document.getElementById("copyClientEntryUrl"),
   refreshTempTokens: document.getElementById("refreshTempTokens"),
@@ -561,6 +575,14 @@ const state = {
   accountStatusFilter: "all",
   accountPage: 1,
   accountPageSize: 20,
+  invitationPage: 1,
+  invitationPageSize: 10,
+  invitationTotalPages: 1,
+  invitationSearchTimer: 0,
+  adminAuditPage: 1,
+  adminAuditPageSize: 10,
+  adminAuditTotalPages: 1,
+  adminAuditSearchTimer: 0,
   accountQuotaSummary: null,
   savingTokenIds: new Set(),
   autoRefreshing: false,
@@ -1686,7 +1708,7 @@ function switchView(name) {
   if (name === "membership") Promise.allSettled([loadMemberships(), loadClientProfile()]);
   if (name === "transactions") loadTransactions();
   if (name === "point-cards") loadPointCards();
-  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadRuntimeConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships()]);
+  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadRuntimeConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships(), loadInvitationConfig(), loadAdminAuditLogs()]);
   if (name === "proxy-nodes" && portal === "admin") loadProxyNodes();
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
@@ -2320,12 +2342,23 @@ async function loadEmailDomains() {
 
 async function loadInvitationConfig() {
   if (portal !== "admin" || !els.registrationInvitationRequired) return;
-  const data = await apiFetch("/admin/invitation-codes?limit=200");
+  const params = new URLSearchParams({
+    page: String(state.invitationPage),
+    page_size: String(state.invitationPageSize),
+    q: els.invitationSearch?.value.trim() || "",
+    usage: els.invitationUsageFilter?.value || "all",
+  });
+  const data = await apiFetch(`/admin/invitation-codes?${params}`);
   state.registrationInvitationRequired = data.required !== false;
+  state.invitationPage = Number(data.page || 1);
+  state.invitationTotalPages = Number(data.total_pages || 1);
   els.registrationInvitationRequired.checked = state.registrationInvitationRequired;
   const counts = data.counts || {};
   if (els.invitationConfigState) els.invitationConfigState.textContent = `${state.registrationInvitationRequired ? "已启用" : "已关闭"} · 邀请码 ${Number(counts.total || 0)} 个 · 累计使用 ${Number(counts.uses || 0)} 次`;
   renderInvitationCodes(data.codes || []);
+  if (els.invitationPageState) els.invitationPageState.textContent = `第 ${state.invitationPage} / ${state.invitationTotalPages} 页 · 筛选结果 ${Number(data.filtered_total || 0)} 条`;
+  if (els.prevInvitationPage) els.prevInvitationPage.disabled = state.invitationPage <= 1;
+  if (els.nextInvitationPage) els.nextInvitationPage.disabled = state.invitationPage >= state.invitationTotalPages;
 }
 
 function renderInvitationCodes(codes) {
@@ -2335,17 +2368,45 @@ function renderInvitationCodes(codes) {
     <div class="invitation-code-row">
       <code>${escapeHtml(item.code || "-")}</code>
       <span>使用 ${Number(item.use_count || 0)} 次</span>
+      <span>${escapeHtml(item.last_used_username ? `最近 ${item.last_used_username}` : "尚未使用")}</span>
       <span>${escapeHtml(formatTime(item.created_at))}</span>
       <button class="danger-button compact-button" type="button" data-delete-invitation-code="${escapeHtml(item.id || "")}">删除</button>
     </div>
   `).join("") : '<div class="empty-state invitation-code-empty">暂无邀请码</div>';
 }
 
+async function loadAdminAuditLogs() {
+  if (portal !== "admin" || !els.adminAuditList) return;
+  const params = new URLSearchParams({
+    page: String(state.adminAuditPage),
+    page_size: String(state.adminAuditPageSize),
+    q: els.adminAuditSearch?.value.trim() || "",
+    action: els.adminAuditAction?.value || "all",
+  });
+  const data = await apiFetch(`/admin/audit-logs?${params}`);
+  state.adminAuditPage = Number(data.page || 1);
+  state.adminAuditTotalPages = Number(data.total_pages || 1);
+  const rows = Array.isArray(data.entries) ? data.entries : [];
+  const actionLabels = { invitation_generate: "生成邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截" };
+  els.adminAuditList.innerHTML = rows.length ? rows.map((item) => `
+    <div class="admin-audit-row">
+      <div><strong>${escapeHtml(item.title || "管理操作")}</strong><p>${escapeHtml(item.detail || "-")}</p></div>
+      <span>${escapeHtml(item.actor || "管理员")}${item.ip_address ? ` · ${escapeHtml(item.ip_address)}` : ""}</span>
+      <span>${escapeHtml(actionLabels[item.action] || "管理操作")}</span>
+      <span>${escapeHtml(formatTime(item.created_at))}</span>
+    </div>
+  `).join("") : '<div class="empty-state admin-audit-empty">暂无操作日志</div>';
+  if (els.adminAuditState) els.adminAuditState.textContent = `共 ${Number(data.total || 0)} 条`;
+  if (els.adminAuditPageState) els.adminAuditPageState.textContent = `第 ${state.adminAuditPage} / ${state.adminAuditTotalPages} 页`;
+  if (els.prevAdminAuditPage) els.prevAdminAuditPage.disabled = state.adminAuditPage <= 1;
+  if (els.nextAdminAuditPage) els.nextAdminAuditPage.disabled = state.adminAuditPage >= state.adminAuditTotalPages;
+}
+
 async function deleteRegistrationInvitationCode(codeId) {
   if (!codeId || !window.confirm("确认删除这个邀请码？删除后该邀请码将立即失效。")) return;
   try {
     await apiFetch(`/admin/invitation-codes/${encodeURIComponent(codeId)}`, { method: "DELETE" });
-    await loadInvitationConfig();
+    await Promise.all([loadInvitationConfig(), loadAdminAuditLogs()]);
     toast("邀请码已删除");
   } catch (error) {
     toast(`邀请码删除失败：${error.message}`, "error");
@@ -2359,7 +2420,7 @@ async function saveInvitationRequirement() {
   try {
     const data = await apiFetch("/admin/invitation-codes/settings", { method: "PATCH", body: { required } });
     state.registrationInvitationRequired = data.required !== false;
-    await loadInvitationConfig();
+    await Promise.all([loadInvitationConfig(), loadAdminAuditLogs()]);
     toast(state.registrationInvitationRequired ? "已启用邀请码注册" : "已关闭邀请码注册");
   } catch (error) {
     els.registrationInvitationRequired.checked = !required;
@@ -2378,7 +2439,7 @@ async function generateRegistrationInvitationCodes() {
     const codes = (data.generated || []).map((item) => String(item.code || "")).filter(Boolean).join("\n");
     if (els.generatedInvitationCodeList) els.generatedInvitationCodeList.textContent = codes;
     els.generatedInvitationCodes?.classList.toggle("hidden", !codes);
-    await loadInvitationConfig();
+    await Promise.all([loadInvitationConfig(), loadAdminAuditLogs()]);
     toast(`已生成 ${Number(data.count || 0)} 个邀请码`);
   } catch (error) {
     toast(`邀请码生成失败：${error.message}`, "error");
@@ -5210,6 +5271,22 @@ function bindEvents() {
     const button = event.target.closest("[data-delete-invitation-code]");
     if (button) deleteRegistrationInvitationCode(button.dataset.deleteInvitationCode);
   });
+  els.invitationSearch?.addEventListener("input", () => {
+    window.clearTimeout(state.invitationSearchTimer);
+    state.invitationSearchTimer = window.setTimeout(() => { state.invitationPage = 1; loadInvitationConfig(); }, 250);
+  });
+  els.invitationUsageFilter?.addEventListener("change", () => { state.invitationPage = 1; loadInvitationConfig(); });
+  els.invitationPageSize?.addEventListener("change", () => { state.invitationPageSize = Number(els.invitationPageSize.value || 10); state.invitationPage = 1; loadInvitationConfig(); });
+  els.prevInvitationPage?.addEventListener("click", () => { state.invitationPage = Math.max(1, state.invitationPage - 1); loadInvitationConfig(); });
+  els.nextInvitationPage?.addEventListener("click", () => { state.invitationPage = Math.min(state.invitationTotalPages, state.invitationPage + 1); loadInvitationConfig(); });
+  els.adminAuditSearch?.addEventListener("input", () => {
+    window.clearTimeout(state.adminAuditSearchTimer);
+    state.adminAuditSearchTimer = window.setTimeout(() => { state.adminAuditPage = 1; loadAdminAuditLogs(); }, 250);
+  });
+  els.adminAuditAction?.addEventListener("change", () => { state.adminAuditPage = 1; loadAdminAuditLogs(); });
+  els.adminAuditPageSize?.addEventListener("change", () => { state.adminAuditPageSize = Number(els.adminAuditPageSize.value || 10); state.adminAuditPage = 1; loadAdminAuditLogs(); });
+  els.prevAdminAuditPage?.addEventListener("click", () => { state.adminAuditPage = Math.max(1, state.adminAuditPage - 1); loadAdminAuditLogs(); });
+  els.nextAdminAuditPage?.addEventListener("click", () => { state.adminAuditPage = Math.min(state.adminAuditTotalPages, state.adminAuditPage + 1); loadAdminAuditLogs(); });
   const setClientMode = (register) => {
     state.clientRegisterMode = register;
     els.clientLoginTab?.classList.toggle("active", !register);

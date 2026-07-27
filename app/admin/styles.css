@@ -5973,17 +5973,31 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .invitation-toggle-control > input:checked + .switch-track > span { transform: translateX(18px); }
 .invitation-toggle-control > input:focus-visible + .switch-track { outline: 2px solid #202423; outline-offset: 2px; }
 #generatedInvitationCodes { margin-top: 14px; }
+.invitation-list-toolbar,
+.admin-audit-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(140px, 180px) minmax(110px, 130px); gap: 10px; align-items: end; margin-top: 14px; }
 .invitation-code-list { display: grid; max-height: 300px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
-.invitation-code-row { display: grid; grid-template-columns: minmax(180px, 1fr) 100px 170px auto; gap: 12px; align-items: center; min-height: 52px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.invitation-code-row { display: grid; grid-template-columns: minmax(180px, 1fr) 92px minmax(110px, 150px) 170px auto; gap: 12px; align-items: center; min-height: 52px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .invitation-code-row:last-child { border-bottom: 0; }
 .invitation-code-row code { color: #1f2523; font-weight: 700; }
 .invitation-code-row > span { color: var(--muted); font-size: 12px; }
 .invitation-code-empty { min-height: 92px; }
+.invitation-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding-top: 10px; color: var(--muted); font-size: 12px; }
+.invitation-pagination > div { display: flex; gap: 8px; }
+.admin-audit-list { display: grid; max-height: 360px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.admin-audit-row { display: grid; grid-template-columns: minmax(130px, 180px) minmax(200px, 1fr) minmax(110px, 160px) 170px; gap: 12px; align-items: center; min-height: 62px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.admin-audit-row:last-child { border-bottom: 0; }
+.admin-audit-row strong { color: #252b29; font-size: 13px; }
+.admin-audit-row p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.admin-audit-row > span { color: var(--muted); font-size: 12px; }
+.admin-audit-empty { min-height: 110px; }
 @media (max-width: 760px) {
   .invitation-config-controls { grid-template-columns: 1fr; }
+  .invitation-list-toolbar,
+  .admin-audit-toolbar { grid-template-columns: 1fr; }
   .invitation-code-row { grid-template-columns: 1fr auto; }
   .invitation-code-row > span { grid-column: 1; }
-  .invitation-code-row > button { grid-column: 2; grid-row: 1 / span 3; }
+  .invitation-code-row > button { grid-column: 2; grid-row: 1 / span 4; }
+  .admin-audit-row { grid-template-columns: 1fr; gap: 5px; }
 }
 .announcement-lock-copy { display: grid; gap: 3px; }
 .announcement-lock-copy strong { color: #782c29; font-size: 13px; }

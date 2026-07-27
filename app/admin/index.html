@@ -9,8 +9,8 @@
       body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
-    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.48" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.48" />
+    <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.49" />
   </head>
   <body>
     <script>
@@ -22,7 +22,7 @@
       <canvas class="client-ink-canvas" id="clientInkCanvas" aria-hidden="true"></canvas>
       <div class="client-entry-home" aria-hidden="false">
         <header class="client-entry-header">
-          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.48" alt="HS" />
+          <img class="client-entry-logo" src="/admin/assets/hs-logo.png?v=1.4.49" alt="HS" />
           <div class="client-entry-actions">
             <button class="secondary-button" id="returnClientLanding" type="button">返回</button>
             <button class="primary-button" id="openClientLogin" type="button">登录</button>
@@ -34,7 +34,7 @@
       </div>
       <form class="login-panel" id="loginForm">
         <div class="login-brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.48" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.49" alt="" /></div>
         </div>
 
         <div class="login-heading">
@@ -100,7 +100,7 @@
       <canvas class="client-workspace-ink" id="clientWorkspaceInk" aria-hidden="true"></canvas>
       <aside class="sidebar" id="sidebar">
         <div class="brand">
-          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.48" alt="" /></div>
+          <div class="brand-mark" aria-label="HS"><img class="brand-logo" src="/admin/assets/hs-logo.png?v=1.4.49" alt="" /></div>
           <div class="sidebar-client-identity">
             <strong id="clientAccountName">当前用户</strong>
             <span id="sidebarMembershipName">普通用户</span>
@@ -285,7 +285,23 @@
                   <button class="primary-button" id="generateInvitationCodes" type="button"><i data-lucide="plus" aria-hidden="true"></i>生成邀请码</button>
                 </div>
                 <div class="generated-codes hidden" id="generatedInvitationCodes"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedInvitationCodes" type="button">复制全部</button></div><pre id="generatedInvitationCodeList"></pre></div>
+                <div class="invitation-list-toolbar">
+                  <label class="field"><span>搜索</span><input id="invitationSearch" type="search" maxlength="80" placeholder="搜索邀请码或使用者" /></label>
+                  <label class="field"><span>使用状态</span><select id="invitationUsageFilter"><option value="all">全部</option><option value="unused">未使用</option><option value="used">已使用</option></select></label>
+                  <label class="field"><span>每页数量</span><select id="invitationPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
+                </div>
                 <div class="invitation-code-list" id="invitationCodeList" aria-live="polite"></div>
+                <div class="invitation-pagination"><span id="invitationPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevInvitationPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextInvitationPage" type="button">下一页</button></div></div>
+              </section>
+              <section class="panel config-panel" id="adminAuditPanel">
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="scroll-text" aria-hidden="true"></i></span><h2>管理员操作日志</h2><p>记录邀请码管理操作及异常注册拦截。</p></div><span class="settings-state" id="adminAuditState">等待读取</span></div>
+                <div class="admin-audit-toolbar">
+                  <label class="field"><span>搜索</span><input id="adminAuditSearch" type="search" maxlength="100" placeholder="搜索操作、详情或管理员" /></label>
+                  <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="invitation_generate">生成邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
+                  <label class="field"><span>每页数量</span><select id="adminAuditPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
+                </div>
+                <div class="admin-audit-list" id="adminAuditList" aria-live="polite"></div>
+                <div class="invitation-pagination"><span id="adminAuditPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevAdminAuditPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextAdminAuditPage" type="button">下一页</button></div></div>
               </section>
               <section class="panel config-panel" id="modelConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>生成模型</h2><p>控制各平台可选模型及默认模型列表。</p></div><span class="settings-state" id="modelConfigState">自动同步</span></div>
@@ -1203,7 +1219,7 @@
     </div>
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
-    <script src="/admin/assets/ink-bg.js?v=1.4.48"></script>
-    <script src="/admin/assets/app.js?v=1.4.48"></script>
+    <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
+    <script src="/admin/assets/app.js?v=1.4.49"></script>
   </body>
 </html>

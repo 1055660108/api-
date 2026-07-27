@@ -5,11 +5,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
-from app import admin_auth, config, feedback, invitation_codes, main, membership_catalog, notifications, package_catalog, point_cards, point_transactions, store, temp_access, users
+from app import admin_audit, admin_auth, config, feedback, invitation_codes, main, membership_catalog, notifications, package_catalog, point_cards, point_transactions, registration_security, store, temp_access, users
 
 
 class ClientFeatureTests(unittest.TestCase):
@@ -26,6 +26,7 @@ class ClientFeatureTests(unittest.TestCase):
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.root / "temp_tokens.json"),
             patch.object(users, "USERS_PATH", self.root / "users.json"),
             patch.object(invitation_codes, "INVITATION_CODES_PATH", self.root / "invitation_codes.json"),
+            patch.object(admin_audit, "ADMIN_AUDIT_PATH", self.root / "admin_audit.json"),
             patch.object(feedback, "FEEDBACK_PATH", self.root / "feedback.json"),
             patch.object(notifications, "NOTIFICATIONS_PATH", self.root / "notifications.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
@@ -42,11 +43,13 @@ class ClientFeatureTests(unittest.TestCase):
         config.ensure_config()
         config.update_config({"registration_email_verification_enabled": False})
         invitation_codes.set_registration_required(False)
+        registration_security.clear_local_state()
         self.client = TestClient(main.app)
 
     def tearDown(self) -> None:
         self.client.close()
         admin_auth.clear_sessions()
+        registration_security.clear_local_state()
         for patcher in reversed(self.patchers):
             patcher.stop()
         self.temporary_directory.cleanup()
@@ -70,7 +73,7 @@ class ClientFeatureTests(unittest.TestCase):
             json={"username": "chosen-admin", "password": "StrongPassword123"},
         )
         self.assertEqual(logged_in.status_code, 200, logged_in.text)
-        generated = self.client.post("/admin/invitation-codes", json={"count": 1})
+        generated = self.client.post("/admin/invitation-codes", json={"count": 2})
         self.assertEqual(generated.status_code, 201, generated.text)
         code = generated.json()["generated"][0]["code"]
         registered = self.client.post(
@@ -88,10 +91,13 @@ class ClientFeatureTests(unittest.TestCase):
         details = self.client.get(f"/users/{user['id']}/details").json()["user"]
         self.assertEqual(details["invitation_code"], code)
         state = self.client.get("/admin/invitation-codes").json()
-        self.assertEqual(state["counts"], {"total": 1, "uses": 2})
-        self.assertEqual(state["codes"][0]["use_count"], 2)
+        self.assertEqual(state["counts"], {"total": 2, "uses": 2})
+        used_record = next(item for item in state["codes"] if item["code"] == code)
+        self.assertEqual(used_record["use_count"], 2)
+        filtered = self.client.get(f"/admin/invitation-codes?page=1&page_size=10&usage=used&q={code}").json()
+        self.assertEqual((filtered["filtered_total"], filtered["total_pages"]), (1, 1))
 
-        deleted = self.client.delete(f"/admin/invitation-codes/{state['codes'][0]['id']}")
+        deleted = self.client.delete(f"/admin/invitation-codes/{used_record['id']}")
         self.assertEqual(deleted.status_code, 200, deleted.text)
         rejected = self.client.post(
             "/auth/register",
@@ -100,6 +106,10 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(rejected.json()["detail"], "邀请码无效")
 
+        remaining = self.client.get("/admin/invitation-codes").json()["codes"][0]
+        protected = self.client.delete(f"/admin/invitation-codes/{remaining['id']}")
+        self.assertEqual(protected.status_code, 409)
+
         disabled = self.client.patch("/admin/invitation-codes/settings", json={"required": False})
         self.assertEqual(disabled.status_code, 200)
         open_registration = self.client.post(
@@ -107,6 +117,49 @@ class ClientFeatureTests(unittest.TestCase):
             json={"username": "invite_disabled", "password": "password123", "confirm_password": "password123"},
         )
         self.assertEqual(open_registration.status_code, 200, open_registration.text)
+        audit = self.client.get("/admin/audit-logs?page=1&page_size=10").json()
+        self.assertGreaterEqual(audit["total"], 3)
+        self.assertIn("invitation_generate", {item["action"] for item in audit["entries"]})
+        self.assertIn("invitation_delete", {item["action"] for item in audit["entries"]})
+        self.assertIn("invitation_setting", {item["action"] for item in audit["entries"]})
+
+    def test_consecutive_abnormal_registrations_are_temporarily_blocked_and_logged(self) -> None:
+        invitation_codes.set_registration_required(True)
+        with patch.object(main, "_rate_limit", new=AsyncMock()):
+            for index in range(4):
+                response = self.client.post(
+                    "/auth/register",
+                    json={"username": f"invalid_{index}", "password": "password123", "confirm_password": "password123", "invitation_code": "invalid-code"},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+            code = invitation_codes.generate_codes(1)[0]["code"]
+            successful = self.client.post(
+                "/auth/register",
+                json={"username": "security_reset", "password": "password123", "confirm_password": "password123", "invitation_code": code},
+            )
+            self.assertEqual(successful.status_code, 200, successful.text)
+            for index in range(4, 8):
+                response = self.client.post(
+                    "/auth/register",
+                    json={"username": f"invalid_{index}", "password": "password123", "confirm_password": "password123", "invitation_code": "invalid-code"},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+            blocked = self.client.post(
+                "/auth/register",
+                json={"username": "invalid_8", "password": "password123", "confirm_password": "password123", "invitation_code": "invalid-code"},
+            )
+            self.assertEqual(blocked.status_code, 429, blocked.text)
+            self.assertIn("暂时拦截", blocked.json()["detail"])
+            repeated = self.client.post(
+                "/auth/register",
+                json={"username": "invalid_9", "password": "password123", "confirm_password": "password123", "invitation_code": "invalid-code"},
+            )
+            self.assertEqual(repeated.status_code, 429, repeated.text)
+
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        logs = self.client.get("/admin/audit-logs?page=1&page_size=10&action=registration_block").json()
+        self.assertEqual(logs["total"], 1)
+        self.assertEqual(logs["entries"][0]["actor"], "系统")
 
     def test_registration_rejects_case_insensitive_duplicate_username(self) -> None:
         self.register("UniqueUser")

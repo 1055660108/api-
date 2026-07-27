@@ -200,12 +200,12 @@ def release_reservation(reservation_id: str) -> None:
     return None
 
 
-def delete_code(code_id: object) -> bool:
+def delete_code(code_id: object) -> dict[str, Any] | None:
     normalized_id = str(code_id or "").strip()
     if not normalized_id:
-        return False
+        return None
 
-    def mutate(data: dict[str, Any]) -> bool:
+    def mutate(data: dict[str, Any]) -> dict[str, Any] | None:
         codes = data.get("codes", {})
         code_hash = next(
             (
@@ -216,23 +216,57 @@ def delete_code(code_id: object) -> bool:
             "",
         )
         if not code_hash:
-            return False
+            return None
+        if bool(data.get("required", True)) and len(codes) <= 1:
+            raise ValueError("启用邀请码注册时至少需要保留一个邀请码")
+        deleted = dict(codes[code_hash])
         del codes[code_hash]
         data["updated_at"] = _now()
-        return True
+        return deleted
 
     return _mutate(mutate)
 
 
-def invitation_state(data: dict[str, Any] | None = None, limit: int = 200) -> dict[str, Any]:
+def invitation_state(
+    data: dict[str, Any] | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    query: str = "",
+    usage: str = "all",
+) -> dict[str, Any]:
     source = _normalize_data(data) if isinstance(data, dict) else _read()
-    rows = [dict(item) for item in source.get("codes", {}).values() if isinstance(item, dict)]
+    all_rows = [dict(item) for item in source.get("codes", {}).values() if isinstance(item, dict)]
+    normalized_query = _normalize(query)
+    normalized_usage = str(usage or "all").strip().lower()
+    if normalized_usage not in {"all", "unused", "used"}:
+        raise ValueError("邀请码使用状态筛选无效")
+    rows = all_rows
+    if normalized_usage == "unused":
+        rows = [item for item in rows if int(item.get("use_count") or 0) == 0]
+    elif normalized_usage == "used":
+        rows = [item for item in rows if int(item.get("use_count") or 0) > 0]
+    if normalized_query:
+        rows = [
+            item
+            for item in rows
+            if normalized_query in _normalize(item.get("code"))
+            or normalized_query in _normalize(item.get("last_used_username"))
+        ]
     rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    normalized_page_size = max(10, min(100, int(page_size)))
+    filtered_total = len(rows)
+    total_pages = max(1, (filtered_total + normalized_page_size - 1) // normalized_page_size)
+    current_page = min(max(1, int(page)), total_pages)
+    start = (current_page - 1) * normalized_page_size
     return {
         "required": bool(source.get("required", True)),
         "counts": {
-            "total": len(rows),
-            "uses": sum(max(0, int(item.get("use_count") or 0)) for item in rows),
+            "total": len(all_rows),
+            "uses": sum(max(0, int(item.get("use_count") or 0)) for item in all_rows),
         },
-        "codes": rows[:max(1, min(1000, int(limit)))],
+        "codes": rows[start:start + normalized_page_size],
+        "filtered_total": filtered_total,
+        "page": current_page,
+        "page_size": normalized_page_size,
+        "total_pages": total_pages,
     }

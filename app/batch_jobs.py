@@ -70,6 +70,8 @@ def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str,
             "video_url": "",
             "created_at": "",
             "finished_at": "",
+            "revision": 1,
+            "updated_at": created_at,
         })
     job = {
         "id": job_id,
@@ -84,6 +86,7 @@ def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str,
         "reference_count": max(0, int(reference_count or 0)),
         "reference_batch_id": str(reference_batch_id or "")[:100],
         "rows": normalized_rows,
+        "revision": 1,
         "created_at": created_at,
         "updated_at": created_at,
         "canceled_at": "",
@@ -132,8 +135,32 @@ def list_jobs(owner_token_hash: str | None = None, *, active_only: bool = False,
 
 def _mutate_job(job_id: str, mutator: Callable[[dict[str, Any]], Any]) -> Any:
     def apply(job: dict[str, Any]):
+        before = deepcopy(job)
         result = mutator(job)
-        job["updated_at"] = _now()
+        before_rows = {
+            int(row.get("index") or 0): row
+            for row in before.get("rows", [])
+            if isinstance(row, dict)
+        }
+        changed_rows = []
+        for row in job.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            previous = before_rows.get(int(row.get("index") or 0), {})
+            current_payload = {key: value for key, value in row.items() if key not in {"revision", "updated_at"}}
+            previous_payload = {key: value for key, value in previous.items() if key not in {"revision", "updated_at"}}
+            if current_payload != previous_payload:
+                changed_rows.append(row)
+        current_job_payload = {key: value for key, value in job.items() if key not in {"rows", "revision", "updated_at"}}
+        previous_job_payload = {key: value for key, value in before.items() if key not in {"rows", "revision", "updated_at"}}
+        if changed_rows or current_job_payload != previous_job_payload:
+            revision = max(0, int(before.get("revision") or 0)) + 1
+            updated_at = _now()
+            job["revision"] = revision
+            job["updated_at"] = updated_at
+            for row in changed_rows:
+                row["revision"] = revision
+                row["updated_at"] = updated_at
         return result
 
     if postgres.enabled():
@@ -143,19 +170,25 @@ def _mutate_job(job_id: str, mutator: Callable[[dict[str, Any]], Any]) -> Any:
         job = payload["jobs"].get(str(job_id))
         if not isinstance(job, dict):
             raise KeyError(job_id)
+        before = deepcopy(job)
         result = apply(job)
-        _write_local(payload)
+        if job != before:
+            _write_local(payload)
         return result
 
 
-def public_job(job: dict[str, Any]) -> dict[str, Any]:
+def public_job(job: dict[str, Any], since_revision: int | None = None) -> dict[str, Any]:
     rows = []
     counts = {"queued": 0, "creating": 0, "running": 0, "completed": 0, "failed": 0, "canceled": 0}
+    revision = max(0, int(job.get("revision") or 0))
+    full = since_revision is None or int(since_revision) > revision
     for raw in job.get("rows", []):
         if not isinstance(raw, dict):
             continue
         status = str(raw.get("status") or "queued")
         counts[status] = counts.get(status, 0) + 1
+        if not full and int(raw.get("revision") or 0) <= int(since_revision or 0):
+            continue
         rows.append({
             "index": int(raw.get("index") or 0),
             "client_index": int(raw.get("client_index") or 0),
@@ -166,6 +199,7 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
             "error": str(raw.get("error") or ""),
             "video_url": str(raw.get("video_url") or ""),
             "image_count": int(raw.get("image_count") or 0),
+            "revision": max(0, int(raw.get("revision") or 0)),
         })
     return {
         "id": str(job.get("id") or ""),
@@ -175,6 +209,9 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "concurrency": int(job.get("concurrency") or 1),
         "created_at": str(job.get("created_at") or ""),
         "updated_at": str(job.get("updated_at") or ""),
+        "revision": revision,
+        "delta": not full,
+        "total": sum(counts.values()),
         "counts": counts,
         "rows": rows,
     }
@@ -189,7 +226,7 @@ def cancel_job(job_id: str, owner_token_hash: str) -> dict[str, Any]:
             if str(row.get("status") or "") in {"queued", "creating"} and not str(row.get("task_id") or ""):
                 row.update(status="canceled", error="用户停止批量生成", finished_at=_now())
         job["status"] = "canceling" if any(str(row.get("status") or "") == "running" for row in job.get("rows", [])) else "canceled"
-        return deepcopy(job)
+        return job
 
     return _mutate_job(job_id, mutate)
 
@@ -301,7 +338,7 @@ def reconcile_job(job_id: str, task_payloads: dict[str, dict[str, str]]) -> dict
             else:
                 row["status"] = "running"
         _finish_job_if_terminal(job)
-        return deepcopy(job)
+        return job
 
     return _mutate_job(job_id, mutate)
 

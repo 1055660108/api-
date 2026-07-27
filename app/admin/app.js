@@ -534,6 +534,9 @@ const state = {
   batchConcurrencyCustomized: false,
   batchSessionId: "",
   batchJobId: "",
+  batchJobRevision: 0,
+  batchJobCursorReady: false,
+  batchJobSummarySignature: "",
   batchDraftOwner: "",
   batchDraftSaveTimer: 0,
   batchImagePersistenceFailed: false,
@@ -4268,6 +4271,11 @@ async function loadBatchDraft() {
   state.batchSpreadsheetName = "";
   state.batchPrompts = [];
   state.batchPage = 1;
+  state.batchJobId = "";
+  state.batchSessionId = "";
+  state.batchJobRevision = 0;
+  state.batchJobCursorReady = false;
+  state.batchJobSummarySignature = "";
   try {
     const stored = JSON.parse(localStorage.getItem(batchDraftStorageKey(owner)) || "null");
     if (!stored || stored.version !== BATCH_DRAFT_VERSION || !Array.isArray(stored.prompts)) throw new Error("no draft");
@@ -4432,6 +4440,9 @@ function resetBatchTaskPage() {
   state.batchPage = 1;
   state.batchAutoStopRequested = false;
   state.batchJobId = "";
+  state.batchJobRevision = 0;
+  state.batchJobCursorReady = false;
+  state.batchJobSummarySignature = "";
   state.batchSessionId = "";
   state.batchConcurrencyCustomized = false;
   if (els.batchSpreadsheetInput) els.batchSpreadsheetInput.value = "";
@@ -4624,7 +4635,7 @@ async function refreshBatchTaskStatuses(options = {}) {
   if (state.batchJobId) {
     if (!options.quiet) setBusy(els.refreshBatchTasks, true, "刷新中");
     try {
-      const result = await apiFetch(`/batch-prompts/jobs/${encodeURIComponent(state.batchJobId)}`, { timeout: 30000 });
+      const result = await apiFetch(persistentBatchStatusPath(state.batchJobId), { timeout: 30000 });
       applyPersistentBatchJob(result.job);
       if (!options.quiet) toast("批次状态已刷新");
     } finally {
@@ -4667,12 +4678,22 @@ async function refreshBatchTaskStatuses(options = {}) {
   }
 }
 
+function persistentBatchStatusPath(jobId) {
+  const path = `/batch-prompts/jobs/${encodeURIComponent(String(jobId || ""))}`;
+  const revision = Math.max(0, Number(state.batchJobRevision || 0));
+  return state.batchJobCursorReady ? `${path}?since_revision=${encodeURIComponent(revision)}` : path;
+}
+
 function applyPersistentBatchJob(job) {
   if (!job?.id || !Array.isArray(job.rows)) return false;
   const jobId = String(job.id);
+  const incremental = Boolean(job.delta);
   state.batchJobId = jobId;
   state.batchSessionId = state.batchJobId;
-  if (!state.batchPrompts.length) {
+  state.batchJobRevision = Math.max(0, Number(job.revision || 0));
+  state.batchJobCursorReady = true;
+  let rowsChanged = false;
+  if (!state.batchPrompts.length && !incremental) {
     state.batchPrompts = job.rows.map((row, index) => ({
       row: Math.max(1, Number(row.sheet_row || index + 1)),
       prompt: String(row.prompt || ""),
@@ -4685,6 +4706,7 @@ function applyPersistentBatchJob(job) {
       batchRowIndex: Math.max(1, Number(row.index || index + 1)),
       images: [],
     }));
+    rowsChanged = true;
   } else {
     job.rows.forEach((row) => {
       const rowIndex = Math.max(1, Number(row.index || 0));
@@ -4696,28 +4718,51 @@ function applyPersistentBatchJob(job) {
       )) || (taskId ? state.batchPrompts.find((entry) => String(entry.taskId || "") === taskId) : null) || state.batchPrompts.find((entry) => (
         !String(entry.batchJobId || "") && Number(entry.row) === sheetRow && String(entry.prompt || "") === prompt
       ));
-      if (!item) return;
-      item.status = String(row.status || "queued");
-      item.error = row.error ? batchFriendlyError(row.error) : "";
-      item.taskId = taskId;
-      item.videoUrl = String(row.video_url || "");
-      item.batchJobId = jobId;
-      item.batchRowIndex = rowIndex;
-      item.selected = false;
+      if (!item) {
+        state.batchPrompts.push({
+          row: Math.max(1, sheetRow || rowIndex),
+          prompt,
+          selected: false,
+          status: String(row.status || "queued"),
+          error: row.error ? batchFriendlyError(row.error) : "",
+          taskId,
+          videoUrl: String(row.video_url || ""),
+          batchJobId: jobId,
+          batchRowIndex: rowIndex,
+          images: [],
+        });
+        rowsChanged = true;
+        return;
+      }
+      const next = {
+        status: String(row.status || "queued"),
+        error: row.error ? batchFriendlyError(row.error) : "",
+        taskId,
+        videoUrl: String(row.video_url || ""),
+        batchJobId: jobId,
+        batchRowIndex: rowIndex,
+      };
+      if (item.status !== next.status || item.error !== next.error || item.taskId !== next.taskId || item.videoUrl !== next.videoUrl || item.batchJobId !== next.batchJobId || item.batchRowIndex !== next.batchRowIndex) {
+        Object.assign(item, next, { selected: false });
+        rowsChanged = true;
+      }
     });
   }
   const counts = job.counts || {};
   const finished = Number(counts.completed || 0) + Number(counts.failed || 0) + Number(counts.canceled || 0);
   const active = Number(counts.creating || 0) + Number(counts.running || 0);
   const queued = Number(counts.queued || 0);
-  const total = job.rows.length;
+  const total = Math.max(0, Number(job.total || Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0) || state.batchPrompts.length));
+  const summarySignature = JSON.stringify([job.status, total, counts]);
+  const summaryChanged = summarySignature !== state.batchJobSummarySignature;
+  state.batchJobSummarySignature = summarySignature;
   if (els.batchTaskProgress) {
     els.batchTaskProgress.textContent = ["completed", "canceled"].includes(String(job.status || ""))
       ? `批次已结束：成功 ${Number(counts.completed || 0)} 条，失败 ${Number(counts.failed || 0)} 条，取消 ${Number(counts.canceled || 0)} 条`
       : `批次生成中：已完成 ${finished} / ${total}，运行 ${active} 条，批次排队 ${queued} 条`;
   }
-  saveBatchDraft();
-  renderBatchPrompts();
+  if (rowsChanged || !incremental) saveBatchDraft();
+  if (rowsChanged || summaryChanged || !incremental) renderBatchPrompts();
   return ["queued", "running", "canceling"].includes(String(job.status || ""));
 }
 
@@ -4730,7 +4775,7 @@ async function monitorPersistentBatchJob(jobId) {
     let active = true;
     while (active && state.batchJobId === normalized) {
       await waitForBatchPoll(5000);
-      const result = await apiFetch(`/batch-prompts/jobs/${encodeURIComponent(normalized)}`, { timeout: 30000 });
+      const result = await apiFetch(persistentBatchStatusPath(normalized), { timeout: 30000 });
       active = applyPersistentBatchJob(result.job);
       await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth()]);
     }
@@ -4840,6 +4885,9 @@ async function autoSubmitBatchTasks() {
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在保存 ${selected.length} 条批量计划`;
     const result = await apiFetch("/batch-prompts/jobs", { method: "POST", body: form, timeout: 120000 });
     state.batchJobId = String(result.job?.id || "");
+    state.batchJobRevision = 0;
+    state.batchJobCursorReady = false;
+    state.batchJobSummarySignature = "";
     state.batchSessionId = state.batchJobId;
     applyPersistentBatchJob(result.job);
     toast("批次已进入后台公平队列");
@@ -5451,6 +5499,9 @@ function bindEvents() {
     state.batchPrompts = [];
     state.batchPage = 1;
     state.batchJobId = "";
+    state.batchJobRevision = 0;
+    state.batchJobCursorReady = false;
+    state.batchJobSummarySignature = "";
     state.batchSessionId = "";
     if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = state.batchSpreadsheet?.name || "未选择文件";
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = state.batchSpreadsheet ? "文件已导入，等待解析" : "等待导入";

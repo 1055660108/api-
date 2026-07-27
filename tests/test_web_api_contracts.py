@@ -434,6 +434,58 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(job["rows"][0]["status"], "failed")
         self.assertEqual(job["rows"][0]["error"], "多次生成失败")
 
+    def test_persistent_batch_status_returns_only_rows_changed_after_revision(self) -> None:
+        registered = self.register("batch_incremental_status")
+        owner_hash = temp_access.hash_token(registered["token"])
+        headers = {"X-API-Token": registered["token"]}
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 1,
+            "rows": [
+                {"client_index": index, "sheet_row": index + 2, "prompt": f"增量状态 {index + 1}", "image_count": 0}
+                for index in range(3)
+            ],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            created = self.client.post(
+                "/batch-prompts/jobs",
+                headers=headers,
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            initial = created.json()["job"]
+            self.assertFalse(initial["delta"])
+            self.assertEqual(initial["total"], 3)
+            self.assertEqual(len(initial["rows"]), 3)
+            initial_revision = initial["revision"]
+
+            unchanged = self.client.get(
+                f"/batch-prompts/jobs/{initial['id']}?since_revision={initial_revision}",
+                headers=headers,
+            ).json()["job"]
+            self.assertTrue(unchanged["delta"])
+            self.assertEqual(unchanged["revision"], initial_revision)
+            self.assertEqual(unchanged["rows"], [])
+            self.assertEqual(unchanged["total"], 3)
+
+            claim = batch_jobs.claim_next_row(owner_hash)
+            self.assertIsNotNone(claim)
+            changed = self.client.get(
+                f"/batch-prompts/jobs/{initial['id']}?since_revision={initial_revision}",
+                headers=headers,
+            ).json()["job"]
+            self.assertTrue(changed["delta"])
+            self.assertGreater(changed["revision"], initial_revision)
+            self.assertEqual([row["index"] for row in changed["rows"]], [1])
+            self.assertEqual(changed["rows"][0]["status"], "creating")
+
+            recovered = self.client.get(
+                f"/batch-prompts/jobs/{initial['id']}?since_revision=999999",
+                headers=headers,
+            ).json()["job"]
+            self.assertFalse(recovered["delta"])
+            self.assertEqual(len(recovered["rows"]), 3)
+
     def test_persistent_batch_scheduler_copies_shared_and_row_reference_images(self) -> None:
         registered = self.register("persistent_batch_images")
         owner_hash = temp_access.hash_token(registered["token"])

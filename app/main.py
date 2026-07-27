@@ -3082,11 +3082,21 @@ async def current_persistent_batch_job(access: Annotated[AccessContext, Depends(
 
 
 @app.get("/batch-prompts/jobs/{job_id}", dependencies=[Depends(require_temp)])
-async def persistent_batch_job_status(job_id: str, access: Annotated[AccessContext, Depends(require_temp)]):
+async def persistent_batch_job_status(
+    job_id: str,
+    access: Annotated[AccessContext, Depends(require_temp)],
+    since_revision: int | None = Query(None, ge=0),
+):
     job = await asyncio.to_thread(get_batch_job, job_id, access.token_hash)
     if not job:
         raise HTTPException(status_code=404, detail="批次不存在")
-    task_ids = [str(row.get("task_id") or "") for row in job.get("rows", []) if isinstance(row, dict) and str(row.get("task_id") or "")]
+    task_ids = [
+        str(row.get("task_id") or "")
+        for row in job.get("rows", [])
+        if isinstance(row, dict)
+        and str(row.get("task_id") or "")
+        and str(row.get("status") or "") not in {"completed", "failed", "canceled"}
+    ]
     if task_ids:
         states = await asyncio.to_thread(task_states, task_ids, access.token_hash)
         payloads = {
@@ -3102,7 +3112,7 @@ async def persistent_batch_job_status(job_id: str, access: Annotated[AccessConte
             for task_id, meta, result in states
         }
         job = await asyncio.to_thread(reconcile_batch_job, job_id, payloads)
-    return {"job": public_batch_job(job)}
+    return {"job": public_batch_job(job, since_revision=since_revision)}
 
 
 @app.post("/batch-prompts/{batch_id}/cancel", dependencies=[Depends(require_token)])

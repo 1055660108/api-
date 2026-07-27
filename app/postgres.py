@@ -660,11 +660,13 @@ def mutate_batch_job(job_id: str, mutator: Callable[[dict[str, Any]], T]) -> T:
         if not row:
             raise KeyError(job_id)
         payload = dict(row[0])
+        before = deepcopy(payload)
         result = mutator(payload)
-        conn.execute(
-            "UPDATE dola_batch_jobs SET payload = %s, updated_at = now() WHERE id = %s",
-            (Jsonb(payload), job_id),
-        )
+        if payload != before:
+            conn.execute(
+                "UPDATE dola_batch_jobs SET payload = %s, updated_at = now() WHERE id = %s",
+                (Jsonb(payload), job_id),
+            )
         return result
 
 

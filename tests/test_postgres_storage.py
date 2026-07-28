@@ -6,6 +6,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -389,9 +390,18 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
         self.assertIn("INSERT INTO dola_schema_version(version) VALUES (3)", schema)
         self.assertIn("CREATE TABLE IF NOT EXISTS dola_point_transactions", schema)
         self.assertIn("dola_point_transactions_user_created_idx", schema)
+        self.assertIn("CREATE TABLE IF NOT EXISTS dola_point_transactions_archive", schema)
+        self.assertIn("dola_point_transactions_archive_user_created_idx", schema)
         self.assertIn("CREATE TABLE IF NOT EXISTS dola_user_activity", schema)
         self.assertIn("dola_user_activity_user_created_idx", schema)
         self.assertIn("INSERT INTO dola_schema_version(version) VALUES (4)", schema)
+
+    def test_old_point_transactions_use_postgres_archive(self) -> None:
+        with patch.object(postgres, "archive_point_transactions", return_value=7) as archive:
+            self.assertEqual(point_transactions.archive_old_transactions(365, 5000), 7)
+        cutoff, limit = archive.call_args.args
+        self.assertEqual(limit, 5000)
+        self.assertGreaterEqual((datetime.now(timezone.utc) - cutoff).days, 364)
 
     def test_user_activity_is_inserted_and_paginated_by_user(self) -> None:
         for index in range(3):

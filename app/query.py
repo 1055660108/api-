@@ -4,6 +4,8 @@ import asyncio
 import base64
 import json
 import re
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -14,15 +16,29 @@ from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUC
 from .temp_access import refund_temp_quota_hash
 
 
-_QUERY_LOCKS: dict[str, asyncio.Lock] = {}
+@dataclass
+class _QueryLockEntry:
+    lock: asyncio.Lock
+    users: int = 0
 
 
-def _query_lock(task_id: str) -> asyncio.Lock:
-    lock = _QUERY_LOCKS.get(task_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _QUERY_LOCKS[task_id] = lock
-    return lock
+_QUERY_LOCKS: dict[str, _QueryLockEntry] = {}
+
+
+@asynccontextmanager
+async def _query_lock(task_id: str):
+    entry = _QUERY_LOCKS.get(task_id)
+    if entry is None:
+        entry = _QueryLockEntry(asyncio.Lock())
+        _QUERY_LOCKS[task_id] = entry
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users = max(0, entry.users - 1)
+        if entry.users == 0 and _QUERY_LOCKS.get(task_id) is entry:
+            _QUERY_LOCKS.pop(task_id, None)
 from .textfix import repair_text
 
 

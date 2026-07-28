@@ -6,6 +6,7 @@ import inspect
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -296,6 +297,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(admin["version"], __version__)
         self.assertEqual(admin["role"], "admin")
         self.assertEqual(admin["components"]["queue"]["error"], "internal queue detail")
+        self.assertIn("monitoring", admin["components"])
         self.assertTrue({"quota", "token_concurrency", "active_task_count", "task_retention_days", "user_name"} <= set(client))
         self.assertEqual(client["role"], "client")
         self.assertEqual(client["active_task_count"], 0)
@@ -303,17 +305,55 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertNotIn("admin_username", client)
         self.assertNotIn("error", client["components"]["queue"])
         self.assertNotIn("executable_path", client["components"]["browser"])
+        self.assertNotIn("monitoring", client["components"])
 
     def test_runtime_submit_interval_is_admin_only_persistent_and_validated(self) -> None:
         self.assertEqual(self.client.get("/config/runtime").status_code, 403)
         self.login_admin()
-        self.assertEqual(self.client.get("/config/runtime").json()["dola_submit_interval_seconds"], 5.0)
-        updated = self.client.post("/config/runtime", json={"dola_submit_interval_seconds": 2.5})
+        current = self.client.get("/config/runtime").json()
+        self.assertEqual(current["dola_submit_interval_seconds"], 5.0)
+        self.assertEqual(current["batch_history_retention_days"], 30)
+        updated = self.client.post("/config/runtime", json={"dola_submit_interval_seconds": 2.5, "batch_history_retention_days": 14})
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["dola_submit_interval_seconds"], 2.5)
+        self.assertEqual(updated.json()["batch_history_retention_days"], 14)
         self.assertEqual(config.load_settings().dola_submit_interval_seconds, 2.5)
+        self.assertEqual(config.load_settings().batch_history_retention_days, 14)
         for invalid in (0.9, 5.1, "invalid"):
             self.assertEqual(self.client.post("/config/runtime", json={"dola_submit_interval_seconds": invalid}).status_code, 400)
+        for invalid in (6, 31, "invalid"):
+            self.assertEqual(self.client.post("/config/runtime", json={"batch_history_retention_days": invalid}).status_code, 400)
+
+    def test_batch_history_cleanup_removes_only_expired_terminal_jobs(self) -> None:
+        old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+        with patch.object(batch_jobs, "_now", return_value=old):
+            expired = batch_jobs.create_job("owner", [{"prompt": "expired"}], ratio="9:16", concurrency=1)
+            active = batch_jobs.create_job("owner", [{"prompt": "active"}], ratio="9:16", concurrency=1)
+
+            def finish(job: dict) -> None:
+                job["status"] = "completed"
+                job["finished_at"] = old
+                job["rows"][0]["status"] = "completed"
+
+            batch_jobs._mutate_job(expired["id"], finish)
+        recent = batch_jobs.create_job("owner", [{"prompt": "recent"}], ratio="9:16", concurrency=1)
+        batch_jobs._mutate_job(recent["id"], finish)
+        removed = batch_jobs.cleanup_history(30)
+        self.assertEqual([item["id"] for item in removed], [expired["id"]])
+        self.assertIsNone(batch_jobs.get_job(expired["id"]))
+        self.assertIsNotNone(batch_jobs.get_job(active["id"]))
+        self.assertIsNotNone(batch_jobs.get_job(recent["id"]))
+
+    def test_admin_audit_prunes_old_entries_and_keeps_recent_limit(self) -> None:
+        old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+        recent = datetime.now(timezone.utc).isoformat()
+        admin_audit.ADMIN_AUDIT_PATH.write_text(json.dumps({"entries": [
+            {"id": "old", "created_at": old},
+            {"id": "new-1", "created_at": recent},
+            {"id": "new-2", "created_at": recent},
+        ]}), encoding="utf-8")
+        self.assertEqual(admin_audit.prune_admin_actions(90, 1), 2)
+        self.assertEqual([item["id"] for item in admin_audit.list_admin_actions()["entries"]], ["new-2"])
 
     def test_task_idempotency_replays_without_second_charge(self) -> None:
         registered = self.register("idempotent_client")

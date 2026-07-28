@@ -17,6 +17,7 @@ from .task_queue import get_task_queue
 
 ACTIVE_JOB_STATUSES = {"queued", "running", "canceling"}
 TERMINAL_ROW_STATUSES = {"completed", "failed", "canceled"}
+TERMINAL_JOB_STATUSES = {"completed", "canceled"}
 _LOCK = threading.RLock()
 _SCHEDULER_LOCK = threading.Lock()
 _LOCAL_OWNER_CURSOR = 0
@@ -132,6 +133,34 @@ def list_jobs(owner_token_hash: str | None = None, *, active_only: bool = False,
         rows = [item for item in rows if str(item.get("status") or "") in ACTIVE_JOB_STATUSES]
     rows.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")), reverse=True)
     return rows[:max(1, min(1000, int(limit)))]
+
+
+def cleanup_history(retention_days: int, limit: int = 500) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(7, min(30, int(retention_days))))
+    normalized_limit = max(1, min(5000, int(limit)))
+    if postgres.enabled():
+        return postgres.delete_expired_batch_jobs(cutoff, normalized_limit)
+    with _LOCK:
+        payload = _read_local()
+        candidates: list[tuple[datetime, str, dict[str, Any]]] = []
+        for job_id, raw in payload["jobs"].items():
+            if not isinstance(raw, dict) or str(raw.get("status") or "") not in TERMINAL_JOB_STATUSES:
+                continue
+            try:
+                updated_at = datetime.fromisoformat(str(raw.get("updated_at") or raw.get("finished_at") or raw.get("created_at") or "").replace("Z", "+00:00"))
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if updated_at < cutoff:
+                candidates.append((updated_at, str(job_id), raw))
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        removed = [dict(raw) for _, _, raw in candidates[:normalized_limit]]
+        for _, job_id, _ in candidates[:normalized_limit]:
+            payload["jobs"].pop(job_id, None)
+        if removed:
+            _write_local(payload)
+        return removed
 
 
 def _mutate_job(job_id: str, mutator: Callable[[dict[str, Any]], Any]) -> Any:

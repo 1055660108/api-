@@ -7456,7 +7456,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 
 .runtime-config-form {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(150px, 1fr)) auto;
   align-items: end;
   gap: 12px;
   margin-top: 18px;
@@ -7466,6 +7466,32 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 
 .runtime-config-form .field { max-width: 260px; }
 .runtime-config-form button { min-width: 116px; }
+.resource-alert-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  color: #76561b;
+  background: #fff8e8;
+  border: 1px solid #ead29b;
+  border-radius: 6px;
+}
+.resource-alert-banner[data-level="critical"] { color: #8e312d; background: #fff2f1; border-color: #e7bab6; }
+.resource-alert-banner > svg { width: 20px; height: 20px; flex: 0 0 auto; }
+.resource-alert-banner > div { display: flex; min-width: 0; flex-wrap: wrap; gap: 4px 10px; }
+.resource-alert-banner span { overflow-wrap: anywhere; }
+.resource-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.resource-monitor-grid > span { display: grid; gap: 4px; min-width: 0; }
+.resource-monitor-grid small { color: var(--muted); font-size: 11px; }
+.resource-monitor-grid strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .settings-icon svg { width: 18px; height: 18px; }
 
 #emailModal .modal-panel {
@@ -7859,6 +7885,7 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
   #feedbackModal .feedback-modal-panel { padding: 22px 20px; }
   #feedbackModal #feedbackContent { min-height: 170px; }
   .runtime-config-form { grid-template-columns: 1fr; }
+  .resource-monitor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .runtime-config-form .field { max-width: none; }
   #emailModal .modal-panel { grid-template-columns: 1fr; padding: 22px 20px; }
   #emailModal .modal-panel > .field { grid-column: 1; }

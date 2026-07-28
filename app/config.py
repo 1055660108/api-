@@ -92,6 +92,7 @@ def default_config() -> dict[str, Any]:
         "video_duration": 15,
         "max_image_count": 9,
         "task_cache_retention_days": 7,
+        "batch_history_retention_days": 30,
         "default_platform": DEFAULT_PLATFORM,
         "platform_models": DEFAULT_MODELS,
         "platform_model_states": {},
@@ -301,6 +302,7 @@ class Settings:
     video_duration: int
     max_image_count: int
     task_cache_retention_days: int
+    batch_history_retention_days: int
     default_platform: str
     platform_models: dict[str, list[str]]
     platform_model_states: dict[str, dict[str, bool]]
@@ -408,6 +410,7 @@ def load_settings() -> Settings:
         video_duration=max(1, int(data.get("video_duration") or 15)),
         max_image_count=max(0, min(9, int(data.get("max_image_count") or 9))),
         task_cache_retention_days=max(1, int(data.get("task_cache_retention_days") or 7)),
+        batch_history_retention_days=max(7, min(30, int(data.get("batch_history_retention_days") or 30))),
         default_platform=default_platform,
         platform_models=platform_models,
         platform_model_states=platform_model_states,

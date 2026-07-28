@@ -65,6 +65,14 @@ CREATE TABLE IF NOT EXISTS dola_point_transactions (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS dola_point_transactions_user_created_idx ON dola_point_transactions (user_id, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS dola_point_transactions_archive (
+    id varchar(32) PRIMARY KEY,
+    user_id varchar(64) NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamptz NOT NULL,
+    archived_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dola_point_transactions_archive_user_created_idx ON dola_point_transactions_archive (user_id, created_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS dola_user_activity (
     id varchar(32) PRIMARY KEY,
     user_id varchar(64) NOT NULL,
@@ -198,6 +206,29 @@ def connection() -> Iterator[Any]:
         return
     with pool.connection() as conn:
         yield conn
+
+
+def health_snapshot() -> dict[str, Any]:
+    started = datetime.now(timezone.utc)
+    with connection() as conn:
+        conn.execute("SET LOCAL statement_timeout = '2s'")
+        row = conn.execute(
+            "SELECT current_database(), pg_database_size(current_database()), "
+            "current_setting('max_connections')::int, "
+            "(SELECT count(*) FROM pg_stat_activity WHERE datname = current_database())"
+        ).fetchone()
+    pool = _connection_pool()
+    pool_stats = pool.get_stats() if pool is not None and hasattr(pool, "get_stats") else {}
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds() * 1000
+    return {
+        "ok": True,
+        "database": str(row[0]),
+        "database_size_bytes": int(row[1]),
+        "max_connections": int(row[2]),
+        "connections": int(row[3]),
+        "latency_ms": round(elapsed, 1),
+        "pool": {str(key): int(value) for key, value in dict(pool_stats).items() if isinstance(value, (int, float))},
+    }
 
 
 def ensure_schema() -> None:
@@ -546,6 +577,23 @@ def query_point_transactions(user_id: str, page: int, page_size: int) -> dict[st
     }
 
 
+def archive_point_transactions(cutoff: datetime, limit: int = 5000) -> int:
+    with connection() as conn:
+        row = conn.execute(
+            "WITH moved AS ("
+            "DELETE FROM dola_point_transactions WHERE id IN ("
+            "SELECT id FROM dola_point_transactions WHERE created_at < %s ORDER BY created_at, id LIMIT %s"
+            ") RETURNING id, user_id, payload, created_at"
+            "), archived AS ("
+            "INSERT INTO dola_point_transactions_archive(id, user_id, payload, created_at) "
+            "SELECT id, user_id, payload, created_at FROM moved "
+            "ON CONFLICT (id) DO NOTHING RETURNING id"
+            ") SELECT count(*) FROM moved",
+            (cutoff, max(1, min(50_000, int(limit)))),
+        ).fetchone()
+    return int(row[0] if row else 0)
+
+
 def insert_user_activity(entry: dict[str, Any]) -> None:
     from psycopg.types.json import Jsonb
 
@@ -684,6 +732,19 @@ def list_batch_jobs(owner_token_hash: str | None = None, *, active_only: bool = 
         rows = conn.execute(
             f"SELECT payload FROM dola_batch_jobs{where} ORDER BY created_at DESC, id DESC LIMIT %s",
             tuple(params),
+        ).fetchall()
+    return [dict(row[0]) for row in rows]
+
+
+def delete_expired_batch_jobs(cutoff: datetime, limit: int = 500) -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute(
+            "DELETE FROM dola_batch_jobs WHERE id IN ("
+            "SELECT id FROM dola_batch_jobs "
+            "WHERE payload->>'status' IN ('completed', 'canceled') AND updated_at < %s "
+            "ORDER BY updated_at, id LIMIT %s"
+            ") RETURNING payload",
+            (cutoff, max(1, min(5000, int(limit)))),
         ).fetchall()
     return [dict(row[0]) for row in rows]
 
@@ -1002,4 +1063,4 @@ def delete_task(task_id: str) -> None:
 
 def clear_all() -> None:
     with connection() as conn:
-        conn.execute("TRUNCATE dola_tasks, dola_documents, dola_accounts, dola_temp_tokens, dola_users, dola_point_transactions, dola_user_activity, dola_batch_jobs")
+        conn.execute("TRUNCATE dola_tasks, dola_documents, dola_accounts, dola_temp_tokens, dola_users, dola_point_transactions, dola_point_transactions_archive, dola_user_activity, dola_batch_jobs")

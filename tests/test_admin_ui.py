@@ -32,6 +32,10 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', styles)
         self.assertIn('#settingsView.active .settings-layout', styles)
         self.assertIn('scrollbar-gutter: stable;', styles)
+        self.assertIn('id="batchHistoryRetentionDays"', self.html)
+        self.assertIn('id="resourceMonitorPanel"', self.html)
+        self.assertIn('id="resourceAlertBanner"', self.html)
+        self.assertIn('renderResourceMonitoring(data.components?.monitoring || {})', self.javascript)
 
     def test_account_header_uses_wrapping_grid_without_overflow(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")

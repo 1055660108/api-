@@ -44,6 +44,8 @@ const els = {
   clientTokenDisplay: document.getElementById("clientTokenDisplay"),
   clientAccountName: document.getElementById("clientAccountName"),
   dashboardPointsBalance: document.getElementById("dashboardPointsBalance"),
+  resourceAlertBanner: document.getElementById("resourceAlertBanner"),
+  resourceAlertText: document.getElementById("resourceAlertText"),
   sidebar: document.getElementById("sidebar"),
   toggleSidebar: document.getElementById("toggleSidebar"),
   sidebarMembershipName: document.getElementById("sidebarMembershipName"),
@@ -384,7 +386,13 @@ const els = {
   runtimeConfigForm: document.getElementById("runtimeConfigForm"),
   runtimeConfigState: document.getElementById("runtimeConfigState"),
   dolaSubmitInterval: document.getElementById("dolaSubmitInterval"),
+  batchHistoryRetentionDays: document.getElementById("batchHistoryRetentionDays"),
   saveRuntimeConfig: document.getElementById("saveRuntimeConfig"),
+  resourceMonitorState: document.getElementById("resourceMonitorState"),
+  resourceDiskState: document.getElementById("resourceDiskState"),
+  resourceMemoryState: document.getElementById("resourceMemoryState"),
+  resourceRedisState: document.getElementById("resourceRedisState"),
+  resourcePostgresState: document.getElementById("resourcePostgresState"),
   modelConfigPanel: document.getElementById("modelConfigPanel"),
   modelConfigDisplay: document.getElementById("modelConfigDisplay"),
   openModelModal: document.getElementById("openModelModal"),
@@ -2715,6 +2723,36 @@ function updateDashboardMetrics() {
   if (els.taskTodayDoneCount) els.taskTodayDoneCount.textContent = String(stats?.completed_today ?? todayDone);
 }
 
+function renderResourceMonitoring(monitoring = {}) {
+  if (portal !== "admin") return;
+  const alerts = Array.isArray(monitoring.alerts) ? monitoring.alerts : [];
+  const level = String(monitoring.level || "pending");
+  const percent = (value) => Number.isFinite(Number(value)) ? `${Math.round(Number(value) * 100)}%` : "--";
+  const componentState = (component, normalText) => {
+    if (component?.configured === false) return "未启用";
+    if (component?.ok === false || component?.level === "critical") return "严重";
+    if (component?.level === "warning") return "警告";
+    return normalText;
+  };
+  if (els.resourceAlertBanner) {
+    els.resourceAlertBanner.classList.toggle("hidden", alerts.length === 0);
+    els.resourceAlertBanner.dataset.level = level;
+  }
+  if (els.resourceAlertText) els.resourceAlertText.textContent = alerts.map((item) => item.message).filter(Boolean).join("；");
+  if (els.resourceMonitorState) els.resourceMonitorState.textContent = level === "critical" ? "严重告警" : level === "warning" ? "需要关注" : level === "normal" ? "运行正常" : "等待检测";
+  if (els.resourceDiskState) els.resourceDiskState.textContent = monitoring.disk ? percent(monitoring.disk.ratio) : "--";
+  if (els.resourceMemoryState) {
+    const apiRatio = Number(monitoring.memory?.api?.ratio || 0);
+    const workerRatio = Number(monitoring.memory?.worker?.ratio || 0);
+    els.resourceMemoryState.textContent = monitoring.memory ? percent(Math.max(apiRatio, workerRatio)) : "--";
+  }
+  if (els.resourceRedisState) els.resourceRedisState.textContent = componentState(monitoring.redis, "正常");
+  if (els.resourcePostgresState) {
+    const ratio = monitoring.postgres?.connection_ratio;
+    els.resourcePostgresState.textContent = componentState(monitoring.postgres, ratio != null ? percent(ratio) : "正常");
+  }
+}
+
 async function refreshHealth() {
   const data = await apiFetch("/health");
   state.activeIds = Array.isArray(data.active) ? data.active : [];
@@ -2725,6 +2763,7 @@ async function refreshHealth() {
   state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 8);
   state.browserContextsPerProcess = Number(data.components?.browser?.contexts_per_process || 4);
   state.submissionConcurrency = Number(data.components?.browser?.submission_capacity || effectiveWorkers || 32);
+  renderResourceMonitoring(data.components?.monitoring || {});
   if (portal === "admin") {
     els.metricWorkers.textContent = String(state.submissionConcurrency);
     if (els.metricWorkersNote) els.metricWorkersNote.textContent = `提交并发 · 远端运行 ${Number(data.remote_generation_active || 0)}`;
@@ -3127,21 +3166,26 @@ async function loadRuntimeConfig() {
   if (portal !== "admin" || !els.dolaSubmitInterval) return null;
   const data = await apiFetch("/config/runtime");
   const interval = Math.max(1, Math.min(5, Number(data.dola_submit_interval_seconds || 5)));
+  const retentionDays = Math.max(7, Math.min(30, Number(data.batch_history_retention_days || 30)));
   els.dolaSubmitInterval.value = String(interval);
-  if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${interval} 秒`;
+  if (els.batchHistoryRetentionDays) els.batchHistoryRetentionDays.value = String(retentionDays);
+  if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${interval} 秒 · ${retentionDays} 天`;
   return data;
 }
 
 async function saveRuntimeConfig(event) {
   event?.preventDefault();
   const interval = Math.round(Number(els.dolaSubmitInterval?.value || 0) * 10) / 10;
+  const retentionDays = Number.parseInt(els.batchHistoryRetentionDays?.value || "", 10);
   if (!Number.isFinite(interval) || interval < 1 || interval > 5) return toast("任务提交间隔需为 1 - 5 秒", "error");
+  if (!Number.isInteger(retentionDays) || retentionDays < 7 || retentionDays > 30) return toast("批量历史保留时间需为 7 - 30 天", "error");
   setBusy(els.saveRuntimeConfig, true, "保存中");
   try {
-    const data = await apiFetch("/config/runtime", { method: "POST", body: { dola_submit_interval_seconds: interval } });
+    const data = await apiFetch("/config/runtime", { method: "POST", body: { dola_submit_interval_seconds: interval, batch_history_retention_days: retentionDays } });
     els.dolaSubmitInterval.value = String(data.dola_submit_interval_seconds);
-    if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${data.dola_submit_interval_seconds} 秒`;
-    toast("任务提交间隔已生效");
+    if (els.batchHistoryRetentionDays) els.batchHistoryRetentionDays.value = String(data.batch_history_retention_days);
+    if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${data.dola_submit_interval_seconds} 秒 · ${data.batch_history_retention_days} 天`;
+    toast("运行与保留设置已生效");
   } catch (error) {
     toast(`保存失败：${error.message}`, "error");
   } finally {

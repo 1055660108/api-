@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from . import config as app_config
-from .admin_audit import list_admin_actions, record_admin_action
+from .admin_audit import list_admin_actions, prune_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_quota
@@ -33,6 +33,7 @@ from .billing import model_cost_points, model_cost_units, points_to_units, units
 from .batch_jobs import (
     cancel_job as cancel_persistent_batch_job,
     claim_next_row as claim_next_batch_row,
+    cleanup_history as cleanup_batch_history,
     coordinator as batch_coordinator,
     create_job as create_batch_job,
     fail_or_requeue_row as fail_or_requeue_batch_row,
@@ -68,6 +69,7 @@ from .proxy_manager import activate_mihomo_node, fetch_subscription_node_list, m
 from .resilience import PlatformGuard, adaptive_worker_limit, queue_admission
 from .registration_security import block_retry_after as registration_block_retry_after, clear_local_state as clear_registration_security_state, record_failure as record_registration_failure, reset_failures as reset_registration_failures
 from .repository_update import repository_status, update_repository
+from .resource_monitor import collect_resource_snapshot, latest_resource_snapshot
 from .spreadsheet_import import MAX_SPREADSHEET_BYTES, SUPPORTED_SPREADSHEET_SUFFIXES, SpreadsheetImportError, parse_spreadsheet
 from .postgres import ensure_schema as ensure_postgres_schema
 from .postgres import enabled as postgres_enabled
@@ -75,7 +77,7 @@ from .postgres import is_transient_error as is_transient_postgres_error
 from .package_catalog import create_package, disable_package, list_packages, update_package
 from .membership_catalog import DEFAULT_PAYMENT_URL, create_membership, disable_membership, get_membership, list_memberships, update_membership
 from .point_cards import delete_cards, generate_cards, list_cards, purge_legacy_cards, redeem_card
-from .point_transactions import list_transactions, record_transaction
+from .point_transactions import archive_old_transactions, list_transactions, record_transaction
 from .user_activity import list_activity, record_activity
 from .store import (
     active_task_ids,
@@ -363,6 +365,7 @@ return {1, 0}
 quota_reset_task = None
 task_cache_cleanup_task = None
 proxy_health_task = None
+resource_alert_task = None
 LOCAL_TZ = timezone(timedelta(hours=8))
 
 
@@ -486,9 +489,36 @@ async def task_cache_cleanup_loop() -> None:
     import asyncio
 
     while True:
-        settings = load_settings()
-        cleanup_expired_task_cache(settings.task_cache_retention_days, active_task_ids(), temp_token_retention_days())
+        try:
+            settings = load_settings()
+            await asyncio.to_thread(cleanup_expired_task_cache, settings.task_cache_retention_days, active_task_ids(), temp_token_retention_days())
+            expired_batches = await asyncio.to_thread(cleanup_batch_history, settings.batch_history_retention_days, 5000)
+            for job in expired_batches:
+                job_id = str(job.get("id") or "")
+                if job_id:
+                    try:
+                        await asyncio.to_thread(shutil.rmtree, _batch_job_assets_path(job_id), True)
+                    except ValueError:
+                        pass
+            await asyncio.to_thread(_cleanup_batch_references)
+            await asyncio.to_thread(prune_admin_actions, 90, 10_000)
+            await asyncio.to_thread(archive_old_transactions, 365, 5000)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("scheduled data retention cleanup failed")
         await asyncio.sleep(6 * 60 * 60)
+
+
+async def resource_alert_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(collect_resource_snapshot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("resource alert collection failed")
+        await asyncio.sleep(60)
 
 
 async def refresh_proxy_health_once() -> dict[str, object]:
@@ -821,7 +851,7 @@ async def batch_scheduler_loop() -> None:
 async def lifespan(app: FastAPI):
     import asyncio
 
-    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task, batch_scheduler_task
+    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task, resource_alert_task, batch_scheduler_task
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
     clear_registration_security_state()
@@ -845,6 +875,7 @@ async def lifespan(app: FastAPI):
     quota_reset_task = asyncio.create_task(account_quota_reset_loop())
     task_cache_cleanup_task = asyncio.create_task(task_cache_cleanup_loop())
     proxy_health_task = asyncio.create_task(proxy_health_loop())
+    resource_alert_task = asyncio.create_task(resource_alert_loop())
     batch_scheduler_task = asyncio.create_task(batch_scheduler_loop())
     try:
         yield
@@ -862,6 +893,10 @@ async def lifespan(app: FastAPI):
             proxy_health_task.cancel()
             with suppress(asyncio.CancelledError):
                 await proxy_health_task
+        if resource_alert_task:
+            resource_alert_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await resource_alert_task
         if batch_scheduler_task:
             batch_scheduler_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -1120,6 +1155,7 @@ def _health_payload(access: AccessContext) -> dict:
         },
     }
     if access.is_admin:
+        monitoring = latest_resource_snapshot()
         data["admin_username"] = settings.admin_username
         data["remote_generation_limit"] = 0
         try:
@@ -1129,6 +1165,9 @@ def _health_payload(access: AccessContext) -> dict:
         data["components"]["queue"]["error"] = queue_health.get("error", "")
         data["components"]["browser"]["executable_path"] = browser_path or ""
         data["components"]["browser"]["error"] = browser_error
+        data["components"]["monitoring"] = monitoring
+        if monitoring.get("level") == "critical":
+            data["status"] = "degraded"
     if access.is_temp:
         data.update(_client_access_payload(access))
         data["browser_workers"] = access.concurrency
@@ -2498,21 +2537,36 @@ async def workers_config():
 @app.get("/config/runtime", dependencies=[Depends(require_admin)])
 async def runtime_config():
     settings = load_settings()
-    return {"dola_submit_interval_seconds": settings.dola_submit_interval_seconds}
+    return {
+        "dola_submit_interval_seconds": settings.dola_submit_interval_seconds,
+        "batch_history_retention_days": settings.batch_history_retention_days,
+    }
 
 
 @app.post("/config/runtime", dependencies=[Depends(require_admin)])
 async def update_runtime_config(request: Request):
     payload = await _request_payload(request)
+    settings = load_settings()
     try:
-        submit_interval = float(payload.get("dola_submit_interval_seconds"))
+        submit_interval = float(payload.get("dola_submit_interval_seconds", settings.dola_submit_interval_seconds))
+        batch_history_retention_days = int(payload.get("batch_history_retention_days", settings.batch_history_retention_days))
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="dola_submit_interval_seconds must be a number")
+        raise HTTPException(status_code=400, detail="runtime retention values must be numbers")
     if submit_interval < 1 or submit_interval > 5:
         raise HTTPException(status_code=400, detail="dola_submit_interval_seconds must be between 1 and 5")
+    if batch_history_retention_days < 7 or batch_history_retention_days > 30:
+        raise HTTPException(status_code=400, detail="batch_history_retention_days must be between 7 and 30")
     submit_interval = round(submit_interval, 1)
-    update_config({"dola_submit_interval_seconds": submit_interval})
-    return {"ok": True, "dola_submit_interval_seconds": load_settings().dola_submit_interval_seconds}
+    update_config({
+        "dola_submit_interval_seconds": submit_interval,
+        "batch_history_retention_days": batch_history_retention_days,
+    })
+    refreshed = load_settings()
+    return {
+        "ok": True,
+        "dola_submit_interval_seconds": refreshed.dola_submit_interval_seconds,
+        "batch_history_retention_days": refreshed.batch_history_retention_days,
+    }
 
 
 @app.get("/config/platforms", dependencies=[Depends(require_token)])

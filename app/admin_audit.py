@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from .config import DATA_DIR, ensure_dirs
 ADMIN_AUDIT_PATH = DATA_DIR / "admin_audit.json"
 _LOCK = threading.RLock()
 _MAX_ENTRIES = 10_000
+_RETENTION_DAYS = 90
 
 
 def _now() -> str:
@@ -73,7 +74,7 @@ def record_admin_action(
     def append(payload: dict[str, Any]) -> None:
         entries = payload.setdefault("entries", [])
         entries.append(entry)
-        del entries[:-_MAX_ENTRIES]
+        payload["entries"] = _retained_entries(entries, _RETENTION_DAYS, _MAX_ENTRIES)
 
     with _LOCK:
         if postgres.enabled():
@@ -83,6 +84,44 @@ def record_admin_action(
             append(payload)
             _write(payload)
     return dict(entry)
+
+
+def _retained_entries(entries: list[Any], retention_days: int, max_entries: int) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(retention_days)))
+    retained: list[dict[str, Any]] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            created_at = datetime.fromisoformat(str(raw.get("created_at") or "").replace("Z", "+00:00"))
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if created_at >= cutoff:
+            retained.append(dict(raw))
+    return retained[-max(1, int(max_entries)):]
+
+
+def prune_admin_actions(retention_days: int = _RETENTION_DAYS, max_entries: int = _MAX_ENTRIES) -> int:
+    removed = 0
+
+    def prune(payload: dict[str, Any]) -> None:
+        nonlocal removed
+        entries = payload.setdefault("entries", [])
+        retained = _retained_entries(entries, retention_days, max_entries)
+        removed = max(0, len(entries) - len(retained))
+        payload["entries"] = retained
+
+    with _LOCK:
+        if postgres.enabled():
+            postgres.mutate_document("admin_audit", _default(), prune)
+        else:
+            payload = _read()
+            prune(payload)
+            if removed:
+                _write(payload)
+    return removed
 
 
 def list_admin_actions(

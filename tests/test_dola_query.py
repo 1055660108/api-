@@ -22,6 +22,42 @@ def single_chain(conversation_id: str, messages: list[dict]) -> dict:
 
 
 class DolaQueryTests(unittest.TestCase):
+    def test_query_lock_serializes_waiters_and_releases_registry_entry(self) -> None:
+        task_id = "f" * 32
+
+        async def exercise() -> tuple[int, list[dict[str, str]]]:
+            query._QUERY_LOCKS.clear()
+            active = 0
+            max_active = 0
+            first_entered = asyncio.Event()
+            release_first = asyncio.Event()
+
+            async def fake_query(_task_id: str) -> dict[str, str]:
+                nonlocal active, max_active
+                active += 1
+                max_active = max(max_active, active)
+                if not first_entered.is_set():
+                    first_entered.set()
+                    await release_first.wait()
+                await asyncio.sleep(0)
+                active -= 1
+                return {"code": "1", "text": "生成中", "url": ""}
+
+            with patch.object(query, "_query_task_once", new=fake_query):
+                first = asyncio.create_task(query.query_task(task_id))
+                await first_entered.wait()
+                second = asyncio.create_task(query.query_task(task_id))
+                await asyncio.sleep(0)
+                self.assertEqual(query._QUERY_LOCKS[task_id].users, 2)
+                release_first.set()
+                results = await asyncio.gather(first, second)
+            return max_active, results
+
+        max_active, results = asyncio.run(exercise())
+        self.assertEqual(max_active, 1)
+        self.assertEqual(len(results), 2)
+        self.assertNotIn(task_id, query._QUERY_LOCKS)
+
     def test_running_task_query_returns_current_execution_phase(self) -> None:
         with patch.object(query, "expire_task_if_timeout"), patch.object(
             query, "get_meta", return_value={"status": "running", "status_reason": "正在打开生成页面"}

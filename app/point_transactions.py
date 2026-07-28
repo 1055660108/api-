@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import postgres
@@ -100,3 +100,10 @@ def list_transactions(user_id: str, page: int = 1, page_size: int = 50) -> dict[
     page = min(max(1, int(page)), total_pages)
     start = (page - 1) * page_size
     return {"transactions": rows[start:start + page_size], "total": total, "page": page, "page_size": page_size, "total_pages": total_pages}
+
+
+def archive_old_transactions(retention_days: int = 365, limit: int = 5000) -> int:
+    if not postgres.enabled():
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(365, int(retention_days)))
+    return postgres.archive_point_transactions(cutoff, limit)

@@ -48,11 +48,17 @@ _MIHOMO_ACTIVE_PROXY: dict[str, str] = {}
 _NODE_DELAYS: dict[str, tuple[int | None, float]] = {}
 _NODE_LAST_GOOD: dict[str, tuple[int, float]] = {}
 _NODE_DOLA_HEALTH: dict[str, tuple[bool, float]] = {}
+_NODE_COOLDOWNS: dict[str, tuple[float, str]] = {}
+_NODE_GATEWAY_FAILURES: dict[str, tuple[int, float]] = {}
 _PROXY_SOURCE_FAILURES: dict[str, float] = {}
 _NODE_DELAYS_LOADED = False
 NODE_DELAYS_PATH = DATA_DIR / "proxy_node_delays.json"
 NODE_DELAY_TTL_SECONDS = 300
 NODE_FAILURE_COOLDOWN_SECONDS = 90
+NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS = 600
+NODE_GATEWAY_FAILURE_COOLDOWN_SECONDS = 300
+NODE_GATEWAY_FAILURE_WINDOW_SECONDS = 300
+NODE_GATEWAY_FAILURE_THRESHOLD = 2
 PROXY_SOURCE_FAILURE_COOLDOWN_SECONDS = 90
 DOLA_HEALTH_TTL_SECONDS = 300
 DOLA_HEALTHCHECK_URL = "https://www.dola.com/"
@@ -140,12 +146,64 @@ def _persist_node_delays() -> None:
         pass
 
 
-def mark_node_unavailable(node_id: str) -> None:
+def mark_node_unavailable(
+    node_id: str,
+    *,
+    cooldown_seconds: int = NODE_FAILURE_COOLDOWN_SECONDS,
+    reason: str = "runtime_failure",
+) -> None:
     _load_persisted_node_delays()
     normalized = str(node_id or "").strip()
     if normalized:
-        _NODE_DELAYS[normalized] = (None, time.monotonic())
-        _NODE_DOLA_HEALTH[normalized] = (False, time.monotonic())
+        now = time.monotonic()
+        _NODE_DELAYS[normalized] = (None, now)
+        _NODE_DOLA_HEALTH[normalized] = (False, now)
+        deadline = now + max(1, int(cooldown_seconds))
+        previous_deadline, _ = _NODE_COOLDOWNS.get(normalized, (0.0, ""))
+        if deadline >= previous_deadline:
+            _NODE_COOLDOWNS[normalized] = (deadline, str(reason or "runtime_failure")[:80])
+
+
+def node_retry_after(node_id: str) -> int:
+    normalized = str(node_id or "").strip()
+    if not normalized:
+        return 0
+    now = time.monotonic()
+    deadline, _ = _NODE_COOLDOWNS.get(normalized, (0.0, ""))
+    if deadline > now:
+        return max(1, math.ceil(deadline - now))
+    if deadline:
+        _NODE_COOLDOWNS.pop(normalized, None)
+    delay, checked_at = _NODE_DELAYS.get(normalized, (0, 0.0))
+    if delay is None and checked_at > 0:
+        remaining = NODE_FAILURE_COOLDOWN_SECONDS - (now - checked_at)
+        return max(0, math.ceil(remaining))
+    return 0
+
+
+def record_node_gateway_failure(node_id: str, status: int) -> bool:
+    normalized = str(node_id or "").strip()
+    if not normalized or int(status or 0) not in {502, 503, 504}:
+        return False
+    now = time.monotonic()
+    previous_count, previous_at = _NODE_GATEWAY_FAILURES.get(normalized, (0, 0.0))
+    count = previous_count + 1 if now - previous_at <= NODE_GATEWAY_FAILURE_WINDOW_SECONDS else 1
+    _NODE_GATEWAY_FAILURES[normalized] = (count, now)
+    if count < NODE_GATEWAY_FAILURE_THRESHOLD:
+        return False
+    mark_node_unavailable(
+        normalized,
+        cooldown_seconds=NODE_GATEWAY_FAILURE_COOLDOWN_SECONDS,
+        reason=f"gateway_http_{int(status)}",
+    )
+    _NODE_GATEWAY_FAILURES.pop(normalized, None)
+    return True
+
+
+def record_node_success(node_id: str) -> None:
+    normalized = str(node_id or "").strip()
+    if normalized:
+        _NODE_GATEWAY_FAILURES.pop(normalized, None)
 
 
 def mark_proxy_source_unavailable(source: str) -> None:
@@ -171,8 +229,7 @@ def proxy_source_retry_after(source: str) -> int:
 
 
 def _node_is_cooling_down(node_id: str) -> bool:
-    delay, checked_at = _NODE_DELAYS.get(str(node_id or ""), (0, 0.0))
-    return delay is None and checked_at > 0 and time.monotonic() - checked_at < NODE_FAILURE_COOLDOWN_SECONDS
+    return node_retry_after(node_id) > 0
 
 
 def identify_country(name: str, server: str = "") -> str:
@@ -701,6 +758,7 @@ async def resolve_subscription_proxy(
     selected_node: str = "",
     selected_countries: Iterable[str] = (),
     latency_threshold_ms: int = 5000,
+    excluded_node_ids: Iterable[str] = (),
 ) -> dict[str, str]:
     global _SUBSCRIPTION_RESOLVE_LOCK
     if _SUBSCRIPTION_RESOLVE_LOCK is None:
@@ -712,12 +770,13 @@ async def resolve_subscription_proxy(
             refresh_seconds=refresh_seconds,
         )
         countries = {str(item).strip() for item in selected_countries if str(item or "").strip()}
+        excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
         eligible_nodes = tuple(node for node in nodes if not auto_select or (countries and node.country in countries))
         if not eligible_nodes:
             raise RuntimeError("automatic proxy selection requires at least one selected country" if auto_select and not countries else "selected proxy countries contain no usable nodes")
-        selectable_nodes = tuple(node for node in eligible_nodes if not _node_is_cooling_down(node.id))
+        selectable_nodes = tuple(node for node in eligible_nodes if node.id not in excluded and not _node_is_cooling_down(node.id))
         if not selectable_nodes:
-            raise RuntimeError("all eligible proxy nodes are temporarily unavailable")
+            raise RuntimeError("no alternative proxy node is currently available" if excluded else "all eligible proxy nodes are temporarily unavailable")
         chosen = next((node for node in selectable_nodes if node.id == selected_node), None)
         if auto_select:
             fresh_delays = {
@@ -789,6 +848,7 @@ async def acquire_dola_subscription_proxy(
     selected_node: str = "",
     selected_countries: Iterable[str] = (),
     latency_threshold_ms: int = 5000,
+    excluded_node_ids: Iterable[str] = (),
 ) -> dict[str, str]:
     global _MIHOMO_LEASE_CONDITION, _MIHOMO_ACTIVE_LEASES, _MIHOMO_ACTIVE_PROXY
     if _MIHOMO_LEASE_CONDITION is None:
@@ -799,10 +859,11 @@ async def acquire_dola_subscription_proxy(
         refresh_seconds=refresh_seconds,
     )
     attempts = max(1, len(nodes))
+    excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
     async with _MIHOMO_LEASE_CONDITION:
         while _MIHOMO_ACTIVE_LEASES > 0:
             active_node = str(_MIHOMO_ACTIVE_PROXY.get("node_id") or "")
-            if active_node and not _node_is_cooling_down(active_node):
+            if active_node and active_node not in excluded and not _node_is_cooling_down(active_node):
                 _MIHOMO_ACTIVE_LEASES += 1
                 return {**_MIHOMO_ACTIVE_PROXY, "mihomo_lease": "1"}
             await _MIHOMO_LEASE_CONDITION.wait()
@@ -818,6 +879,7 @@ async def acquire_dola_subscription_proxy(
                 selected_node=selected_node,
                 selected_countries=selected_countries,
                 latency_threshold_ms=latency_threshold_ms,
+                excluded_node_ids=excluded,
             )
             node_id = str(proxy.get("node_id") or "")
             if node_id == last_node and _node_is_cooling_down(node_id):

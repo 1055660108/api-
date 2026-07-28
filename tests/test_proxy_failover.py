@@ -48,6 +48,8 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.data_patch.start()
         account_proxies._ROTATION_CURSOR = 0
         proxy_manager._PROXY_SOURCE_FAILURES.clear()
+        proxy_manager._NODE_COOLDOWNS.clear()
+        proxy_manager._NODE_GATEWAY_FAILURES.clear()
 
     def tearDown(self) -> None:
         self.data_patch.stop()
@@ -169,6 +171,43 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
 
     def test_proxy_mode_unavailable_is_an_infrastructure_failure(self) -> None:
         self.assertTrue(automation.is_infrastructure_failure("all configured proxy modes are unavailable (subscription: cooling down)"))
+
+    def test_runtime_failure_remembers_node_for_the_next_task_attempt(self) -> None:
+        instance = automation_instance()
+        instance.proxy_node_id = "failed-node"
+        instance._task_exists = lambda: True
+        with patch.object(automation, "get_meta", return_value={}), patch.object(automation, "update_meta") as update, patch.object(
+            automation, "mark_node_unavailable"
+        ) as unavailable:
+            instance._mark_active_proxy_unavailable(cooldown_seconds=600, reason="service_frequent")
+
+        unavailable.assert_called_once_with("failed-node", reason="service_frequent", cooldown_seconds=600)
+        update.assert_called_once_with(
+            "fake-task",
+            proxy_retry_avoid_node_id="failed-node",
+            failed_proxy_node_ids=["failed-node"],
+        )
+
+    def test_gateway_failure_tracks_node_without_immediate_first_hit_cooldown(self) -> None:
+        instance = automation_instance()
+        instance.proxy_node_id = "gateway-node"
+        instance._remember_failed_proxy_node = unittest.mock.Mock()
+        with patch.object(automation, "record_node_gateway_failure", return_value=False) as record:
+            instance._record_active_gateway_failure(504)
+
+        instance._remember_failed_proxy_node.assert_called_once_with()
+        record.assert_called_once_with("gateway-node", 504)
+
+    def test_active_limited_node_defers_before_submission_and_is_avoided(self) -> None:
+        instance = automation_instance()
+        instance.proxy_node_id = "limited-node"
+        instance._remember_failed_proxy_node = unittest.mock.Mock()
+        with patch.object(automation, "node_retry_after", return_value=45):
+            outcome = instance._active_proxy_cooldown_outcome()
+
+        self.assertTrue(outcome["defer_only"])
+        self.assertEqual(outcome["retry_after"], 45)
+        instance._remember_failed_proxy_node.assert_called_once_with()
 
 
 if __name__ == "__main__":

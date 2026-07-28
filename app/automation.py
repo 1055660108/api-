@@ -23,7 +23,21 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from .account_proxies import account_browser_config, account_proxy_candidates, account_proxy_configured, account_proxy_url
 from .browser_runtime import BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
-from .proxy_manager import acquire_dola_subscription_proxy, dola_proxy_available, fetch_proxy_from_api, mark_node_unavailable, mark_proxy_source_available, mark_proxy_source_unavailable, proxy_source_available, proxy_source_retry_after, release_dola_subscription_proxy
+from .proxy_manager import (
+    NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,
+    acquire_dola_subscription_proxy,
+    dola_proxy_available,
+    fetch_proxy_from_api,
+    mark_node_unavailable,
+    mark_proxy_source_available,
+    mark_proxy_source_unavailable,
+    node_retry_after,
+    proxy_source_available,
+    proxy_source_retry_after,
+    record_node_gateway_failure,
+    record_node_success,
+    release_dola_subscription_proxy,
+)
 from .store import (
     begin_task_submission,
     clear_transient_result,
@@ -805,10 +819,54 @@ class DolaFetchAutomation:
         if self._task_exists():
             set_execution_phase(self.task_id, phase, status_reason)
 
-    def _mark_active_proxy_unavailable(self) -> None:
-        mark_node_unavailable(self.proxy_node_id)
+    def _remember_failed_proxy_node(self) -> None:
+        node_id = str(self.proxy_node_id or "").strip()
+        if not node_id or not self._task_exists():
+            return
+        meta = get_meta(self.task_id)
+        failed = [str(item) for item in meta.get("failed_proxy_node_ids") or [] if str(item)]
+        if node_id not in failed:
+            failed.append(node_id)
+        update_meta(
+            self.task_id,
+            proxy_retry_avoid_node_id=node_id,
+            failed_proxy_node_ids=failed[-20:],
+        )
+
+    def _mark_active_proxy_unavailable(
+        self,
+        *,
+        cooldown_seconds: int | None = None,
+        reason: str = "runtime_failure",
+    ) -> None:
+        if self.proxy_node_id:
+            kwargs: dict[str, Any] = {"reason": reason}
+            if cooldown_seconds is not None:
+                kwargs["cooldown_seconds"] = cooldown_seconds
+            mark_node_unavailable(self.proxy_node_id, **kwargs)
+            self._remember_failed_proxy_node()
         if not self.proxy_node_id and self.active_proxy_source != "account":
             mark_proxy_source_unavailable(self.active_proxy_source)
+
+    def _record_active_gateway_failure(self, status: int) -> None:
+        if not self.proxy_node_id:
+            return
+        self._remember_failed_proxy_node()
+        record_node_gateway_failure(self.proxy_node_id, status)
+
+    def _active_proxy_cooldown_outcome(self) -> dict[str, Any] | None:
+        retry_after = node_retry_after(self.proxy_node_id)
+        if retry_after <= 0:
+            return None
+        self._remember_failed_proxy_node()
+        return {
+            "success": False,
+            "retryable": True,
+            "reason": "proxy node cooling down",
+            "infrastructure_fault": True,
+            "defer_only": True,
+            "retry_after": retry_after,
+        }
 
     async def run(self) -> dict[str, Any]:
         try:
@@ -830,6 +888,10 @@ class DolaFetchAutomation:
         except Exception as exc:
             reason = str(exc)[:500]
             infrastructure_fault = is_infrastructure_failure(reason)
+            upper_reason = reason.upper()
+            gateway_status = next((status for status in (502, 503, 504) if f"HTTP {status}" in upper_reason), 0)
+            if gateway_status:
+                self._record_active_gateway_failure(gateway_status)
             if is_reference_upload_failure(reason):
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
@@ -894,19 +956,26 @@ class DolaFetchAutomation:
                 self._set_phase("opening_generation_page", "正在打开生成页面")
                 response = await page.goto(TARGET_URL, wait_until="commit", timeout=90000)
                 if response and response.status >= 500:
-                    return {"success": False, "retryable": True, "reason": f"page load failed {response.status}", "infrastructure_fault": True}
+                    status = int(response.status)
+                    if status in {502, 503, 504}:
+                        self._record_active_gateway_failure(status)
+                    return {"success": False, "retryable": True, "reason": f"page load failed {status}", "infrastructure_fault": True}
                 try:
                     await page.wait_for_load_state("domcontentloaded", timeout=30000)
                 except Exception:
                     pass
                 await page.wait_for_timeout(5000)
                 if self._is_region_restricted(page.url):
-                    self._mark_active_proxy_unavailable()
+                    self._mark_active_proxy_unavailable(reason="region_restricted")
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "page_navigation"})
                     return {"success": False, "retryable": True, "reason": "region restricted", "infrastructure_fault": True}
 
+                if cooldown := self._active_proxy_cooldown_outcome():
+                    return cooldown
                 self._set_phase("preparing_references", "正在准备参考图" if task_image_paths(self.task_id) else "正在准备生成请求")
                 attachments = await self._upload_images_if_needed(page)
+                if cooldown := self._active_proxy_cooldown_outcome():
+                    return cooldown
                 self._set_phase("submitting_request", "正在提交生成请求")
                 collection_id = str(uuid.uuid4())
                 unique_key = str(uuid.uuid4())
@@ -974,16 +1043,20 @@ class DolaFetchAutomation:
                 )
                 self._set_phase("submission_received", "生成请求已接收，正在确认状态")
                 if result.get("service_frequent"):
+                    self._mark_active_proxy_unavailable(
+                        cooldown_seconds=NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,
+                        reason="service_frequent",
+                    )
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "service_frequent", "submit_phase": "submission_response"})
                     return {"success": False, "retryable": True, "reason": "service frequent", "infrastructure_fault": True}
                 if result.get("country_restricted"):
-                    self._mark_active_proxy_unavailable()
+                    self._mark_active_proxy_unavailable(reason="country_restricted")
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "country_restricted", "submit_phase": "submission_response"})
                     return {"success": False, "retryable": True, "reason": "country restricted", "infrastructure_fault": True}
                 if self._is_region_restricted(str(result.get("location_href") or page.url)):
-                    self._mark_active_proxy_unavailable()
+                    self._mark_active_proxy_unavailable(reason="region_restricted")
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "submission_response"})
                     return {"success": False, "retryable": True, "reason": "region restricted", "infrastructure_fault": True}
@@ -991,6 +1064,8 @@ class DolaFetchAutomation:
                 if not bool(result.get("ok")) or status < 200 or status >= 300:
                     release_task_submission(self.task_id)
                     reason = f"submission failed with HTTP {status or 'unknown'}"
+                    if status in {502, 503, 504}:
+                        self._record_active_gateway_failure(status)
                     self._save_result(extra={"submit_error_category": f"http_{status or 'unknown'}", "submit_phase": "submission_response"})
                     return {
                         "success": False,
@@ -999,6 +1074,9 @@ class DolaFetchAutomation:
                         "account_fault": status in {401, 403},
                         "infrastructure_fault": status >= 500,
                     }
+                record_node_success(self.proxy_node_id)
+                if self._task_exists():
+                    update_meta(self.task_id, proxy_retry_avoid_node_id="")
                 self._mark_success()
                 return {"success": True, "retryable": False, "reason": ""}
             finally:
@@ -1015,6 +1093,9 @@ class DolaFetchAutomation:
         self.settings = load_settings()
         self.active_proxy_source = ""
         self.proxy_node_id = ""
+        meta = get_meta(self.task_id) if self._task_exists() else {}
+        avoid_node_id = str(meta.get("proxy_retry_avoid_node_id") or "").strip()
+        excluded_node_ids = {avoid_node_id} if avoid_node_id else set()
         if not self.settings.proxy_enabled:
             self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
             return None
@@ -1049,11 +1130,14 @@ class DolaFetchAutomation:
                         selected_node=self.settings.proxy_selected_node,
                         selected_countries=self.settings.proxy_auto_countries,
                         latency_threshold_ms=self.settings.proxy_latency_threshold_ms,
+                        excluded_node_ids=excluded_node_ids,
                     )
                     self.subscription_proxy = proxy
                     self.proxy_node_id = str(proxy.get("node_id") or "")
                     self.active_proxy_source = source
                     mark_proxy_source_available(source)
+                    if avoid_node_id and self.proxy_node_id != avoid_node_id:
+                        update_meta(self.task_id, proxy_retry_avoid_node_id="")
                     self._save_result(
                         extra={
                             "proxy_source": source,
@@ -1066,7 +1150,14 @@ class DolaFetchAutomation:
                     return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_subscription_scheme)
                 if source == "account":
                     account_errors = 0
+                    cooling_delays_for_accounts: list[int] = []
                     for entry in account_proxy_candidates(self.settings):
+                        entry_id = str(entry.get("id") or "")
+                        if entry_id in excluded_node_ids:
+                            continue
+                        if retry_after := node_retry_after(entry_id):
+                            cooling_delays_for_accounts.append(retry_after)
+                            continue
                         probe_url = account_proxy_url(entry)
                         if not probe_url or not await dola_proxy_available(probe_url, min(12.0, float(self.settings.proxy_api_timeout_seconds))):
                             account_errors += 1
@@ -1075,6 +1166,8 @@ class DolaFetchAutomation:
                         self.proxy_node_id = str(entry.get("id") or "")
                         self.active_proxy_source = source
                         mark_proxy_source_available(source)
+                        if avoid_node_id and self.proxy_node_id != avoid_node_id:
+                            update_meta(self.task_id, proxy_retry_avoid_node_id="")
                         self._save_result(extra={
                             "proxy_source": source,
                             "proxy_server": config["server"] if config else "",
@@ -1082,6 +1175,8 @@ class DolaFetchAutomation:
                             "proxy_node_name": f"{entry.get('host')}:{entry.get('port')}",
                         })
                         return config
+                    if cooling_delays_for_accounts:
+                        raise ProxyCoolingDownError(min(cooling_delays_for_accounts))
                     raise RuntimeError(f"all selected authenticated proxies are unavailable for Dola ({account_errors} checked)")
                 proxy = await fetch_proxy_from_api(
                     self.settings.proxy_api_url,
@@ -1094,6 +1189,8 @@ class DolaFetchAutomation:
                 mark_proxy_source_available(source)
                 self._save_result(extra={"proxy_source": source, "proxy_server": proxy["server"]})
                 return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_api_scheme)
+            except ProxyCoolingDownError:
+                raise
             except Exception as exc:
                 mark_proxy_source_unavailable(source)
                 errors.append(f"{source}: {str(exc)[:160]}")

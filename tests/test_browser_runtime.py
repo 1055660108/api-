@@ -140,7 +140,7 @@ class BrowserRuntimeTests(unittest.TestCase):
         self.assertIn("await lease.release()", dola)
         self.assertIn('context_options["proxy"] = proxy_config', dola)
         self.assertIn("proxy=None", dola)
-        self.assertGreaterEqual(dola.count("self._mark_active_proxy_unavailable()"), 5)
+        self.assertGreaterEqual(dola.count("self._mark_active_proxy_unavailable("), 5)
         self.assertIn('if not self.proxy_node_id and self.active_proxy_source != "account":', dola)
         self.assertIn("await release_dola_subscription_proxy(self.subscription_proxy)", dola)
         self.assertIn("await dola_proxy_available", dola)

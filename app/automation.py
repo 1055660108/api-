@@ -1146,10 +1146,23 @@ class DolaFetchAutomation:
                         "infrastructure_fault": status >= 500,
                     }
                 record_node_success(self.proxy_node_id)
+                confirmation_pending = not bool(str(result.get("conversation_id") or ""))
                 if self._task_exists():
-                    update_meta(self.task_id, proxy_retry_avoid_node_id="")
-                self._mark_success(confirmation_pending=not bool(str(result.get("conversation_id") or "")))
-                return {"success": True, "retryable": False, "reason": ""}
+                    updates: dict[str, Any] = {"proxy_retry_avoid_node_id": ""}
+                    if not confirmation_pending:
+                        updates.update(
+                            preferred_account_id="",
+                            ambiguous_proxy_retry_count=0,
+                            ambiguous_proxy_avoid_node_ids=[],
+                        )
+                    update_meta(self.task_id, **updates)
+                self._mark_success(confirmation_pending=confirmation_pending)
+                return {
+                    "success": True,
+                    "retryable": False,
+                    "reason": "",
+                    "confirmation_pending": confirmation_pending,
+                }
             finally:
                 await safe_unroute_all(page)
                 if lease is not None:
@@ -1245,7 +1258,13 @@ class DolaFetchAutomation:
         self.proxy_exit_id = "direct"
         meta = get_meta(self.task_id) if self._task_exists() else {}
         avoid_node_id = str(meta.get("proxy_retry_avoid_node_id") or "").strip()
-        excluded_node_ids = {avoid_node_id} if avoid_node_id else set()
+        excluded_node_ids = {
+            str(item).strip()
+            for item in meta.get("ambiguous_proxy_avoid_node_ids") or []
+            if str(item).strip()
+        }
+        if avoid_node_id:
+            excluded_node_ids.add(avoid_node_id)
         if not self.settings.proxy_enabled:
             self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
             return None

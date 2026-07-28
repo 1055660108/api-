@@ -570,13 +570,23 @@ class WorkerManager:
                     continue
                 failed_account_ids = set(str(item) for item in meta.get("failed_account_ids") or [] if item)
                 platform = str(meta.get("platform") or "dola")
+                preferred_account_id = str(meta.get("preferred_account_id") or "").strip().lower() if platform == "dola" else ""
                 if platform not in {"dola", "doubao", "qianwen"}:
                     mark_failed(task_id, "该平台网页自动化暂未接入")
                     continue
                 if not can_run_task(task_id, worker_id):
                     continue
-                account = claim_account_for_worker(worker_id, task_id, exclude_ids=failed_account_ids, platform=platform)
+                account = claim_account_for_worker(
+                    worker_id,
+                    task_id,
+                    exclude_ids=failed_account_ids,
+                    platform=platform,
+                    preferred_id=preferred_account_id,
+                )
                 if not account:
+                    if preferred_account_id:
+                        defer_task(task_id, "等待原账号更换代理重试", "preferred_account", 3)
+                        continue
                     if not self._handle_unavailable_account(task_id, meta, platform):
                         await asyncio.sleep(3)
                     continue
@@ -627,15 +637,15 @@ class WorkerManager:
                     elif outcome.get("retryable") and not outcome.get("account_fault") and not outcome.get("infrastructure_fault"):
                         self._platform_guard.record_failure(platform)
                 if outcome.get("success") and platform in {"dola", "doubao", "qianwen"} and account:
-                    settle_account_quota(str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
+                    if not outcome.get("confirmation_pending"):
+                        settle_account_quota(str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
                     clear_account_current_task(str(account.get("id") or ""), task_id)
                 if not outcome.get("success"):
                     retry_count = 0
                     if outcome.get("submitted"):
                         if account:
-                            settle_account_quota(str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
                             clear_account_current_task(str(account.get("id") or ""), task_id)
-                        mark_submitted(task_id)
+                        mark_submitted(task_id, result_poll_delay_seconds=15)
                         await asyncio.sleep(20)
                         continue
                     if account:

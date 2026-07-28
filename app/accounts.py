@@ -681,9 +681,15 @@ def account_for_worker(worker_id: str, exclude_ids: set[str] | None = None, plat
         return _select_account(_read_data()["accounts"], exclude_ids, platform)
 
 
-def _select_account(accounts: list[dict[str, Any]], exclude_ids: set[str] | None = None, platform: str = DEFAULT_PLATFORM) -> dict[str, Any] | None:
+def _select_account(
+    accounts: list[dict[str, Any]],
+    exclude_ids: set[str] | None = None,
+    platform: str = DEFAULT_PLATFORM,
+    preferred_id: str = "",
+) -> dict[str, Any] | None:
     excluded = exclude_ids or set()
     target_platform = normalize_platform(platform)
+    preferred_id = str(preferred_id or "").strip().lower()
     now = datetime.now(timezone.utc)
 
     def available(item: dict[str, Any]) -> bool:
@@ -701,6 +707,7 @@ def _select_account(accounts: list[dict[str, Any]], exclude_ids: set[str] | None
         and str(item.get("account_status") or "normal") != "abnormal"
         and str(item.get("platform") or DEFAULT_PLATFORM) == target_platform
         and str(item.get("id") or "") not in excluded
+        and (not preferred_id or str(item.get("id") or "") == preferred_id)
         and not str(item.get("current_task_id") or "")
         and isinstance(item.get("cookies"), list)
         and item.get("cookies")
@@ -729,11 +736,18 @@ def _select_account(accounts: list[dict[str, Any]], exclude_ids: set[str] | None
     }
 
 
-def claim_account_for_worker(worker_id: str, task_id: str, exclude_ids: set[str] | None = None, platform: str = DEFAULT_PLATFORM) -> dict[str, Any] | None:
+def claim_account_for_worker(
+    worker_id: str,
+    task_id: str,
+    exclude_ids: set[str] | None = None,
+    platform: str = DEFAULT_PLATFORM,
+    preferred_id: str = "",
+) -> dict[str, Any] | None:
+    preferred_id = str(preferred_id or "").strip().lower()
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(account: dict[str, Any]) -> dict[str, Any]:
-                selected = _select_account([account], platform=platform)
+                selected = _select_account([account], platform=platform, preferred_id=preferred_id)
                 if selected is None:
                     raise RuntimeError("selected account became unavailable")
                 now = utc_now()
@@ -745,10 +759,10 @@ def claim_account_for_worker(worker_id: str, task_id: str, exclude_ids: set[str]
                 return selected
 
             return postgres.claim_available_account(
-                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate
+                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id
             )
         data = _read_data()
-        selected = _select_account(data["accounts"], exclude_ids, platform)
+        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id)
         if not selected:
             return None
         now = utc_now()

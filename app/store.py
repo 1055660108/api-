@@ -28,6 +28,7 @@ TASK_RETRY_TIMEOUT_MINUTES = 30
 MAX_TASK_RETRIES = 10
 DEFAULT_TASK_RETRY_LIMIT = 2
 MAX_INFRASTRUCTURE_RETRIES = 6
+AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT = 3
 MAX_ATTEMPT_HISTORY = 20
 LOCAL_TZ = timezone(timedelta(hours=8))
 _TASK_LOCKS_LOCK = threading.RLock()
@@ -797,6 +798,57 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int | None = No
         return count
 
 
+def retry_ambiguous_proxy_task(
+    task_id: str,
+    reason: str,
+    account_id: str,
+    proxy_node_id: str,
+    delay_seconds: int = 3,
+) -> int:
+    account_id = str(account_id or "").strip().lower()
+    proxy_node_id = str(proxy_node_id or "").strip()
+    with task_lock(task_id):
+        def mutate(meta: dict[str, Any]) -> int:
+            if str(meta.get("status") or "") != STATUS_SUBMITTED:
+                return max(0, int(meta.get("ambiguous_proxy_retry_count") or 0))
+            count = max(0, int(meta.get("ambiguous_proxy_retry_count") or 0)) + 1
+            avoided = [str(item) for item in meta.get("ambiguous_proxy_avoid_node_ids") or [] if item]
+            if proxy_node_id and proxy_node_id not in avoided:
+                avoided.append(proxy_node_id)
+            now = utc_now()
+            _append_attempt_history(meta, str(reason or ""), "proxy_refresh")
+            meta.update(
+                status=STATUS_PENDING,
+                worker_id="",
+                finished_at="",
+                error="",
+                submit_phase="",
+                submit_started_at="",
+                result_watch_miss_count=0,
+                execution_phase="retry_queued",
+                status_reason="正在刷新API代理，任务已自动排队",
+                queue_reason="正在刷新API代理，任务已自动排队",
+                queue_category="proxy_refresh",
+                next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=max(1, int(delay_seconds)))).isoformat(),
+                preferred_account_id=account_id,
+                ambiguous_proxy_retry_count=count,
+                ambiguous_proxy_avoid_node_ids=avoided[-12:],
+                proxy_retry_avoid_node_id=proxy_node_id,
+                phase_updated_at=now,
+                updated_at=now,
+            )
+            return count
+
+        if postgres.enabled():
+            count = postgres.mutate_task_part(task_id, "meta", mutate)
+        else:
+            meta = get_meta(task_id)
+            count = mutate(meta)
+            _write_storage_json(meta_path(task_id), meta)
+        requeue_pending_task(task_id)
+        return count
+
+
 def retry_ambiguous_submitted_task(task_id: str, reason: str, max_retries: int | None = None, delay_seconds: int = 15) -> int:
     configured_limit = task_retry_limit()
     max_retries = configured_limit if max_retries is None else max(0, min(configured_limit, int(max_retries)))
@@ -816,6 +868,9 @@ def retry_ambiguous_submitted_task(task_id: str, reason: str, max_retries: int |
                 result_watch_miss_count=0,
                 execution_phase="retry_queued",
                 status_reason="正在重试中，请稍等！",
+                preferred_account_id="",
+                ambiguous_proxy_retry_count=0,
+                ambiguous_proxy_avoid_node_ids=[],
                 phase_updated_at=now,
                 updated_at=now,
             )

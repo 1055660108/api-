@@ -16,7 +16,7 @@ from .accounts import clear_account_current_task, disable_account_for_login, exh
 from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
 from .config import load_settings
 from .proxy_manager import fetch_proxy_from_api
-from .store import STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, update_meta
+from .store import AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_proxy_task, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, update_meta
 from .temp_access import refund_temp_quota_hash
 
 
@@ -708,6 +708,20 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
                 "conversation_recovery_error_category": "",
             },
         )
+        if any(
+            (
+                meta.get("preferred_account_id"),
+                meta.get("ambiguous_proxy_retry_count"),
+                meta.get("ambiguous_proxy_avoid_node_ids"),
+            )
+        ):
+            update_meta(
+                task_id,
+                preferred_account_id="",
+                ambiguous_proxy_retry_count=0,
+                ambiguous_proxy_avoid_node_ids=[],
+                proxy_retry_avoid_node_id="",
+            )
     else:
         ambiguous_at = parse_time(str(result.get("submission_ambiguous_at") or ""))
         if bool(result.get("submission_ambiguous")) and ambiguous_at and (
@@ -715,12 +729,24 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         ).total_seconds() >= AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS:
             account_id = str(result.get("account_id") or "")
             if account_id:
-                clear_account_current_task(account_id, task_id)
                 refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
-                record_failed_account(task_id, account_id)
             proxy_node_id = str(result.get("proxy_node_id") or "").strip()
-            if proxy_node_id:
-                update_meta(task_id, proxy_retry_avoid_node_id=proxy_node_id)
+            proxy_source = str(result.get("proxy_source") or "").strip().lower()
+            proxy_retry_count = max(0, int(meta.get("ambiguous_proxy_retry_count") or 0))
+            if account_id and proxy_source == "api" and proxy_retry_count < AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT:
+                retry_ambiguous_proxy_task(
+                    task_id,
+                    "提交后未取得有效会话，正在更换代理重试",
+                    account_id,
+                    proxy_node_id,
+                    delay_seconds=3,
+                )
+                clear_transient_result(task_id)
+                return {"code": "1", "text": "正在重试中，请稍等！", "url": ""}
+            if account_id:
+                clear_account_current_task(account_id, task_id)
+                record_failed_account(task_id, account_id)
+            update_meta(task_id, proxy_retry_avoid_node_id=proxy_node_id)
             retry_count = retry_ambiguous_submitted_task(task_id, "提交后未取得有效会话，正在安全重试", max_retries=retry_limit, delay_seconds=3)
             if retry_count <= retry_limit:
                 clear_transient_result(task_id)

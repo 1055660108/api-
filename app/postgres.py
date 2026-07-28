@@ -623,6 +623,7 @@ def claim_available_account(
     today: str,
     now: str,
     mutator: Callable[[dict[str, Any]], T],
+    preferred_id: str = "",
 ) -> T | None:
     from psycopg.types.json import Jsonb
 
@@ -644,6 +645,10 @@ def claim_available_account(
     if excluded:
         conditions.append("NOT (id = ANY(%s))")
         params.append(excluded)
+    preferred_id = str(preferred_id or "").strip().lower()
+    if preferred_id:
+        conditions.append("id = %s")
+        params.append(preferred_id)
     query = (
         f"SELECT id, payload FROM dola_accounts WHERE {' AND '.join(conditions)} "
         f"ORDER BY CASE WHEN {quota_limit} = 2 AND {quota_used} = 0 THEN 0 ELSE 1 END, "

@@ -514,7 +514,7 @@ class DolaQueryTests(unittest.TestCase):
             )
         )
 
-    def test_ambiguous_submission_requeues_with_infrastructure_budget_after_recovery_window(self) -> None:
+    def test_ambiguous_api_submission_retries_three_proxies_with_same_account(self) -> None:
         task_id = "0" * 32
         meta = {"status": query.STATUS_SUBMITTED, "prompt": "复杂提示词", "owner_token_hash": "owner-hash"}
         result_data = {
@@ -524,6 +524,7 @@ class DolaQueryTests(unittest.TestCase):
             "submission_ambiguous_at": (datetime.now(timezone.utc) - timedelta(seconds=181)).isoformat(),
             "account_id": "account-1",
             "account_quota_charge_id": "charge-1",
+            "proxy_source": "api",
             "proxy_node_id": "node-old",
         }
         with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
@@ -537,18 +538,69 @@ class DolaQueryTests(unittest.TestCase):
         ) as clear_account, patch.object(
             query, "record_failed_account"
         ) as record_failed, patch.object(
+            query, "retry_ambiguous_proxy_task", return_value=1
+        ) as retry_proxy, patch.object(
+            query, "retry_ambiguous_submitted_task"
+        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result:
+            response = asyncio.run(query._query_task_once(task_id))
+        self.assertEqual(response, {"code": "1", "text": "正在重试中，请稍等！", "url": ""})
+        clear_account.assert_not_called()
+        refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
+        record_failed.assert_not_called()
+        retry_proxy.assert_called_once_with(
+            task_id,
+            "提交后未取得有效会话，正在更换代理重试",
+            "account-1",
+            "node-old",
+            delay_seconds=3,
+        )
+        retry_task.assert_not_called()
+        clear_result.assert_called_once_with(task_id)
+
+    def test_ambiguous_api_submission_switches_account_after_three_proxy_retries(self) -> None:
+        task_id = "0" * 32
+        meta = {
+            "status": query.STATUS_SUBMITTED,
+            "prompt": "复杂提示词",
+            "owner_token_hash": "owner-hash",
+            "ambiguous_proxy_retry_count": 3,
+        }
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "submission_collection_id": "collection-ambiguous",
+            "submission_ambiguous": True,
+            "submission_ambiguous_at": (datetime.now(timezone.utc) - timedelta(seconds=181)).isoformat(),
+            "account_id": "account-1",
+            "account_quota_charge_id": "charge-4",
+            "proxy_source": "api",
+            "proxy_node_id": "node-fourth",
+        }
+        with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_matching_recent_conversation_id", new=AsyncMock(return_value="")
+        ), patch.object(query, "save_result"), patch.object(
+            query, "refund_account_quota_once"
+        ) as refund_account, patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(
+            query, "record_failed_account"
+        ) as record_failed, patch.object(
+            query, "retry_ambiguous_proxy_task"
+        ) as retry_proxy, patch.object(
             query, "retry_ambiguous_submitted_task", return_value=1
         ) as retry_task, patch.object(query, "clear_transient_result") as clear_result, patch.object(
             query, "update_meta"
         ) as update_meta:
             response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "1", "text": "正在重试中，请稍等！", "url": ""})
+        refund_account.assert_called_once_with(task_id, "account-1", "charge-4")
         clear_account.assert_called_once_with("account-1", task_id)
-        refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
         record_failed.assert_called_once_with(task_id, "account-1")
+        retry_proxy.assert_not_called()
         retry_task.assert_called_once_with(task_id, "提交后未取得有效会话，正在安全重试", max_retries=2, delay_seconds=3)
         clear_result.assert_called_once_with(task_id)
-        update_meta.assert_called_once_with(task_id, proxy_retry_avoid_node_id="node-old")
+        update_meta.assert_called_once_with(task_id, proxy_retry_avoid_node_id="node-fourth")
 
     def test_result_query_uses_the_submission_proxy(self) -> None:
         task_id = "0" * 32

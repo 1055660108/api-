@@ -171,6 +171,35 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probe.await_count, 2)
         self.assertEqual(result["server"], "http://proxy-b.example:18002")
 
+    async def test_api_mode_avoids_all_proxies_that_missed_a_conversation(self) -> None:
+        settings = proxy_settings("api")
+        settings.proxy_api_url = "https://proxy-api.example/get"
+        excluded = {"api:proxy-a.example:18001", "api:proxy-b.example:18002"}
+        proxies = [
+            {"server": "http://proxy-a.example:18001", "host_port": "proxy-a.example:18001"},
+            {"server": "http://proxy-b.example:18002", "host_port": "proxy-b.example:18002"},
+            {"server": "http://proxy-c.example:18003", "host_port": "proxy-c.example:18003"},
+        ]
+        instance = automation_instance()
+        with patch.object(instance, "_task_exists", return_value=True), patch.object(
+            automation, "load_settings", return_value=settings
+        ), patch.object(
+            automation,
+            "get_meta",
+            return_value={"ambiguous_proxy_avoid_node_ids": sorted(excluded)},
+        ), patch.object(
+            automation, "fetch_proxy_from_api", new=AsyncMock(side_effect=proxies)
+        ) as fetch, patch.object(
+            automation, "dola_proxy_available", new=AsyncMock(return_value=True)
+        ) as probe, patch.object(
+            automation, "proxy_exit_identity", new=AsyncMock(return_value="ip:203.0.113.32")
+        ), patch.object(automation, "update_meta"):
+            result = await instance._browser_proxy_config()
+
+        self.assertEqual(fetch.await_count, 3)
+        probe.assert_awaited_once_with("http://proxy-c.example:18003", 12.0)
+        self.assertEqual(result["server"], "http://proxy-c.example:18003")
+
     async def test_api_mode_queues_briefly_only_after_three_candidates_fail(self) -> None:
         settings = proxy_settings("api")
         settings.proxy_api_url = "https://proxy-api.example/get"

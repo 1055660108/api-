@@ -413,6 +413,18 @@ class ReliabilityTests(unittest.TestCase):
         self.assertFalse(accounts.refund_account_quota(created["id"], first["quota_charge_id"]))
         self.assertEqual(accounts.list_accounts()[0]["quota_used"], 1)
 
+    def test_worker_can_claim_the_preferred_account_for_proxy_retry(self) -> None:
+        accounts.add_account("Dola A", "session=first", quota_limit=2)
+        preferred = accounts.add_account("Dola B", "session=second", quota_limit=2)
+        claimed = accounts.claim_account_for_worker(
+            "worker-1",
+            "task-1",
+            platform="dola",
+            preferred_id=preferred["id"],
+        )
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["id"], preferred["id"])
+
     def test_quota_insufficient_refunds_charge_but_exhausts_account(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=2)
         claimed = accounts.claim_account_for_worker("worker-1", "task-1")
@@ -578,6 +590,12 @@ class ReliabilityTests(unittest.TestCase):
         task = self.create_task("owner")
         self.assertTrue(store.mark_running(task["id"], "worker-1"))
         store.mark_submitted(task["id"])
+        store.update_meta(
+            task["id"],
+            preferred_account_id="account-1",
+            ambiguous_proxy_retry_count=3,
+            ambiguous_proxy_avoid_node_ids=["api:one", "api:two"],
+        )
         count = store.retry_ambiguous_submitted_task(task["id"], "页面跳转", max_retries=2, delay_seconds=1)
         meta = store.get_meta(task["id"])
         self.assertEqual(count, 1)
@@ -586,6 +604,30 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(int(meta.get("retry_count") or 0), 0)
         self.assertEqual(meta["queue_category"], "infrastructure")
         self.assertEqual(meta["submit_phase"], "")
+        self.assertEqual(meta["preferred_account_id"], "")
+        self.assertEqual(meta["ambiguous_proxy_retry_count"], 0)
+        self.assertEqual(meta["ambiguous_proxy_avoid_node_ids"], [])
+
+    def test_ambiguous_proxy_retry_keeps_account_and_does_not_consume_retry_budget(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.mark_submitted(task["id"])
+        count = store.retry_ambiguous_proxy_task(
+            task["id"],
+            "提交后未取得有效会话",
+            "account-1",
+            "api:proxy-one:18001",
+            delay_seconds=1,
+        )
+        meta = store.get_meta(task["id"])
+        self.assertEqual(count, 1)
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
+        self.assertEqual(meta["preferred_account_id"], "account-1")
+        self.assertEqual(meta["ambiguous_proxy_retry_count"], 1)
+        self.assertEqual(meta["ambiguous_proxy_avoid_node_ids"], ["api:proxy-one:18001"])
+        self.assertEqual(int(meta.get("infrastructure_retry_count") or 0), 0)
+        self.assertEqual(int(meta.get("retry_count") or 0), 0)
+        self.assertEqual(meta["queue_category"], "proxy_refresh")
 
     def test_reference_attachment_cache_reuses_identical_images_for_same_account(self) -> None:
         automation.clear_reference_attachment_cache()

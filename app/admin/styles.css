@@ -6014,6 +6014,36 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .announcement-lock-control > input:checked + .switch-track > span { transform: translateX(18px); }
 .announcement-lock-control > input:focus-visible + .switch-track { outline: 2px solid #4da59d; outline-offset: 2px; }
 .invitation-config-controls { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(110px, 140px) auto; gap: 12px; align-items: end; }
+.settings-stack { align-items: start; }
+.settings-stack .config-panel { min-height: 0; align-self: start; }
+.admin-settings-columns,
+.admin-settings-compact-grid { grid-column: 1 / -1; min-width: 0; }
+.admin-settings-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.admin-settings-column { display: grid; min-width: 0; gap: 14px; align-content: start; }
+.admin-settings-column .config-panel,
+.admin-settings-compact-grid .config-panel { width: 100%; max-width: none; min-height: 0; margin: 0; }
+.admin-settings-compact-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.admin-settings-columns .settings-card-header,
+.admin-settings-compact-grid .settings-card-header { align-items: flex-start; }
+.admin-settings-columns .settings-card-header > div,
+.admin-settings-compact-grid .settings-card-header > div { min-width: 0; }
+.admin-settings-columns .settings-state,
+.admin-settings-compact-grid .settings-state { max-width: 46%; line-height: 1.35; text-align: right; white-space: normal; }
+.invitation-config-controls,
+.invitation-list-toolbar,
+.admin-audit-toolbar { padding-top: 14px; border-top: 1px solid var(--line); }
+.invitation-list-toolbar .field,
+.admin-audit-toolbar .field { min-width: 0; }
+.invitation-list-toolbar input,
+.invitation-list-toolbar select,
+.admin-audit-toolbar input,
+.admin-audit-toolbar select { width: 100%; min-width: 0; height: 40px; }
+.invitation-code-list,
+.admin-audit-list { background: rgba(250, 251, 250, .72); }
+.invitation-pagination { margin-top: 0; border-top: 1px solid var(--line); }
+.invitation-pagination .compact-button { min-width: 66px; }
+body[data-portal="client"] .admin-settings-columns,
+body[data-portal="client"] .admin-settings-compact-grid { display: none !important; }
 .invitation-toggle-control { display: flex; align-items: center; gap: 10px; min-height: 42px; cursor: pointer; }
 .invitation-toggle-control > input { position: absolute; opacity: 0; pointer-events: none; }
 .invitation-toggle-control > span:last-child { display: grid; gap: 2px; }
@@ -6040,6 +6070,8 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .admin-audit-row > span { color: var(--muted); font-size: 12px; }
 .admin-audit-empty { min-height: 110px; }
 @media (max-width: 760px) {
+  .admin-settings-columns,
+  .admin-settings-compact-grid { grid-template-columns: 1fr; }
   .invitation-config-controls { grid-template-columns: 1fr; }
   .invitation-list-toolbar,
   .admin-audit-toolbar { grid-template-columns: 1fr; }
@@ -6047,6 +6079,10 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
   .invitation-code-row > span { grid-column: 1; }
   .invitation-code-row > button { grid-column: 2; grid-row: 1 / span 4; }
   .admin-audit-row { grid-template-columns: 1fr; gap: 5px; }
+}
+@media (min-width: 761px) and (max-width: 1350px) {
+  .admin-settings-columns { grid-template-columns: 1fr; }
+  .admin-settings-compact-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .announcement-lock-copy { display: grid; gap: 3px; }
 .announcement-lock-copy strong { color: #782c29; font-size: 13px; }

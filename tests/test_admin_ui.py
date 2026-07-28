@@ -21,6 +21,17 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("data-model-cost", self.javascript)
         self.assertIn("积分/次", self.javascript)
 
+    def test_admin_only_settings_are_hidden_from_client_and_use_natural_columns(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertEqual(self.html.count('id="invitationConfigPanel"'), 1)
+        self.assertEqual(self.html.count('id="adminAuditPanel"'), 1)
+        self.assertIn('class="admin-settings-columns"', self.html)
+        self.assertIn('class="admin-settings-compact-grid"', self.html)
+        self.assertIn('body[data-portal="client"] .admin-settings-columns', styles)
+        self.assertIn('body[data-portal="client"] .admin-settings-compact-grid', styles)
+        self.assertIn('.admin-settings-column { display: grid;', styles)
+        self.assertIn('.settings-stack .config-panel { min-height: 0; align-self: start; }', styles)
+
     def test_repository_update_control_is_present(self) -> None:
         for element_id in ("repositoryUpdatePanel", "repositoryUpdateState", "repositoryUpdateError", "repositoryRevision", "updateRepository"):
             self.assertIn(f'id="{element_id}"', self.html)

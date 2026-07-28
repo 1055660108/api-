@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.52" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.53" />
   </head>
   <body>
     <script>
@@ -273,10 +273,24 @@
                 <pre class="repository-update-error hidden" id="repositoryUpdateError" aria-live="polite"></pre>
                 <div class="settings-card-value version-values"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><div><span>最新版本</span><strong id="repositoryLatestVersion">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
               </section>
+              <div class="admin-settings-columns">
+                <div class="admin-settings-column">
               <section class="panel config-panel" id="emailConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>注册邮箱验证</h2><p>设置允许注册的邮箱后缀，并使用 QQ 邮箱 SMTP 发送验证码。</p></div><span class="settings-state" id="emailConfigState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>允许邮箱</span><strong id="emailConfigDisplay">等待读取</strong></div><button class="primary-button" id="openEmailModal" type="button">编辑邮箱验证</button></div>
               </section>
+              <section class="panel config-panel" id="adminAuditPanel">
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="scroll-text" aria-hidden="true"></i></span><h2>管理员操作日志</h2><p>记录邀请码管理操作及异常注册拦截。</p></div><span class="settings-state" id="adminAuditState">等待读取</span></div>
+                <div class="admin-audit-toolbar">
+                  <label class="field"><span>搜索</span><input id="adminAuditSearch" type="search" maxlength="100" placeholder="搜索操作、详情或管理员" /></label>
+                  <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="invitation_generate">生成邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
+                  <label class="field"><span>每页数量</span><select id="adminAuditPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
+                </div>
+                <div class="admin-audit-list" id="adminAuditList" aria-live="polite"></div>
+                <div class="invitation-pagination"><span id="adminAuditPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevAdminAuditPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextAdminAuditPage" type="button">下一页</button></div></div>
+              </section>
+                </div>
+                <div class="admin-settings-column">
               <section class="panel config-panel" id="invitationConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="ticket-check" aria-hidden="true"></i></span><h2>注册邀请码</h2><p>邀请码可长期重复使用，手动删除后失效。</p></div><span class="settings-state" id="invitationConfigState">等待读取</span></div>
                 <div class="invitation-config-controls">
@@ -293,20 +307,13 @@
                 <div class="invitation-code-list" id="invitationCodeList" aria-live="polite"></div>
                 <div class="invitation-pagination"><span id="invitationPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevInvitationPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextInvitationPage" type="button">下一页</button></div></div>
               </section>
-              <section class="panel config-panel" id="adminAuditPanel">
-                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="scroll-text" aria-hidden="true"></i></span><h2>管理员操作日志</h2><p>记录邀请码管理操作及异常注册拦截。</p></div><span class="settings-state" id="adminAuditState">等待读取</span></div>
-                <div class="admin-audit-toolbar">
-                  <label class="field"><span>搜索</span><input id="adminAuditSearch" type="search" maxlength="100" placeholder="搜索操作、详情或管理员" /></label>
-                  <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="invitation_generate">生成邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
-                  <label class="field"><span>每页数量</span><select id="adminAuditPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
-                </div>
-                <div class="admin-audit-list" id="adminAuditList" aria-live="polite"></div>
-                <div class="invitation-pagination"><span id="adminAuditPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevAdminAuditPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextAdminAuditPage" type="button">下一页</button></div></div>
-              </section>
               <section class="panel config-panel" id="modelConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>生成模型</h2><p>控制各平台可选模型及默认模型列表。</p></div><span class="settings-state" id="modelConfigState">自动同步</span></div>
                 <div class="settings-card-value"><div><span>已启用模型</span><strong id="modelConfigDisplay">等待读取</strong></div><button class="primary-button" id="openModelModal" type="button">编辑模型</button></div>
               </section>
+                </div>
+              </div>
+              <div class="admin-settings-compact-grid">
               <section class="panel config-panel" id="runtimeConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="timer" aria-hidden="true"></i></span><h2>任务提交间隔</h2><p>控制 Dola 任务依次提交的最小时间间隔。</p></div><span class="settings-state" id="runtimeConfigState">等待读取</span></div>
                 <form class="runtime-config-form" id="runtimeConfigForm"><label class="field"><span>间隔秒数</span><input id="dolaSubmitInterval" type="number" min="1" max="5" step="0.1" value="5" /></label><button class="primary-button" id="saveRuntimeConfig" type="submit">保存间隔</button></form>
@@ -319,6 +326,7 @@
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>会员管理</h2><p>配置客户端显示的会员套餐。</p></div><span class="settings-state" id="membershipConfigState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>套餐目录</span><strong id="membershipConfigDisplay">等待读取</strong></div><button class="primary-button" id="openMembershipModal" type="button">管理会员</button></div>
               </section>
+              </div>
             </div>
           </div>
         </section>
@@ -1232,6 +1240,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.52"></script>
+    <script src="/admin/assets/app.js?v=1.4.53"></script>
   </body>
 </html>

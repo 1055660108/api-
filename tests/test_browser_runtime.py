@@ -76,6 +76,51 @@ class BrowserRuntimeTests(unittest.TestCase):
             executable.touch()
             self.assertEqual(browser_runtime.resolve_browser_executable(str(executable)), str(executable.resolve()))
 
+    def test_distinct_proxy_configs_use_distinct_browser_processes(self) -> None:
+        launches: list[dict] = []
+
+        class FakeContext:
+            def __init__(self):
+                self.close = AsyncMock()
+
+        class FakeProxyBrowser:
+            def __init__(self):
+                self.connected = True
+                self.close = AsyncMock(side_effect=self._close)
+
+            def is_connected(self) -> bool:
+                return self.connected
+
+            async def _close(self) -> None:
+                self.connected = False
+
+            async def new_context(self, **_options):
+                return FakeContext()
+
+        async def exercise() -> None:
+            playwright = unittest.mock.Mock()
+
+            async def launch(**options):
+                launches.append(options)
+                return FakeProxyBrowser()
+
+            playwright.chromium.launch = AsyncMock(side_effect=launch)
+            playwright.stop = AsyncMock()
+            runtime = unittest.mock.Mock()
+            runtime.start = AsyncMock(return_value=playwright)
+            pool = browser_runtime.ReusableBrowserPool(max_processes=2, contexts_per_process=4)
+            common = {"executable_path": None, "headless": True, "browser_args": [], "context_options": {"locale": "zh-CN"}}
+            with patch.object(browser_runtime, "async_playwright", return_value=runtime):
+                first = await pool.acquire_context(**common, proxy={"server": "http://127.0.0.1:4101"})
+                second = await pool.acquire_context(**common, proxy={"server": "http://127.0.0.1:4102"})
+                await first.release()
+                await second.release()
+                await pool.stop()
+
+        asyncio.run(exercise())
+        self.assertEqual(len(launches), 2)
+        self.assertNotEqual(launches[0]["proxy"], launches[1]["proxy"])
+
     def test_invalid_configured_executable_fails_clearly(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "configured browser executable not found"):
             browser_runtime.resolve_browser_executable("missing-browser.exe")
@@ -138,13 +183,14 @@ class BrowserRuntimeTests(unittest.TestCase):
 
         self.assertLess(dola.index("await safe_unroute_all(page)"), dola.index("await safe_close(context)"))
         self.assertIn("await lease.release()", dola)
-        self.assertIn('context_options["proxy"] = proxy_config', dola)
-        self.assertIn("proxy=None", dola)
+        self.assertNotIn('context_options["proxy"] = proxy_config', dola)
+        self.assertIn("proxy=proxy_config", dola)
         self.assertGreaterEqual(dola.count("self._mark_active_proxy_unavailable("), 5)
         self.assertIn('if not self.proxy_node_id and self.active_proxy_source != "account":', dola)
         self.assertIn("await release_dola_subscription_proxy(self.subscription_proxy)", dola)
         self.assertIn("await dola_proxy_available", dola)
         self.assertIn("browser_pool=self._dola_browser_pool", (root / "worker.py").read_text(encoding="utf-8"))
+        self.assertIn("submission_pacer=self._wait_for_dola_submit_slot", (root / "worker.py").read_text(encoding="utf-8"))
         for source in (doubao, qianwen):
             self.assertLess(source.index('page.remove_listener("response", response_handler)'), source.index("await cancel_tracked_tasks(response_tasks)"))
             self.assertLess(source.index("await cancel_tracked_tasks(response_tasks)"), source.index("await safe_close(context)"))

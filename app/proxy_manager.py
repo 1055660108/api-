@@ -7,9 +7,11 @@ import re
 import base64
 import asyncio
 import socket
+import secrets
 import subprocess
 import time
 import hashlib
+import ipaddress
 import tempfile
 from urllib.parse import quote, unquote, urlsplit
 from dataclasses import dataclass
@@ -42,9 +44,9 @@ _MIHOMO_SELECTED_NODE_ID = ""
 _SUBSCRIPTION_CACHE: dict[str, Any] = {"url": "", "nodes": (), "snapshot": b"", "provider": b"", "refreshed_at": 0.0}
 _SUBSCRIPTION_CACHE_LOCK: asyncio.Lock | None = None
 _SUBSCRIPTION_RESOLVE_LOCK: asyncio.Lock | None = None
-_MIHOMO_LEASE_CONDITION: asyncio.Condition | None = None
-_MIHOMO_ACTIVE_LEASES = 0
-_MIHOMO_ACTIVE_PROXY: dict[str, str] = {}
+_TASK_MIHOMO_CONDITION: asyncio.Condition | None = None
+_TASK_MIHOMO_SLOTS: list["_TaskMihomoSlot"] = []
+_PROXY_EXIT_CACHE: dict[str, tuple[str, float]] = {}
 _NODE_DELAYS: dict[str, tuple[int | None, float]] = {}
 _NODE_LAST_GOOD: dict[str, tuple[int, float]] = {}
 _NODE_DOLA_HEALTH: dict[str, tuple[bool, float]] = {}
@@ -66,6 +68,19 @@ DOLA_HEALTHCHECK_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149.0.0.0 Safari/537.36",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
 }
+
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(os.environ.get(name) or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+TASK_MIHOMO_MAX_SLOTS = _bounded_env_int("DOLA_MIHOMO_EXIT_SLOTS", 8, 1, 8)
+TASK_MIHOMO_CONTEXTS_PER_EXIT = _bounded_env_int("DOLA_MIHOMO_CONTEXTS_PER_EXIT", 4, 1, 4)
+PROXY_EXIT_CACHE_SECONDS = 30 * 60
+PROXY_EXIT_CHECK_URL = "https://api.ipify.org"
 COUNTRY_MARKERS = {
     "香港": ("香港", "hong kong", "hongkong", " hk", "🇭🇰"),
     "台湾": ("台湾", "taiwan", " taipei", " tw", "🇹🇼"),
@@ -96,6 +111,25 @@ class ProxyNode:
     server: str
     port: int
     uri: str
+
+
+@dataclass(eq=False)
+class _TaskMihomoSlot:
+    slot_id: str
+    node_id: str
+    node_name: str
+    subscription_url: str
+    snapshot_digest: str
+    process: subprocess.Popen | None = None
+    port: int = 0
+    controller_port: int = 0
+    config_path: Path | None = None
+    server: str = ""
+    proxy_mode: str = "mihomo"
+    active: int = 1
+    exit_id: str = ""
+    launching: bool = True
+    retiring: bool = False
 
 
 def _node_id(uri: str) -> str:
@@ -455,21 +489,27 @@ def _port_is_open(port: int) -> bool:
 
 def _stop_mihomo() -> None:
     global _MIHOMO_PROCESS
-    if not _MIHOMO_PROCESS or _MIHOMO_PROCESS.poll() is not None:
+    _terminate_mihomo_process(_MIHOMO_PROCESS)
+
+
+def _terminate_mihomo_process(process: subprocess.Popen | None) -> None:
+    if not process or process.poll() is not None:
         return
-    _MIHOMO_PROCESS.terminate()
+    process.terminate()
     try:
-        _MIHOMO_PROCESS.wait(timeout=5)
+        process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        _MIHOMO_PROCESS.kill()
-        _MIHOMO_PROCESS.wait(timeout=5)
+        process.kill()
+        process.wait(timeout=5)
 
 
-def _launch_mihomo(config_path: Path, port: int, controller_port: int) -> subprocess.Popen:
+def _launch_mihomo(config_path: Path, port: int, controller_port: int, runtime_dir: Path | None = None) -> subprocess.Popen:
     if not MIHOMO_EXECUTABLE.exists():
         raise RuntimeError(f"mihomo executable not found: {MIHOMO_EXECUTABLE}")
+    working_directory = runtime_dir or MIHOMO_RUNTIME_DIR
+    working_directory.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(
-        [str(MIHOMO_EXECUTABLE), "-d", str(MIHOMO_RUNTIME_DIR), "-f", str(config_path)],
+        [str(MIHOMO_EXECUTABLE), "-d", str(working_directory), "-f", str(config_path)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -635,6 +675,34 @@ async def dola_proxy_available(server: str, timeout_seconds: float = 8.0) -> boo
     return available
 
 
+async def proxy_exit_identity(server: str, fallback: str, timeout_seconds: float = 5.0) -> str:
+    normalized_server = str(server or "").strip()
+    normalized_fallback = str(fallback or "proxy").strip()[:120] or "proxy"
+    cache_key = hashlib.sha256(normalized_server.encode("utf-8", errors="replace")).hexdigest()
+    cached = _PROXY_EXIT_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[1] < PROXY_EXIT_CACHE_SECONDS:
+        return cached[0]
+    exit_id = f"node:{normalized_fallback}"
+    if normalized_server:
+        try:
+            timeout = httpx.Timeout(timeout_seconds, connect=min(3.0, timeout_seconds))
+            async with httpx.AsyncClient(proxy=normalized_server, timeout=timeout, trust_env=False) as client:
+                response = await client.get(PROXY_EXIT_CHECK_URL)
+            if response.status_code == 200:
+                address = str(ipaddress.ip_address(str(response.text or "").strip()))
+                exit_id = f"ip:{address}"
+        except (httpx.HTTPError, ValueError, TypeError):
+            pass
+    _PROXY_EXIT_CACHE[cache_key] = (exit_id, time.monotonic())
+    if len(_PROXY_EXIT_CACHE) > 512:
+        stale = [key for key, (_, checked_at) in _PROXY_EXIT_CACHE.items() if time.monotonic() - checked_at >= PROXY_EXIT_CACHE_SECONDS]
+        for key in stale:
+            _PROXY_EXIT_CACHE.pop(key, None)
+        while len(_PROXY_EXIT_CACHE) > 512:
+            _PROXY_EXIT_CACHE.pop(next(iter(_PROXY_EXIT_CACHE)))
+    return exit_id
+
+
 async def probe_dola_proxy(server: str, timeout_seconds: float = 8.0) -> tuple[bool, int | None]:
     return await _probe_dola_proxy(server, timeout_seconds)
 
@@ -701,7 +769,12 @@ async def _select_mihomo_node(node: ProxyNode) -> None:
     global _MIHOMO_SELECTED_NODE_ID
     if not await _mihomo_ready(_MIHOMO_PROCESS, _MIHOMO_PORT, _MIHOMO_CONTROLLER_PORT):
         raise RuntimeError("mihomo controller is not available")
-    endpoint = f"http://127.0.0.1:{_MIHOMO_CONTROLLER_PORT}/proxies/DOLA"
+    await _select_mihomo_node_on(_MIHOMO_CONTROLLER_PORT, node)
+    _MIHOMO_SELECTED_NODE_ID = node.id
+
+
+async def _select_mihomo_node_on(controller_port: int, node: ProxyNode) -> None:
+    endpoint = f"http://127.0.0.1:{int(controller_port)}/proxies/DOLA"
     async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
         response = await client.put(endpoint, json={"name": node.name})
     if response.status_code not in {200, 204}:
@@ -710,7 +783,242 @@ async def _select_mihomo_node(node: ProxyNode) -> None:
         current = await client.get(endpoint)
     if current.status_code != 200 or str(current.json().get("now") or "") != node.name:
         raise RuntimeError("mihomo node selection did not take effect")
-    _MIHOMO_SELECTED_NODE_ID = node.id
+
+
+async def _launch_task_mihomo_slot(
+    slot: _TaskMihomoSlot,
+    node: ProxyNode,
+    provider: bytes,
+) -> dict[str, str]:
+    runtime_dir = MIHOMO_RUNTIME_DIR / f"task-slot-{slot.slot_id}"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    port = _available_port()
+    controller_port = _available_port()
+    config_path = runtime_dir / "config.yaml"
+    _atomic_write(config_path, _mihomo_config(provider, port, controller_port))
+    process = await asyncio.to_thread(_launch_mihomo, config_path, port, controller_port, runtime_dir)
+    try:
+        if not await _mihomo_ready(process, port, controller_port):
+            raise RuntimeError("task Mihomo proxy group is unavailable")
+        await _select_mihomo_node_on(controller_port, node)
+        server = f"http://127.0.0.1:{port}"
+        if not await dola_proxy_available(server, 12.0):
+            raise RuntimeError("selected task proxy node is unavailable for Dola")
+        exit_id = await proxy_exit_identity(server, node.id)
+    except Exception:
+        await asyncio.to_thread(_terminate_mihomo_process, process)
+        raise
+    slot.process = process
+    slot.port = port
+    slot.controller_port = controller_port
+    slot.config_path = config_path
+    slot.exit_id = exit_id
+    slot.server = server
+    slot.launching = False
+    return {
+        "server": server,
+        "node_count": "managed",
+        "node_id": node.id,
+        "node_name": node.name,
+        "proxy_mode": "mihomo",
+        "mihomo_lease": "1",
+        "mihomo_slot_id": slot.slot_id,
+        "exit_id": exit_id,
+    }
+
+
+async def _acquire_task_mihomo_proxy(
+    nodes: tuple[ProxyNode, ...],
+    subscription_url: str,
+    *,
+    timeout_seconds: int,
+    auto_select: bool,
+    selected_node: str,
+    selected_countries: Iterable[str],
+    latency_threshold_ms: int,
+    excluded_node_ids: Iterable[str],
+) -> dict[str, str]:
+    global _TASK_MIHOMO_CONDITION
+    if _TASK_MIHOMO_CONDITION is None:
+        _TASK_MIHOMO_CONDITION = asyncio.Condition()
+    provider = bytes(_SUBSCRIPTION_CACHE.get("provider") or b"")
+    if not provider:
+        raise RuntimeError("proxy subscription cannot generate a local Mihomo configuration")
+    digest = hashlib.sha256(provider).hexdigest()
+    base_excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
+    selected_country_set = {str(item).strip() for item in selected_countries if str(item or "").strip()}
+    if auto_select and not selected_country_set:
+        raise RuntimeError("automatic proxy selection requires at least one selected country")
+    allowed_node_ids = {
+        node.id for node in nodes
+        if (auto_select and node.country in selected_country_set)
+        or (not auto_select and (not selected_node or node.id == selected_node))
+    }
+    if auto_select and not allowed_node_ids:
+        raise RuntimeError("selected proxy countries contain no usable nodes")
+    failed_launch_ids: set[str] = set()
+    while True:
+        retired: list[_TaskMihomoSlot] = []
+        async with _TASK_MIHOMO_CONDITION:
+            for slot in list(_TASK_MIHOMO_SLOTS):
+                stale = slot.subscription_url != subscription_url or slot.snapshot_digest != digest
+                unavailable = _node_is_cooling_down(slot.node_id)
+                outside_selection = bool(allowed_node_ids) and slot.node_id not in allowed_node_ids
+                disconnected = bool(slot.process and slot.process.poll() is not None)
+                if stale or unavailable or outside_selection or disconnected:
+                    slot.retiring = True
+                if slot.retiring and slot.active == 0 and not slot.launching:
+                    _TASK_MIHOMO_SLOTS.remove(slot)
+                    retired.append(slot)
+            if retired:
+                await asyncio.gather(*(asyncio.to_thread(_terminate_mihomo_process, slot.process) for slot in retired), return_exceptions=True)
+
+            ready = [
+                slot for slot in _TASK_MIHOMO_SLOTS
+                if not slot.launching
+                and not slot.retiring
+                and slot.node_id not in base_excluded
+                and (not allowed_node_ids or slot.node_id in allowed_node_ids)
+                and slot.active < TASK_MIHOMO_CONTEXTS_PER_EXIT
+                and (slot.proxy_mode == "native" or (slot.process is not None and slot.process.poll() is None))
+            ]
+            active_node_ids = {slot.node_id for slot in _TASK_MIHOMO_SLOTS}
+            matching_slots = [
+                slot for slot in _TASK_MIHOMO_SLOTS
+                if slot.subscription_url == subscription_url and slot.snapshot_digest == digest and not slot.retiring
+            ]
+            can_launch = len(_TASK_MIHOMO_SLOTS) < TASK_MIHOMO_MAX_SLOTS and (auto_select or not matching_slots)
+            chosen: ProxyNode | None = None
+            choose_error: Exception | None = None
+            if can_launch:
+                try:
+                    chosen = await _choose_subscription_node(
+                        nodes,
+                        subscription_url,
+                        timeout_seconds=timeout_seconds,
+                        auto_select=auto_select,
+                        selected_node=selected_node,
+                        selected_countries=selected_countries,
+                        latency_threshold_ms=latency_threshold_ms,
+                        excluded_node_ids=base_excluded | failed_launch_ids | active_node_ids,
+                    )
+                except Exception as exc:
+                    choose_error = exc
+            if chosen is None:
+                if ready:
+                    slot = min(ready, key=lambda item: (item.active, item.slot_id))
+                    slot.active += 1
+                    proxy = {
+                        "server": slot.server or f"http://127.0.0.1:{slot.port}",
+                        "node_count": "managed",
+                        "node_id": slot.node_id,
+                        "node_name": slot.node_name,
+                        "proxy_mode": slot.proxy_mode,
+                        "mihomo_lease": "1",
+                        "mihomo_slot_id": slot.slot_id,
+                        "exit_id": slot.exit_id or f"node:{slot.node_id}",
+                    }
+                    _TASK_MIHOMO_CONDITION.notify_all()
+                elif choose_error and not _TASK_MIHOMO_SLOTS:
+                    raise choose_error
+                else:
+                    await _TASK_MIHOMO_CONDITION.wait()
+                    continue
+            else:
+                if chosen.protocol in {"http", "https", "socks5", "socks5h"}:
+                    server = chosen.uri.split("#", 1)[0]
+                    if not await _node_dola_available(chosen.id, server, min(12.0, float(timeout_seconds))):
+                        continue
+                    exit_id = await proxy_exit_identity(server, chosen.id)
+                    slot = _TaskMihomoSlot(
+                        slot_id=secrets.token_hex(6),
+                        node_id=chosen.id,
+                        node_name=chosen.name,
+                        subscription_url=subscription_url,
+                        snapshot_digest=digest,
+                        server=server,
+                        proxy_mode="native",
+                        exit_id=exit_id,
+                        launching=False,
+                    )
+                    _TASK_MIHOMO_SLOTS.append(slot)
+                    _TASK_MIHOMO_CONDITION.notify_all()
+                    return {
+                        "server": server,
+                        "host_port": server.rsplit("//", 1)[-1],
+                        "node_count": str(len(nodes)),
+                        "node_id": chosen.id,
+                        "node_name": chosen.name,
+                        "proxy_mode": "native",
+                        "mihomo_lease": "1",
+                        "mihomo_slot_id": slot.slot_id,
+                        "exit_id": exit_id,
+                    }
+                slot = _TaskMihomoSlot(
+                    slot_id=secrets.token_hex(6),
+                    node_id=chosen.id,
+                    node_name=chosen.name,
+                    subscription_url=subscription_url,
+                    snapshot_digest=digest,
+                )
+                _TASK_MIHOMO_SLOTS.append(slot)
+                try:
+                    proxy = await _launch_task_mihomo_slot(slot, chosen, provider)
+                except Exception:
+                    if slot in _TASK_MIHOMO_SLOTS:
+                        _TASK_MIHOMO_SLOTS.remove(slot)
+                    failed_launch_ids.add(chosen.id)
+                    mark_node_unavailable(chosen.id)
+                    _TASK_MIHOMO_CONDITION.notify_all()
+                    if len(failed_launch_ids | base_excluded) >= len(nodes):
+                        raise
+                    continue
+                _TASK_MIHOMO_CONDITION.notify_all()
+        return proxy
+
+
+async def release_task_mihomo_proxy(proxy: dict[str, str] | None) -> None:
+    global _TASK_MIHOMO_CONDITION
+    slot_id = str((proxy or {}).get("mihomo_slot_id") or "")
+    if not slot_id or _TASK_MIHOMO_CONDITION is None:
+        return
+    retired: _TaskMihomoSlot | None = None
+    async with _TASK_MIHOMO_CONDITION:
+        slot = next((item for item in _TASK_MIHOMO_SLOTS if item.slot_id == slot_id), None)
+        if not slot:
+            return
+        slot.active = max(0, slot.active - 1)
+        if _node_is_cooling_down(slot.node_id):
+            slot.retiring = True
+        if slot.active == 0 and slot.retiring:
+            _TASK_MIHOMO_SLOTS.remove(slot)
+            retired = slot
+        _TASK_MIHOMO_CONDITION.notify_all()
+    if retired:
+        await asyncio.to_thread(_terminate_mihomo_process, retired.process)
+
+
+async def shutdown_task_mihomo_pool() -> None:
+    global _TASK_MIHOMO_CONDITION
+    if _TASK_MIHOMO_CONDITION is None:
+        return
+    async with _TASK_MIHOMO_CONDITION:
+        slots = list(_TASK_MIHOMO_SLOTS)
+        _TASK_MIHOMO_SLOTS.clear()
+        _TASK_MIHOMO_CONDITION.notify_all()
+    await asyncio.gather(*(asyncio.to_thread(_terminate_mihomo_process, slot.process) for slot in slots), return_exceptions=True)
+
+
+def task_mihomo_pool_snapshot() -> dict[str, Any]:
+    slots = list(_TASK_MIHOMO_SLOTS)
+    return {
+        "slot_limit": TASK_MIHOMO_MAX_SLOTS,
+        "contexts_per_exit": TASK_MIHOMO_CONTEXTS_PER_EXIT,
+        "slots": len(slots),
+        "active": sum(max(0, int(slot.active)) for slot in slots),
+        "distinct_nodes": len({slot.node_id for slot in slots if not slot.retiring}),
+        "distinct_exits": len({slot.exit_id for slot in slots if slot.exit_id and not slot.retiring}),
+    }
 
 
 async def activate_mihomo_node(node: ProxyNode, subscription_url: str, timeout_seconds: int = 20, refresh_seconds: int = 900) -> None:
@@ -748,6 +1056,69 @@ def node_payload(node: ProxyNode, selected_node: str = "") -> dict[str, Any]:
     }
 
 
+async def _choose_subscription_node(
+    nodes: tuple[ProxyNode, ...],
+    subscription_url: str,
+    *,
+    timeout_seconds: int,
+    auto_select: bool,
+    selected_node: str,
+    selected_countries: Iterable[str],
+    latency_threshold_ms: int,
+    excluded_node_ids: Iterable[str],
+) -> ProxyNode:
+    countries = {str(item).strip() for item in selected_countries if str(item or "").strip()}
+    excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
+    eligible_nodes = tuple(node for node in nodes if not auto_select or (countries and node.country in countries))
+    if not eligible_nodes:
+        raise RuntimeError("automatic proxy selection requires at least one selected country" if auto_select and not countries else "selected proxy countries contain no usable nodes")
+    selectable_nodes = tuple(node for node in eligible_nodes if node.id not in excluded and not _node_is_cooling_down(node.id))
+    if not selectable_nodes:
+        raise RuntimeError("no alternative proxy node is currently available" if excluded else "all eligible proxy nodes are temporarily unavailable")
+    chosen = next((node for node in selectable_nodes if node.id == selected_node), None)
+    if auto_select:
+        fresh_delays = {
+            node.id: delay
+            for node in selectable_nodes
+            if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+            and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+        }
+        if not fresh_delays:
+            await measure_node_delays(selectable_nodes, subscription_url, timeout_seconds)
+        all_available = [
+            (delay, node)
+            for node in selectable_nodes
+            if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+            and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+        ]
+        available = [(delay, node) for delay, node in all_available if int(delay) <= int(latency_threshold_ms)]
+        if not available:
+            if all_available:
+                raise RuntimeError("all eligible proxy nodes exceed the latency threshold")
+            raise RuntimeError("all eligible proxy nodes are unavailable")
+        chosen = min(available, key=lambda item: item[0])[1]
+    elif chosen is None and not selected_node:
+        chosen = selectable_nodes[0]
+    elif chosen is None:
+        fresh_available = [
+            (delay, node)
+            for node in selectable_nodes
+            if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+            and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
+        ]
+        if not fresh_available:
+            await measure_node_delays(selectable_nodes, subscription_url, timeout_seconds)
+            fresh_available = [
+                (delay, node)
+                for node in selectable_nodes
+                if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
+            ]
+        if not fresh_available:
+            raise RuntimeError("selected proxy node is unavailable")
+        chosen = min(fresh_available, key=lambda item: item[0])[1]
+    return chosen
+
+
 async def resolve_subscription_proxy(
     subscription_url: str,
     *,
@@ -769,55 +1140,16 @@ async def resolve_subscription_proxy(
             timeout_seconds=timeout_seconds,
             refresh_seconds=refresh_seconds,
         )
-        countries = {str(item).strip() for item in selected_countries if str(item or "").strip()}
-        excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
-        eligible_nodes = tuple(node for node in nodes if not auto_select or (countries and node.country in countries))
-        if not eligible_nodes:
-            raise RuntimeError("automatic proxy selection requires at least one selected country" if auto_select and not countries else "selected proxy countries contain no usable nodes")
-        selectable_nodes = tuple(node for node in eligible_nodes if node.id not in excluded and not _node_is_cooling_down(node.id))
-        if not selectable_nodes:
-            raise RuntimeError("no alternative proxy node is currently available" if excluded else "all eligible proxy nodes are temporarily unavailable")
-        chosen = next((node for node in selectable_nodes if node.id == selected_node), None)
-        if auto_select:
-            fresh_delays = {
-                node.id: delay
-                for node in selectable_nodes
-                if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
-                and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
-            }
-            if not fresh_delays:
-                await measure_node_delays(selectable_nodes, subscription_url, timeout_seconds)
-            all_available = [
-                (delay, node)
-                for node in selectable_nodes
-                if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
-                and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
-            ]
-            available = [(delay, node) for delay, node in all_available if int(delay) <= int(latency_threshold_ms)]
-            if not available:
-                if all_available:
-                    raise RuntimeError("all eligible proxy nodes exceed the latency threshold")
-                raise RuntimeError("all eligible proxy nodes are unavailable")
-            chosen = min(available, key=lambda item: item[0])[1]
-        elif chosen is None and not selected_node:
-            chosen = selectable_nodes[0]
-        elif chosen is None:
-            fresh_available = [
-                (delay, node)
-                for node in selectable_nodes
-                if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
-                and time.monotonic() - _NODE_DELAYS[node.id][1] < NODE_DELAY_TTL_SECONDS
-            ]
-            if not fresh_available:
-                await measure_node_delays(selectable_nodes, subscription_url, timeout_seconds)
-                fresh_available = [
-                    (delay, node)
-                    for node in selectable_nodes
-                    if (delay := _NODE_DELAYS.get(node.id, (None, 0.0))[0]) is not None
-                ]
-            if not fresh_available:
-                raise RuntimeError("selected proxy node is unavailable")
-            chosen = min(fresh_available, key=lambda item: item[0])[1]
+        chosen = await _choose_subscription_node(
+            nodes,
+            subscription_url,
+            timeout_seconds=timeout_seconds,
+            auto_select=auto_select,
+            selected_node=selected_node,
+            selected_countries=selected_countries,
+            latency_threshold_ms=latency_threshold_ms,
+            excluded_node_ids=excluded_node_ids,
+        )
         if chosen.protocol in {"http", "https", "socks5", "socks5h"}:
             server = chosen.uri.split("#", 1)[0]
             return {
@@ -850,61 +1182,27 @@ async def acquire_dola_subscription_proxy(
     latency_threshold_ms: int = 5000,
     excluded_node_ids: Iterable[str] = (),
 ) -> dict[str, str]:
-    global _MIHOMO_LEASE_CONDITION, _MIHOMO_ACTIVE_LEASES, _MIHOMO_ACTIVE_PROXY
-    if _MIHOMO_LEASE_CONDITION is None:
-        _MIHOMO_LEASE_CONDITION = asyncio.Condition()
     nodes = await fetch_subscription_node_list(
         subscription_url,
         timeout_seconds=timeout_seconds,
         refresh_seconds=refresh_seconds,
     )
-    attempts = max(1, len(nodes))
-    excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
-    async with _MIHOMO_LEASE_CONDITION:
-        while _MIHOMO_ACTIVE_LEASES > 0:
-            active_node = str(_MIHOMO_ACTIVE_PROXY.get("node_id") or "")
-            if active_node and active_node not in excluded and not _node_is_cooling_down(active_node):
-                _MIHOMO_ACTIVE_LEASES += 1
-                return {**_MIHOMO_ACTIVE_PROXY, "mihomo_lease": "1"}
-            await _MIHOMO_LEASE_CONDITION.wait()
-
-        last_node = ""
-        for _ in range(attempts):
-            proxy = await resolve_subscription_proxy(
-                subscription_url,
-                timeout_seconds=timeout_seconds,
-                scheme=scheme,
-                refresh_seconds=refresh_seconds,
-                auto_select=auto_select,
-                selected_node=selected_node,
-                selected_countries=selected_countries,
-                latency_threshold_ms=latency_threshold_ms,
-                excluded_node_ids=excluded,
-            )
-            node_id = str(proxy.get("node_id") or "")
-            if node_id == last_node and _node_is_cooling_down(node_id):
-                break
-            last_node = node_id
-            if await _node_dola_available(node_id, str(proxy.get("server") or ""), min(12.0, float(timeout_seconds))):
-                if proxy.get("proxy_mode") == "mihomo":
-                    _MIHOMO_ACTIVE_PROXY = dict(proxy)
-                    _MIHOMO_ACTIVE_LEASES = 1
-                    return {**proxy, "mihomo_lease": "1"}
-                return proxy
-        raise RuntimeError("all eligible proxy nodes are unavailable for Dola")
+    if not nodes:
+        raise RuntimeError("proxy subscription returned no usable nodes")
+    return await _acquire_task_mihomo_proxy(
+        nodes,
+        subscription_url,
+        timeout_seconds=timeout_seconds,
+        auto_select=auto_select,
+        selected_node=selected_node,
+        selected_countries=selected_countries,
+        latency_threshold_ms=latency_threshold_ms,
+        excluded_node_ids=excluded_node_ids,
+    )
 
 
 async def release_dola_subscription_proxy(proxy: dict[str, str] | None) -> None:
-    global _MIHOMO_ACTIVE_LEASES, _MIHOMO_ACTIVE_PROXY, _MIHOMO_LEASE_CONDITION
-    if not proxy or str(proxy.get("mihomo_lease") or "") != "1":
-        return
-    if _MIHOMO_LEASE_CONDITION is None:
-        return
-    async with _MIHOMO_LEASE_CONDITION:
-        _MIHOMO_ACTIVE_LEASES = max(0, _MIHOMO_ACTIVE_LEASES - 1)
-        if _MIHOMO_ACTIVE_LEASES == 0:
-            _MIHOMO_ACTIVE_PROXY = {}
-            _MIHOMO_LEASE_CONDITION.notify_all()
+    await release_task_mihomo_proxy(proxy)
 
 
 async def fetch_proxy_from_api(api_url: str, *, timeout_seconds: int = 20, scheme: str = "http") -> dict[str, str]:

@@ -17,7 +17,7 @@ class VersionTests(unittest.TestCase):
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
         admin_html = (root / "app" / "admin" / "index.html").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.65")
+        self.assertEqual(version, "1.4.66")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertEqual(compose.count("build:"), 1)

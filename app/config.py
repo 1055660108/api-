@@ -92,6 +92,7 @@ def default_config() -> dict[str, Any]:
         "headless": True,
         "task_timeout_seconds": 180,
         "dola_submit_interval_seconds": 5.0,
+        "dola_exit_submit_interval_seconds": 8.0,
         "video_duration": 15,
         "max_image_count": 9,
         "task_cache_retention_days": 7,
@@ -305,6 +306,7 @@ class Settings:
     headless: bool
     task_timeout_seconds: int
     dola_submit_interval_seconds: float
+    dola_exit_submit_interval_seconds: float
     video_duration: int
     max_image_count: int
     task_cache_retention_days: int
@@ -416,6 +418,7 @@ def load_settings() -> Settings:
         headless=_as_bool(data.get("headless"), True),
         task_timeout_seconds=max(30, int(data.get("task_timeout_seconds") or 180)),
         dola_submit_interval_seconds=max(1.0, min(5.0, float(data.get("dola_submit_interval_seconds") or 5.0))),
+        dola_exit_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_exit_submit_interval_seconds") or 8.0))),
         video_duration=max(1, int(data.get("video_duration") or 15)),
         max_image_count=max(0, min(9, int(data.get("max_image_count") or 9))),
         task_cache_retention_days=max(1, int(data.get("task_cache_retention_days") or 7)),

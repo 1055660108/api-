@@ -7,6 +7,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import string
 import threading
@@ -14,7 +15,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import httpx
@@ -32,6 +33,7 @@ from .proxy_manager import (
     mark_proxy_source_available,
     mark_proxy_source_unavailable,
     node_retry_after,
+    proxy_exit_identity,
     proxy_source_available,
     proxy_source_retry_after,
     record_node_gateway_failure,
@@ -69,6 +71,9 @@ BROWSER_EXTRA_HTTP_HEADERS = {
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": '"Windows"',
 }
+SUBMISSION_SECRET_RE = re.compile(
+    r'(?i)("?(?:authorization|cookie|msToken|oauth_token(?:_v2)?|sessionid|sid_tt|sid_guard|odin_tt|passport_csrf_token(?:_default)?)"?\s*[:=]\s*"?)([^"\s,;}]+)'
+)
 FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
 INFRASTRUCTURE_ERROR_MARKERS = (
     "mihomo ",
@@ -99,6 +104,11 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "all selected authenticated proxies are unavailable",
     "all eligible proxy nodes are unavailable",
 )
+
+
+def _submission_response_preview(value: Any) -> str:
+    text = str(value or "").replace("\x00", "")[:6000]
+    return SUBMISSION_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
 PROXY_TRANSPORT_ERROR_MARKERS = (
     "mihomo ",
     "proxy connection",
@@ -641,11 +651,15 @@ async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId
   serviceFrequent = serviceFrequent || text.includes("服务访问频繁") || text.includes("当前服务访问频繁") || text.includes("710022002");
   const countryRestricted = text.includes("所在的国家/地区不可用") || text.includes("country restricted");
   const conversationId = extractConversationId(text);
+  const responsePreview = text.length <= 6000
+    ? text
+    : `${text.slice(0, 3000)}\n...[truncated]...\n${text.slice(-3000)}`;
   return {
     ok: response.ok,
     status: response.status,
     contentType: response.headers.get("content-type") || "",
     responseBytes: text.length,
+    responsePreview,
     conversation_id: conversationId,
     local_conversation_id: localConversationId,
     collection_id: collectionId,
@@ -791,18 +805,29 @@ async def _fetch_json(client: httpx.AsyncClient, url: str, *, label: str, **kwar
 
 
 class DolaFetchAutomation:
-    def __init__(self, task_id: str, prompt: str, ratio: str, duration: int | None = None, account: dict[str, Any] | None = None, browser_pool: ReusableBrowserPool | None = None):
+    def __init__(
+        self,
+        task_id: str,
+        prompt: str,
+        ratio: str,
+        duration: int | None = None,
+        account: dict[str, Any] | None = None,
+        browser_pool: ReusableBrowserPool | None = None,
+        submission_pacer: Callable[[str], Awaitable[None]] | None = None,
+    ):
         self.task_id = task_id
         self.prompt = prompt
         self.ratio = ratio
         self.duration = int(duration or 0)
         self.account = account or {}
         self.browser_pool = browser_pool
+        self.submission_pacer = submission_pacer
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
         self.active_proxy_source = ""
         self.subscription_proxy: dict[str, str] | None = None
+        self.proxy_exit_id = "direct"
 
     def _task_exists(self) -> bool:
         return task_exists(self.task_id)
@@ -929,12 +954,10 @@ class DolaFetchAutomation:
                 }
                 if self.browser_pool is not None:
                     self._set_phase("allocating_browser", "正在分配浏览器资源")
-                    if proxy_config:
-                        context_options["proxy"] = proxy_config
                     lease = await self.browser_pool.acquire_context(
                         executable_path=executable_path,
                         headless=self.settings.headless,
-                        proxy=None,
+                        proxy=proxy_config,
                         browser_args=browser_args,
                         context_options=context_options,
                     )
@@ -976,6 +999,9 @@ class DolaFetchAutomation:
                 attachments = await self._upload_images_if_needed(page)
                 if cooldown := self._active_proxy_cooldown_outcome():
                     return cooldown
+                if self.submission_pacer is not None:
+                    self._set_phase("waiting_submit_slot", "等待当前生成出口提交时段")
+                    await self.submission_pacer(self.proxy_exit_id or self.proxy_node_id or self.active_proxy_source or "direct")
                 self._set_phase("submitting_request", "正在提交生成请求")
                 collection_id = str(uuid.uuid4())
                 unique_key = str(uuid.uuid4())
@@ -1033,12 +1059,25 @@ class DolaFetchAutomation:
                         "chat_status": result.get("status"),
                         "chat_content_type": result.get("contentType"),
                         "chat_response_bytes": int(result.get("responseBytes") or 0),
+                        "submission_response_preview": (
+                            ""
+                            if str(result.get("conversation_id") or "")
+                            else _submission_response_preview(result.get("responsePreview"))
+                        ),
                         "local_conversation_id": str(result.get("local_conversation_id") or ""),
                         "submission_collection_id": str(result.get("collection_id") or ""),
                         "submission_unique_key": str(result.get("unique_key") or ""),
                         "submitted_with_images": bool(result.get("submitted_with_images")),
                         "sse_timed_out": bool(result.get("sse_timed_out")),
-                        "submission_ambiguous": False,
+                        "submission_ambiguous": not bool(str(result.get("conversation_id") or "")),
+                        "submission_ambiguous_at": (
+                            datetime.now(timezone.utc).isoformat()
+                            if not str(result.get("conversation_id") or "")
+                            else ""
+                        ),
+                        "submit_confirmation_state": (
+                            "confirmed" if str(result.get("conversation_id") or "") else "awaiting_conversation"
+                        ),
                     },
                 )
                 self._set_phase("submission_received", "生成请求已接收，正在确认状态")
@@ -1093,6 +1132,7 @@ class DolaFetchAutomation:
         self.settings = load_settings()
         self.active_proxy_source = ""
         self.proxy_node_id = ""
+        self.proxy_exit_id = "direct"
         meta = get_meta(self.task_id) if self._task_exists() else {}
         avoid_node_id = str(meta.get("proxy_retry_avoid_node_id") or "").strip()
         excluded_node_ids = {avoid_node_id} if avoid_node_id else set()
@@ -1135,6 +1175,7 @@ class DolaFetchAutomation:
                     self.subscription_proxy = proxy
                     self.proxy_node_id = str(proxy.get("node_id") or "")
                     self.active_proxy_source = source
+                    self.proxy_exit_id = str(proxy.get("exit_id") or f"node:{self.proxy_node_id}")
                     mark_proxy_source_available(source)
                     if avoid_node_id and self.proxy_node_id != avoid_node_id:
                         update_meta(self.task_id, proxy_retry_avoid_node_id="")
@@ -1145,6 +1186,7 @@ class DolaFetchAutomation:
                             "proxy_node_count": int(proxy["node_count"]) if proxy["node_count"].isdigit() else proxy["node_count"],
                             "proxy_node_id": self.proxy_node_id,
                             "proxy_node_name": str(proxy.get("node_name") or ""),
+                            "proxy_exit_id": self.proxy_exit_id,
                         },
                     )
                     return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_subscription_scheme)
@@ -1165,6 +1207,7 @@ class DolaFetchAutomation:
                         config = account_browser_config(entry)
                         self.proxy_node_id = str(entry.get("id") or "")
                         self.active_proxy_source = source
+                        self.proxy_exit_id = await proxy_exit_identity(probe_url, self.proxy_node_id)
                         mark_proxy_source_available(source)
                         if avoid_node_id and self.proxy_node_id != avoid_node_id:
                             update_meta(self.task_id, proxy_retry_avoid_node_id="")
@@ -1173,6 +1216,7 @@ class DolaFetchAutomation:
                             "proxy_server": config["server"] if config else "",
                             "proxy_node_id": self.proxy_node_id,
                             "proxy_node_name": f"{entry.get('host')}:{entry.get('port')}",
+                            "proxy_exit_id": self.proxy_exit_id,
                         })
                         return config
                     if cooling_delays_for_accounts:
@@ -1186,8 +1230,9 @@ class DolaFetchAutomation:
                 if not await dola_proxy_available(str(proxy.get("server") or ""), min(12.0, float(self.settings.proxy_api_timeout_seconds))):
                     raise RuntimeError("proxy api returned an exit that is unavailable for Dola")
                 self.active_proxy_source = source
+                self.proxy_exit_id = await proxy_exit_identity(str(proxy.get("server") or ""), f"api:{proxy.get('host_port') or 'proxy'}")
                 mark_proxy_source_available(source)
-                self._save_result(extra={"proxy_source": source, "proxy_server": proxy["server"]})
+                self._save_result(extra={"proxy_source": source, "proxy_server": proxy["server"], "proxy_exit_id": self.proxy_exit_id})
                 return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_api_scheme)
             except ProxyCoolingDownError:
                 raise

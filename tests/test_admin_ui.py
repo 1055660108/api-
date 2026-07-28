@@ -432,9 +432,9 @@ class AdminUITests(unittest.TestCase):
 
     def test_dola_submit_interval_is_conservative(self) -> None:
         worker = (Path(__file__).resolve().parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
-        self.assertIn("submit_interval = load_settings().dola_submit_interval_seconds", worker)
+        self.assertIn("submit_interval = load_settings().dola_exit_submit_interval_seconds", worker)
         self.assertIn("delay = submit_interval -", worker)
-        self.assertIn('id="dolaSubmitInterval" type="number" min="1" max="5" step="0.1"', self.html)
+        self.assertIn('id="dolaSubmitInterval" type="number" min="3" max="30" step="0.5"', self.html)
         self.assertIn('apiFetch("/config/runtime"', self.javascript)
         self.assertIn("RESULT_WATCH_DEADLINE_MINUTES = 20", worker)
         self.assertIn("生成超过20分钟，仍未返回结果", worker)

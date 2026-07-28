@@ -4,6 +4,7 @@ import asyncio
 import base64
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
 import httpx
@@ -174,13 +175,43 @@ class DolaQueryTests(unittest.TestCase):
         }
         self.assertEqual(query.extract_matching_conversation_id(duplicate_prompt, prompt="重复的参考图生成提示词"), "")
 
+    def test_conversation_recovery_matches_local_id_and_unique_key(self) -> None:
+        data = {
+            "conversations": [
+                {
+                    "conversation_id": "12345678901234567",
+                    "client_meta": {"local_conversation_id": "local_1111111111111111"},
+                },
+                {
+                    "conversation_id": "22345678901234567",
+                    "option": {"unique_key": "unique-target"},
+                },
+            ]
+        }
+        self.assertEqual(
+            query.extract_matching_conversation_id(data, local_conversation_id="local_1111111111111111"),
+            "12345678901234567",
+        )
+        self.assertEqual(
+            query.extract_matching_conversation_id(data, unique_key="unique-target"),
+            "22345678901234567",
+        )
+
     def test_reference_submission_waits_for_ack_and_returns_recovery_ids(self) -> None:
         self.assertIn("attachments && attachments.length ? 60000 : 30000", automation.SUBMIT_SCRIPT)
         self.assertIn("suppliedCollectionId", automation.SUBMIT_SCRIPT)
         self.assertIn("suppliedUniqueKey", automation.SUBMIT_SCRIPT)
         self.assertIn("suppliedLocalConversationId", automation.SUBMIT_SCRIPT)
-        for field in ("local_conversation_id", "collection_id", "unique_key", "submitted_with_images"):
+        for field in ("local_conversation_id", "collection_id", "unique_key", "submitted_with_images", "responsePreview"):
             self.assertIn(field, automation.SUBMIT_SCRIPT)
+
+    def test_submission_response_preview_redacts_session_credentials(self) -> None:
+        preview = automation._submission_response_preview(
+            'data: {"sessionid":"secret-session","msToken":"secret-token","conversation_id":"123"}'
+        )
+        self.assertNotIn("secret-session", preview)
+        self.assertNotIn("secret-token", preview)
+        self.assertIn("conversation_id", preview)
 
     def test_message_list_order_breaks_equal_order_values(self) -> None:
         data = single_chain(
@@ -471,7 +502,10 @@ class DolaQueryTests(unittest.TestCase):
         recover.assert_awaited_once_with(
             "sessionid=secret",
             collection_id="collection-reference",
+            local_conversation_id="",
+            unique_key="",
             prompt="参考图中的人物缓慢转身",
+            proxy_server="",
         )
         self.assertTrue(
             any(
@@ -490,6 +524,7 @@ class DolaQueryTests(unittest.TestCase):
             "submission_ambiguous_at": (datetime.now(timezone.utc) - timedelta(seconds=181)).isoformat(),
             "account_id": "account-1",
             "account_quota_charge_id": "charge-1",
+            "proxy_node_id": "node-old",
         }
         with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
             query, "get_meta", return_value=meta
@@ -498,13 +533,64 @@ class DolaQueryTests(unittest.TestCase):
         ), patch.object(query, "save_result"), patch.object(
             query, "refund_account_quota_once"
         ) as refund_account, patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(
+            query, "record_failed_account"
+        ) as record_failed, patch.object(
             query, "retry_ambiguous_submitted_task", return_value=1
-        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result:
+        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result, patch.object(
+            query, "update_meta"
+        ) as update_meta:
             response = asyncio.run(query._query_task_once(task_id))
         self.assertEqual(response, {"code": "1", "text": "正在重试中，请稍等！", "url": ""})
+        clear_account.assert_called_once_with("account-1", task_id)
         refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
-        retry_task.assert_called_once_with(task_id, "提交页面在确认结果前发生跳转", max_retries=2, delay_seconds=15)
+        record_failed.assert_called_once_with(task_id, "account-1")
+        retry_task.assert_called_once_with(task_id, "提交后未取得有效会话，正在安全重试", max_retries=2, delay_seconds=15)
         clear_result.assert_called_once_with(task_id)
+        update_meta.assert_called_once_with(task_id, proxy_retry_avoid_node_id="node-old")
+
+    def test_result_query_uses_the_submission_proxy(self) -> None:
+        task_id = "0" * 32
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "conversation_id": "12345678901234567",
+            "proxy_source": "api",
+            "proxy_server": "http://proxy.example:18080",
+        }
+        meta = {"status": query.STATUS_SUBMITTED, "owner_token_hash": "owner-hash"}
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=("", "正在生成"))
+        ) as fetch_chain, patch.object(query, "save_result"):
+            asyncio.run(query._query_task_once(task_id))
+        fetch_chain.assert_awaited_once_with(
+            "sessionid=secret",
+            "12345678901234567",
+            proxy_server="http://proxy.example:18080",
+        )
+
+    def test_expired_api_query_proxy_is_refreshed_once(self) -> None:
+        task_id = "0" * 32
+        result_data = {"proxy_source": "api", "proxy_server": "http://old.example:18080"}
+        operation = AsyncMock(side_effect=[httpx.ProxyError("expired proxy"), "recovered"])
+        settings = SimpleNamespace(
+            proxy_api_url="https://proxy-api.example/get",
+            proxy_api_timeout_seconds=20,
+            proxy_api_scheme="http",
+        )
+        with patch.object(query, "load_settings", return_value=settings), patch.object(
+            query,
+            "fetch_proxy_from_api",
+            new=AsyncMock(return_value={"server": "http://new.example:18081"}),
+        ) as refresh, patch.object(query, "save_result") as save_result:
+            response = asyncio.run(query._run_task_query(task_id, result_data, operation))
+        self.assertEqual(response, "recovered")
+        self.assertEqual(operation.await_args_list[0].args, ("http://old.example:18080",))
+        self.assertEqual(operation.await_args_list[1].args, ("http://new.example:18081",))
+        refresh.assert_awaited_once()
+        self.assertEqual(save_result.call_args.kwargs["extra"]["query_proxy_refresh_count"], 1)
 
     def test_pending_policy_retry_remains_in_progress(self) -> None:
         task_id = "0" * 32

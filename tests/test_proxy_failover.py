@@ -107,13 +107,17 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
             automation, "dola_proxy_available", new=AsyncMock(side_effect=[False, True])
         ) as probe, patch.object(
             automation, "acquire_dola_subscription_proxy", new=AsyncMock()
-        ) as subscription:
+        ) as subscription, patch.object(
+            automation, "proxy_exit_identity", new=AsyncMock(return_value="ip:203.0.113.20")
+        ) as exit_identity:
             result = await instance._browser_proxy_config()
 
         self.assertEqual(probe.await_count, 2)
         subscription.assert_not_awaited()
+        exit_identity.assert_awaited_once()
         self.assertEqual(result["server"], "socks5://us.example.com:3020")
         self.assertEqual(instance.proxy_node_id, imported["selected_ids"][1])
+        self.assertEqual(instance.proxy_exit_id, "ip:203.0.113.20")
 
     def test_authenticated_proxy_helpers_keep_browser_credentials_separate(self) -> None:
         probe_url = config.account_proxy_url_for("socks5", "proxy.example.com", 3010, "fake user", "p@ss:word")

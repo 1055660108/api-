@@ -7,12 +7,15 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
+from .account_proxies import account_proxy_entries, account_proxy_url
 from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, refund_account_quota, settle_account_quota
 from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
+from .config import load_settings
+from .proxy_manager import fetch_proxy_from_api
 from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_submitted_task, retry_submitted_task, save_result, update_meta
 from .temp_access import refund_temp_quota_hash
 
@@ -194,7 +197,7 @@ def _recent_payload(include_messages: bool = False) -> dict[str, Any]:
         "cmd": 3200,
         "uplink_body": {
             "pull_recent_conv_chain_uplink_body": {
-                "limit": 10,
+                "limit": 30,
                 "message_count_per_conv": 10,
                 "api_version": 1,
                 "conv_version": 0,
@@ -343,8 +346,18 @@ def _normalized_match_text(value: str) -> str:
     return re.sub(r"\s+", "", repair_text(str(value or ""))).casefold()
 
 
-def extract_matching_conversation_id(data: Any, *, collection_id: str = "", prompt: str = "") -> str:
+def extract_matching_conversation_id(
+    data: Any,
+    *,
+    collection_id: str = "",
+    local_conversation_id: str = "",
+    unique_key: str = "",
+    prompt: str = "",
+) -> str:
     collection_id = str(collection_id or "").strip()
+    local_conversation_id = str(local_conversation_id or "").strip()
+    unique_key = str(unique_key or "").strip()
+    submission_identifiers = tuple(item for item in (collection_id, local_conversation_id, unique_key) if item)
     normalized_prompt = _normalized_match_text(prompt)
     prompt_probe = normalized_prompt[:120] if len(normalized_prompt) >= 8 else ""
     collection_candidates: list[tuple[tuple[int, int], str]] = []
@@ -357,7 +370,7 @@ def extract_matching_conversation_id(data: Any, *, collection_id: str = "", prom
             continue
         strings = _collect_strings(item)
         raw_text = "\n".join(strings)
-        collection_match = bool(collection_id and collection_id in raw_text)
+        collection_match = any(identifier in raw_text for identifier in submission_identifiers)
         prompt_match = bool(prompt_probe and prompt_probe in _normalized_match_text(raw_text))
         if collection_match:
             collection_candidates.append((_item_order_key(item, position), conversation_id))
@@ -475,9 +488,20 @@ def decode_main_url(value: str) -> str:
     return ""
 
 
-async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+async def _post_json(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    *,
+    proxy_server: str = "",
+) -> dict[str, Any]:
     timeout = httpx.Timeout(30.0, connect=15.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=False,
+        trust_env=False,
+        proxy=str(proxy_server or "") or None,
+    ) as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         try:
@@ -486,20 +510,99 @@ async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any])
             raise DolaQueryError("invalid_response", "Dola returned an invalid JSON response") from exc
 
 
-async def fetch_recent_conversation_id(cookie: str) -> str:
-    data = await _post_json(RECENT_CONV_URL, _headers(cookie), _recent_payload())
+async def fetch_recent_conversation_id(cookie: str, *, proxy_server: str = "") -> str:
+    data = await _post_json(RECENT_CONV_URL, _headers(cookie), _recent_payload(), proxy_server=proxy_server)
     return extract_conversation_id(data)
 
 
-async def fetch_matching_recent_conversation_id(cookie: str, *, collection_id: str = "", prompt: str = "") -> str:
-    data = await _post_json(RECENT_CONV_URL, _headers(cookie), _recent_payload(include_messages=True))
-    return extract_matching_conversation_id(data, collection_id=collection_id, prompt=prompt)
+async def fetch_matching_recent_conversation_id(
+    cookie: str,
+    *,
+    collection_id: str = "",
+    local_conversation_id: str = "",
+    unique_key: str = "",
+    prompt: str = "",
+    proxy_server: str = "",
+) -> str:
+    data = await _post_json(
+        RECENT_CONV_URL,
+        _headers(cookie),
+        _recent_payload(include_messages=True),
+        proxy_server=proxy_server,
+    )
+    return extract_matching_conversation_id(
+        data,
+        collection_id=collection_id,
+        local_conversation_id=local_conversation_id,
+        unique_key=unique_key,
+        prompt=prompt,
+    )
 
 
-async def fetch_single_chain(cookie: str, conversation_id: str) -> tuple[str, str]:
-    data = await _post_json(SINGLE_CHAIN_URL, _headers(cookie), _single_payload(conversation_id))
+async def fetch_single_chain(cookie: str, conversation_id: str, *, proxy_server: str = "") -> tuple[str, str]:
+    data = await _post_json(
+        SINGLE_CHAIN_URL,
+        _headers(cookie),
+        _single_payload(conversation_id),
+        proxy_server=proxy_server,
+    )
     validate_conversation_ownership(data, conversation_id)
     return extract_main_url(data), extract_tts_content(data)
+
+
+async def _task_query_proxy_server(result: dict[str, Any]) -> str:
+    source = str(result.get("proxy_source") or "").strip().lower()
+    if source == "account":
+        proxy_node_id = str(result.get("proxy_node_id") or "").strip()
+        if proxy_node_id:
+            entries = await asyncio.to_thread(account_proxy_entries, [proxy_node_id])
+            if entries:
+                return account_proxy_url(entries[0])
+    if source in {"api", "subscription"}:
+        return str(result.get("proxy_server") or "").strip()
+    return ""
+
+
+def _query_proxy_can_refresh(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return int(exc.response.status_code) in {407, 502, 503, 504}
+    return isinstance(exc, httpx.TransportError)
+
+
+async def _run_task_query(
+    task_id: str,
+    result: dict[str, Any],
+    operation: Callable[[str], Awaitable[Any]],
+) -> Any:
+    proxy_server = await _task_query_proxy_server(result)
+    try:
+        return await operation(proxy_server)
+    except Exception as exc:
+        if str(result.get("proxy_source") or "").strip().lower() != "api" or not _query_proxy_can_refresh(exc):
+            raise
+        settings = load_settings()
+        if not settings.proxy_api_url:
+            raise
+        refreshed = await fetch_proxy_from_api(
+            settings.proxy_api_url,
+            timeout_seconds=settings.proxy_api_timeout_seconds,
+            scheme=settings.proxy_api_scheme,
+        )
+        refreshed_server = str(refreshed.get("server") or "").strip()
+        if not refreshed_server:
+            raise
+        refresh_count = max(0, int(result.get("query_proxy_refresh_count") or 0)) + 1
+        result["proxy_server"] = refreshed_server
+        result["query_proxy_refresh_count"] = refresh_count
+        save_result(
+            task_id,
+            extra={
+                "proxy_server": refreshed_server,
+                "query_proxy_refresh_count": refresh_count,
+                "query_proxy_refreshed_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return await operation(refreshed_server)
 
 
 async def _query_task_once(task_id: str) -> dict[str, str]:
@@ -555,6 +658,7 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         result.get("sse_response_text")
         or result.get("chat_response_text")
         or result.get("chat_response_preview")
+        or result.get("submission_response_preview")
         or ""
     )
     conversation_id = extract_conversation_id_from_sse(sse_text)
@@ -563,12 +667,21 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         conversation_id = str(result.get("conversation_id") or "")
         conversation_source = "submit_result" if conversation_id else ""
     recovery_collection_id = str(result.get("submission_collection_id") or "")
-    if not conversation_id and recovery_collection_id:
+    recovery_local_id = str(result.get("local_conversation_id") or "")
+    recovery_unique_key = str(result.get("submission_unique_key") or "")
+    if not conversation_id and any((recovery_collection_id, recovery_local_id, recovery_unique_key)):
         try:
-            conversation_id = await fetch_matching_recent_conversation_id(
-                cookie,
-                collection_id=recovery_collection_id,
-                prompt=str(meta.get("prompt") or ""),
+            conversation_id = await _run_task_query(
+                task_id,
+                result,
+                lambda proxy_server: fetch_matching_recent_conversation_id(
+                    cookie,
+                    collection_id=recovery_collection_id,
+                    local_conversation_id=recovery_local_id,
+                    unique_key=recovery_unique_key,
+                    prompt=str(meta.get("prompt") or ""),
+                    proxy_server=proxy_server,
+                ),
             )
         except Exception as exc:
             diagnostic = query_error_diagnostic(exc)
@@ -582,7 +695,18 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         if conversation_id:
             conversation_source = "matched_recent_submission"
     if conversation_id:
-        save_result(task_id, conversation_id=conversation_id, extra={"conversation_source": conversation_source, "submission_ambiguous": False})
+        save_result(
+            task_id,
+            conversation_id=conversation_id,
+            extra={
+                "conversation_source": conversation_source,
+                "submission_ambiguous": False,
+                "submission_ambiguous_at": "",
+                "submit_confirmation_state": "confirmed",
+                "conversation_recovery_error": "",
+                "conversation_recovery_error_category": "",
+            },
+        )
     else:
         ambiguous_at = parse_time(str(result.get("submission_ambiguous_at") or ""))
         if bool(result.get("submission_ambiguous")) and ambiguous_at and (
@@ -590,8 +714,13 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         ).total_seconds() >= AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS:
             account_id = str(result.get("account_id") or "")
             if account_id:
+                clear_account_current_task(account_id, task_id)
                 refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
-            retry_count = retry_ambiguous_submitted_task(task_id, "提交页面在确认结果前发生跳转", max_retries=2, delay_seconds=15)
+                record_failed_account(task_id, account_id)
+            proxy_node_id = str(result.get("proxy_node_id") or "").strip()
+            if proxy_node_id:
+                update_meta(task_id, proxy_retry_avoid_node_id=proxy_node_id)
+            retry_count = retry_ambiguous_submitted_task(task_id, "提交后未取得有效会话，正在安全重试", max_retries=2, delay_seconds=15)
             if retry_count <= 2:
                 clear_transient_result(task_id)
                 return {"code": "1", "text": "正在重试中，请稍等！", "url": ""}
@@ -609,7 +738,11 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         return {"code": "1", "text": "没有文本", "url": ""}
 
     try:
-        main_url_encoded, tts_content = await fetch_single_chain(cookie, conversation_id)
+        main_url_encoded, tts_content = await _run_task_query(
+            task_id,
+            result,
+            lambda proxy_server: fetch_single_chain(cookie, conversation_id, proxy_server=proxy_server),
+        )
     except Exception as exc:
         save_result(task_id, extra=query_error_diagnostic(exc))
         return {"code": "1", "text": "没有文本", "url": ""}

@@ -3273,11 +3273,11 @@ async function saveEmailConfig() {
 async function loadRuntimeConfig() {
   if (portal !== "admin" || !els.dolaSubmitInterval) return null;
   const data = await apiFetch("/config/runtime");
-  const interval = Math.max(1, Math.min(5, Number(data.dola_submit_interval_seconds || 5)));
+  const interval = Math.max(3, Math.min(30, Number(data.dola_exit_submit_interval_seconds || 8)));
   const retentionDays = Math.max(7, Math.min(30, Number(data.batch_history_retention_days || 30)));
   els.dolaSubmitInterval.value = String(interval);
   if (els.batchHistoryRetentionDays) els.batchHistoryRetentionDays.value = String(retentionDays);
-  if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${interval} 秒 · ${retentionDays} 天`;
+  if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${interval} 秒/出口 · ${retentionDays} 天`;
   return data;
 }
 
@@ -3285,14 +3285,14 @@ async function saveRuntimeConfig(event) {
   event?.preventDefault();
   const interval = Math.round(Number(els.dolaSubmitInterval?.value || 0) * 10) / 10;
   const retentionDays = Number.parseInt(els.batchHistoryRetentionDays?.value || "", 10);
-  if (!Number.isFinite(interval) || interval < 1 || interval > 5) return toast("任务提交间隔需为 1 - 5 秒", "error");
+  if (!Number.isFinite(interval) || interval < 3 || interval > 30) return toast("单出口提交间隔需为 3 - 30 秒", "error");
   if (!Number.isInteger(retentionDays) || retentionDays < 7 || retentionDays > 30) return toast("批量历史保留时间需为 7 - 30 天", "error");
   setBusy(els.saveRuntimeConfig, true, "保存中");
   try {
-    const data = await apiFetch("/config/runtime", { method: "POST", body: { dola_submit_interval_seconds: interval, batch_history_retention_days: retentionDays } });
-    els.dolaSubmitInterval.value = String(data.dola_submit_interval_seconds);
+    const data = await apiFetch("/config/runtime", { method: "POST", body: { dola_exit_submit_interval_seconds: interval, batch_history_retention_days: retentionDays } });
+    els.dolaSubmitInterval.value = String(data.dola_exit_submit_interval_seconds);
     if (els.batchHistoryRetentionDays) els.batchHistoryRetentionDays.value = String(data.batch_history_retention_days);
-    if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${data.dola_submit_interval_seconds} 秒 · ${data.batch_history_retention_days} 天`;
+    if (els.runtimeConfigState) els.runtimeConfigState.textContent = `${data.dola_exit_submit_interval_seconds} 秒/出口 · ${data.batch_history_retention_days} 天`;
     toast("运行与保留设置已生效");
   } catch (error) {
     toast(`保存失败：${error.message}`, "error");

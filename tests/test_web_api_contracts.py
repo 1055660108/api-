@@ -753,6 +753,30 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
         self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).credit_units, 10)
 
+    def test_canceled_batch_plan_is_rejected_before_persistent_job_creation(self) -> None:
+        registered = self.register("cancel_batch_plan_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        headers = {"X-API-Token": registered["token"]}
+        batch_id = "batch-stop-before-plan"
+        canceled = self.client.post(f"/batch-prompts/{batch_id}/cancel", headers=headers)
+        self.assertEqual(canceled.status_code, 200, canceled.text)
+
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 1,
+            "reference_batch_id": batch_id,
+            "rows": [{"client_index": 0, "sheet_row": 2, "prompt": "不应保存的批量计划", "image_count": 0}],
+        }
+        response = self.client.post(
+            "/batch-prompts/jobs",
+            headers=headers,
+            data={"manifest": json.dumps(manifest, ensure_ascii=False)},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"], "批量提交已停止")
+        self.assertEqual(batch_jobs.list_jobs(owner_hash), [])
+        self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
+
     def test_large_batch_from_one_user_does_not_make_another_user_busy(self) -> None:
         first = self.register("busy_owner_a")
         second = self.register("busy_owner_b")

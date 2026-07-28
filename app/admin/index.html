@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.60" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.61" />
   </head>
   <body>
     <script>
@@ -430,8 +430,8 @@
           </form>
         </section>
 
-        <section class="view" id="batch-submitView" data-title="多任务提交">
-          <section class="panel batch-task-page" aria-label="多任务提交">
+        <section class="view" id="batch-submitView" data-title="批量提交">
+          <section class="panel batch-task-page" aria-label="批量提交">
             <div class="batch-import-toolbar">
               <input class="sr-only" id="batchSpreadsheetInput" type="file" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt" />
               <input class="sr-only" id="batchSharedImageInput" type="file" accept="image/jpeg,image/png,image/webp" multiple />
@@ -1026,7 +1026,7 @@
     <div class="modal-backdrop hidden" id="proxyModal" aria-hidden="true">
       <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="proxyModalTitle">
         <div class="modal-header"><h2 id="proxyModalTitle">编辑网络代理</h2><button class="modal-close" id="closeProxyModal" type="button" aria-label="关闭">×</button></div>
-        <label class="field"><span>首选代理模式</span><select id="proxySource"><option value="subscription">节点订阅</option><option value="account">账密连接</option><option value="api">代理提取 API</option><option value="direct">直连</option></select><small>节点订阅与账密连接会保留配置，首选模式不可用时自动切换备用模式</small></label>
+        <label class="field"><span>当前代理模式</span><select id="proxySource"><option value="subscription">节点订阅</option><option value="account">账密连接</option><option value="api">代理提取 API</option><option value="direct">直连</option></select><small>任务只使用当前模式，并在该模式已选择的可用节点内切换</small></label>
         <label class="field" id="proxySubscriptionField"><span>节点订阅链接</span><input id="proxySubscriptionUrl" type="url" placeholder="https://example.com/subscribe?token=..." /><small id="proxySubscriptionHint">支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅</small></label>
         <div class="compact-form-grid hidden" id="proxyAccountField">
           <label class="field"><span>连接协议</span><select id="proxyAccountScheme"><option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5H</option><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
@@ -1266,6 +1266,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.60"></script>
+    <script src="/admin/assets/app.js?v=1.4.61"></script>
   </body>
 </html>

@@ -3289,6 +3289,7 @@ async def create_persistent_batch_job(
     reference_id = str(payload.get("reference_id") or "").strip()
     reference_count = max(0, min(load_settings().max_image_count, int(payload.get("reference_count") or 0)))
     reference_batch_id = str(payload.get("reference_batch_id") or "").strip()[:100]
+    _ensure_batch_active(access, reference_batch_id)
     if reference_id:
         shared_paths = await asyncio.to_thread(_batch_reference_paths, reference_id, access.token_hash, reference_batch_id)
         if reference_count <= 0 or len(shared_paths) < reference_count:
@@ -3326,6 +3327,7 @@ async def create_persistent_batch_job(
     upload_cursor = 0
     try:
         for row_index, row in enumerate(normalized_rows, start=1):
+            _ensure_batch_active(access, reference_batch_id)
             saved_names: list[str] = []
             original_names: list[str] = []
             for image_index in range(int(row["image_count"])):
@@ -3340,6 +3342,7 @@ async def create_persistent_batch_job(
                 original_names.append(_reference_image_name(upload.filename, image_index + 1, suffix))
             row["image_files"] = saved_names
             row["image_names"] = original_names
+        _ensure_batch_active(access, reference_batch_id)
         job = await _storage_call(
             create_batch_job,
             access.token_hash,
@@ -3351,6 +3354,8 @@ async def create_persistent_batch_job(
             reference_batch_id=reference_batch_id,
             job_id=job_id,
         )
+        if reference_batch_id and _batch_is_canceled(access, reference_batch_id):
+            job = await asyncio.to_thread(cancel_persistent_batch_job, job_id, access.token_hash)
     except Exception:
         shutil.rmtree(assets_root, ignore_errors=True)
         raise

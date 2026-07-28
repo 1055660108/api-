@@ -53,24 +53,20 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.data_patch.stop()
         self.temporary_directory.cleanup()
 
-    async def test_subscription_failure_falls_back_to_authenticated_proxy(self) -> None:
+    async def test_subscription_mode_does_not_fall_back_to_authenticated_proxy(self) -> None:
         instance = automation_instance()
         settings = proxy_settings("subscription")
         with patch.object(automation, "load_settings", return_value=settings), patch.object(
             automation, "acquire_dola_subscription_proxy", new=AsyncMock(side_effect=RuntimeError("subscription unavailable"))
         ) as subscription, patch.object(automation, "dola_proxy_available", new=AsyncMock(return_value=True)) as probe:
-            result = await instance._browser_proxy_config()
+            with self.assertRaisesRegex(RuntimeError, "all configured proxy modes are unavailable"):
+                await instance._browser_proxy_config()
 
         subscription.assert_awaited_once()
-        self.assertIn("fake-region-JP:fake-password@proxy.example.com:3010", probe.await_args.args[0])
-        self.assertEqual(result, {
-            "server": "socks5://proxy.example.com:3010",
-            "username": "fake-region-JP",
-            "password": "fake-password",
-        })
-        self.assertEqual(instance.active_proxy_source, "account")
+        probe.assert_not_awaited()
+        self.assertEqual(instance.active_proxy_source, "")
 
-    async def test_authenticated_proxy_failure_falls_back_to_subscription(self) -> None:
+    async def test_authenticated_proxy_mode_does_not_fall_back_to_subscription(self) -> None:
         instance = automation_instance()
         settings = proxy_settings("account")
         subscription_proxy = {
@@ -84,12 +80,12 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             automation, "acquire_dola_subscription_proxy", new=AsyncMock(return_value=subscription_proxy)
         ) as subscription:
-            result = await instance._browser_proxy_config()
+            with self.assertRaisesRegex(RuntimeError, "all configured proxy modes are unavailable"):
+                await instance._browser_proxy_config()
 
-        subscription.assert_awaited_once()
-        self.assertEqual(result, {"server": "http://127.0.0.1:7890"})
-        self.assertEqual(instance.active_proxy_source, "subscription")
-        self.assertEqual(instance.proxy_node_id, "node-1")
+        subscription.assert_not_awaited()
+        self.assertEqual(instance.active_proxy_source, "")
+        self.assertEqual(instance.proxy_node_id, "")
 
     async def test_authenticated_pool_tries_next_selected_proxy_before_other_mode(self) -> None:
         settings = proxy_settings("account")

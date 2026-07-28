@@ -4841,7 +4841,7 @@ function renderBatchPrompts() {
   }
   if (els.batchSelectionLimit) els.batchSelectionLimit.max = String(Math.max(1, selectable.length));
   if (els.submitBatchTasks) {
-    els.submitBatchTasks.disabled = !state.batchAutoRunning && !state.batchSubmitting && !selected.length;
+    els.submitBatchTasks.disabled = state.batchAutoStopRequested || (!state.batchAutoRunning && !state.batchSubmitting && !selected.length);
     els.submitBatchTasks.textContent = state.batchAutoRunning || state.batchSubmitting
       ? (state.batchAutoStopRequested ? "正在停止" : "停止生成")
       : "生成所选任务";
@@ -4940,10 +4940,12 @@ async function prepareBatchReferenceBundle(sessionId) {
   return { id: String(data.reference_id), count: Number(data.image_count) };
 }
 
-function requestBatchSubmissionStop() {
+async function requestBatchSubmissionStop() {
   const sessionId = String(state.batchSessionId || "").trim();
-  if (!sessionId) return;
-  apiFetch(`/batch-prompts/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", timeout: 5000 }).catch(() => {});
+  if (!sessionId) return null;
+  const result = await apiFetch(`/batch-prompts/${encodeURIComponent(sessionId)}/cancel`, { method: "POST", timeout: 10000 });
+  if (result?.job) applyPersistentBatchJob(result.job);
+  return result;
 }
 
 function applyBatchTaskResult(item, result) {
@@ -5089,8 +5091,14 @@ function applyPersistentBatchJob(job) {
   const summarySignature = JSON.stringify([job.status, total, counts]);
   const summaryChanged = summarySignature !== state.batchJobSummarySignature;
   state.batchJobSummarySignature = summarySignature;
+  const jobStatus = String(job.status || "");
+  state.batchAutoStopRequested = jobStatus === "canceling" || (
+    state.batchAutoStopRequested && ["queued", "running"].includes(jobStatus)
+  );
   if (els.batchTaskProgress) {
-    els.batchTaskProgress.textContent = ["completed", "canceled"].includes(String(job.status || ""))
+    els.batchTaskProgress.textContent = jobStatus === "canceling"
+      ? `正在停止：已创建的 ${active} 条任务继续生成，未创建的任务已取消`
+      : ["completed", "canceled"].includes(jobStatus)
       ? `批次已结束：成功 ${Number(counts.completed || 0)} 条，失败 ${Number(counts.failed || 0)} 条，取消 ${Number(counts.canceled || 0)} 条`
       : `批次生成中：已完成 ${finished} / ${total}，运行 ${active} 条，批次排队 ${queued} 条`;
   }
@@ -5154,9 +5162,17 @@ function validateBatchSelection() {
 
 async function submitBatchTasks() {
   if (state.batchAutoRunning || state.batchSubmitting) {
+    if (state.batchAutoStopRequested) return;
     state.batchAutoStopRequested = true;
-    requestBatchSubmissionStop();
+    renderBatchPrompts();
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，已创建的任务继续生成";
+    try {
+      await requestBatchSubmissionStop();
+    } catch (error) {
+      state.batchAutoStopRequested = false;
+      renderBatchPrompts();
+      toast(`停止失败：${batchFriendlyError(error.message)}`, "error");
+    }
     return;
   }
   const selected = validateBatchSelection();
@@ -5171,9 +5187,17 @@ function waitForBatchPoll(milliseconds) {
 
 async function autoSubmitBatchTasks() {
   if (state.batchAutoRunning) {
+    if (state.batchAutoStopRequested) return;
     state.batchAutoStopRequested = true;
-    requestBatchSubmissionStop();
+    renderBatchPrompts();
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = "正在停止，已创建的任务继续生成";
+    try {
+      await requestBatchSubmissionStop();
+    } catch (error) {
+      state.batchAutoStopRequested = false;
+      renderBatchPrompts();
+      toast(`停止失败：${batchFriendlyError(error.message)}`, "error");
+    }
     return;
   }
   if (state.batchSubmitting) return;
@@ -5222,13 +5246,24 @@ async function autoSubmitBatchTasks() {
     state.batchJobCursorReady = false;
     state.batchJobSummarySignature = "";
     state.batchSessionId = state.batchJobId;
-    applyPersistentBatchJob(result.job);
+    const stopWasRequested = state.batchAutoStopRequested;
+    let active = applyPersistentBatchJob(result.job);
+    if (stopWasRequested && active) {
+      state.batchAutoStopRequested = true;
+      renderBatchPrompts();
+      const canceled = await requestBatchSubmissionStop();
+      if (canceled?.job) active = applyPersistentBatchJob(canceled.job);
+    }
     toast("批次已进入后台公平队列");
-    await monitorPersistentBatchJob(state.batchJobId);
+    if (active) await monitorPersistentBatchJob(state.batchJobId);
+    else state.batchAutoRunning = false;
   } catch (error) {
+    const stopped = state.batchAutoStopRequested || Number(error.status || 0) === 409;
     selected.forEach(({ item }) => { if (item.status === "queued" && !item.taskId) item.status = ""; });
-    if (els.batchTaskProgress) els.batchTaskProgress.textContent = "批次生成未开始";
-    toast(`批次生成失败：${batchFriendlyError(error.message)}`, "error");
+    state.batchAutoRunning = false;
+    state.batchAutoStopRequested = false;
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = stopped ? "批量提交已停止" : "批次生成未开始";
+    toast(stopped ? "批量提交已停止" : `批次生成失败：${batchFriendlyError(error.message)}`, stopped ? "success" : "error");
   } finally {
     state.batchSubmitting = false;
     await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);

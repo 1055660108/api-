@@ -931,8 +931,8 @@ class DolaFetchAutomation:
             "account": account_proxy_configured(self.settings),
             "api": bool(self.settings.proxy_api_url),
         }
-        fallback_order = [self.settings.proxy_source, "subscription", "account", "api"]
-        candidates = list(dict.fromkeys(source for source in fallback_order if configured.get(source)))
+        selected_source = str(self.settings.proxy_source or "").strip().lower()
+        candidates = [selected_source] if configured.get(selected_source) else []
         errors: list[str] = []
         attempted_sources = 0
         cooling_delays: list[int] = []

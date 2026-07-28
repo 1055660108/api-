@@ -98,6 +98,18 @@ def should_consume_retry_account_quota(outcome: dict) -> bool:
     return bool(outcome.get("retryable")) and not bool(outcome.get("infrastructure_fault"))
 
 
+def defer_non_counting_retry(task_id: str, outcome: dict) -> bool:
+    if not bool(outcome.get("defer_only")):
+        return False
+    defer_task(
+        task_id,
+        "生成节点冷却中，任务已自动排队",
+        "proxy_cooldown",
+        max(1, int(outcome.get("retry_after") or 5)),
+    )
+    return True
+
+
 def release_account_after_retryable_failure(task_id: str, account: dict, platform: str, outcome: dict) -> None:
     account_id = str(account.get("id") or "")
     if not account_id:
@@ -618,15 +630,17 @@ class WorkerManager:
                             clear_account_current_task(str(account.get("id") or ""), task_id)
                     if outcome.get("retryable"):
                         reason = str(outcome.get("reason") or "")[:500]
-                        if outcome.get("infrastructure_fault"):
-                            retry_count = record_infrastructure_retry(task_id, reason)
-                            retry_limit = MAX_INFRASTRUCTURE_RETRIES
-                        else:
-                            retry_count = record_retry(task_id, reason)
-                            retry_limit = MAX_TASK_RETRIES
-                        if retry_count > retry_limit:
-                            meta = get_meta(task_id)
-                            refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+                        deferred = defer_non_counting_retry(task_id, outcome)
+                        if not deferred:
+                            if outcome.get("infrastructure_fault"):
+                                retry_count = record_infrastructure_retry(task_id, reason)
+                                retry_limit = MAX_INFRASTRUCTURE_RETRIES
+                            else:
+                                retry_count = record_retry(task_id, reason)
+                                retry_limit = MAX_TASK_RETRIES
+                            if retry_count > retry_limit:
+                                meta = get_meta(task_id)
+                                refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     else:
                         reason = str(outcome.get("reason") or "")[:500]
                         mark_failed(task_id, reason)

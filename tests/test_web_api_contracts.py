@@ -121,6 +121,29 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(client_task["error"], "生成失败，请重试！")
         self.assertEqual(admin_task["error"], "生成超过20分钟，仍未返回结果")
 
+    def test_proxy_cooldown_reason_is_visible_only_to_admin(self) -> None:
+        registered = self.register("proxy_cooldown_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        task = store.create_task("代理冷却原因隔离", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        raw_error = "all configured proxy modes are unavailable (subscription: cooling down)"
+        store.mark_failed(task["id"], raw_error)
+
+        client_task = self.client.get(
+            "/tasks?page=1&page_size=20",
+            headers={"X-API-Token": registered["token"]},
+        ).json()["tasks"][0]
+        admin_task = next(
+            item
+            for item in self.client.get(
+                "/tasks?page=1&page_size=20",
+                headers={"X-API-Token": self.admin_token},
+            ).json()["tasks"]
+            if item["id"] == task["id"]
+        )
+
+        self.assertEqual(client_task["error"], "生成失败，请重试！")
+        self.assertEqual(admin_task["error"], raw_error)
+
     def test_admin_and_client_entries_publish_the_same_static_bundle(self) -> None:
         admin = self.client.get("/admin")
         client = self.client.get("/client/")
@@ -145,6 +168,7 @@ class WebAPIContractTests(unittest.TestCase):
         owner_hash = temp_access.hash_token(registered["token"])
         task = store.create_task("视频播放", "9:16", owner_token_hash=owner_hash, platform="dola")
         store.save_result(task["id"], extra={"decoded_main_url": "https://cdn.example/video.mp4"})
+        store.set_task_images(task["id"], [self.root / "01.png"], ["角色正面参考图.png"])
         captured: dict[str, object] = {}
 
         class UpstreamResponse:
@@ -187,6 +211,17 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(captured["headers"]["Referer"], "https://www.dola.com/")
         self.assertTrue(captured["response_closed"])
         self.assertTrue(captured["client_closed"])
+        self.assertTrue(response.headers["content-disposition"].startswith("inline;"))
+        self.assertIn("filename*=UTF-8''%E8%A7%92%E8%89%B2%E6%AD%A3%E9%9D%A2%E5%8F%82%E8%80%83%E5%9B%BE.mp4", response.headers["content-disposition"])
+
+        with patch.object(main.httpx, "AsyncClient", return_value=UpstreamClient()):
+            download = self.client.get(
+                f"/tasks/{task['id']}/video?download=true",
+                headers={"X-API-Token": registered["token"]},
+            )
+        disposition = download.headers["content-disposition"]
+        self.assertIn(f'filename="{task["id"]}.mp4"', disposition)
+        self.assertIn("filename*=UTF-8''%E8%A7%92%E8%89%B2%E6%AD%A3%E9%9D%A2%E5%8F%82%E8%80%83%E5%9B%BE.mp4", disposition)
 
         other = self.register("video_other")
         denied = self.client.get(f"/tasks/{task['id']}/video", headers={"X-API-Token": other["token"]})

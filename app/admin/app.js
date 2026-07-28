@@ -5279,7 +5279,7 @@ function downloadVideo(url, id) {
   if (!value) return;
   const link = document.createElement("a");
   link.href = taskVideoPlaybackUrl(id, true) || value;
-  link.download = `${id || "video"}.mp4`;
+  if (!id) link.download = "video.mp4";
   link.target = "_blank";
   link.rel = "noreferrer";
   document.body.appendChild(link);

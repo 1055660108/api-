@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import base64
@@ -158,8 +159,15 @@ def mark_proxy_source_available(source: str) -> None:
 
 
 def proxy_source_available(source: str) -> bool:
+    return proxy_source_retry_after(source) == 0
+
+
+def proxy_source_retry_after(source: str) -> int:
     failed_at = _PROXY_SOURCE_FAILURES.get(str(source or "").strip().lower(), 0.0)
-    return not failed_at or time.monotonic() - failed_at >= PROXY_SOURCE_FAILURE_COOLDOWN_SECONDS
+    if not failed_at:
+        return 0
+    remaining = PROXY_SOURCE_FAILURE_COOLDOWN_SECONDS - (time.monotonic() - failed_at)
+    return max(0, math.ceil(remaining))
 
 
 def _node_is_cooling_down(node_id: str) -> bool:

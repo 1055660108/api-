@@ -11,7 +11,7 @@ import smtplib
 import subprocess
 import threading
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -171,6 +171,14 @@ def _reference_image_name(value: object, index: int, suffix: str = "") -> str:
     extension = Path(cleaned).suffix[:16]
     stem_limit = max(1, MAX_REFERENCE_IMAGE_NAME_LENGTH - len(extension))
     return f"{cleaned[:-len(extension)][:stem_limit]}{extension}" if extension else cleaned[:MAX_REFERENCE_IMAGE_NAME_LENGTH]
+
+
+def _video_download_filename(meta: dict, task_id: str) -> str:
+    names = meta.get("reference_image_names") if isinstance(meta.get("reference_image_names"), list) else []
+    source_name = _reference_image_name(names[0], 1) if names else ""
+    stem = Path(source_name).stem.strip() if source_name else ""
+    stem = "".join("_" if character in '<>:"/\\|?*' else character for character in stem).strip(" .")
+    return f"{(stem[:150] or task_id)}.mp4"
 
 
 def _video_referer(platform: str) -> str:
@@ -1220,6 +1228,8 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
         return "正在启动服务"
     text = text.replace("浏览器", "服务")
     if re.search(r"当前地区不可用|所在的国家/地区不可用|region restricted|country restricted", text, flags=re.IGNORECASE):
+        return "生成失败，请重试！" if terminal else "正在重试中，请稍等！"
+    if re.search(r"all configured proxy modes|proxy modes are temporarily|cooling down", text, flags=re.IGNORECASE):
         return "生成失败，请重试！" if terminal else "正在重试中，请稍等！"
     if re.search(
         r"Page\.(?:goto|click|evaluate|waitFor|wait_for)|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
@@ -3893,8 +3903,11 @@ async def task_video(
     }
     outgoing_headers.setdefault("Accept-Ranges", "bytes")
     outgoing_headers["Cache-Control"] = "private, max-age=300"
-    if download:
-        outgoing_headers["Content-Disposition"] = f'attachment; filename="{task_id}.mp4"'
+    download_name = _video_download_filename(meta, task_id)
+    disposition = "attachment" if download else "inline"
+    outgoing_headers["Content-Disposition"] = (
+        f'{disposition}; filename="{task_id}.mp4"; filename*=UTF-8\'\'{quote(download_name, safe="")}'
+    )
 
     async def stream_video():
         try:

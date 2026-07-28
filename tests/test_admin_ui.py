@@ -544,6 +544,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('data-batch-video-download', self.javascript)
         self.assertIn('openVideoModal(item.videoUrl, item.taskId)', self.javascript)
         self.assertIn('downloadVideo(item.videoUrl, item.taskId)', self.javascript)
+        self.assertNotIn('link.download = `${id || "video"}.mp4`', self.javascript)
         self.assertIn('item.videoUrl = String(result.url || "")', self.javascript)
         self.assertIn('return "服务暂时繁忙，请重新生成"', self.javascript)
         self.assertIn('/batch-prompts/${encodeURIComponent(sessionId)}/cancel', self.javascript)

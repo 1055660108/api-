@@ -22,7 +22,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from .account_proxies import account_browser_config, account_proxy_candidates, account_proxy_configured, account_proxy_url
 from .browser_runtime import BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
-from .proxy_manager import acquire_dola_subscription_proxy, dola_proxy_available, fetch_proxy_from_api, mark_node_unavailable, mark_proxy_source_available, mark_proxy_source_unavailable, proxy_source_available, release_dola_subscription_proxy
+from .proxy_manager import acquire_dola_subscription_proxy, dola_proxy_available, fetch_proxy_from_api, mark_node_unavailable, mark_proxy_source_available, mark_proxy_source_unavailable, proxy_source_available, proxy_source_retry_after, release_dola_subscription_proxy
 from .store import (
     begin_task_submission,
     clear_transient_result,
@@ -67,6 +67,9 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "connection reset",
     "net::err_proxy",
     "net::err_connection",
+    "all configured proxy modes are unavailable",
+    "all selected authenticated proxies are unavailable",
+    "all eligible proxy nodes are unavailable",
 )
 REFERENCE_UPLOAD_ERROR_MARKERS = (
     "prepare_upload",
@@ -81,6 +84,12 @@ REFERENCE_CACHE_TTL_SECONDS = max(60, min(86400, int(os.environ.get("DOLA_REFERE
 REFERENCE_CACHE_MAX_ENTRIES = max(16, min(4096, int(os.environ.get("DOLA_REFERENCE_CACHE_MAX_ENTRIES") or 512)))
 _REFERENCE_CACHE_LOCK = threading.RLock()
 _REFERENCE_ATTACHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+class ProxyCoolingDownError(RuntimeError):
+    def __init__(self, retry_after: int):
+        self.retry_after = max(1, int(retry_after))
+        super().__init__("proxy modes are temporarily cooling down")
 
 
 def is_final_generation_failure(text: str) -> bool:
@@ -734,7 +743,7 @@ class DolaFetchAutomation:
 
     def _mark_active_proxy_unavailable(self) -> None:
         mark_node_unavailable(self.proxy_node_id)
-        if self.active_proxy_source != "account":
+        if not self.proxy_node_id and self.active_proxy_source != "account":
             mark_proxy_source_unavailable(self.active_proxy_source)
 
     async def run(self) -> dict[str, Any]:
@@ -745,6 +754,16 @@ class DolaFetchAutomation:
             self._mark_active_proxy_unavailable()
             self._mark_pending("browser timeout")
             return {"success": False, "retryable": True, "reason": "browser timeout"}
+        except ProxyCoolingDownError as exc:
+            self._mark_pending("生成节点冷却中")
+            return {
+                "success": False,
+                "retryable": True,
+                "reason": "proxy cooling down",
+                "infrastructure_fault": True,
+                "defer_only": True,
+                "retry_after": exc.retry_after,
+            }
         except Exception as exc:
             reason = str(exc)[:500]
             self._mark_pending(reason)
@@ -915,10 +934,14 @@ class DolaFetchAutomation:
         fallback_order = [self.settings.proxy_source, "subscription", "account", "api"]
         candidates = list(dict.fromkeys(source for source in fallback_order if configured.get(source)))
         errors: list[str] = []
+        attempted_sources = 0
+        cooling_delays: list[int] = []
         for source in candidates:
             if not proxy_source_available(source):
                 errors.append(f"{source}: cooling down")
+                cooling_delays.append(proxy_source_retry_after(source))
                 continue
+            attempted_sources += 1
             try:
                 if source == "subscription":
                     proxy = await acquire_dola_subscription_proxy(
@@ -984,6 +1007,8 @@ class DolaFetchAutomation:
                     self.proxy_node_id = ""
         if not candidates:
             raise RuntimeError("selected proxy mode is not configured")
+        if attempted_sources == 0 and cooling_delays:
+            raise ProxyCoolingDownError(min(cooling_delays))
         raise RuntimeError(f"all configured proxy modes are unavailable ({'; '.join(errors)})")
 
     async def _inject_account(self, context: BrowserContext) -> None:

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from app import accounts, automation, config, store, task_queue, temp_access
 from app.automation import DolaFetchAutomation, is_infrastructure_failure
-from app.worker import IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
+from app.worker import IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -639,6 +639,17 @@ class ReliabilityTests(unittest.TestCase):
         meta = store.get_meta(task["id"])
         self.assertEqual(meta["status"], store.STATUS_PENDING)
         self.assertGreater(datetime.fromisoformat(meta["next_attempt_at"]), datetime.now(timezone.utc))
+
+    def test_proxy_cooldown_defer_does_not_consume_retry_budget(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        self.assertTrue(defer_non_counting_retry(task["id"], {"defer_only": True, "retry_after": 45}))
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
+        self.assertEqual(meta.get("retry_count", 0), 0)
+        self.assertEqual(meta.get("infrastructure_retry_count", 0), 0)
+        self.assertEqual(meta["queue_category"], "proxy_cooldown")
+        self.assertGreaterEqual(datetime.fromisoformat(meta["next_attempt_at"]), datetime.now(timezone.utc) + timedelta(seconds=40))
 
     def test_worker_reuses_token_concurrency_limits_for_one_second(self) -> None:
         manager = WorkerManager()

@@ -130,8 +130,49 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
     def test_failed_proxy_source_enters_temporary_cooldown(self) -> None:
         proxy_manager.mark_proxy_source_unavailable("account")
         self.assertFalse(proxy_manager.proxy_source_available("account"))
+        self.assertGreater(proxy_manager.proxy_source_retry_after("account"), 0)
         proxy_manager.mark_proxy_source_available("account")
         self.assertTrue(proxy_manager.proxy_source_available("account"))
+        self.assertEqual(proxy_manager.proxy_source_retry_after("account"), 0)
+
+    async def test_all_cooling_proxy_sources_defer_without_consuming_a_retry(self) -> None:
+        instance = automation_instance()
+        instance.settings = SimpleNamespace(task_timeout_seconds=180)
+        settings = proxy_settings("subscription")
+        settings.proxy_account_host = ""
+        settings.proxy_account_port = 0
+        settings.proxy_account_username = ""
+        settings.proxy_account_password = ""
+        proxy_manager.mark_proxy_source_unavailable("subscription")
+
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            instance, "_run_once", new=AsyncMock(side_effect=automation.ProxyCoolingDownError(45))
+        ):
+            outcome = await instance.run()
+
+        self.assertTrue(outcome["retryable"])
+        self.assertTrue(outcome["infrastructure_fault"])
+        self.assertTrue(outcome["defer_only"])
+        self.assertEqual(outcome["retry_after"], 45)
+
+    async def test_proxy_configuration_reports_the_soonest_cooling_deadline(self) -> None:
+        instance = automation_instance()
+        settings = proxy_settings("subscription")
+        settings.proxy_account_host = ""
+        settings.proxy_account_port = 0
+        settings.proxy_account_username = ""
+        settings.proxy_account_password = ""
+        proxy_manager.mark_proxy_source_unavailable("subscription")
+
+        with patch.object(automation, "load_settings", return_value=settings):
+            with self.assertRaises(automation.ProxyCoolingDownError) as raised:
+                await instance._browser_proxy_config()
+
+        self.assertGreater(raised.exception.retry_after, 0)
+        self.assertLessEqual(raised.exception.retry_after, proxy_manager.PROXY_SOURCE_FAILURE_COOLDOWN_SECONDS)
+
+    def test_proxy_mode_unavailable_is_an_infrastructure_failure(self) -> None:
+        self.assertTrue(automation.is_infrastructure_failure("all configured proxy modes are unavailable (subscription: cooling down)"))
 
 
 if __name__ == "__main__":

@@ -761,12 +761,16 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_worker_has_independent_image_submission_limit(self) -> None:
         manager = WorkerManager()
-        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 4)
-        self.assertEqual(manager._image_submission_semaphore._value, 4)
+        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 8)
+        self.assertEqual(manager._image_submission_semaphore._value, 8)
         self.assertEqual(manager._image_submission_reservations, set())
         snapshot = manager.health_snapshot()
-        self.assertEqual(snapshot["image_upload_concurrency"], 4)
+        self.assertEqual(snapshot["image_upload_concurrency"], 8)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
+        self.assertEqual(snapshot["browser_pool"]["process_limit"], 12)
+        self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 4)
+        self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 48)
+        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 48)
 
     def test_reconciliation_repairs_quota_used_from_charge_ledger(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=3)

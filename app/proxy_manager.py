@@ -77,7 +77,7 @@ def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int
         return default
 
 
-TASK_MIHOMO_MAX_SLOTS = _bounded_env_int("DOLA_MIHOMO_EXIT_SLOTS", 8, 1, 8)
+TASK_MIHOMO_MAX_SLOTS = _bounded_env_int("DOLA_MIHOMO_EXIT_SLOTS", 12, 1, 12)
 TASK_MIHOMO_CONTEXTS_PER_EXIT = _bounded_env_int("DOLA_MIHOMO_CONTEXTS_PER_EXIT", 4, 1, 4)
 PROXY_EXIT_CACHE_SECONDS = 30 * 60
 PROXY_EXIT_CHECK_URL = "https://api.ipify.org"

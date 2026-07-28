@@ -806,7 +806,7 @@ async def batch_scheduler_tick() -> bool:
             _BATCH_RECONCILE_AT = time.monotonic() + 1.0
             jobs = await asyncio.to_thread(list_batch_jobs, None, active_only=True, limit=1000)
         active_rows = await asyncio.to_thread(list_task_metas_by_statuses, {"pending", "running", "submitted"})
-        global_capacity = max(1, min(BROWSER_SUBMISSION_CONCURRENCY, int(load_settings().max_effective_workers or BROWSER_SUBMISSION_CONCURRENCY)))
+        global_capacity = BROWSER_SUBMISSION_CONCURRENCY
         if len(active_rows) >= global_capacity:
             return False
         eligible: set[str] = set()

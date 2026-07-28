@@ -231,7 +231,7 @@ def memory_pressure() -> tuple[float, int, int]:
 def adaptive_worker_limit(configured: int, capacity_limit: int | None = None) -> tuple[int, dict[str, Any]]:
     policy = load_policy()
     ratio, used, limit = memory_pressure()
-    capacity = max(1, min(999, int(capacity_limit))) if capacity_limit is not None else _env_int("DOLA_MAX_EFFECTIVE_WORKERS", 32)
+    capacity = max(1, min(999, int(capacity_limit))) if capacity_limit is not None else _env_int("DOLA_MAX_EFFECTIVE_WORKERS", 48)
     capped = min(configured, capacity)
     minimum = min(capped, policy.minimum_workers)
     if ratio >= policy.memory_critical_ratio:

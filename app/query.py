@@ -47,7 +47,7 @@ from .textfix import repair_text
 
 
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
-AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS = 10
+AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS = 60
 RETRY_GENERATING_TEXT = "视频生成中请稍后..."
 SUCCESS_TEXT = "已成功"
 POLICY_RETRY_TEXT = "你的输入可能包含违规内容请重试！"

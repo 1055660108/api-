@@ -22,6 +22,7 @@ import httpx
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .account_proxies import account_browser_config, account_proxy_candidates, account_proxy_configured, account_proxy_url
+from .api_proxy_pool import ApiProxyLease, ReusableApiProxyPool
 from .browser_runtime import BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
 from .proxy_manager import (
@@ -825,6 +826,7 @@ class DolaFetchAutomation:
         duration: int | None = None,
         account: dict[str, Any] | None = None,
         browser_pool: ReusableBrowserPool | None = None,
+        api_proxy_pool: ReusableApiProxyPool | None = None,
         submission_pacer: Callable[[str], Awaitable[None]] | None = None,
     ):
         self.task_id = task_id
@@ -833,6 +835,8 @@ class DolaFetchAutomation:
         self.duration = int(duration or 0)
         self.account = account or {}
         self.browser_pool = browser_pool
+        self.api_proxy_pool = api_proxy_pool
+        self.api_proxy_lease: ApiProxyLease | None = None
         self.submission_pacer = submission_pacer
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
@@ -878,6 +882,8 @@ class DolaFetchAutomation:
     ) -> None:
         if self.active_proxy_source == "api":
             self._remember_failed_proxy_node()
+            if getattr(self, "api_proxy_lease", None) is not None:
+                self.api_proxy_lease.invalidate()
             return
         if self.proxy_node_id:
             kwargs: dict[str, Any] = {"reason": reason}
@@ -893,6 +899,8 @@ class DolaFetchAutomation:
             return
         self._remember_failed_proxy_node()
         if self.active_proxy_source == "api":
+            if getattr(self, "api_proxy_lease", None) is not None:
+                self.api_proxy_lease.invalidate()
             return
         record_node_gateway_failure(self.proxy_node_id, status)
 
@@ -1172,8 +1180,47 @@ class DolaFetchAutomation:
                     await safe_close(browser)
                 await release_dola_subscription_proxy(self.subscription_proxy)
                 self.subscription_proxy = None
+                if getattr(self, "api_proxy_lease", None) is not None:
+                    await self.api_proxy_lease.release()
+                    self.api_proxy_lease = None
 
     async def _api_browser_proxy_config(self, excluded_node_ids: set[str]) -> dict[str, str]:
+        api_proxy_pool = getattr(self, "api_proxy_pool", None)
+        if api_proxy_pool is not None:
+            try:
+                lease = await api_proxy_pool.acquire(
+                    self.settings.proxy_api_url,
+                    timeout_seconds=self.settings.proxy_api_timeout_seconds,
+                    scheme=self.settings.proxy_api_scheme,
+                    excluded_node_ids=excluded_node_ids,
+                )
+            except Exception as exc:
+                self._save_result(extra={"proxy_source": "api", "api_proxy_last_error": str(exc)[:800]})
+                raise ProxyCoolingDownError(
+                    API_PROXY_RETRY_AFTER_SECONDS,
+                    reason="api proxy pool is refreshing",
+                    queue_reason="正在刷新API代理，任务已自动排队",
+                    queue_category="proxy_refresh",
+                ) from exc
+            self.api_proxy_lease = lease
+            self.proxy_node_id = lease.node_id
+            self.active_proxy_source = "api"
+            self.proxy_exit_id = await proxy_exit_identity(lease.server, lease.node_id)
+            record_node_success(lease.node_id)
+            mark_proxy_source_available("api")
+            if excluded_node_ids and lease.node_id not in excluded_node_ids and self._task_exists():
+                update_meta(self.task_id, proxy_retry_avoid_node_id="")
+            self._save_result(
+                extra={
+                    "proxy_source": "api",
+                    "proxy_server": lease.server,
+                    "proxy_node_id": lease.node_id,
+                    "proxy_node_name": lease.host_port,
+                    "proxy_exit_id": self.proxy_exit_id,
+                    "api_proxy_pool_shared": True,
+                }
+            )
+            return browser_proxy_config_for(lease.server, default_scheme=self.settings.proxy_api_scheme)
         seen_endpoints: set[str] = set()
         rejected_endpoints: list[str] = []
         errors: list[str] = []

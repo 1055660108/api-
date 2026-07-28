@@ -2869,7 +2869,7 @@ async function refreshHealth() {
   const effectiveWorkers = Number(data.components?.resources?.effective_workers ?? configuredWorkers);
   state.configuredWorkers = configuredWorkers || 1;
   state.maxEffectiveWorkers = Number(data.components?.resources?.capacity_limit ?? configuredWorkers ?? 1);
-  state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 8);
+  state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 12);
   state.browserContextsPerProcess = Number(data.components?.browser?.contexts_per_process || 4);
   state.submissionConcurrency = Number(data.components?.browser?.submission_capacity || effectiveWorkers || 32);
   renderResourceMonitoring(data.components?.monitoring || {});

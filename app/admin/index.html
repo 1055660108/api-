@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.69" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.70" />
   </head>
   <body>
     <script>
@@ -752,7 +752,7 @@
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"browser_pool_processes":8,"browser_contexts_per_process":4,"submission_concurrency":32,"remote_generation_limit":0}</code>
+                    <code>{"browser_pool_processes":12,"browser_contexts_per_process":4,"submission_concurrency":48,"remote_generation_limit":0}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -763,11 +763,11 @@
                   <p>全局远端生成不限制；单用户远端上限由管理员在用户管理中设置。</p>
                   <div class="api-example">
                     <span>请求示例</span>
-                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":32}' http://SERVER_IP:8088/config/workers</code>
+                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":48}' http://SERVER_IP:8088/config/workers</code>
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"ok":true,"browser_pool_processes":8,"browser_contexts_per_process":4,"submission_concurrency":32,"remote_generation_limit":0}</code>
+                    <code>{"ok":true,"browser_pool_processes":12,"browser_contexts_per_process":4,"submission_concurrency":48,"remote_generation_limit":0}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -1282,6 +1282,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.69"></script>
+    <script src="/admin/assets/app.js?v=1.4.70"></script>
   </body>
 </html>

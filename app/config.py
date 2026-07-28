@@ -64,14 +64,14 @@ def _read_mem_gb() -> float:
 
 
 def recommended_browser_workers() -> int:
-    return 32
+    return 48
 
 
 def default_max_effective_workers() -> int:
     try:
-        value = int(os.environ.get("DOLA_MAX_EFFECTIVE_WORKERS", "32"))
+        value = int(os.environ.get("DOLA_MAX_EFFECTIVE_WORKERS", "48"))
     except (TypeError, ValueError):
-        value = 32
+        value = 48
     return max(1, min(999, value))
 
 

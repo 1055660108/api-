@@ -152,6 +152,36 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(proxy_manager.node_retry_after("api:proxy-a.example:18001"), 0)
         self.assertEqual(proxy_manager.node_retry_after("api:proxy-b.example:18002"), 0)
 
+    async def test_api_mode_uses_shared_endpoint_pool_for_real_context_capacity(self) -> None:
+        settings = proxy_settings("api")
+        settings.proxy_api_url = "https://proxy-api.example/get"
+        lease = SimpleNamespace(
+            server="http://proxy-pool.example:18010",
+            host_port="proxy-pool.example:18010",
+            node_id="api:proxy-pool.example:18010",
+            invalidate=lambda: None,
+            release=AsyncMock(),
+        )
+        proxy_pool = SimpleNamespace(acquire=AsyncMock(return_value=lease))
+        instance = automation_instance()
+        instance.api_proxy_pool = proxy_pool
+        instance.api_proxy_lease = None
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "proxy_exit_identity", new=AsyncMock(return_value="ip:203.0.113.40")
+        ):
+            result = await instance._browser_proxy_config()
+
+        proxy_pool.acquire.assert_awaited_once_with(
+            settings.proxy_api_url,
+            timeout_seconds=settings.proxy_api_timeout_seconds,
+            scheme=settings.proxy_api_scheme,
+            excluded_node_ids=set(),
+        )
+        self.assertIs(instance.api_proxy_lease, lease)
+        self.assertEqual(instance.proxy_node_id, lease.node_id)
+        self.assertEqual(instance.proxy_exit_id, "ip:203.0.113.40")
+        self.assertEqual(result, {"server": "http://proxy-pool.example:18010"})
+
     async def test_api_mode_ignores_duplicate_endpoints_while_seeking_candidates(self) -> None:
         settings = proxy_settings("api")
         settings.proxy_api_url = "https://proxy-api.example/get"

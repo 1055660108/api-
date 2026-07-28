@@ -8,8 +8,9 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
 from .accounts import claim_account_for_worker, clear_account_current_task, refund_account_quota, settle_account_quota
+from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, is_final_generation_failure, is_infrastructure_failure
-from .browser_runtime import ReusableBrowserPool
+from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
 from .doubao_automation import DoubaoVideoAutomation
 from .qianwen_automation import QianwenVideoAutomation
 from .proxy_manager import shutdown_task_mihomo_pool, task_mihomo_pool_snapshot
@@ -71,7 +72,7 @@ RESULT_POLL_RATE_PER_SECOND = _bounded_env_int("DOLA_RESULT_POLL_RATE_PER_SECOND
 RESULT_POLL_BATCH_SIZE = _bounded_env_int("DOLA_RESULT_POLL_BATCH_SIZE", 256, RESULT_POLL_CONCURRENCY, 2000)
 RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_SECONDS", 20, 10, 120)
 RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
-IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 4, 1, 16)
+IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 8, 1, 16)
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -155,7 +156,14 @@ class WorkerManager:
         self._queue = get_task_queue()
         self._platform_guard = PlatformGuard(getattr(self._queue, "client", None))
         self._resource_snapshot: dict[str, object] = {}
-        self._dola_browser_pool = ReusableBrowserPool(max_processes=8, contexts_per_process=4)
+        self._dola_browser_pool = ReusableBrowserPool(
+            max_processes=BROWSER_POOL_PROCESSES,
+            contexts_per_process=BROWSER_CONTEXTS_PER_PROCESS,
+        )
+        self._api_proxy_pool = ReusableApiProxyPool(
+            max_endpoints=BROWSER_POOL_PROCESSES,
+            contexts_per_endpoint=BROWSER_CONTEXTS_PER_PROCESS,
+        )
         self._remote_generation_reservations: dict[str, str] = {}
 
     async def start(self) -> None:
@@ -206,6 +214,7 @@ class WorkerManager:
         self._worker_task_ids.clear()
         set_active_tasks([])
         await self._dola_browser_pool.stop()
+        await self._api_proxy_pool.stop()
         await shutdown_task_mihomo_pool()
 
     def health_snapshot(self) -> dict:
@@ -232,6 +241,7 @@ class WorkerManager:
             "image_upload_concurrency": IMAGE_SUBMISSION_CONCURRENCY,
             "image_upload_reserved": len(self._image_submission_reservations),
             "browser_pool": self._dola_browser_pool.snapshot(),
+            "api_proxy_pool": self._api_proxy_pool.snapshot(),
             "proxy_exit_pool": task_mihomo_pool_snapshot(),
             "remote_generation_limit": 0,
             "remote_generation_active": remote_generating,
@@ -619,6 +629,7 @@ class WorkerManager:
                         int(meta.get("duration") or 0),
                         account=account,
                         browser_pool=self._dola_browser_pool,
+                        api_proxy_pool=self._api_proxy_pool,
                         submission_pacer=self._wait_for_dola_submit_slot,
                     )
                 if platform == "dola" and task_image_paths(task_id):

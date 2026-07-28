@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.56" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.57" />
   </head>
   <body>
     <script>
@@ -264,6 +264,7 @@
                   <label><input type="radio" name="billingPriority" value="points_first" /><span><strong>积分优先</strong><small>积分不足时自动使用视频额度</small></span></label>
                 </div>
               </section>
+              <div class="admin-settings-grid">
               <section class="panel config-panel admin-password-panel">
                 <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>管理员账号</h2><p>当前账号只读，密码可在安全弹窗中修改。</p></div><span class="settings-state" id="adminPasswordState">安全登录</span></div>
                 <div class="settings-card-value"><div><span>管理员账号</span><strong id="adminAccountDisplay">-</strong></div><button class="primary-button" id="openPasswordModal" type="button">修改密码</button></div>
@@ -273,8 +274,6 @@
                 <pre class="repository-update-error hidden" id="repositoryUpdateError" aria-live="polite"></pre>
                 <div class="settings-card-value version-values"><div><span>当前版本</span><strong id="repositoryRevision">等待读取</strong></div><div><span>最新版本</span><strong id="repositoryLatestVersion">等待读取</strong></div><button class="primary-button" id="updateRepository" type="button">检查并更新</button></div>
               </section>
-              <div class="admin-settings-columns">
-                <div class="admin-settings-column">
               <section class="panel config-panel" id="emailConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">@</span><h2>注册邮箱验证</h2><p>设置允许注册的邮箱后缀，并使用 QQ 邮箱 SMTP 发送验证码。</p></div><span class="settings-state" id="emailConfigState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>允许邮箱</span><strong id="emailConfigDisplay">等待读取</strong></div><button class="primary-button" id="openEmailModal" type="button">编辑邮箱验证</button></div>
@@ -283,8 +282,6 @@
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="scroll-text" aria-hidden="true"></i></span><h2>管理员操作日志</h2><p>记录邀请码管理操作及异常注册拦截。</p></div><span class="settings-state" id="adminAuditState">等待读取</span></div>
                 <button class="secondary-button settings-entry-button" id="openAdminAuditModal" type="button"><i data-lucide="list-filter" aria-hidden="true"></i>日志详情</button>
               </section>
-                </div>
-                <div class="admin-settings-column">
               <section class="panel config-panel" id="invitationConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="ticket-check" aria-hidden="true"></i></span><h2>注册邀请码</h2><p>邀请码可长期重复使用，手动删除后失效。</p></div><span class="settings-state" id="invitationConfigState">等待读取</span></div>
                 <button class="primary-button settings-entry-button" id="openInvitationManagementModal" type="button"><i data-lucide="settings-2" aria-hidden="true"></i>邀请码管理</button>
@@ -293,9 +290,6 @@
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>生成模型</h2><p>控制各平台可选模型及默认模型列表。</p></div><span class="settings-state" id="modelConfigState">自动同步</span></div>
                 <div class="settings-card-value"><div><span>已启用模型</span><strong id="modelConfigDisplay">等待读取</strong></div><button class="primary-button" id="openModelModal" type="button">编辑模型</button></div>
               </section>
-                </div>
-              </div>
-              <div class="admin-settings-compact-grid">
               <section class="panel config-panel" id="runtimeConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="timer" aria-hidden="true"></i></span><h2>任务提交间隔</h2><p>控制 Dola 任务依次提交的最小时间间隔。</p></div><span class="settings-state" id="runtimeConfigState">等待读取</span></div>
                 <form class="runtime-config-form" id="runtimeConfigForm"><label class="field"><span>间隔秒数</span><input id="dolaSubmitInterval" type="number" min="1" max="5" step="0.1" value="5" /></label><button class="primary-button" id="saveRuntimeConfig" type="submit">保存间隔</button></form>
@@ -1267,6 +1261,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.56"></script>
+    <script src="/admin/assets/app.js?v=1.4.57"></script>
   </body>
 </html>

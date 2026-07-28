@@ -21,16 +21,23 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("data-model-cost", self.javascript)
         self.assertIn("积分/次", self.javascript)
 
-    def test_admin_only_settings_are_hidden_from_client_and_use_natural_columns(self) -> None:
+    def test_admin_only_settings_use_one_stable_scrollable_grid(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertEqual(self.html.count('id="invitationConfigPanel"'), 1)
         self.assertEqual(self.html.count('id="adminAuditPanel"'), 1)
-        self.assertIn('class="admin-settings-columns"', self.html)
-        self.assertIn('class="admin-settings-compact-grid"', self.html)
-        self.assertIn('body[data-portal="client"] .admin-settings-columns', styles)
-        self.assertIn('body[data-portal="client"] .admin-settings-compact-grid', styles)
-        self.assertIn('.admin-settings-column { display: grid;', styles)
-        self.assertIn('.settings-stack .config-panel { min-height: 0; align-self: start; }', styles)
+        self.assertEqual(self.html.count('class="admin-settings-grid"'), 1)
+        self.assertNotIn('class="admin-settings-columns"', self.html)
+        self.assertNotIn('class="admin-settings-compact-grid"', self.html)
+        self.assertIn('body[data-portal="client"] .admin-settings-grid', styles)
+        self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', styles)
+        self.assertIn('#settingsView.active .settings-layout', styles)
+        self.assertIn('scrollbar-gutter: stable;', styles)
+
+    def test_account_header_uses_wrapping_grid_without_overflow(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('.accounts-panel > .panel-header {\n  display: grid;', styles)
+        self.assertIn('grid-template-columns: minmax(420px, 1fr) auto minmax(180px, 240px) auto auto;', styles)
+        self.assertIn('grid-template-columns: auto minmax(96px, 1fr) auto minmax(112px, 1fr) auto;', styles)
 
     def test_repository_update_control_is_present(self) -> None:
         for element_id in ("repositoryUpdatePanel", "repositoryUpdateState", "repositoryUpdateError", "repositoryRevision", "updateRepository"):

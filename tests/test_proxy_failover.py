@@ -50,6 +50,8 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         proxy_manager._PROXY_SOURCE_FAILURES.clear()
         proxy_manager._NODE_COOLDOWNS.clear()
         proxy_manager._NODE_GATEWAY_FAILURES.clear()
+        proxy_manager._NODE_DELAYS.clear()
+        proxy_manager._NODE_DOLA_HEALTH.clear()
 
     def tearDown(self) -> None:
         self.data_patch.stop()
@@ -118,6 +120,100 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["server"], "socks5://us.example.com:3020")
         self.assertEqual(instance.proxy_node_id, imported["selected_ids"][1])
         self.assertEqual(instance.proxy_exit_id, "ip:203.0.113.20")
+
+    async def test_api_mode_tries_three_distinct_candidates_until_one_is_available(self) -> None:
+        settings = proxy_settings("api")
+        settings.proxy_api_url = "https://proxy-api.example/get"
+        proxies = [
+            {"server": "http://proxy-a.example:18001", "host_port": "proxy-a.example:18001"},
+            {"server": "http://proxy-b.example:18002", "host_port": "proxy-b.example:18002"},
+            {"server": "http://proxy-c.example:18003", "host_port": "proxy-c.example:18003"},
+        ]
+        instance = automation_instance()
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "fetch_proxy_from_api", new=AsyncMock(side_effect=proxies)
+        ) as fetch, patch.object(
+            automation, "dola_proxy_available", new=AsyncMock(side_effect=[False, False, True])
+        ) as probe, patch.object(
+            automation, "proxy_exit_identity", new=AsyncMock(return_value="ip:203.0.113.30")
+        ) as exit_identity, patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock()
+        ) as subscription:
+            result = await instance._browser_proxy_config()
+
+        self.assertEqual(fetch.await_count, 3)
+        self.assertEqual(probe.await_count, 3)
+        exit_identity.assert_awaited_once_with("http://proxy-c.example:18003", "api:proxy-c.example:18003")
+        subscription.assert_not_awaited()
+        self.assertEqual(result, {"server": "http://proxy-c.example:18003"})
+        self.assertEqual(instance.proxy_node_id, "api:proxy-c.example:18003")
+        self.assertEqual(instance.proxy_exit_id, "ip:203.0.113.30")
+        self.assertTrue(proxy_manager.proxy_source_available("api"))
+        self.assertGreater(proxy_manager.node_retry_after("api:proxy-a.example:18001"), 0)
+        self.assertGreater(proxy_manager.node_retry_after("api:proxy-b.example:18002"), 0)
+
+    async def test_api_mode_ignores_duplicate_endpoints_while_seeking_candidates(self) -> None:
+        settings = proxy_settings("api")
+        settings.proxy_api_url = "https://proxy-api.example/get"
+        duplicate = {"server": "http://proxy-a.example:18001", "host_port": "proxy-a.example:18001"}
+        replacement = {"server": "http://proxy-b.example:18002", "host_port": "proxy-b.example:18002"}
+        instance = automation_instance()
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "fetch_proxy_from_api", new=AsyncMock(side_effect=[duplicate, duplicate, replacement])
+        ) as fetch, patch.object(
+            automation, "dola_proxy_available", new=AsyncMock(side_effect=[False, True])
+        ) as probe, patch.object(
+            automation, "proxy_exit_identity", new=AsyncMock(return_value="ip:203.0.113.31")
+        ):
+            result = await instance._browser_proxy_config()
+
+        self.assertEqual(fetch.await_count, 3)
+        self.assertEqual(probe.await_count, 2)
+        self.assertEqual(result["server"], "http://proxy-b.example:18002")
+
+    async def test_api_mode_queues_briefly_only_after_three_candidates_fail(self) -> None:
+        settings = proxy_settings("api")
+        settings.proxy_api_url = "https://proxy-api.example/get"
+        proxies = [
+            {"server": f"http://proxy-{index}.example:{18000 + index}", "host_port": f"proxy-{index}.example:{18000 + index}"}
+            for index in range(1, 4)
+        ]
+        instance = automation_instance()
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "fetch_proxy_from_api", new=AsyncMock(side_effect=proxies)
+        ) as fetch, patch.object(
+            automation, "dola_proxy_available", new=AsyncMock(return_value=False)
+        ) as probe, patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock()
+        ) as subscription:
+            with self.assertRaises(automation.ProxyCoolingDownError) as raised:
+                await instance._browser_proxy_config()
+
+        self.assertEqual(raised.exception.retry_after, automation.API_PROXY_RETRY_AFTER_SECONDS)
+        self.assertEqual(fetch.await_count, 3)
+        self.assertEqual(probe.await_count, 3)
+        subscription.assert_not_awaited()
+        self.assertTrue(proxy_manager.proxy_source_available("api"))
+        self.assertTrue(all(proxy_manager.node_retry_after(f"api:proxy-{index}.example:{18000 + index}") > 0 for index in range(1, 4)))
+
+    async def test_api_mode_stops_after_three_extraction_errors(self) -> None:
+        settings = proxy_settings("api")
+        settings.proxy_api_url = "https://proxy-api.example/get"
+        instance = automation_instance()
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation,
+            "fetch_proxy_from_api",
+            new=AsyncMock(side_effect=RuntimeError("proxy api temporarily unavailable")),
+        ) as fetch, patch.object(
+            automation, "dola_proxy_available", new=AsyncMock()
+        ) as probe:
+            with self.assertRaises(automation.ProxyCoolingDownError) as raised:
+                await instance._browser_proxy_config()
+
+        self.assertEqual(raised.exception.retry_after, automation.API_PROXY_RETRY_AFTER_SECONDS)
+        self.assertEqual(fetch.await_count, automation.API_PROXY_FETCH_ERROR_LIMIT)
+        probe.assert_not_awaited()
+        self.assertTrue(proxy_manager.proxy_source_available("api"))
 
     def test_authenticated_proxy_helpers_keep_browser_credentials_separate(self) -> None:
         probe_url = config.account_proxy_url_for("socks5", "proxy.example.com", 3010, "fake user", "p@ss:word")

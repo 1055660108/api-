@@ -137,6 +137,10 @@ REFERENCE_UPLOAD_ERROR_MARKERS = (
 )
 REFERENCE_CACHE_TTL_SECONDS = max(60, min(86400, int(os.environ.get("DOLA_REFERENCE_CACHE_TTL_SECONDS") or 1800)))
 REFERENCE_CACHE_MAX_ENTRIES = max(16, min(4096, int(os.environ.get("DOLA_REFERENCE_CACHE_MAX_ENTRIES") or 512)))
+API_PROXY_CANDIDATE_LIMIT = 3
+API_PROXY_FETCH_LIMIT = 6
+API_PROXY_FETCH_ERROR_LIMIT = 3
+API_PROXY_RETRY_AFTER_SECONDS = 30
 _REFERENCE_CACHE_LOCK = threading.RLock()
 _REFERENCE_ATTACHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _REFERENCE_UPLOADS_IN_FLIGHT: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
@@ -1128,6 +1132,80 @@ class DolaFetchAutomation:
                 await release_dola_subscription_proxy(self.subscription_proxy)
                 self.subscription_proxy = None
 
+    async def _api_browser_proxy_config(self, excluded_node_ids: set[str]) -> dict[str, str]:
+        seen_endpoints: set[str] = set()
+        rejected_endpoints: list[str] = []
+        errors: list[str] = []
+        fetch_count = 0
+        fetch_error_count = 0
+        while fetch_count < API_PROXY_FETCH_LIMIT and len(seen_endpoints) < API_PROXY_CANDIDATE_LIMIT:
+            fetch_count += 1
+            try:
+                proxy = await fetch_proxy_from_api(
+                    self.settings.proxy_api_url,
+                    timeout_seconds=self.settings.proxy_api_timeout_seconds,
+                    scheme=self.settings.proxy_api_scheme,
+                )
+            except Exception as exc:
+                fetch_error_count += 1
+                errors.append(f"fetch {fetch_count}: {str(exc)[:120]}")
+                if fetch_error_count >= API_PROXY_FETCH_ERROR_LIMIT:
+                    break
+                continue
+            host_port = str(proxy.get("host_port") or "").strip()
+            server = str(proxy.get("server") or "").strip()
+            if not host_port or not server:
+                errors.append(f"fetch {fetch_count}: proxy api returned an empty endpoint")
+                continue
+            node_id = f"api:{host_port}"
+            if node_id in seen_endpoints:
+                continue
+            seen_endpoints.add(node_id)
+            if node_id in excluded_node_ids or node_retry_after(node_id) > 0:
+                rejected_endpoints.append(host_port)
+                errors.append(f"{host_port}: cooling down")
+                continue
+            available = await dola_proxy_available(
+                server,
+                min(12.0, float(self.settings.proxy_api_timeout_seconds)),
+            )
+            if not available:
+                rejected_endpoints.append(host_port)
+                errors.append(f"{host_port}: unavailable for Dola")
+                mark_node_unavailable(node_id, reason="dola_probe_failed")
+                continue
+            self.proxy_node_id = node_id
+            self.active_proxy_source = "api"
+            self.proxy_exit_id = await proxy_exit_identity(server, node_id)
+            record_node_success(node_id)
+            mark_proxy_source_available("api")
+            if excluded_node_ids and node_id not in excluded_node_ids and self._task_exists():
+                update_meta(self.task_id, proxy_retry_avoid_node_id="")
+            self._save_result(
+                extra={
+                    "proxy_source": "api",
+                    "proxy_server": server,
+                    "proxy_node_id": node_id,
+                    "proxy_node_name": host_port,
+                    "proxy_exit_id": self.proxy_exit_id,
+                    "api_proxy_candidate_count": len(seen_endpoints),
+                    "api_proxy_fetch_count": fetch_count,
+                    "api_proxy_rejected_endpoints": rejected_endpoints[-3:],
+                    "api_proxy_last_error": "",
+                }
+            )
+            return browser_proxy_config_for(server, default_scheme=self.settings.proxy_api_scheme)
+        self._save_result(
+            extra={
+                "proxy_source": "api",
+                "api_proxy_candidate_count": len(seen_endpoints),
+                "api_proxy_fetch_count": fetch_count,
+                "api_proxy_rejected_endpoints": rejected_endpoints[-3:],
+                "api_proxy_last_error": "; ".join(errors[-6:])[:800],
+            }
+        )
+        raise ProxyCoolingDownError(API_PROXY_RETRY_AFTER_SECONDS)
+
     async def _browser_proxy_config(self) -> dict[str, str] | None:
         self.settings = load_settings()
         self.active_proxy_source = ""
@@ -1222,18 +1300,7 @@ class DolaFetchAutomation:
                     if cooling_delays_for_accounts:
                         raise ProxyCoolingDownError(min(cooling_delays_for_accounts))
                     raise RuntimeError(f"all selected authenticated proxies are unavailable for Dola ({account_errors} checked)")
-                proxy = await fetch_proxy_from_api(
-                    self.settings.proxy_api_url,
-                    timeout_seconds=self.settings.proxy_api_timeout_seconds,
-                    scheme=self.settings.proxy_api_scheme,
-                )
-                if not await dola_proxy_available(str(proxy.get("server") or ""), min(12.0, float(self.settings.proxy_api_timeout_seconds))):
-                    raise RuntimeError("proxy api returned an exit that is unavailable for Dola")
-                self.active_proxy_source = source
-                self.proxy_exit_id = await proxy_exit_identity(str(proxy.get("server") or ""), f"api:{proxy.get('host_port') or 'proxy'}")
-                mark_proxy_source_available(source)
-                self._save_result(extra={"proxy_source": source, "proxy_server": proxy["server"], "proxy_exit_id": self.proxy_exit_id})
-                return browser_proxy_config_for(proxy["server"], default_scheme=self.settings.proxy_api_scheme)
+                return await self._api_browser_proxy_config(excluded_node_ids)
             except ProxyCoolingDownError:
                 raise
             except Exception as exc:

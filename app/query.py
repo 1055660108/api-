@@ -619,7 +619,7 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     account_id = str(result.get("account_id") or "")
     if is_portrait_protection_rejection(text):
         invalidate_reference_attachment_keys([str(item) for item in result.get("reference_image_cache_keys") or []])
-        update_meta(task_id, reference_upload_cache_bypass=True, reference_force_grid=True)
+        update_meta(task_id, reference_upload_cache_bypass=True, reference_face_grid_retry=True, reference_force_grid=False)
         if account_id:
             clear_account_current_task(account_id, task_id)
             refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))

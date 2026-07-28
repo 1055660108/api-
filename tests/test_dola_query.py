@@ -289,7 +289,7 @@ class DolaQueryTests(unittest.TestCase):
 
         self.assertEqual(response, {"code": "1", "text": "正在重试中，请稍等！", "url": ""})
         invalidate_cache.assert_called_once_with(["cached-reference"])
-        self.assertIn(call(task_id, reference_upload_cache_bypass=True, reference_force_grid=True), update_meta.call_args_list)
+        self.assertIn(call(task_id, reference_upload_cache_bypass=True, reference_face_grid_retry=True, reference_force_grid=False), update_meta.call_args_list)
         self.assertIn(call(task_id, portrait_protection_retry_count=1), update_meta.call_args_list)
         clear_account.assert_called_once_with("account-portrait", task_id)
         refund_account.assert_called_once_with(task_id, "account-portrait", "charge-portrait")

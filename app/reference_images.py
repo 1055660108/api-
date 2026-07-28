@@ -72,40 +72,46 @@ def _merge_faces(faces: list[tuple[int, int, int, int]]) -> list[tuple[int, int,
     return merged
 
 
-def _detect_faces(image: np.ndarray) -> list[tuple[int, int, int, int]]:
+def _detect_faces(image: np.ndarray, *, retry: bool = False) -> list[tuple[int, int, int, int]]:
     height, width = image.shape[:2]
     scale = min(1.0, DETECTION_MAX_SIDE / float(max(height, width) or 1))
     sample = image if scale == 1.0 else cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     gray = cv2.equalizeHist(cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY))
-    minimum = max(28, int(min(gray.shape[:2]) * 0.035))
+    minimum_ratio = 0.025 if retry else 0.035
+    minimum = max(22 if retry else 28, int(min(gray.shape[:2]) * minimum_ratio))
     cascade_root = Path(cv2.data.haarcascades)
-    detectors = (
-        cv2.CascadeClassifier(str(cascade_root / "haarcascade_frontalface_alt2.xml")),
-        cv2.CascadeClassifier(str(cascade_root / "haarcascade_profileface.xml")),
-    )
+    detector_specs = [
+        ("haarcascade_frontalface_alt2.xml", False),
+        ("haarcascade_profileface.xml", True),
+    ]
+    if retry:
+        detector_specs.extend([
+            ("haarcascade_frontalface_default.xml", False),
+            ("haarcascade_frontalface_alt.xml", False),
+        ])
     detected: list[tuple[int, int, int, int]] = []
-    for detector in detectors:
+    for filename, detect_flipped in detector_specs:
+        detector = cv2.CascadeClassifier(str(cascade_root / filename))
         if detector.empty():
             continue
         for x, y, w, h in detector.detectMultiScale(
             gray,
-            scaleFactor=1.08,
-            minNeighbors=4,
+            scaleFactor=1.05 if retry else 1.08,
+            minNeighbors=3 if retry else 4,
             minSize=(minimum, minimum),
             flags=cv2.CASCADE_SCALE_IMAGE,
         ):
             detected.append((int(x / scale), int(y / scale), int(w / scale), int(h / scale)))
-    profile = detectors[1]
-    if not profile.empty():
-        flipped = cv2.flip(gray, 1)
-        for x, y, w, h in profile.detectMultiScale(
-            flipped,
-            scaleFactor=1.08,
-            minNeighbors=4,
-            minSize=(minimum, minimum),
-            flags=cv2.CASCADE_SCALE_IMAGE,
-        ):
-            detected.append((int((gray.shape[1] - x - w) / scale), int(y / scale), int(w / scale), int(h / scale)))
+        if detect_flipped:
+            flipped = cv2.flip(gray, 1)
+            for x, y, w, h in detector.detectMultiScale(
+                flipped,
+                scaleFactor=1.05 if retry else 1.08,
+                minNeighbors=3 if retry else 4,
+                minSize=(minimum, minimum),
+                flags=cv2.CASCADE_SCALE_IMAGE,
+            ):
+                detected.append((int((gray.shape[1] - x - w) / scale), int(y / scale), int(w / scale), int(h / scale)))
     return _merge_faces(detected)
 
 
@@ -165,14 +171,15 @@ def _apply_face_grids(image: np.ndarray, faces: list[tuple[int, int, int, int]],
     return output
 
 
-def _force_grid_enabled(task_id: str) -> bool:
+def _face_grid_retry_enabled(task_id: str) -> bool:
     try:
-        return bool(get_meta(task_id).get("reference_force_grid"))
+        meta = get_meta(task_id)
+        return bool(meta.get("reference_face_grid_retry") or meta.get("reference_force_grid"))
     except (FileNotFoundError, OSError):
         return False
 
 
-def prepare_task_reference_images(task_id: str, force_grid: bool | None = None) -> list[Path]:
+def prepare_task_reference_images(task_id: str, retry_face_detection: bool | None = None) -> list[Path]:
     originals = task_image_paths(task_id)
     if not originals:
         return []
@@ -182,7 +189,7 @@ def prepare_task_reference_images(task_id: str, force_grid: bool | None = None) 
     manifest_path = internal_dir / "manifest.json"
     manifest = _read_manifest(manifest_path)
     entries = manifest.setdefault("images", {})
-    force_grid = _force_grid_enabled(task_id) if force_grid is None else bool(force_grid)
+    retry_face_detection = _face_grid_retry_enabled(task_id) if retry_face_detection is None else bool(retry_face_detection)
     prepared: list[Path] = []
     total_faces = 0
     processing_errors: list[str] = []
@@ -190,9 +197,9 @@ def prepare_task_reference_images(task_id: str, force_grid: bool | None = None) 
     for index, source in enumerate(originals, start=1):
         fingerprint = _source_fingerprint(source)
         cached = entries.get(source.name) if isinstance(entries, dict) else None
-        expected_force_mode = "full-grid" if force_grid else ""
         cached_mode = str(cached.get("mode") or "") if isinstance(cached, dict) else ""
-        cache_mode_matches = cached_mode == expected_force_mode if force_grid else cached_mode in {"original", "face-grid"}
+        valid_modes = {"original-retry", "face-grid-retry"} if retry_face_detection else {"original", "face-grid"}
+        cache_mode_matches = cached_mode in valid_modes
         if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and cache_mode_matches:
             face_count = max(0, int(cached.get("face_count") or 0))
             processed_name = str(cached.get("processed_name") or "")
@@ -205,17 +212,18 @@ def prepare_task_reference_images(task_id: str, force_grid: bool | None = None) 
         image = _load_image(source)
         if image is None:
             processing_errors.append(source.name)
-            entries[source.name] = {"fingerprint": fingerprint, "face_count": 0, "processed_name": "", "mode": "original"}
+            mode = "original-retry" if retry_face_detection else "original"
+            entries[source.name] = {"fingerprint": fingerprint, "face_count": 0, "processed_name": "", "mode": mode}
             prepared.append(source)
             continue
 
-        faces = _detect_faces(image)
+        faces = _detect_faces(image, retry=retry_face_detection)
         total_faces += len(faces)
-        mode = "full-grid" if force_grid else ("face-grid" if faces else "original")
+        mode = ("face-grid-retry" if retry_face_detection else "face-grid") if faces else ("original-retry" if retry_face_detection else "original")
         processed_name = ""
         prepared_path = source
-        if mode != "original":
-            protected = _grid_region(image, f"{fingerprint}:full") if force_grid else _apply_face_grids(image, faces, fingerprint)
+        if faces:
+            protected = _apply_face_grids(image, faces, fingerprint)
             processed_name = f"{index:02d}-{fingerprint}-{mode}.jpg"
             prepared_path = internal_dir / processed_name
             success, encoded = cv2.imencode(".jpg", protected, [cv2.IMWRITE_JPEG_QUALITY, 93])
@@ -238,7 +246,7 @@ def prepare_task_reference_images(task_id: str, force_grid: bool | None = None) 
             reference_face_detection_completed=True,
             reference_face_count=total_faces,
             reference_face_processing_errors=processing_errors,
-            reference_grid_mode="full-grid" if force_grid else ("face-grid" if total_faces else "original"),
+            reference_grid_mode=("face-grid-retry" if retry_face_detection else "face-grid") if total_faces else ("original-retry" if retry_face_detection else "original"),
         )
     except (FileNotFoundError, OSError):
         LOGGER.warning("could not persist reference face metadata for task %s", task_id)

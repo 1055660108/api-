@@ -54,7 +54,7 @@ class ReferenceImageTests(unittest.TestCase):
 
             self.assertEqual(prepared, [source])
 
-    def test_force_grid_processes_image_without_detected_face_and_keeps_original(self) -> None:
+    def test_retry_only_grids_detected_face_and_keeps_original(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "01.jpg"
@@ -66,11 +66,38 @@ class ReferenceImageTests(unittest.TestCase):
             with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
                 reference_images, "task_dir", return_value=root
             ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
-                reference_images, "_detect_faces", return_value=[]
-            ):
-                prepared = reference_images.prepare_task_reference_images("0" * 32, force_grid=True)
+                reference_images, "_detect_faces", return_value=[(50, 35, 60, 70)]
+            ) as detect:
+                prepared = reference_images.prepare_task_reference_images("0" * 32, retry_face_detection=True)
 
             self.assertEqual(source.read_bytes(), original)
             self.assertEqual(prepared[0].parent.name, "processed_references")
             self.assertNotEqual(prepared[0].read_bytes(), original)
-            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "full-grid")
+            self.assertTrue(detect.call_args.kwargs["retry"])
+            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "face-grid-retry")
+
+    def test_retry_without_detected_face_still_uses_original(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "01.jpg"
+            success, encoded = cv2.imencode(".jpg", np.full((120, 160, 3), 180, dtype=np.uint8))
+            self.assertTrue(success)
+            source.write_bytes(encoded.tobytes())
+
+            with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
+                reference_images, "task_dir", return_value=root
+            ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
+                reference_images, "_detect_faces", return_value=[]
+            ):
+                prepared = reference_images.prepare_task_reference_images("0" * 32, retry_face_detection=True)
+
+            self.assertEqual(prepared, [source])
+            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "original-retry")
+
+    def test_face_grid_does_not_modify_pixels_outside_face_region(self) -> None:
+        image = np.full((180, 220, 3), 160, dtype=np.uint8)
+        processed = reference_images._apply_face_grids(image, [(80, 55, 60, 70)], "face-only")
+
+        self.assertTrue(np.array_equal(processed[:20, :], image[:20, :]))
+        self.assertTrue(np.array_equal(processed[:, :40], image[:, :40]))
+        self.assertGreater(np.count_nonzero(processed[40:145, 68:152] != image[40:145, 68:152]), 0)

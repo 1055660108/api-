@@ -202,8 +202,7 @@ class ReliabilityTests(unittest.TestCase):
         manager._queue = unittest.mock.Mock()
 
         async def recover() -> None:
-            with patch("app.worker.account_for_current_task", return_value=None):
-                await manager._watch_running_tasks_once()
+            await manager._watch_running_tasks_once()
 
         asyncio.run(recover())
         recovered = store.get_meta(task["id"])
@@ -221,8 +220,7 @@ class ReliabilityTests(unittest.TestCase):
         async def recover() -> None:
             live = asyncio.create_task(asyncio.sleep(60))
             manager._workers["worker-stale"] = live
-            with patch("app.worker.account_for_current_task", return_value={"id": "account"}):
-                await manager._watch_running_tasks_once()
+            await manager._watch_running_tasks_once()
             with self.assertRaises(asyncio.CancelledError):
                 await live
 
@@ -485,7 +483,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta.get("retry_count", 0), 0)
         self.assertEqual(meta["infrastructure_retry_count"], 1)
         self.assertEqual(meta["queue_category"], "infrastructure")
-        self.assertEqual(meta["queue_reason"], "节点连接异常，正在切换节点")
+        self.assertEqual(meta["queue_reason"], "服务连接异常，正在恢复")
         self.assertEqual(meta["error"], "")
 
     def test_retry_attempt_history_preserves_real_backend_errors(self) -> None:
@@ -500,6 +498,70 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual([item["kind"] for item in history], ["execution_retry", "infrastructure_retry", "terminal"])
         self.assertIn("ApplyImageUpload", history[0]["reason"])
         self.assertEqual(history[-1]["reason"], "多次生成失败")
+
+    def test_retry_attempt_history_keeps_repeated_identical_failures(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        self.assertEqual(store.record_retry(task["id"], "相同远端失败"), 1)
+        self.assertTrue(store.mark_running(task["id"], "worker-2"))
+        self.assertEqual(store.record_retry(task["id"], "相同远端失败"), 2)
+        history = store.get_meta(task["id"])["attempt_history"]
+        self.assertEqual(len(history), 2)
+        self.assertEqual([item["reason"] for item in history], ["相同远端失败", "相同远端失败"])
+
+    def test_supervisor_trims_idle_workers_without_canceling_active_workers(self) -> None:
+        manager = WorkerManager()
+        manager._workers = {"active-worker": object(), "idle-worker": object()}
+        manager._worker_task_ids = {"active-worker": "task-1"}
+        self.assertEqual(manager._idle_workers_to_trim(1), ["idle-worker"])
+        manager._workers = {"active-worker-1": object(), "active-worker-2": object()}
+        manager._worker_task_ids = {"active-worker-1": "task-1", "active-worker-2": "task-2"}
+        self.assertEqual(manager._idle_workers_to_trim(1), [])
+
+    def test_browser_timeout_uses_infrastructure_retry_budget(self) -> None:
+        task = self.create_task("owner")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner._run_once = AsyncMock(side_effect=asyncio.TimeoutError())
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["retryable"])
+        self.assertTrue(outcome["infrastructure_fault"])
+        self.assertEqual(outcome["reason"], "browser timeout")
+        mark_proxy.assert_called_once_with()
+
+    def test_navigation_context_loss_is_infrastructure_without_blacking_out_node(self) -> None:
+        task = self.create_task("owner")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        reason = "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+        runner._run_once = AsyncMock(side_effect=RuntimeError(reason))
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["infrastructure_fault"])
+        self.assertEqual(outcome["reason"], reason)
+        mark_proxy.assert_not_called()
+
+    def test_tls_alert_is_infrastructure_and_marks_node_unavailable(self) -> None:
+        task = self.create_task("owner")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        reason = "[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error"
+        runner._run_once = AsyncMock(side_effect=RuntimeError(reason))
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["infrastructure_fault"])
+        mark_proxy.assert_called_once_with()
+
+    def test_ambiguous_submission_retry_does_not_consume_generation_budget(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.mark_submitted(task["id"])
+        count = store.retry_ambiguous_submitted_task(task["id"], "页面跳转", max_retries=2, delay_seconds=1)
+        meta = store.get_meta(task["id"])
+        self.assertEqual(count, 1)
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
+        self.assertEqual(meta["infrastructure_retry_count"], 1)
+        self.assertEqual(int(meta.get("retry_count") or 0), 0)
+        self.assertEqual(meta["queue_category"], "infrastructure")
+        self.assertEqual(meta["submit_phase"], "")
 
     def test_reference_attachment_cache_reuses_identical_images_for_same_account(self) -> None:
         automation.clear_reference_attachment_cache()

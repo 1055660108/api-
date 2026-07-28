@@ -1076,9 +1076,9 @@ class WebAPIContractTests(unittest.TestCase):
         store.mark_failed(task["id"], raw_error)
 
         client_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": token}).json()["tasks"][0]
-        self.assertEqual(client_task["error"], "你的输入可能包含违规内容请重试！")
+        self.assertEqual(client_task["error"], "服务暂时异常，请重试！")
         client_result = self.client.get(f"/tasks/{task['id']}", headers={"X-API-Token": token}).json()
-        self.assertEqual(client_result["text"], "你的输入可能包含违规内容请重试！")
+        self.assertEqual(client_result["text"], "服务暂时异常，请重试！")
 
         admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
         self.assertEqual(admin_task["error"], raw_error)

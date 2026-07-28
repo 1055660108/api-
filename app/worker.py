@@ -7,7 +7,7 @@ import socket
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import account_for_current_task, claim_account_for_worker, clear_account_current_task, refund_account_quota, settle_account_quota
+from .accounts import claim_account_for_worker, clear_account_current_task, refund_account_quota, settle_account_quota
 from .automation import DolaFetchAutomation, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import ReusableBrowserPool
 from .doubao_automation import DoubaoVideoAutomation
@@ -248,6 +248,13 @@ class WorkerManager:
                 return True
         return False
 
+    def _idle_workers_to_trim(self, desired: int) -> list[str]:
+        excess = max(0, len(self._workers) - max(1, int(desired)))
+        if not excess:
+            return []
+        idle_ids = [worker_id for worker_id in self._workers if worker_id not in self._worker_task_ids]
+        return idle_ids[:excess]
+
     async def _supervise(self) -> None:
         while not self._stopping:
             try:
@@ -275,8 +282,7 @@ class WorkerManager:
                 with suppress(Exception):
                     demand += count_pending_tasks()
                 desired = min(effective, max(1, demand))
-                current_ids = list(self._workers.keys())
-                for worker_id in current_ids[desired:]:
+                for worker_id in self._idle_workers_to_trim(desired):
                     task = self._workers.pop(worker_id, None)
                     if task:
                         task.cancel()
@@ -332,7 +338,7 @@ class WorkerManager:
                     continue
                 worker_id = str(meta.get("worker_id") or "")
                 task = self._workers.get(worker_id) if worker_id else None
-                if task and not task.done() and account_for_current_task(task_id):
+                if task and not task.done():
                     stale_after = max(240, int(load_settings().task_timeout_seconds)) + RUNNING_WATCH_GRACE_SECONDS
                     if phase_age < timedelta(seconds=stale_after):
                         continue

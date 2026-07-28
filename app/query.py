@@ -6,13 +6,14 @@ import json
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, refund_account_quota, settle_account_quota
 from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
-from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, record_failed_account, retry_submitted_task, save_result, update_meta
+from .store import MAX_TASK_RETRIES, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_submitted_task, retry_submitted_task, save_result, update_meta
 from .temp_access import refund_temp_quota_hash
 
 
@@ -43,6 +44,7 @@ from .textfix import repair_text
 
 
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
+AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS = 180
 RETRY_GENERATING_TEXT = "视频生成中请稍后..."
 SUCCESS_TEXT = "已成功"
 POLICY_RETRY_TEXT = "你的输入可能包含违规内容请重试！"
@@ -560,11 +562,12 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     if not conversation_id:
         conversation_id = str(result.get("conversation_id") or "")
         conversation_source = "submit_result" if conversation_id else ""
-    if not conversation_id and int(meta.get("image_count") or 0) > 0:
+    recovery_collection_id = str(result.get("submission_collection_id") or "")
+    if not conversation_id and recovery_collection_id:
         try:
             conversation_id = await fetch_matching_recent_conversation_id(
                 cookie,
-                collection_id=str(result.get("submission_collection_id") or ""),
+                collection_id=recovery_collection_id,
                 prompt=str(meta.get("prompt") or ""),
             )
         except Exception as exc:
@@ -577,10 +580,24 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
                 },
             )
         if conversation_id:
-            conversation_source = "matched_recent_reference_task"
+            conversation_source = "matched_recent_submission"
     if conversation_id:
-        save_result(task_id, conversation_id=conversation_id, extra={"conversation_source": conversation_source})
+        save_result(task_id, conversation_id=conversation_id, extra={"conversation_source": conversation_source, "submission_ambiguous": False})
     else:
+        ambiguous_at = parse_time(str(result.get("submission_ambiguous_at") or ""))
+        if bool(result.get("submission_ambiguous")) and ambiguous_at and (
+            datetime.now(timezone.utc) - ambiguous_at
+        ).total_seconds() >= AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS:
+            account_id = str(result.get("account_id") or "")
+            if account_id:
+                refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+            retry_count = retry_ambiguous_submitted_task(task_id, "提交页面在确认结果前发生跳转", max_retries=2, delay_seconds=15)
+            if retry_count <= 2:
+                clear_transient_result(task_id)
+                return {"code": "1", "text": "正在重试中，请稍等！", "url": ""}
+            meta = get_meta(task_id)
+            refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+            return {"code": "0", "text": "生成失败，请重试！", "url": ""}
         save_result(
             task_id,
             extra={

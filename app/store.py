@@ -474,8 +474,7 @@ def _append_attempt_history(meta: dict[str, Any], reason: str, kind: str) -> Non
         "retry_count": max(0, int(meta.get("retry_count") or 0)),
         "infrastructure_retry_count": max(0, int(meta.get("infrastructure_retry_count") or 0)),
     }
-    if not history or any(entry[key] != history[-1].get(key) for key in ("kind", "reason", "phase")):
-        history.append(entry)
+    history.append(entry)
     meta["attempt_history"] = history[-MAX_ATTEMPT_HISTORY:]
     meta["last_attempt_error"] = normalized
     meta["last_attempt_kind"] = entry["kind"]
@@ -721,7 +720,7 @@ def record_infrastructure_retry(task_id: str, reason: str = "") -> int:
                 meta.update(
                     status=STATUS_PENDING,
                     finished_at="",
-                    queue_reason="节点连接异常，正在切换节点",
+                    queue_reason="服务连接异常，正在恢复",
                     queue_category="infrastructure",
                     next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(),
                 )
@@ -783,6 +782,52 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
         meta["updated_at"] = utc_now()
         _write_storage_json(meta_path(task_id), meta)
+        if count <= max_retries:
+            requeue_pending_task(task_id)
+        return count
+
+
+def retry_ambiguous_submitted_task(task_id: str, reason: str, max_retries: int = 2, delay_seconds: int = 15) -> int:
+    max_retries = max(1, min(MAX_INFRASTRUCTURE_RETRIES, int(max_retries)))
+    with task_lock(task_id):
+        def mutate(meta: dict[str, Any]) -> int:
+            if str(meta.get("status") or "") != STATUS_SUBMITTED:
+                return max(0, int(meta.get("infrastructure_retry_count") or 0))
+            count = max(0, int(meta.get("infrastructure_retry_count") or 0)) + 1
+            now = utc_now()
+            _append_attempt_history(meta, str(reason or ""), "infrastructure_retry")
+            meta.update(
+                infrastructure_retry_count=count,
+                infrastructure_error=str(reason or "")[:500],
+                worker_id="",
+                submit_phase="",
+                submit_started_at="",
+                result_watch_miss_count=0,
+                execution_phase="retry_queued",
+                status_reason="正在重试中，请稍等！",
+                phase_updated_at=now,
+                updated_at=now,
+            )
+            meta.setdefault("infrastructure_retry_started_at", now)
+            if count > max_retries:
+                meta.update(status=STATUS_FAILED, finished_at=now, error="生成失败，请重试！", queue_reason="", queue_category="")
+            else:
+                meta.update(
+                    status=STATUS_PENDING,
+                    finished_at="",
+                    error="",
+                    queue_reason="提交状态未确认，正在安全重试",
+                    queue_category="infrastructure",
+                    next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=max(1, int(delay_seconds)) * count)).isoformat(),
+                )
+            return count
+
+        if postgres.enabled():
+            count = postgres.mutate_task_part(task_id, "meta", mutate)
+        else:
+            meta = get_meta(task_id)
+            count = mutate(meta)
+            _write_storage_json(meta_path(task_id), meta)
         if count <= max_retries:
             requeue_pending_task(task_id)
         return count

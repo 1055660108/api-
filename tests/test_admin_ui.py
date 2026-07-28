@@ -244,7 +244,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('timeout: 45000', self.javascript)
         self.assertIn('timeoutError.code = "REQUEST_TIMEOUT"', self.javascript)
         self.assertIn('els.submitState.textContent = "正在确认提交结果"', self.javascript)
-        self.assertIn("你的输入可能包含违规内容请重试！", self.javascript)
+        self.assertIn("服务暂时异常，请重试！", self.javascript)
         self.assertIn("正在重试中，请稍等！", self.javascript)
         self.assertIn("goto|click|evaluate|waitFor", self.javascript)
         self.assertIn('label: "排队中"', self.javascript)

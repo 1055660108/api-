@@ -11,6 +11,7 @@ import secrets
 import string
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,6 @@ from .proxy_manager import acquire_dola_subscription_proxy, dola_proxy_available
 from .store import (
     begin_task_submission,
     clear_transient_result,
-    mark_pending,
     mark_success,
     mark_submitted,
     release_task_submission,
@@ -65,11 +65,42 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "proxy subscription",
     "connection refused",
     "connection reset",
+    "connection closed",
+    "server disconnected",
+    "unexpected eof",
+    "eof occurred in violation",
+    "ssl:",
+    "tlsv1_alert",
+    "tls handshake",
     "net::err_proxy",
     "net::err_connection",
+    "execution context was destroyed",
+    "most likely because of a navigation",
+    "cannot find context with specified id",
+    "frame was detached",
+    "target page, context or browser has been closed",
+    "target page has been closed",
+    "browser timeout",
     "all configured proxy modes are unavailable",
     "all selected authenticated proxies are unavailable",
     "all eligible proxy nodes are unavailable",
+)
+PROXY_TRANSPORT_ERROR_MARKERS = (
+    "mihomo ",
+    "proxy connection",
+    "proxy node",
+    "proxy subscription",
+    "connection refused",
+    "connection reset",
+    "connection closed",
+    "server disconnected",
+    "unexpected eof",
+    "eof occurred in violation",
+    "ssl:",
+    "tlsv1_alert",
+    "tls handshake",
+    "net::err_proxy",
+    "net::err_connection",
 )
 REFERENCE_UPLOAD_ERROR_MARKERS = (
     "prepare_upload",
@@ -100,6 +131,11 @@ def is_final_generation_failure(text: str) -> bool:
 def is_infrastructure_failure(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     return any(marker in normalized for marker in INFRASTRUCTURE_ERROR_MARKERS)
+
+
+def is_proxy_transport_failure(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(marker in normalized for marker in PROXY_TRANSPORT_ERROR_MARKERS)
 
 
 def is_reference_upload_failure(text: str) -> bool:
@@ -329,7 +365,7 @@ async ({body}) => {
 
 
 SUBMIT_SCRIPT = r"""
-async ({prompt, ratio, duration, attachments}) => {
+async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId, uniqueKey: suppliedUniqueKey, localConversationId: suppliedLocalConversationId}) => {
   function uuid() {
     return crypto.randomUUID ? crypto.randomUUID() :
       "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
@@ -420,8 +456,8 @@ async ({prompt, ratio, duration, attachments}) => {
     }
     return "";
   }
-  const collectionId = uuid();
-  const uniqueKey = uuid();
+  const collectionId = suppliedCollectionId || uuid();
+  const uniqueKey = suppliedUniqueKey || uuid();
   function buildPayload({localConversationId}) {
     const text = `生成视频：${prompt}${ratio ? `，${ratio}` : ""}`;
     const messages = [];
@@ -542,7 +578,7 @@ async ({prompt, ratio, duration, attachments}) => {
       }
     };
   }
-  const localConversationId = `local_${randomDigits(16)}`;
+  const localConversationId = suppliedLocalConversationId || `local_${randomDigits(16)}`;
   history.pushState({}, "", `/chat/${localConversationId}`);
   const params = buildQuery();
   let requestUrl = `${location.origin}/chat/completion?${params.toString()}`;
@@ -761,10 +797,6 @@ class DolaFetchAutomation:
         if self._task_exists():
             save_result(self.task_id, **kwargs)
 
-    def _mark_pending(self, reason: str) -> None:
-        if self._task_exists():
-            mark_pending(self.task_id, reason)
-
     def _mark_success(self) -> None:
         if self._task_exists():
             mark_submitted(self.task_id)
@@ -784,10 +816,9 @@ class DolaFetchAutomation:
             return await asyncio.wait_for(self._run_once(), timeout=timeout)
         except asyncio.TimeoutError:
             self._mark_active_proxy_unavailable()
-            self._mark_pending("browser timeout")
-            return {"success": False, "retryable": True, "reason": "browser timeout"}
+            self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_timeout"})
+            return {"success": False, "retryable": True, "reason": "browser timeout", "infrastructure_fault": True}
         except ProxyCoolingDownError as exc:
-            self._mark_pending("生成节点冷却中")
             return {
                 "success": False,
                 "retryable": True,
@@ -798,12 +829,12 @@ class DolaFetchAutomation:
             }
         except Exception as exc:
             reason = str(exc)[:500]
-            self._mark_pending(reason)
             infrastructure_fault = is_infrastructure_failure(reason)
             if is_reference_upload_failure(reason):
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
-                self._mark_active_proxy_unavailable()
+                if is_proxy_transport_failure(reason):
+                    self._mark_active_proxy_unavailable()
                 self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
             return {"success": False, "retryable": True, "reason": reason, "infrastructure_fault": infrastructure_fault}
 
@@ -863,8 +894,7 @@ class DolaFetchAutomation:
                 self._set_phase("opening_generation_page", "正在打开生成页面")
                 response = await page.goto(TARGET_URL, wait_until="commit", timeout=90000)
                 if response and response.status >= 500:
-                    self._mark_pending(f"page load failed {response.status}")
-                    return {"success": False, "retryable": True, "reason": f"page load failed {response.status}"}
+                    return {"success": False, "retryable": True, "reason": f"page load failed {response.status}", "infrastructure_fault": True}
                 try:
                     await page.wait_for_load_state("domcontentloaded", timeout=30000)
                 except Exception:
@@ -873,26 +903,57 @@ class DolaFetchAutomation:
                 if self._is_region_restricted(page.url):
                     self._mark_active_proxy_unavailable()
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "page_navigation"})
-                    self._mark_pending("region restricted")
-                    return {"success": False, "retryable": True, "reason": "region restricted"}
+                    return {"success": False, "retryable": True, "reason": "region restricted", "infrastructure_fault": True}
 
                 self._set_phase("preparing_references", "正在准备参考图" if task_image_paths(self.task_id) else "正在准备生成请求")
                 attachments = await self._upload_images_if_needed(page)
                 self._set_phase("submitting_request", "正在提交生成请求")
+                collection_id = str(uuid.uuid4())
+                unique_key = str(uuid.uuid4())
+                local_conversation_id = f"local_{secrets.randbelow(9 * 10**15) + 10**15}"
+                cookies = await context.cookies()
+                cookie_string = "; ".join(f"{item['name']}={item['value']}" for item in cookies if item.get("name"))
+                self._save_result(
+                    cookie_string=cookie_string,
+                    extra={
+                        "account_id": str(self.account.get("id") or ""),
+                        "account_name": str(self.account.get("name") or ""),
+                        "account_quota_charge_id": str(self.account.get("quota_charge_id") or ""),
+                        "local_conversation_id": local_conversation_id,
+                        "submission_collection_id": collection_id,
+                        "submission_unique_key": unique_key,
+                        "submission_ambiguous": False,
+                    },
+                )
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
-                result = await page.evaluate(
-                    SUBMIT_SCRIPT,
-                    {
-                        "prompt": self.prompt,
-                        "ratio": self.ratio,
-                        "duration": self.duration or self.settings.video_duration,
-                        "attachments": attachments,
-                    },
-                )
-                cookies = await context.cookies()
-                cookie_string = "; ".join(f"{item['name']}={item['value']}" for item in cookies if item.get("name"))
+                try:
+                    result = await page.evaluate(
+                        SUBMIT_SCRIPT,
+                        {
+                            "prompt": self.prompt,
+                            "ratio": self.ratio,
+                            "duration": self.duration or self.settings.video_duration,
+                            "attachments": attachments,
+                            "collectionId": collection_id,
+                            "uniqueKey": unique_key,
+                            "localConversationId": local_conversation_id,
+                        },
+                    )
+                except Exception as exc:
+                    reason = str(exc)[:500]
+                    if is_infrastructure_failure(reason):
+                        self._save_result(extra={
+                            "submission_ambiguous": True,
+                            "submission_ambiguous_at": datetime.now(timezone.utc).isoformat(),
+                            "submit_error_category": "ambiguous_submission",
+                            "submit_phase": "submitting_request",
+                            "ambiguous_submission_error": reason,
+                        })
+                        return {"success": False, "retryable": True, "submitted": True, "reason": reason, "infrastructure_fault": True}
+                    release_task_submission(self.task_id)
+                    raise
                 self._save_result(
                     conversation_id=str(result.get("conversation_id") or ""),
                     cookie_string=cookie_string,
@@ -908,33 +969,36 @@ class DolaFetchAutomation:
                         "submission_unique_key": str(result.get("unique_key") or ""),
                         "submitted_with_images": bool(result.get("submitted_with_images")),
                         "sse_timed_out": bool(result.get("sse_timed_out")),
+                        "submission_ambiguous": False,
                     },
                 )
                 self._set_phase("submission_received", "生成请求已接收，正在确认状态")
                 if result.get("service_frequent"):
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "service_frequent", "submit_phase": "submission_response"})
-                    self._mark_pending("service frequent")
-                    return {"success": False, "retryable": True, "reason": "service frequent"}
+                    return {"success": False, "retryable": True, "reason": "service frequent", "infrastructure_fault": True}
                 if result.get("country_restricted"):
                     self._mark_active_proxy_unavailable()
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "country_restricted", "submit_phase": "submission_response"})
-                    self._mark_pending("country restricted")
-                    return {"success": False, "retryable": True, "reason": "country restricted"}
+                    return {"success": False, "retryable": True, "reason": "country restricted", "infrastructure_fault": True}
                 if self._is_region_restricted(str(result.get("location_href") or page.url)):
                     self._mark_active_proxy_unavailable()
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "submission_response"})
-                    self._mark_pending("region restricted")
-                    return {"success": False, "retryable": True, "reason": "region restricted"}
+                    return {"success": False, "retryable": True, "reason": "region restricted", "infrastructure_fault": True}
                 status = int(result.get("status") or 0)
                 if not bool(result.get("ok")) or status < 200 or status >= 300:
                     release_task_submission(self.task_id)
                     reason = f"submission failed with HTTP {status or 'unknown'}"
                     self._save_result(extra={"submit_error_category": f"http_{status or 'unknown'}", "submit_phase": "submission_response"})
-                    self._mark_pending(reason)
-                    return {"success": False, "retryable": True, "reason": reason, "account_fault": status in {401, 403}}
+                    return {
+                        "success": False,
+                        "retryable": True,
+                        "reason": reason,
+                        "account_fault": status in {401, 403},
+                        "infrastructure_fault": status >= 500,
+                    }
                 self._mark_success()
                 return {"success": True, "retryable": False, "reason": ""}
             finally:

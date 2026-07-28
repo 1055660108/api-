@@ -1232,11 +1232,11 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
     if re.search(r"all configured proxy modes|proxy modes are temporarily|cooling down", text, flags=re.IGNORECASE):
         return "生成失败，请重试！" if terminal else "正在重试中，请稍等！"
     if re.search(
-        r"Page\.(?:goto|click|evaluate|waitFor|wait_for)|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
+        r"Page\.(?:goto|click|evaluate|waitFor|wait_for)|execution context was destroyed|worker execution heartbeat missing|SSL:|TLSV1_|tls alert|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷",
         text,
         flags=re.IGNORECASE,
     ):
-        return "你的输入可能包含违规内容请重试！"
+        return "服务暂时异常，请重试！" if terminal else "服务连接异常，正在重试！"
     text = re.sub(r"Dola|dola|豆包|千问|qianwen|doubao|平台", replacement, text, flags=re.IGNORECASE)
     text = re.sub(r"账号|账户|号池|换号|服务凭证", "服务", text, flags=re.IGNORECASE)
     if re.search(r"额度不足|额度已用完|次数不足|次数已用完|余额不足|正在切换服务重试|正在切换账号重试|多个服务额度均不足", text):

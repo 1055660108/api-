@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, call, patch
 
 import httpx
@@ -70,6 +71,9 @@ class DolaQueryTests(unittest.TestCase):
             "mihomo controller is not available",
             "mihomo DOLA proxy group is unavailable",
             "Page.evaluate: TypeError: Failed to fetch",
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation",
+            "[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error",
+            "browser timeout",
             "All connection attempts failed",
         ):
             self.assertTrue(automation.is_infrastructure_failure(reason))
@@ -172,6 +176,9 @@ class DolaQueryTests(unittest.TestCase):
 
     def test_reference_submission_waits_for_ack_and_returns_recovery_ids(self) -> None:
         self.assertIn("attachments && attachments.length ? 60000 : 30000", automation.SUBMIT_SCRIPT)
+        self.assertIn("suppliedCollectionId", automation.SUBMIT_SCRIPT)
+        self.assertIn("suppliedUniqueKey", automation.SUBMIT_SCRIPT)
+        self.assertIn("suppliedLocalConversationId", automation.SUBMIT_SCRIPT)
         for field in ("local_conversation_id", "collection_id", "unique_key", "submitted_with_images"):
             self.assertIn(field, automation.SUBMIT_SCRIPT)
 
@@ -448,7 +455,7 @@ class DolaQueryTests(unittest.TestCase):
         }
         meta = {
             "status": query.STATUS_SUBMITTED,
-            "image_count": 1,
+            "image_count": 0,
             "prompt": "参考图中的人物缓慢转身",
             "owner_token_hash": "owner-hash",
         }
@@ -468,10 +475,36 @@ class DolaQueryTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                call.kwargs.get("extra", {}).get("conversation_source") == "matched_recent_reference_task"
+                call.kwargs.get("extra", {}).get("conversation_source") == "matched_recent_submission"
                 for call in save_result.call_args_list
             )
         )
+
+    def test_ambiguous_submission_requeues_with_infrastructure_budget_after_recovery_window(self) -> None:
+        task_id = "0" * 32
+        meta = {"status": query.STATUS_SUBMITTED, "prompt": "复杂提示词", "owner_token_hash": "owner-hash"}
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "submission_collection_id": "collection-ambiguous",
+            "submission_ambiguous": True,
+            "submission_ambiguous_at": (datetime.now(timezone.utc) - timedelta(seconds=181)).isoformat(),
+            "account_id": "account-1",
+            "account_quota_charge_id": "charge-1",
+        }
+        with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_matching_recent_conversation_id", new=AsyncMock(return_value="")
+        ), patch.object(query, "save_result"), patch.object(
+            query, "refund_account_quota_once"
+        ) as refund_account, patch.object(
+            query, "retry_ambiguous_submitted_task", return_value=1
+        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result:
+            response = asyncio.run(query._query_task_once(task_id))
+        self.assertEqual(response, {"code": "1", "text": "正在重试中，请稍等！", "url": ""})
+        refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
+        retry_task.assert_called_once_with(task_id, "提交页面在确认结果前发生跳转", max_retries=2, delay_seconds=15)
+        clear_result.assert_called_once_with(task_id)
 
     def test_pending_policy_retry_remains_in_progress(self) -> None:
         task_id = "0" * 32

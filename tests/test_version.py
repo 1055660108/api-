@@ -17,9 +17,10 @@ class VersionTests(unittest.TestCase):
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
         admin_html = (root / "app" / "admin" / "index.html").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.51")
+        self.assertEqual(version, "1.4.52")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
+        self.assertEqual(compose.count("build:"), 1)
         self.assertIn(f"styles.css?v={version}", admin_html)
         self.assertIn(f"app.js?v={version}", admin_html)
         self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-24}", compose)

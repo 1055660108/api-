@@ -7,6 +7,7 @@ CONTROLLER_HOME="/var/lib/dola-update-controller"
 DOLA_PORT="${DOLA_PORT:-8088}"
 DOLA_IMAGE_NAME="${DOLA_IMAGE_NAME:-dola-fetch-service}"
 DOLA_IMAGE_TAG="${DOLA_IMAGE_TAG:-}"
+DOLA_UPDATE_BUILD_TIMEOUT_SECONDS="${DOLA_UPDATE_BUILD_TIMEOUT_SECONDS:-2400}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "请使用 root 运行" >&2
@@ -36,6 +37,7 @@ Environment=DOLA_UPDATE_REPOSITORY_URL=https://github.com/1055660108/api-.git
 Environment=DOLA_PORT=$DOLA_PORT
 Environment=DOLA_IMAGE_NAME=$DOLA_IMAGE_NAME
 Environment=DOLA_IMAGE_TAG=$DOLA_IMAGE_TAG
+Environment=DOLA_UPDATE_BUILD_TIMEOUT_SECONDS=$DOLA_UPDATE_BUILD_TIMEOUT_SECONDS
 Environment=HOME=$CONTROLLER_HOME
 Environment=DOCKER_CONFIG=$CONTROLLER_HOME/.docker
 NoNewPrivileges=true

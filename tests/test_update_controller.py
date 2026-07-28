@@ -5,7 +5,7 @@ import os
 import subprocess
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from scripts import update_controller
 
@@ -53,7 +53,35 @@ class UpdateControllerTests(unittest.TestCase):
         self.assertIn('install -d -m 0700 "$CONTROLLER_HOME" "$CONTROLLER_HOME/.docker"', installer)
         self.assertIn("Environment=HOME=$CONTROLLER_HOME", installer)
         self.assertIn("Environment=DOCKER_CONFIG=$CONTROLLER_HOME/.docker", installer)
+        self.assertIn("Environment=DOLA_UPDATE_BUILD_TIMEOUT_SECONDS=$DOLA_UPDATE_BUILD_TIMEOUT_SECONDS", installer)
         self.assertIn("ProtectHome=true", installer)
+
+    def test_deploy_builds_shared_image_once_with_extended_timeout(self) -> None:
+        def fake_git(*arguments: str, timeout: int = 120) -> str:
+            if arguments == ("remote", "get-url", "origin"):
+                return update_controller.EXPECTED_ORIGIN
+            if arguments == ("status", "--porcelain", "--untracked-files=all"):
+                return ""
+            if arguments == ("rev-parse", "HEAD"):
+                return "old-revision"
+            if arguments == ("rev-parse", f"origin/{update_controller.BRANCH}"):
+                return "new-revision"
+            return ""
+
+        with patch.object(update_controller, "git", side_effect=fake_git), patch.object(
+            update_controller, "image_name", return_value="dola-fetch-service:old"
+        ), patch.object(update_controller, "run", return_value="") as run, patch.object(
+            update_controller, "wait_for_health"
+        ), patch.dict(update_controller.STATE, {"updating": True, "phase": "准备更新", "error": ""}, clear=True):
+            update_controller.deploy()
+
+        self.assertIn(
+            call("docker", "compose", "build", "api", timeout=update_controller.BUILD_TIMEOUT_SECONDS),
+            run.call_args_list,
+        )
+        build_calls = [item for item in run.call_args_list if item.args[:3] == ("docker", "compose", "build")]
+        self.assertEqual(len(build_calls), 1)
+        self.assertNotIn("worker", build_calls[0].args)
 
     def test_custom_port_and_image_are_used(self) -> None:
         environment = {"DOLA_PORT": "9191", "DOLA_IMAGE_NAME": "registry.example/dola", "DOLA_IMAGE_TAG": "stable"}

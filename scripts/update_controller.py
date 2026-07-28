@@ -28,6 +28,17 @@ MAX_ERROR_LENGTH = 5000
 STATE: dict[str, str | bool] = {"updating": False, "phase": "空闲", "error": ""}
 
 
+def environment_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+BUILD_TIMEOUT_SECONDS = environment_int("DOLA_UPDATE_BUILD_TIMEOUT_SECONDS", 2400, 900, 7200)
+
+
 def command_error_output(stdout: str | None, stderr: str | None) -> str:
     return "\n".join(part.strip() for part in (stdout, stderr) if part and part.strip())
 
@@ -159,7 +170,7 @@ def deploy() -> None:
         git("merge-base", "--is-ancestor", before, target, timeout=15)
         git("merge", "--ff-only", target)
         set_state(phase="构建镜像")
-        run("docker", "compose", "build", "api", "worker")
+        run("docker", "compose", "build", "api", timeout=BUILD_TIMEOUT_SECONDS)
         set_state(phase="更新服务")
         run("docker", "compose", "up", "-d", "--force-recreate", "api", "worker")
         set_state(phase="健康检查")

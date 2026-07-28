@@ -2567,6 +2567,7 @@ async def runtime_config():
     return {
         "dola_submit_interval_seconds": settings.dola_submit_interval_seconds,
         "dola_exit_submit_interval_seconds": settings.dola_exit_submit_interval_seconds,
+        "task_retry_limit": settings.task_retry_limit,
         "batch_history_retention_days": settings.batch_history_retention_days,
     }
 
@@ -2578,6 +2579,7 @@ async def update_runtime_config(request: Request):
     try:
         submit_interval = float(payload.get("dola_submit_interval_seconds", settings.dola_submit_interval_seconds))
         exit_submit_interval = float(payload.get("dola_exit_submit_interval_seconds", settings.dola_exit_submit_interval_seconds))
+        task_retry_limit = int(payload.get("task_retry_limit", settings.task_retry_limit))
         batch_history_retention_days = int(payload.get("batch_history_retention_days", settings.batch_history_retention_days))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="runtime retention values must be numbers")
@@ -2585,12 +2587,15 @@ async def update_runtime_config(request: Request):
         raise HTTPException(status_code=400, detail="dola_submit_interval_seconds must be between 1 and 5")
     if exit_submit_interval < 3 or exit_submit_interval > 30:
         raise HTTPException(status_code=400, detail="dola_exit_submit_interval_seconds must be between 3 and 30")
+    if task_retry_limit < 0 or task_retry_limit > 10:
+        raise HTTPException(status_code=400, detail="task_retry_limit must be between 0 and 10")
     if batch_history_retention_days < 7 or batch_history_retention_days > 30:
         raise HTTPException(status_code=400, detail="batch_history_retention_days must be between 7 and 30")
     submit_interval = round(submit_interval, 1)
     update_config({
         "dola_submit_interval_seconds": submit_interval,
         "dola_exit_submit_interval_seconds": round(exit_submit_interval, 1),
+        "task_retry_limit": task_retry_limit,
         "batch_history_retention_days": batch_history_retention_days,
     })
     refreshed = load_settings()
@@ -2598,6 +2603,7 @@ async def update_runtime_config(request: Request):
         "ok": True,
         "dola_submit_interval_seconds": refreshed.dola_submit_interval_seconds,
         "dola_exit_submit_interval_seconds": refreshed.dola_exit_submit_interval_seconds,
+        "task_retry_limit": refreshed.task_retry_limit,
         "batch_history_retention_days": refreshed.batch_history_retention_days,
     }
 

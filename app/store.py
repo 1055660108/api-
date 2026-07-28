@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import TASKS_DIR, ensure_dirs
+from .config import TASKS_DIR, ensure_dirs, load_settings
 from .platforms import DEFAULT_PLATFORM, normalize_model, normalize_platform
 from . import postgres
 
@@ -25,7 +25,8 @@ STATUS_FAILED = "failed"
 STATUS_CANCELED = "canceled"
 TASK_TIMEOUT_HOURS = 3
 TASK_RETRY_TIMEOUT_MINUTES = 30
-MAX_TASK_RETRIES = 2
+MAX_TASK_RETRIES = 10
+DEFAULT_TASK_RETRY_LIMIT = 2
 MAX_INFRASTRUCTURE_RETRIES = 6
 MAX_ATTEMPT_HISTORY = 20
 LOCAL_TZ = timezone(timedelta(hours=8))
@@ -54,6 +55,13 @@ TRANSIENT_RESULT_FIELDS = {
     "account_quota_charge_id",
     "account_quota_refunded",
 }
+
+
+def task_retry_limit() -> int:
+    try:
+        return max(0, min(MAX_TASK_RETRIES, int(load_settings().task_retry_limit)))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return DEFAULT_TASK_RETRY_LIMIT
 
 
 class CorruptJSONError(ValueError):
@@ -650,6 +658,7 @@ def record_failed_account(task_id: str, account_id: str) -> None:
 
 
 def record_retry(task_id: str, reason: str = "") -> int:
+    retry_limit = task_retry_limit()
     with task_lock(task_id):
         if postgres.enabled():
             def mutate(meta: dict[str, Any]) -> int:
@@ -660,7 +669,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                 _append_attempt_history(meta, str(normalized_reason or ""), "execution_retry")
                 meta.update(retry_count=count, worker_id="", error=normalized_reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
-                if count > MAX_TASK_RETRIES:
+                if count > retry_limit:
                     meta.update(status=STATUS_FAILED, finished_at=utc_now())
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
@@ -679,7 +688,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
         _append_attempt_history(meta, str(reason or ""), "execution_retry")
         meta.update(retry_count=count, worker_id="", error=reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
-        if count > MAX_TASK_RETRIES:
+        if count > retry_limit:
             meta.update(status=STATUS_FAILED, finished_at=utc_now())
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
@@ -747,8 +756,9 @@ def requeue_pending_task(task_id: str) -> bool:
     return queued
 
 
-def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_RETRIES, delay_seconds: int = 45) -> int:
-    max_retries = max(1, min(MAX_TASK_RETRIES, int(max_retries)))
+def retry_submitted_task(task_id: str, reason: str, max_retries: int | None = None, delay_seconds: int = 45) -> int:
+    configured_limit = task_retry_limit()
+    max_retries = configured_limit if max_retries is None else max(0, min(configured_limit, int(max_retries)))
     with task_lock(task_id):
         if postgres.enabled():
             def mutate(meta: dict[str, Any]) -> int:
@@ -787,8 +797,9 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_
         return count
 
 
-def retry_ambiguous_submitted_task(task_id: str, reason: str, max_retries: int = 2, delay_seconds: int = 15) -> int:
-    max_retries = max(1, min(MAX_INFRASTRUCTURE_RETRIES, int(max_retries)))
+def retry_ambiguous_submitted_task(task_id: str, reason: str, max_retries: int | None = None, delay_seconds: int = 15) -> int:
+    configured_limit = task_retry_limit()
+    max_retries = configured_limit if max_retries is None else max(0, min(configured_limit, int(max_retries)))
     with task_lock(task_id):
         def mutate(meta: dict[str, Any]) -> int:
             if str(meta.get("status") or "") != STATUS_SUBMITTED:
@@ -833,8 +844,9 @@ def retry_ambiguous_submitted_task(task_id: str, reason: str, max_retries: int =
         return count
 
 
-def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int = MAX_TASK_RETRIES, delay_seconds: int = 10) -> int:
-    max_retries = max(1, min(MAX_TASK_RETRIES, int(max_retries)))
+def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int | None = None, delay_seconds: int = 10) -> int:
+    configured_limit = task_retry_limit()
+    max_retries = configured_limit if max_retries is None else max(0, min(configured_limit, int(max_retries)))
     with task_lock(task_id):
         if postgres.enabled():
             def mutate(meta: dict[str, Any]) -> int:
@@ -878,12 +890,13 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int =
 
 
 def record_execution_miss(task_id: str, reason: str = "任务未执行，重新排队") -> int:
+    retry_limit = task_retry_limit()
     if postgres.enabled():
         def mutate(meta: dict[str, Any]) -> int:
             miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
             count = max(0, int(meta.get("retry_count") or 0)) + 1
             meta.setdefault("retry_started_at", utc_now())
-            if count > MAX_TASK_RETRIES:
+            if count > retry_limit:
                 meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
             else:
                 meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
@@ -895,7 +908,7 @@ def record_execution_miss(task_id: str, reason: str = "任务未执行，重新�
     miss_count = max(0, int(meta.get("execution_miss_count") or 0)) + 1
     count = max(0, int(meta.get("retry_count") or 0)) + 1
     retry_started_at = str(meta.get("retry_started_at") or utc_now())
-    if count > MAX_TASK_RETRIES:
+    if count > retry_limit:
         update_meta(task_id, retry_count=count, retry_started_at=retry_started_at, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
     else:
         update_meta(task_id, retry_count=count, retry_started_at=retry_started_at, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
@@ -923,9 +936,10 @@ def mark_success(task_id: str) -> None:
     update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED, STATUS_SUCCESS}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now())
 
 
-def mark_submitted(task_id: str) -> None:
+def mark_submitted(task_id: str, result_poll_delay_seconds: int = 45) -> None:
     submitted_at = utc_now()
-    next_result_poll_at = (datetime.now(timezone.utc) + timedelta(seconds=45)).isoformat()
+    poll_delay = max(5, min(120, int(result_poll_delay_seconds or 45)))
+    next_result_poll_at = (datetime.now(timezone.utc) + timedelta(seconds=poll_delay)).isoformat()
     update_meta_if(
         task_id,
         {STATUS_RUNNING},

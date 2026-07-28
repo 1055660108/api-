@@ -546,7 +546,7 @@ class DolaQueryTests(unittest.TestCase):
         clear_account.assert_called_once_with("account-1", task_id)
         refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
         record_failed.assert_called_once_with(task_id, "account-1")
-        retry_task.assert_called_once_with(task_id, "提交后未取得有效会话，正在安全重试", max_retries=2, delay_seconds=15)
+        retry_task.assert_called_once_with(task_id, "提交后未取得有效会话，正在安全重试", max_retries=2, delay_seconds=3)
         clear_result.assert_called_once_with(task_id)
         update_meta.assert_called_once_with(task_id, proxy_retry_avoid_node_id="node-old")
 

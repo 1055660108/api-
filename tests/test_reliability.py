@@ -987,6 +987,17 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(store.retry_submitted_task(task["id"], "额度不足", max_retries=5), 3)
         self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_FAILED)
 
+    def test_configured_retry_limit_controls_real_task_retries(self) -> None:
+        task = self.create_task("owner")
+        with patch.object(store, "load_settings", return_value=SimpleNamespace(task_retry_limit=4)):
+            for expected in range(1, 5):
+                self.assertTrue(store.mark_running(task["id"], f"worker-{expected}"))
+                self.assertEqual(store.record_retry(task["id"], f"failure-{expected}"), expected)
+                self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_PENDING)
+            self.assertTrue(store.mark_running(task["id"], "worker-5"))
+            self.assertEqual(store.record_retry(task["id"], "failure-5"), 5)
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_FAILED)
+
     def test_watchdog_scan_error_does_not_stop_watchdog(self) -> None:
         manager = WorkerManager()
         manager._stopping = False

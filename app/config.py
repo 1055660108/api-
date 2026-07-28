@@ -91,6 +91,7 @@ def default_config() -> dict[str, Any]:
         "browser_executable_path": "",
         "headless": True,
         "task_timeout_seconds": 180,
+        "task_retry_limit": 2,
         "dola_submit_interval_seconds": 5.0,
         "dola_exit_submit_interval_seconds": 8.0,
         "video_duration": 15,
@@ -305,6 +306,7 @@ class Settings:
     browser_executable_path: str
     headless: bool
     task_timeout_seconds: int
+    task_retry_limit: int
     dola_submit_interval_seconds: float
     dola_exit_submit_interval_seconds: float
     video_duration: int
@@ -417,6 +419,7 @@ def load_settings() -> Settings:
         browser_executable_path=str(data.get("browser_executable_path") or "").strip(),
         headless=_as_bool(data.get("headless"), True),
         task_timeout_seconds=max(30, int(data.get("task_timeout_seconds") or 180)),
+        task_retry_limit=max(0, min(10, int(data.get("task_retry_limit") if data.get("task_retry_limit") is not None else 2))),
         dola_submit_interval_seconds=max(1.0, min(5.0, float(data.get("dola_submit_interval_seconds") or 5.0))),
         dola_exit_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_exit_submit_interval_seconds") or 8.0))),
         video_duration=max(1, int(data.get("video_duration") or 15)),

@@ -33,6 +33,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('#settingsView.active .settings-layout', styles)
         self.assertIn('scrollbar-gutter: stable;', styles)
         self.assertIn('id="batchHistoryRetentionDays"', self.html)
+        self.assertIn('id="taskRetryLimit"', self.html)
+        self.assertIn('task_retry_limit: retryLimit', self.javascript)
         self.assertIn('id="resourceMonitorPanel"', self.html)
         self.assertIn('id="resourceAlertBanner"', self.html)
         self.assertIn('renderResourceMonitoring(data.components?.monitoring || {})', self.javascript)

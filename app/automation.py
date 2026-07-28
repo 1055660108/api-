@@ -140,16 +140,24 @@ REFERENCE_CACHE_MAX_ENTRIES = max(16, min(4096, int(os.environ.get("DOLA_REFEREN
 API_PROXY_CANDIDATE_LIMIT = 3
 API_PROXY_FETCH_LIMIT = 6
 API_PROXY_FETCH_ERROR_LIMIT = 3
-API_PROXY_RETRY_AFTER_SECONDS = 30
+API_PROXY_RETRY_AFTER_SECONDS = 5
 _REFERENCE_CACHE_LOCK = threading.RLock()
 _REFERENCE_ATTACHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _REFERENCE_UPLOADS_IN_FLIGHT: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
 
 
 class ProxyCoolingDownError(RuntimeError):
-    def __init__(self, retry_after: int):
+    def __init__(
+        self,
+        retry_after: int,
+        reason: str = "proxy modes are temporarily cooling down",
+        queue_reason: str = "生成节点冷却中，任务已自动排队",
+        queue_category: str = "proxy_cooldown",
+    ):
         self.retry_after = max(1, int(retry_after))
-        super().__init__("proxy modes are temporarily cooling down")
+        self.queue_reason = str(queue_reason or "服务连接异常，任务已自动排队")[:120]
+        self.queue_category = str(queue_category or "infrastructure")[:40]
+        super().__init__(str(reason or "proxy modes are temporarily cooling down"))
 
 
 def is_final_generation_failure(text: str) -> bool:
@@ -840,9 +848,9 @@ class DolaFetchAutomation:
         if self._task_exists():
             save_result(self.task_id, **kwargs)
 
-    def _mark_success(self) -> None:
+    def _mark_success(self, *, confirmation_pending: bool = False) -> None:
         if self._task_exists():
-            mark_submitted(self.task_id)
+            mark_submitted(self.task_id, result_poll_delay_seconds=15 if confirmation_pending else 45)
 
     def _set_phase(self, phase: str, status_reason: str) -> None:
         if self._task_exists():
@@ -868,6 +876,9 @@ class DolaFetchAutomation:
         cooldown_seconds: int | None = None,
         reason: str = "runtime_failure",
     ) -> None:
+        if self.active_proxy_source == "api":
+            self._remember_failed_proxy_node()
+            return
         if self.proxy_node_id:
             kwargs: dict[str, Any] = {"reason": reason}
             if cooldown_seconds is not None:
@@ -881,9 +892,13 @@ class DolaFetchAutomation:
         if not self.proxy_node_id:
             return
         self._remember_failed_proxy_node()
+        if self.active_proxy_source == "api":
+            return
         record_node_gateway_failure(self.proxy_node_id, status)
 
     def _active_proxy_cooldown_outcome(self) -> dict[str, Any] | None:
+        if self.active_proxy_source == "api":
+            return None
         retry_after = node_retry_after(self.proxy_node_id)
         if retry_after <= 0:
             return None
@@ -909,10 +924,12 @@ class DolaFetchAutomation:
             return {
                 "success": False,
                 "retryable": True,
-                "reason": "proxy cooling down",
+                "reason": str(exc),
                 "infrastructure_fault": True,
                 "defer_only": True,
                 "retry_after": exc.retry_after,
+                "defer_reason": exc.queue_reason,
+                "defer_category": exc.queue_category,
             }
         except Exception as exc:
             reason = str(exc)[:500]
@@ -927,6 +944,17 @@ class DolaFetchAutomation:
                 if is_proxy_transport_failure(reason):
                     self._mark_active_proxy_unavailable()
                 self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
+                if self.active_proxy_source == "api" and is_proxy_transport_failure(reason):
+                    return {
+                        "success": False,
+                        "retryable": True,
+                        "reason": reason,
+                        "infrastructure_fault": True,
+                        "defer_only": True,
+                        "retry_after": 3,
+                        "defer_reason": "正在刷新API代理，任务已自动排队",
+                        "defer_category": "proxy_refresh",
+                    }
             return {"success": False, "retryable": True, "reason": reason, "infrastructure_fault": infrastructure_fault}
 
     async def _run_once(self) -> dict[str, Any]:
@@ -1120,7 +1148,7 @@ class DolaFetchAutomation:
                 record_node_success(self.proxy_node_id)
                 if self._task_exists():
                     update_meta(self.task_id, proxy_retry_avoid_node_id="")
-                self._mark_success()
+                self._mark_success(confirmation_pending=not bool(str(result.get("conversation_id") or "")))
                 return {"success": True, "retryable": False, "reason": ""}
             finally:
                 await safe_unroute_all(page)
@@ -1161,9 +1189,9 @@ class DolaFetchAutomation:
             if node_id in seen_endpoints:
                 continue
             seen_endpoints.add(node_id)
-            if node_id in excluded_node_ids or node_retry_after(node_id) > 0:
+            if node_id in excluded_node_ids:
                 rejected_endpoints.append(host_port)
-                errors.append(f"{host_port}: cooling down")
+                errors.append(f"{host_port}: excluded from the current retry")
                 continue
             available = await dola_proxy_available(
                 server,
@@ -1172,7 +1200,6 @@ class DolaFetchAutomation:
             if not available:
                 rejected_endpoints.append(host_port)
                 errors.append(f"{host_port}: unavailable for Dola")
-                mark_node_unavailable(node_id, reason="dola_probe_failed")
                 continue
             self.proxy_node_id = node_id
             self.active_proxy_source = "api"
@@ -1204,7 +1231,12 @@ class DolaFetchAutomation:
                 "api_proxy_last_error": "; ".join(errors[-6:])[:800],
             }
         )
-        raise ProxyCoolingDownError(API_PROXY_RETRY_AFTER_SECONDS)
+        raise ProxyCoolingDownError(
+            API_PROXY_RETRY_AFTER_SECONDS,
+            reason="api proxy candidates unavailable, refreshing",
+            queue_reason="正在刷新API代理，任务已自动排队",
+            queue_category="proxy_refresh",
+        )
 
     async def _browser_proxy_config(self) -> dict[str, str] | None:
         self.settings = load_settings()

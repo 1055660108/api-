@@ -32,7 +32,6 @@ from .store import (
     mark_retry_queue_verified,
     mark_submitted,
     mark_result_once,
-    MAX_TASK_RETRIES,
     MAX_INFRASTRUCTURE_RETRIES,
     record_failed_account,
     record_result_watch_miss,
@@ -43,6 +42,7 @@ from .store import (
     set_active_tasks,
     STATUS_SUBMITTED,
     task_image_paths,
+    task_retry_limit,
     update_meta,
     utc_now,
 )
@@ -104,8 +104,8 @@ def defer_non_counting_retry(task_id: str, outcome: dict) -> bool:
         return False
     defer_task(
         task_id,
-        "生成节点冷却中，任务已自动排队",
-        "proxy_cooldown",
+        str(outcome.get("defer_reason") or "生成节点冷却中，任务已自动排队"),
+        str(outcome.get("defer_category") or "proxy_cooldown"),
         max(1, int(outcome.get("retry_after") or 5)),
     )
     return True
@@ -652,7 +652,7 @@ class WorkerManager:
                                 retry_limit = MAX_INFRASTRUCTURE_RETRIES
                             else:
                                 retry_count = record_retry(task_id, reason)
-                                retry_limit = MAX_TASK_RETRIES
+                                retry_limit = task_retry_limit()
                             if retry_count > retry_limit:
                                 meta = get_meta(task_id)
                                 refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
@@ -686,7 +686,7 @@ class WorkerManager:
                         self._platform_guard.record_failure(platform)
                 with suppress(FileNotFoundError):
                     retry_count = record_infrastructure_retry(task_id, reason) if infrastructure_fault else record_retry(task_id, reason)
-                    retry_limit = MAX_INFRASTRUCTURE_RETRIES if infrastructure_fault else MAX_TASK_RETRIES
+                    retry_limit = MAX_INFRASTRUCTURE_RETRIES if infrastructure_fault else task_retry_limit()
                     if retry_count > retry_limit:
                         meta = get_meta(task_id)
                         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))

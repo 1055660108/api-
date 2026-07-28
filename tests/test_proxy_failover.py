@@ -149,8 +149,8 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(instance.proxy_node_id, "api:proxy-c.example:18003")
         self.assertEqual(instance.proxy_exit_id, "ip:203.0.113.30")
         self.assertTrue(proxy_manager.proxy_source_available("api"))
-        self.assertGreater(proxy_manager.node_retry_after("api:proxy-a.example:18001"), 0)
-        self.assertGreater(proxy_manager.node_retry_after("api:proxy-b.example:18002"), 0)
+        self.assertEqual(proxy_manager.node_retry_after("api:proxy-a.example:18001"), 0)
+        self.assertEqual(proxy_manager.node_retry_after("api:proxy-b.example:18002"), 0)
 
     async def test_api_mode_ignores_duplicate_endpoints_while_seeking_candidates(self) -> None:
         settings = proxy_settings("api")
@@ -194,7 +194,7 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(probe.await_count, 3)
         subscription.assert_not_awaited()
         self.assertTrue(proxy_manager.proxy_source_available("api"))
-        self.assertTrue(all(proxy_manager.node_retry_after(f"api:proxy-{index}.example:{18000 + index}") > 0 for index in range(1, 4)))
+        self.assertTrue(all(proxy_manager.node_retry_after(f"api:proxy-{index}.example:{18000 + index}") == 0 for index in range(1, 4)))
 
     async def test_api_mode_stops_after_three_extraction_errors(self) -> None:
         settings = proxy_settings("api")

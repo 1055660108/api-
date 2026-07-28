@@ -283,6 +283,25 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('value="1" placeholder="Dola 默认 1"', self.html)
         self.assertIn('platform === "dola" ? 1', self.javascript)
 
+    def test_batch_row_images_use_natural_ordinal_mapping(self) -> None:
+        self.assertIn('function naturallySortedBatchImageFiles(files)', self.javascript)
+        self.assertIn('new Intl.Collator(undefined, { numeric: true, sensitivity: "base" })', self.javascript)
+        self.assertIn('const targets = state.batchPrompts.filter((item) => item.prompt.trim() && !batchItemIsCreated(item));', self.javascript)
+        self.assertIn('targets[index].images = createBatchImageEntries([sortedFiles[index]])', self.javascript)
+        self.assertIn('releaseBatchImageEntries(item.images);', self.javascript)
+        self.assertNotIn('index % state.batchPrompts.length', self.javascript)
+        self.assertNotIn('Number(entry.row) === number', self.javascript)
+
+    def test_account_access_key_management_is_admin_only_ui(self) -> None:
+        for element_id in (
+            "accountAccessPanel", "openAccountAccessModal", "accountAccessModal", "accountAccessEnabled",
+            "rotateAccountAccessKey", "saveAccountAccessState", "revokeAccountAccessKey", "copyAccountAccessKey",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('apiFetch("/config/account-access")', self.javascript)
+        self.assertIn('apiFetch("/config/account-access/rotate", { method: "POST" })', self.javascript)
+        self.assertIn('loadAccountAccessConfig()', self.javascript)
+
     def test_client_ink_entry_flow_preserves_existing_auth_and_workspace(self) -> None:
         root = Path(__file__).resolve().parents[1]
         styles = (root / "app" / "admin" / "styles.css").read_text(encoding="utf-8")

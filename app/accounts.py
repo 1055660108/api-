@@ -1211,3 +1211,60 @@ def update_account_quota(account_id: str, quota_limit: int) -> dict[str, Any]:
                 _write_data(data)
                 return _public_account(account)
     raise KeyError("account not found")
+
+
+def update_account_details(
+    account_id: str,
+    *,
+    name: str | None = None,
+    quota_limit: int | None = None,
+) -> dict[str, Any]:
+    account_id = str(account_id or "").strip().lower()
+    if not ACCOUNT_ID_RE.fullmatch(account_id):
+        raise KeyError("account not found")
+    normalized_name: str | None = None
+    if name is not None:
+        normalized_name = str(name).strip()
+        if not normalized_name or len(normalized_name) > 120:
+            raise ValueError("账号名称长度需为 1-120 个字符")
+        if any(ord(character) < 32 or ord(character) == 127 for character in normalized_name):
+            raise ValueError("账号名称包含无效字符")
+    normalized_quota: int | None = None
+    if quota_limit is not None:
+        try:
+            normalized_quota = int(quota_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("账号额度上限必须是整数") from exc
+        if normalized_quota < 0 or normalized_quota > 1_000_000:
+            raise ValueError("账号额度上限需为 0-1000000")
+    if normalized_name is None and normalized_quota is None:
+        raise ValueError("至少需要提供账号名称或额度上限")
+
+    def apply(account: dict[str, Any]) -> dict[str, Any]:
+        if normalized_name is not None:
+            account["name"] = normalized_name
+        if normalized_quota is not None:
+            account["quota_limit"] = normalized_quota
+        account["updated_at"] = utc_now()
+        return _public_account(account)
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> dict[str, Any]:
+                for account in data.get("accounts") or []:
+                    if str(account.get("id") or "") == account_id:
+                        return apply(account)
+                raise KeyError("account not found")
+
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") == account_id:
+                result = apply(account)
+                _write_data(data)
+                return result
+    raise KeyError("account not found")
+
+
+def update_account_name(account_id: str, name: str) -> dict[str, Any]:
+    return update_account_details(account_id, name=name)

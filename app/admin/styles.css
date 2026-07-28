@@ -6047,6 +6047,19 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .admin-management-modal .modal-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .elevated-modal { z-index: 72; }
 .admin-audit-details-modal { width: min(calc(100vw - 48px), 720px); max-height: calc(100vh - 48px); }
+.account-access-modal { width: min(calc(100vw - 48px), 820px); max-height: calc(100vh - 48px); }
+.account-access-body { display: grid; gap: 16px; min-height: 0; overflow-y: auto; }
+.account-access-status { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, auto); gap: 16px; align-items: center; padding: 16px; border: 1px solid var(--line); border-radius: 6px; background: #fafbfa; }
+.account-access-status > div { display: grid; gap: 5px; }
+.account-access-status > div span,
+.account-access-endpoints span { color: var(--muted); font-size: 12px; }
+.account-access-status > div strong { color: #242a28; font-size: 15px; overflow-wrap: anywhere; }
+.account-access-endpoints { display: grid; gap: 10px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 6px; }
+.account-access-endpoints > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; align-items: center; }
+.account-access-endpoints code { overflow-wrap: anywhere; color: #252b29; font-size: 13px; }
+.account-access-endpoints p { margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.account-access-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.account-access-actions .danger-button { margin-left: auto; }
 .admin-audit-details { display: grid; margin: 0; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
 .admin-audit-details > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); border-bottom: 1px solid var(--line); }
 .admin-audit-details > div:last-child { border-bottom: 0; }
@@ -6086,7 +6099,7 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 body[data-portal="client"] .admin-settings-columns,
 body[data-portal="client"] .admin-settings-compact-grid { display: none !important; }
 .invitation-toggle-control { display: flex; align-items: center; gap: 10px; min-height: 42px; cursor: pointer; }
-.invitation-toggle-control > input { position: absolute; opacity: 0; pointer-events: none; }
+.invitation-toggle-control > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .invitation-toggle-control > span:last-child { display: grid; gap: 2px; }
 .invitation-toggle-control small { color: #737b78; font-size: 12px; }
 .invitation-toggle-control > input:checked + .switch-track { background: #202423; }
@@ -6126,6 +6139,9 @@ body[data-portal="client"] .admin-settings-compact-grid { display: none !importa
   .admin-audit-row { grid-template-columns: 1fr; gap: 5px; }
   .admin-audit-row > button { justify-self: start; }
   .admin-audit-details > div { grid-template-columns: 1fr; }
+  .account-access-status { grid-template-columns: 1fr; }
+  .account-access-endpoints > div { grid-template-columns: 1fr; gap: 3px; }
+  .account-access-actions .danger-button { margin-left: 0; }
   .admin-audit-details dt { padding-bottom: 3px; }
   .admin-audit-details dd { padding-top: 3px; }
 }

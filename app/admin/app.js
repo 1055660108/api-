@@ -464,6 +464,21 @@ const els = {
   deleteSelectedVideos: document.getElementById("deleteSelectedVideos"),
   accountPlatformFilter: document.getElementById("accountPlatformFilter"),
   accountStatusFilter: document.getElementById("accountStatusFilter"),
+  openAccountAccessModal: document.getElementById("openAccountAccessModal"),
+  accountAccessModal: document.getElementById("accountAccessModal"),
+  closeAccountAccessModal: document.getElementById("closeAccountAccessModal"),
+  cancelAccountAccessModal: document.getElementById("cancelAccountAccessModal"),
+  accountAccessState: document.getElementById("accountAccessState"),
+  accountAccessKeyHint: document.getElementById("accountAccessKeyHint"),
+  accountAccessEnabled: document.getElementById("accountAccessEnabled"),
+  generatedAccountAccessKey: document.getElementById("generatedAccountAccessKey"),
+  generatedAccountAccessKeyValue: document.getElementById("generatedAccountAccessKeyValue"),
+  copyAccountAccessKey: document.getElementById("copyAccountAccessKey"),
+  accountAccessGroupsEndpoint: document.getElementById("accountAccessGroupsEndpoint"),
+  accountAccessAccountsEndpoint: document.getElementById("accountAccessAccountsEndpoint"),
+  rotateAccountAccessKey: document.getElementById("rotateAccountAccessKey"),
+  saveAccountAccessState: document.getElementById("saveAccountAccessState"),
+  revokeAccountAccessKey: document.getElementById("revokeAccountAccessKey"),
   openInvitationManagementModal: document.getElementById("openInvitationManagementModal"),
   invitationManagementModal: document.getElementById("invitationManagementModal"),
   closeInvitationManagementModal: document.getElementById("closeInvitationManagementModal"),
@@ -603,6 +618,8 @@ const state = {
   accountStatusFilter: "all",
   accountPage: 1,
   accountPageSize: 20,
+  accountAccessConfigured: false,
+  accountAccessEnabled: false,
   invitationPage: 1,
   invitationPageSize: 10,
   invitationTotalPages: 1,
@@ -1737,7 +1754,7 @@ function switchView(name) {
   if (name === "membership") Promise.allSettled([loadMemberships(), loadClientProfile()]);
   if (name === "transactions") loadTransactions();
   if (name === "point-cards") loadPointCards();
-  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadRuntimeConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships(), loadInvitationConfig(), loadAdminAuditLogs()]);
+  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadRuntimeConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships(), loadAccountAccessConfig(), loadInvitationConfig(), loadAdminAuditLogs()]);
   if (name === "proxy-nodes" && portal === "admin") loadProxyNodes();
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
@@ -2388,6 +2405,97 @@ async function loadEmailDomains() {
   syncClientRegistrationControls();
 }
 
+function renderAccountAccessConfig(data) {
+  const configured = Boolean(data?.configured);
+  const enabled = Boolean(data?.enabled);
+  state.accountAccessConfigured = configured;
+  state.accountAccessEnabled = enabled;
+  if (els.accountAccessState) els.accountAccessState.textContent = configured ? (enabled ? "已启用" : "已停用") : "尚未生成";
+  if (els.accountAccessKeyHint) els.accountAccessKeyHint.textContent = data?.hint || "尚未生成";
+  if (els.accountAccessEnabled) {
+    els.accountAccessEnabled.checked = enabled;
+    els.accountAccessEnabled.disabled = !configured;
+  }
+  if (els.accountAccessGroupsEndpoint) els.accountAccessGroupsEndpoint.textContent = data?.groups_endpoint || "/account-access/groups";
+  if (els.accountAccessAccountsEndpoint) els.accountAccessAccountsEndpoint.textContent = data?.accounts_endpoint || "/account-access/accounts";
+  if (els.revokeAccountAccessKey) els.revokeAccountAccessKey.disabled = !configured;
+  if (els.saveAccountAccessState) els.saveAccountAccessState.disabled = !configured;
+}
+
+async function loadAccountAccessConfig() {
+  if (portal !== "admin" || !els.accountAccessState) return;
+  const data = await apiFetch("/config/account-access");
+  renderAccountAccessConfig(data);
+  return data;
+}
+
+async function openAccountAccessManagement() {
+  if (portal !== "admin") return;
+  els.accountAccessModal?.classList.remove("hidden");
+  els.accountAccessModal?.setAttribute("aria-hidden", "false");
+  try {
+    await loadAccountAccessConfig();
+  } catch (error) {
+    toast(`访问密钥读取失败：${error.message}`, "error");
+  }
+}
+
+function closeAccountAccessManagement() {
+  closeSettingsModal(els.accountAccessModal);
+  if (els.generatedAccountAccessKeyValue) els.generatedAccountAccessKeyValue.textContent = "";
+  els.generatedAccountAccessKey?.classList.add("hidden");
+}
+
+async function rotateAccountAccessCredential() {
+  if (state.accountAccessConfigured && !window.confirm("更换后旧访问密钥会立即失效，确认继续？")) return;
+  setBusy(els.rotateAccountAccessKey, true, "生成中");
+  try {
+    const data = await apiFetch("/config/account-access/rotate", { method: "POST" });
+    if (els.generatedAccountAccessKeyValue) els.generatedAccountAccessKeyValue.textContent = String(data.key || "");
+    els.generatedAccountAccessKey?.classList.toggle("hidden", !data.key);
+    renderAccountAccessConfig(data);
+    await loadAdminAuditLogs();
+    toast(data.key ? "访问密钥已生成，请立即保存" : "访问密钥生成失败", data.key ? "success" : "error");
+  } catch (error) {
+    toast(`访问密钥生成失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.rotateAccountAccessKey, false);
+  }
+}
+
+async function saveAccountAccessEnabled() {
+  if (!state.accountAccessConfigured) return;
+  setBusy(els.saveAccountAccessState, true, "保存中");
+  try {
+    const data = await apiFetch("/config/account-access", { method: "PATCH", body: { enabled: Boolean(els.accountAccessEnabled?.checked) } });
+    renderAccountAccessConfig(data);
+    await loadAdminAuditLogs();
+    toast(data.enabled ? "账号访问密钥已启用" : "账号访问密钥已停用");
+  } catch (error) {
+    if (els.accountAccessEnabled) els.accountAccessEnabled.checked = state.accountAccessEnabled;
+    toast(`访问状态保存失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.saveAccountAccessState, false);
+  }
+}
+
+async function revokeAccountAccessCredential() {
+  if (!state.accountAccessConfigured || !window.confirm("确认撤销账号访问密钥？撤销后无法恢复。")) return;
+  setBusy(els.revokeAccountAccessKey, true, "撤销中");
+  try {
+    const data = await apiFetch("/config/account-access", { method: "DELETE" });
+    renderAccountAccessConfig(data);
+    if (els.generatedAccountAccessKeyValue) els.generatedAccountAccessKeyValue.textContent = "";
+    els.generatedAccountAccessKey?.classList.add("hidden");
+    await loadAdminAuditLogs();
+    toast("账号访问密钥已撤销");
+  } catch (error) {
+    toast(`访问密钥撤销失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.revokeAccountAccessKey, false);
+  }
+}
+
 async function openInvitationManagement() {
   if (portal !== "admin") return;
   els.invitationManagementModal?.classList.remove("hidden");
@@ -2424,7 +2532,7 @@ function closeAdminAuditManagement() {
 function openAdminAuditDetails(entryId) {
   const entry = state.adminAuditEntries.find((item) => String(item.id || "") === String(entryId || ""));
   if (!entry || !els.adminAuditDetails) return;
-  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截" };
+  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截", account_access_rotate: "生成访问密钥", account_access_setting: "访问密钥设置", account_access_revoke: "撤销访问密钥", account_access_create: "密钥添加账号", account_access_update: "密钥修改账号" };
   if (els.adminAuditDetailsSubtitle) els.adminAuditDetailsSubtitle.textContent = `${actionLabels[entry.action] || "管理操作"} · ${formatTime(entry.created_at)}`;
   const details = [
     ["操作名称", entry.title || "管理操作"],
@@ -2490,7 +2598,7 @@ async function loadAdminAuditLogs() {
   state.adminAuditTotalPages = Number(data.total_pages || 1);
   const rows = Array.isArray(data.entries) ? data.entries : [];
   state.adminAuditEntries = rows;
-  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截" };
+  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截", account_access_rotate: "生成访问密钥", account_access_setting: "访问密钥设置", account_access_revoke: "撤销访问密钥", account_access_create: "密钥添加账号", account_access_update: "密钥修改账号" };
   els.adminAuditList.innerHTML = rows.length ? rows.map((item) => `
     <div class="admin-audit-row">
       <div><strong>${escapeHtml(item.title || "管理操作")}</strong><p>${escapeHtml(actionLabels[item.action] || "管理操作")}</p></div>
@@ -4877,28 +4985,33 @@ function applyBatchSelectionCount() {
   renderBatchPrompts();
 }
 
+function naturallySortedBatchImageFiles(files) {
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  return Array.from(files || [])
+    .map((file, index) => ({ file, index }))
+    .sort((left, right) => collator.compare(left.file.name, right.file.name) || left.index - right.index)
+    .map(({ file }) => file);
+}
+
 function mapBatchReferenceImages(files) {
   if (!state.batchPrompts.length) return toast("请先解析表格，再按行批量配图", "error");
-  let matched = 0;
-  const unassigned = [];
-  Array.from(files || []).forEach((file) => {
-    const number = Number((file.name.replace(/\.[^.]+$/, "").match(/(?:^|\D)(\d{1,6})(?:\D|$)/) || [])[1] || 0);
-    const item = number ? state.batchPrompts.find((entry) => Number(entry.row) === number) : null;
-    if (!item) {
-      unassigned.push(file);
-      return;
-    }
-    appendBatchImageFiles(item, [file]);
-    matched += 1;
+  const sortedFiles = naturallySortedBatchImageFiles(files);
+  if (!sortedFiles.length) return toast("请选择要按行匹配的参考图", "error");
+  const targets = state.batchPrompts.filter((item) => item.prompt.trim() && !batchItemIsCreated(item));
+  if (!targets.length) return toast("当前没有可配图的提示词", "error");
+  targets.forEach((item) => {
+    releaseBatchImageEntries(item.images);
+    item.images = [];
   });
-  unassigned.forEach((file, index) => {
-    const item = state.batchPrompts[index % state.batchPrompts.length];
-    appendBatchImageFiles(item, [file]);
-    matched += 1;
-  });
+  const matched = Math.min(sortedFiles.length, targets.length);
+  for (let index = 0; index < matched; index += 1) {
+    targets[index].images = createBatchImageEntries([sortedFiles[index]]);
+  }
   persistBatchReferenceImages();
+  scheduleBatchDraftSave();
   renderBatchPrompts();
-  toast(`已匹配 ${matched} 张参考图`);
+  const ignored = sortedFiles.length - matched;
+  toast(ignored > 0 ? `已按行匹配 ${matched} 张参考图，忽略多出的 ${ignored} 张` : `已按行顺序匹配 ${matched} 张参考图`);
 }
 
 async function parseBatchSpreadsheet() {
@@ -5484,6 +5597,14 @@ function bindEvents() {
     updateNotificationRecipientState();
   });
   els.packageForm?.addEventListener("submit", createPointPackage);
+  els.openAccountAccessModal?.addEventListener("click", openAccountAccessManagement);
+  els.closeAccountAccessModal?.addEventListener("click", closeAccountAccessManagement);
+  els.cancelAccountAccessModal?.addEventListener("click", closeAccountAccessManagement);
+  els.accountAccessModal?.addEventListener("click", (event) => { if (event.target === els.accountAccessModal) closeAccountAccessManagement(); });
+  els.rotateAccountAccessKey?.addEventListener("click", rotateAccountAccessCredential);
+  els.saveAccountAccessState?.addEventListener("click", saveAccountAccessEnabled);
+  els.revokeAccountAccessKey?.addEventListener("click", revokeAccountAccessCredential);
+  els.copyAccountAccessKey?.addEventListener("click", () => copyText(els.generatedAccountAccessKeyValue?.textContent || "", "访问密钥"));
   els.openInvitationManagementModal?.addEventListener("click", openInvitationManagement);
   els.closeInvitationManagementModal?.addEventListener("click", closeInvitationManagement);
   els.cancelInvitationManagementModal?.addEventListener("click", closeInvitationManagement);

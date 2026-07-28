@@ -24,10 +24,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 from . import config as app_config
+from .account_access import generate_key as generate_account_access_key, revoke_key as revoke_account_access_key, set_enabled as set_account_access_enabled, status as account_access_status, verify_key as verify_account_access_key
 from .admin_audit import list_admin_actions, prune_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
-from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_quota
+from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
 from .batch_jobs import (
@@ -1060,6 +1061,22 @@ async def require_admin(access: Annotated[AccessContext, Depends(require_token)]
     if not access.is_admin:
         raise HTTPException(status_code=403, detail="forbidden")
     return access
+
+
+async def require_account_access(
+    request: Request,
+    x_account_access_key: Annotated[str | None, Header(alias="X-Account-Access-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> str:
+    supplied = str(x_account_access_key or "").strip()
+    if authorization and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    identity = hashlib.sha256(supplied.encode("utf-8")).hexdigest()[:16] if supplied else "missing"
+    if not await asyncio.to_thread(verify_account_access_key, supplied):
+        await _rate_limit(request, "account-access-auth", 20, 60, identity)
+        raise HTTPException(status_code=403, detail="访问密钥无效或已停用")
+    await _rate_limit(request, "account-access", 240, 60, identity)
+    return identity
 
 
 class OpenAIAPIError(Exception):
@@ -2853,6 +2870,196 @@ async def update_workers_config(
         "submission_concurrency": BROWSER_SUBMISSION_CONCURRENCY,
         "remote_generation_limit": 0,
     }
+
+
+@app.get("/config/account-access", dependencies=[Depends(require_admin)])
+async def account_access_config():
+    return {
+        **account_access_status(),
+        "groups_endpoint": "/account-access/groups",
+        "accounts_endpoint": "/account-access/accounts",
+    }
+
+
+@app.post("/config/account-access/rotate", dependencies=[Depends(require_admin)])
+async def account_access_rotate(request: Request):
+    raw_key, key_status = await asyncio.to_thread(generate_account_access_key)
+    await _record_admin_action_safe(
+        "account_access_rotate",
+        "生成账号访问密钥",
+        detail=f"新密钥：{key_status.get('hint') or '-'}；旧密钥已立即失效",
+        ip_address=_request_client_key(request),
+    )
+    return {"ok": True, "key": raw_key, **key_status}
+
+
+@app.patch("/config/account-access", dependencies=[Depends(require_admin)])
+async def account_access_update(request: Request):
+    payload = await _request_payload(request)
+    if "enabled" not in payload:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    enabled = str(payload.get("enabled") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    try:
+        key_status = await asyncio.to_thread(set_account_access_enabled, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await _record_admin_action_safe(
+        "account_access_setting",
+        "启用账号访问密钥" if enabled else "停用账号访问密钥",
+        detail=f"密钥：{key_status.get('hint') or '-'}",
+        ip_address=_request_client_key(request),
+    )
+    return {"ok": True, **key_status}
+
+
+@app.delete("/config/account-access", dependencies=[Depends(require_admin)])
+async def account_access_revoke(request: Request):
+    previous = account_access_status()
+    key_status = await asyncio.to_thread(revoke_account_access_key)
+    await _record_admin_action_safe(
+        "account_access_revoke",
+        "撤销账号访问密钥",
+        detail=f"已撤销密钥：{previous.get('hint') or '-'}",
+        ip_address=_request_client_key(request),
+    )
+    return {"ok": True, **key_status}
+
+
+def _account_access_public_account(account: dict) -> dict:
+    return {
+        key: account.get(key)
+        for key in (
+            "id", "platform", "name", "enabled", "account_status", "status_reason",
+            "quota_limit", "quota_used", "quota_remaining", "quota_reset_date",
+            "created_at", "updated_at",
+        )
+    }
+
+
+@app.get("/account-access/groups")
+async def account_access_groups(
+    _access_key: Annotated[str, Depends(require_account_access)],
+):
+    rows = await asyncio.to_thread(list_accounts)
+    groups = []
+    for group_id, label in PLATFORM_LABELS.items():
+        members = [item for item in rows if str(item.get("platform") or DEFAULT_PLATFORM) == group_id]
+        groups.append(
+            {
+                "id": group_id,
+                "name": label,
+                "account_count": len(members),
+                "enabled_count": sum(item.get("enabled") is not False for item in members),
+            }
+        )
+    return {"groups": groups}
+
+
+@app.get("/account-access/accounts")
+async def account_access_accounts(
+    _access_key: Annotated[str, Depends(require_account_access)],
+    group: str = Query(DEFAULT_PLATFORM),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=200),
+):
+    try:
+        platform = normalize_platform(group)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    rows = await asyncio.to_thread(list_accounts, platform=platform)
+    total = len(rows)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    current_page = min(page, total_pages)
+    start = (current_page - 1) * page_size
+    return {
+        "accounts": [_account_access_public_account(item) for item in rows[start:start + page_size]],
+        "group": platform,
+        "total": total,
+        "page": current_page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+@app.post("/account-access/accounts", status_code=201)
+async def account_access_create_account(
+    request: Request,
+    _access_key: Annotated[str, Depends(require_account_access)],
+):
+    await _rate_limit(request, "account-access-create", 60, 60, _access_key)
+    payload = await _request_payload(request)
+    allowed_fields = {"group", "platform", "name", "cookie_data", "cookies", "cookie", "quota_limit", "enabled"}
+    unknown = sorted(set(payload) - allowed_fields)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"不支持的字段：{', '.join(unknown)}")
+    try:
+        platform = normalize_platform(payload.get("group") or payload.get("platform") or DEFAULT_PLATFORM)
+        raw_cookie_data = payload.get("cookie_data") or payload.get("cookies") or payload.get("cookie") or ""
+        cookie_data = json.dumps(raw_cookie_data, ensure_ascii=False) if isinstance(raw_cookie_data, (dict, list)) else str(raw_cookie_data)
+        default_quota_limit = 1 if platform == "dola" else 5 if platform == "qianwen" else 2
+        quota_limit = int(payload.get("quota_limit") if payload.get("quota_limit") not in {None, ""} else default_quota_limit)
+        if quota_limit < 0 or quota_limit > 1_000_000:
+            raise ValueError("账号额度上限需为 0-1000000")
+        enabled = str(payload.get("enabled") if payload.get("enabled") is not None else "true").lower() not in {"0", "false", "no", "off"}
+        account = await asyncio.to_thread(
+            add_account,
+            payload.get("name") or "",
+            cookie_data,
+            enabled,
+            quota_limit,
+            platform,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await _record_admin_action_safe(
+        "account_access_create",
+        "访问密钥添加账号",
+        detail=f"分组：{PLATFORM_LABELS.get(platform, platform)}；名称：{account.get('name') or '-'}；额度上限：{account.get('quota_limit')}",
+        actor="账号访问密钥",
+        ip_address=_request_client_key(request),
+        reference_id=str(account.get("id") or ""),
+    )
+    return {"ok": True, "account": _account_access_public_account(account)}
+
+
+@app.patch("/account-access/accounts/{account_id}")
+async def account_access_update_account(
+    account_id: str,
+    request: Request,
+    _access_key: Annotated[str, Depends(require_account_access)],
+):
+    await _rate_limit(request, "account-access-update", 120, 60, _access_key)
+    payload = await _request_payload(request)
+    unknown = sorted(set(payload) - {"name", "quota_limit"})
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"此密钥不能修改字段：{', '.join(unknown)}")
+    if not payload:
+        raise HTTPException(status_code=400, detail="至少需要提供账号名称或额度上限")
+    try:
+        account = await asyncio.to_thread(
+            update_account_details,
+            account_id,
+            name=payload.get("name") if "name" in payload else None,
+            quota_limit=payload.get("quota_limit") if "quota_limit" in payload else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="account not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    changed = []
+    if "name" in payload:
+        changed.append(f"名称：{account.get('name') or '-'}")
+    if "quota_limit" in payload:
+        changed.append(f"额度上限：{account.get('quota_limit')}")
+    await _record_admin_action_safe(
+        "account_access_update",
+        "访问密钥修改账号",
+        detail="；".join(changed),
+        actor="账号访问密钥",
+        ip_address=_request_client_key(request),
+        reference_id=str(account.get("id") or ""),
+    )
+    return {"ok": True, "account": _account_access_public_account(account)}
 
 
 @app.get("/accounts", dependencies=[Depends(require_admin)])

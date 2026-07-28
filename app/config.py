@@ -78,6 +78,9 @@ def default_max_effective_workers() -> int:
 def default_config() -> dict[str, Any]:
     return {
         "api_token": "",
+        "account_access_key_hash": "",
+        "account_access_key_hint": "",
+        "account_access_key_enabled": False,
         "admin_username": os.environ.get("DOLA_ADMIN_USERNAME", "1055660108"),
         "admin_password_hash": "",
         "host": "0.0.0.0",
@@ -288,6 +291,9 @@ def update_config(updates: Mapping[str, Any]) -> dict[str, Any]:
 @dataclass(frozen=True)
 class Settings:
     api_token: str
+    account_access_key_hash: str
+    account_access_key_hint: str
+    account_access_key_enabled: bool
     admin_username: str
     admin_password_hash: str
     host: str
@@ -396,6 +402,9 @@ def load_settings() -> Settings:
             model_costs[platform][model] = int(cost) if cost.is_integer() else cost
     return Settings(
         api_token=str(data.get("api_token") or ""),
+        account_access_key_hash=str(data.get("account_access_key_hash") or ""),
+        account_access_key_hint=str(data.get("account_access_key_hint") or "")[:40],
+        account_access_key_enabled=_as_bool(data.get("account_access_key_enabled"), False),
         admin_username=validate_username(str(data.get("admin_username") or "admin")),
         admin_password_hash=str(data.get("admin_password_hash") or ""),
         host=str(data.get("host") or "0.0.0.0"),

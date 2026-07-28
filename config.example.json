@@ -1,5 +1,8 @@
 {
   "api_token": "",
+  "account_access_key_hash": "",
+  "account_access_key_hint": "",
+  "account_access_key_enabled": false,
   "admin_username": "admin",
   "admin_password_hash": "",
   "host": "0.0.0.0",

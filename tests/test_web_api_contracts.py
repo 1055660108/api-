@@ -1028,6 +1028,76 @@ class WebAPIContractTests(unittest.TestCase):
             404,
         )
 
+    def test_restricted_account_access_key_lifecycle_and_scope(self) -> None:
+        admin_headers = {"X-API-Token": self.admin_token}
+        self.assertEqual(self.client.get("/account-access/groups").status_code, 403)
+
+        initial = self.client.get("/config/account-access", headers=admin_headers)
+        self.assertEqual(initial.status_code, 200)
+        self.assertFalse(initial.json()["configured"])
+        self.assertNotIn("account_access_key_hash", initial.json())
+
+        rotated = self.client.post("/config/account-access/rotate", headers=admin_headers)
+        self.assertEqual(rotated.status_code, 200)
+        first_key = rotated.json()["key"]
+        self.assertTrue(first_key.startswith("acct_"))
+        key_headers = {"Authorization": f"Bearer {first_key}"}
+
+        groups = self.client.get("/account-access/groups", headers=key_headers)
+        self.assertEqual(groups.status_code, 200)
+        self.assertEqual({item["id"] for item in groups.json()["groups"]}, {"dola", "doubao", "qianwen"})
+
+        created = self.client.post(
+            "/account-access/accounts",
+            headers=key_headers,
+            json={"group": "dola", "name": "外部导入账号", "cookie_data": "sessionid=restricted-key-test", "quota_limit": 12},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        account = created.json()["account"]
+        self.assertEqual(account["name"], "外部导入账号")
+        self.assertEqual(account["quota_limit"], 12)
+        for secret_field in ("cookies", "cookie_header", "cookie_names", "cookie_count", "current_task_id", "current_worker_id"):
+            self.assertNotIn(secret_field, account)
+
+        listed = self.client.get("/account-access/accounts?group=dola", headers={"X-Account-Access-Key": first_key})
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["accounts"][0]["id"], account["id"])
+        self.assertNotIn("cookies", listed.text)
+
+        updated = self.client.patch(
+            f"/account-access/accounts/{account['id']}",
+            headers=key_headers,
+            json={"name": "重命名账号", "quota_limit": 25},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["account"]["name"], "重命名账号")
+        self.assertEqual(updated.json()["account"]["quota_limit"], 25)
+        forbidden_update = self.client.patch(
+            f"/account-access/accounts/{account['id']}",
+            headers=key_headers,
+            json={"enabled": False},
+        )
+        self.assertEqual(forbidden_update.status_code, 400)
+
+        second_rotation = self.client.post("/config/account-access/rotate", headers=admin_headers)
+        self.assertEqual(second_rotation.status_code, 200)
+        second_key = second_rotation.json()["key"]
+        self.assertEqual(self.client.get("/account-access/groups", headers=key_headers).status_code, 403)
+        second_headers = {"Authorization": f"Bearer {second_key}"}
+        self.assertEqual(self.client.get("/account-access/groups", headers=second_headers).status_code, 200)
+
+        disabled = self.client.patch("/config/account-access", headers=admin_headers, json={"enabled": False})
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(disabled.json()["enabled"])
+        self.assertEqual(self.client.get("/account-access/groups", headers=second_headers).status_code, 403)
+
+        revoked = self.client.delete("/config/account-access", headers=admin_headers)
+        self.assertEqual(revoked.status_code, 200)
+        self.assertFalse(revoked.json()["configured"])
+        saved_config = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(saved_config["account_access_key_hash"], "")
+        self.assertNotIn(first_key, config.CONFIG_PATH.read_text(encoding="utf-8"))
+
     def test_direct_reference_upload_persists_original_filename_in_task_list(self) -> None:
         owner = self.register("reference_filename_owner")
         headers = {"X-API-Token": owner["token"]}

@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.64" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.65" />
   </head>
   <body>
     <script>
@@ -269,6 +269,10 @@
               <section class="panel config-panel admin-password-panel">
                 <div class="settings-card-header"><div><span class="settings-icon">⌁</span><h2>管理员账号</h2><p>当前账号只读，密码可在安全弹窗中修改。</p></div><span class="settings-state" id="adminPasswordState">安全登录</span></div>
                 <div class="settings-card-value"><div><span>管理员账号</span><strong id="adminAccountDisplay">-</strong></div><button class="primary-button" id="openPasswordModal" type="button">修改密码</button></div>
+              </section>
+              <section class="panel config-panel" id="accountAccessPanel">
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="key-round" aria-hidden="true"></i></span><h2>账号访问密钥</h2><p>为账号分组及账号导入工具提供独立的受限密钥。</p></div><span class="settings-state" id="accountAccessState">等待读取</span></div>
+                <button class="primary-button settings-entry-button" id="openAccountAccessModal" type="button"><i data-lucide="shield-check" aria-hidden="true"></i>密钥管理</button>
               </section>
               <section class="panel config-panel settings-featured" id="repositoryUpdatePanel">
                 <div class="settings-card-header"><div><span class="settings-icon">↻</span><h2>系统更新</h2><p>检查仓库版本并更新服务。</p></div><span class="settings-state" id="repositoryUpdateState">等待读取</span></div>
@@ -1095,6 +1099,18 @@
     <div class="modal-backdrop hidden" id="pointCardModal" aria-hidden="true">
       <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><h2 id="pointCardModalTitle">生成兑换码</h2><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
     </div>
+    <div class="modal-backdrop hidden" id="accountAccessModal" aria-hidden="true">
+      <section class="modal-panel account-access-modal" role="dialog" aria-modal="true" aria-labelledby="accountAccessModalTitle">
+        <div class="modal-header"><div><h2 id="accountAccessModalTitle">账号访问密钥</h2><p>密钥仅可查询账号分组和公开账号信息、添加账号、修改账号名称及额度上限。</p></div><button class="modal-close" id="closeAccountAccessModal" type="button" aria-label="关闭">×</button></div>
+        <div class="account-access-body">
+          <div class="account-access-status"><div><span>当前密钥</span><strong id="accountAccessKeyHint">尚未生成</strong></div><label class="invitation-toggle-control"><input id="accountAccessEnabled" type="checkbox" /><span class="switch-track" aria-hidden="true"><span></span></span><span><strong>启用访问</strong><small>停用后所有密钥请求立即被拒绝</small></span></label></div>
+          <div class="generated-codes hidden" id="generatedAccountAccessKey"><div><strong>新密钥仅显示一次</strong><button class="secondary-button" id="copyAccountAccessKey" type="button">复制密钥</button></div><pre id="generatedAccountAccessKeyValue"></pre></div>
+          <div class="account-access-endpoints"><div><span>分组接口</span><code id="accountAccessGroupsEndpoint">/account-access/groups</code></div><div><span>账号接口</span><code id="accountAccessAccountsEndpoint">/account-access/accounts</code></div><p>请求头：<code>Authorization: Bearer &lt;访问密钥&gt;</code> 或 <code>X-Account-Access-Key</code></p></div>
+          <div class="account-access-actions"><button class="primary-button" id="rotateAccountAccessKey" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i>生成或更换密钥</button><button class="secondary-button" id="saveAccountAccessState" type="button">保存启用状态</button><button class="danger-button" id="revokeAccountAccessKey" type="button">撤销密钥</button></div>
+        </div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelAccountAccessModal" type="button">关闭</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="invitationManagementModal" aria-hidden="true">
       <section class="modal-panel admin-management-modal" role="dialog" aria-modal="true" aria-labelledby="invitationManagementTitle">
         <div class="modal-header"><div><h2 id="invitationManagementTitle">邀请码管理</h2><p>生成纯英文字母邀请码，长期有效，手动删除后失效。</p></div><button class="modal-close" id="closeInvitationManagementModal" type="button" aria-label="关闭">×</button></div>
@@ -1124,7 +1140,7 @@
         <div class="admin-management-body">
           <div class="admin-audit-toolbar">
             <label class="field"><span>搜索</span><input id="adminAuditSearch" type="search" maxlength="100" placeholder="搜索操作、详情或管理员" /></label>
-            <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="invitation_generate">生成邀请码</option><option value="invitation_update">修改邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
+            <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="account_access_rotate">生成访问密钥</option><option value="account_access_setting">访问密钥设置</option><option value="account_access_revoke">撤销访问密钥</option><option value="account_access_create">密钥添加账号</option><option value="account_access_update">密钥修改账号</option><option value="invitation_generate">生成邀请码</option><option value="invitation_update">修改邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
             <label class="field"><span>每页数量</span><select id="adminAuditPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
           </div>
           <div class="admin-audit-list" id="adminAuditList" aria-live="polite"></div>
@@ -1266,6 +1282,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.64"></script>
+    <script src="/admin/assets/app.js?v=1.4.65"></script>
   </body>
 </html>

@@ -83,6 +83,8 @@ class AdminUITests(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn('data-action="open-references"', self.javascript)
         self.assertIn('/references/${index + 1}', self.javascript)
+        self.assertIn('task.reference_image_names', self.javascript)
+        self.assertIn('class="task-reference-names"', self.javascript)
 
     def test_release_version_is_displayed_in_sidebar_and_admin_update_panel(self) -> None:
         self.assertIn('id="sidebarVersion"', self.html)

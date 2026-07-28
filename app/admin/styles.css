@@ -2884,12 +2884,38 @@ textarea:focus {
   gap: 8px;
 }
 
+.task-prompt-content {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
 .task-prompt {
+  min-width: 48px;
+  flex: 1 1 auto;
   max-width: 100%;
   overflow: hidden;
   color: #1c2a30;
   font-weight: 800;
   line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-reference-names {
+  max-width: 46%;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  padding: 3px 6px;
+  color: #4f5c58;
+  background: #eef1ef;
+  border: 1px solid #d8ddda;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5683,6 +5709,7 @@ body[data-portal="client"] .metric-card {
 }
 
 #tasksView .task-id,
+#tasksView .task-prompt-content,
 #tasksView .task-prompt-row,
 #tasksView .result-text-button,
 #tasksView .task-status-stack,

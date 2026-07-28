@@ -132,6 +132,7 @@ IMAGE_MAGIC = {
     ".webp": (b"RIFF",),
 }
 VALID_VIDEO_DURATIONS = {5, 10, 15}
+MAX_REFERENCE_IMAGE_NAME_LENGTH = 180
 logger = logging.getLogger(__name__)
 
 
@@ -155,6 +156,19 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
     if not any(first.startswith(magic) for magic in IMAGE_MAGIC[suffix]):
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="invalid image content")
+
+
+def _reference_image_name(value: object, index: int, suffix: str = "") -> str:
+    raw = str(value or "").replace("\\", "/").rsplit("/", 1)[-1]
+    cleaned = "".join(character for character in raw if character >= " " and character != "\x7f").strip()
+    fallback_suffix = str(suffix or "").lower() if str(suffix or "").lower() in ALLOWED_IMAGE_SUFFIXES else ""
+    if not cleaned:
+        return f"参考图-{max(1, int(index))}{fallback_suffix}"
+    if len(cleaned) <= MAX_REFERENCE_IMAGE_NAME_LENGTH:
+        return cleaned
+    extension = Path(cleaned).suffix[:16]
+    stem_limit = max(1, MAX_REFERENCE_IMAGE_NAME_LENGTH - len(extension))
+    return f"{cleaned[:-len(extension)][:stem_limit]}{extension}" if extension else cleaned[:MAX_REFERENCE_IMAGE_NAME_LENGTH]
 
 
 def _video_referer(platform: str) -> str:
@@ -270,6 +284,7 @@ def _save_batch_reference_bundle(owner_token_hash: str, batch_id: str, uploads: 
     target_dir = _batch_reference_path(reference_id)
     target_dir.mkdir(parents=True, exist_ok=False)
     saved: list[str] = []
+    original_names: list[str] = []
     try:
         for index, upload in enumerate(uploads, start=1):
             suffix = Path(upload.filename or "").suffix.lower()
@@ -278,11 +293,13 @@ def _save_batch_reference_bundle(owner_token_hash: str, batch_id: str, uploads: 
             filename = f"{index:02d}{suffix}"
             _save_uploaded_image(upload, target_dir / filename)
             saved.append(filename)
+            original_names.append(_reference_image_name(upload.filename, index, suffix))
         metadata = {
             "id": reference_id,
             "owner_token_hash": owner_token_hash,
             "batch_id": str(batch_id or "")[:100],
             "images": saved,
+            "original_names": original_names,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         (target_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
@@ -292,7 +309,7 @@ def _save_batch_reference_bundle(owner_token_hash: str, batch_id: str, uploads: 
         raise
 
 
-def _batch_reference_paths(reference_id: str, owner_token_hash: str, batch_id: str) -> list[Path]:
+def _batch_reference_bundle(reference_id: str, owner_token_hash: str, batch_id: str) -> tuple[list[Path], list[str]]:
     try:
         target_dir = _batch_reference_path(reference_id)
         metadata = json.loads((target_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -303,7 +320,16 @@ def _batch_reference_paths(reference_id: str, owner_token_hash: str, batch_id: s
     paths = [target_dir / str(name) for name in metadata.get("images", []) if str(name)]
     if not paths or any(not path.is_file() for path in paths):
         raise HTTPException(status_code=400, detail="批量共用参考图不完整，请重新上传")
-    return paths
+    raw_names = metadata.get("original_names") if isinstance(metadata.get("original_names"), list) else []
+    names = [
+        _reference_image_name(raw_names[index] if index < len(raw_names) else "", index + 1, path.suffix)
+        for index, path in enumerate(paths)
+    ]
+    return paths, names
+
+
+def _batch_reference_paths(reference_id: str, owner_token_hash: str, batch_id: str) -> list[Path]:
+    return _batch_reference_bundle(reference_id, owner_token_hash, batch_id)[0]
 
 
 def _delete_batch_reference_bundle(reference_id: str, owner_token_hash: str) -> bool:
@@ -561,11 +587,12 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
     if not prompt or ratio not in VALID_RATIOS:
         raise ValueError("批量任务参数无效")
     shared_reference_paths: list[Path] = []
+    shared_reference_names: list[str] = []
     reference_id = str(job.get("reference_id") or "")
     reference_count = max(0, int(job.get("reference_count") or 0))
     if reference_id:
-        shared_reference_paths = await asyncio.to_thread(
-            _batch_reference_paths,
+        shared_reference_paths, shared_reference_names = await asyncio.to_thread(
+            _batch_reference_bundle,
             reference_id,
             owner_hash,
             str(job.get("reference_batch_id") or job_id),
@@ -573,6 +600,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
         if reference_count <= 0 or len(shared_reference_paths) < reference_count:
             raise ValueError("批量共用参考图数量无效，请重新上传")
         shared_reference_paths = shared_reference_paths[:reference_count]
+        shared_reference_names = shared_reference_names[:reference_count]
     assets_root = _batch_job_assets_path(job_id)
     row_reference_paths: list[Path] = []
     for name in row.get("image_files", []):
@@ -580,6 +608,11 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
         if not candidate.is_file():
             raise ValueError("批量任务参考图不完整，请重新上传")
         row_reference_paths.append(candidate)
+    raw_row_reference_names = row.get("image_names") if isinstance(row.get("image_names"), list) else []
+    row_reference_names = [
+        _reference_image_name(raw_row_reference_names[index] if index < len(raw_row_reference_names) else "", index + 1, path.suffix)
+        for index, path in enumerate(row_reference_paths)
+    ]
     if len(shared_reference_paths) + len(row_reference_paths) > load_settings().max_image_count:
         raise ValueError("每条任务最多添加 9 张参考图")
 
@@ -651,7 +684,12 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
                 target = images_dir(str(meta["id"])) / f"{index:02d}{source.suffix.lower()}"
                 await asyncio.to_thread(shutil.copy2, source, target)
                 saved_paths.append(target)
-            await _storage_call(set_task_images, str(meta["id"]), saved_paths)
+            await _storage_call(
+                set_task_images,
+                str(meta["id"]),
+                saved_paths,
+                [*shared_reference_names, *row_reference_names],
+            )
             if not _batch_job_is_active(job_id, owner_hash):
                 raise HTTPException(status_code=409, detail="批量提交已停止")
             await _storage_call(finalize_task_creation, str(meta["id"]))
@@ -3212,6 +3250,7 @@ async def create_persistent_batch_job(
             "prompt": prompt,
             "image_count": image_count,
             "image_files": [],
+            "image_names": [],
         })
     uploads = [item for item in (images or []) if item and item.filename]
     if len(uploads) != expected_images:
@@ -3224,6 +3263,7 @@ async def create_persistent_batch_job(
     try:
         for row_index, row in enumerate(normalized_rows, start=1):
             saved_names: list[str] = []
+            original_names: list[str] = []
             for image_index in range(int(row["image_count"])):
                 upload = uploads[upload_cursor]
                 upload_cursor += 1
@@ -3233,7 +3273,9 @@ async def create_persistent_batch_job(
                 filename = f"{row_index:06d}-{image_index + 1:02d}{suffix}"
                 await asyncio.to_thread(_save_uploaded_image, upload, assets_root / filename)
                 saved_names.append(filename)
+                original_names.append(_reference_image_name(upload.filename, image_index + 1, suffix))
             row["image_files"] = saved_names
+            row["image_names"] = original_names
         job = await _storage_call(
             create_batch_job,
             access.token_hash,
@@ -3353,9 +3395,10 @@ async def submit_task(
         if len(uploads) + batch_reference_image_count > load_settings().max_image_count:
             raise HTTPException(status_code=400, detail="too many images")
         shared_reference_paths: list[Path] = []
+        shared_reference_names: list[str] = []
         if batch_reference_id:
-            shared_reference_paths = await asyncio.to_thread(
-                _batch_reference_paths,
+            shared_reference_paths, shared_reference_names = await asyncio.to_thread(
+                _batch_reference_bundle,
                 batch_reference_id,
                 access.token_hash,
                 batch_id,
@@ -3363,6 +3406,7 @@ async def submit_task(
             if batch_reference_image_count <= 0 or len(shared_reference_paths) < batch_reference_image_count:
                 raise HTTPException(status_code=400, detail="批量共用参考图数量无效，请重新上传")
             shared_reference_paths = shared_reference_paths[:batch_reference_image_count]
+            shared_reference_names = shared_reference_names[:batch_reference_image_count]
         elif batch_reference_task_id:
             try:
                 validate_task_id(batch_reference_task_id)
@@ -3379,6 +3423,11 @@ async def submit_task(
             ):
                 raise HTTPException(status_code=400, detail="批量共用参考图不可用，请重新提交")
             shared_reference_paths = reference_paths[:batch_reference_image_count]
+            raw_reference_names = reference_meta.get("reference_image_names") if isinstance(reference_meta.get("reference_image_names"), list) else []
+            shared_reference_names = [
+                _reference_image_name(raw_reference_names[index] if index < len(raw_reference_names) else "", index + 1, path.suffix)
+                for index, path in enumerate(shared_reference_paths)
+            ]
         elif batch_reference_image_count:
             raise HTTPException(status_code=400, detail="批量共用参考图参数无效")
         await _rate_limit(request, "task-create-batch" if batch else "task-create", 2400 if batch else 30, 60, access.token_hash)
@@ -3473,18 +3522,27 @@ async def submit_task(
             )
             raise HTTPException(status_code=503, detail="任务创建暂时繁忙，请稍后重试", headers={"Retry-After": "2"}) from exc
         saved_paths: list[Path] = []
+        saved_reference_names: list[str] = []
         try:
             for index, source in enumerate(shared_reference_paths, start=1):
                 target = images_dir(meta["id"]) / f"{index:02d}{source.suffix.lower()}"
                 await asyncio.to_thread(shutil.copy2, source, target)
                 saved_paths.append(target)
+                saved_reference_names.append(
+                    _reference_image_name(
+                        shared_reference_names[index - 1] if index <= len(shared_reference_names) else "",
+                        index,
+                        source.suffix,
+                    )
+                )
             for index, upload in enumerate(uploads, start=len(saved_paths) + 1):
                 filename = Path(upload.filename or f"image_{index}.png").name
                 suffix = Path(filename).suffix.lower() or ".png"
                 target = images_dir(meta["id"]) / f"{index:02d}{suffix}"
                 await asyncio.to_thread(_save_uploaded_image, upload, target)
                 saved_paths.append(target)
-            await _storage_call(set_task_images, meta["id"], saved_paths)
+                saved_reference_names.append(_reference_image_name(upload.filename, index, suffix))
+            await _storage_call(set_task_images, meta["id"], saved_paths, saved_reference_names)
             _ensure_batch_active(access, batch_id)
             await _storage_call(finalize_task_creation, str(meta["id"]))
         except HTTPException:
@@ -3826,7 +3884,13 @@ async def task_reference_image(
     return FileResponse(
         path,
         media_type=media_type,
-        filename=path.name,
+        filename=_reference_image_name(
+            (meta.get("reference_image_names") or [])[image_index - 1]
+            if isinstance(meta.get("reference_image_names"), list) and image_index <= len(meta.get("reference_image_names") or [])
+            else "",
+            image_index,
+            path.suffix,
+        ),
         content_disposition_type="inline",
         headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
     )
@@ -3903,7 +3967,16 @@ async def retry_completed_task(request: Request, access: Annotated[AccessContext
             target = images_dir(str(retry_meta["id"])) / f"{index:02d}{source.suffix.lower()}"
             await asyncio.to_thread(shutil.copy2, source, target)
             copied_images.append(target)
-        await asyncio.to_thread(set_task_images, str(retry_meta["id"]), copied_images)
+        original_reference_names = original.get("reference_image_names") if isinstance(original.get("reference_image_names"), list) else []
+        retry_reference_names = [
+            _reference_image_name(
+                original_reference_names[index] if index < len(original_reference_names) else "",
+                index + 1,
+                source.suffix,
+            )
+            for index, source in enumerate(source_images)
+        ]
+        await asyncio.to_thread(set_task_images, str(retry_meta["id"]), copied_images, retry_reference_names)
         await asyncio.to_thread(update_meta, str(retry_meta["id"]), retry_of_task_id=task_id)
         await asyncio.to_thread(finalize_task_creation, str(retry_meta["id"]))
     except QuotaExceeded as exc:

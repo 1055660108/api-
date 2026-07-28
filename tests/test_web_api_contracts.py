@@ -549,6 +549,7 @@ class WebAPIContractTests(unittest.TestCase):
             claim = batch_jobs.claim_next_row(owner_hash)
             task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
         self.assertEqual([path.read_bytes() for path in store.task_image_paths(task_id)], [shared_image, row_image])
+        self.assertEqual(store.get_meta(task_id)["reference_image_names"], ["shared.png", "row.png"])
 
     def test_batch_coordinator_rotates_eligible_owners(self) -> None:
         batch_jobs._LOCAL_OWNER_CURSOR = 0
@@ -624,6 +625,10 @@ class WebAPIContractTests(unittest.TestCase):
             created.append(response.json()["id"])
             copied = [path.read_bytes() for path in store.task_image_paths(response.json()["id"])]
             self.assertEqual(copied, [shared_image, row_image] if index == 2 else [shared_image])
+            self.assertEqual(
+                store.get_meta(response.json()["id"])["reference_image_names"],
+                ["shared.png", "row.png"] if index == 2 else ["shared.png"],
+            )
         second_id = created[1]
         self.assertEqual(self.client.delete(f"/batch-prompts/references/{reference_id}", headers=headers).status_code, 200)
         store.save_result(second_id, extra={"decoded_main_url": "https://example.com/batch-result.mp4"})
@@ -710,7 +715,7 @@ class WebAPIContractTests(unittest.TestCase):
             source = store.create_task(f"{status} task", "16:9", owner_token_hash=owner_hash, model="Seedance 2.0", duration=10)
             image = store.images_dir(source["id"]) / "01.png"
             image.write_bytes(b"reference-image")
-            store.set_task_images(source["id"], [image])
+            store.set_task_images(source["id"], [image], [f"{status}-reference.png"])
             if status == "failed":
                 store.mark_failed(source["id"], "test failure")
             else:
@@ -718,7 +723,7 @@ class WebAPIContractTests(unittest.TestCase):
             source_ids.append(source["id"])
 
         retry_ids = []
-        for source_id in source_ids:
+        for source_id, expected_reference_name in zip(source_ids, ["failed-reference.png", "success-reference.png"], strict=True):
             response = self.client.post(f"/tasks/{source_id}/retry", headers=headers)
             self.assertEqual(response.status_code, 200, response.text)
             retry_id = response.json()["id"]
@@ -727,6 +732,7 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(retry_meta["status"], store.STATUS_PENDING)
             self.assertEqual(retry_meta["retry_of_task_id"], source_id)
             self.assertEqual(retry_meta["duration"], 10)
+            self.assertEqual(retry_meta["reference_image_names"], [expected_reference_name])
             self.assertEqual(store.task_image_paths(retry_id)[0].read_bytes(), b"reference-image")
 
         self.assertEqual(len(set(retry_ids)), 2)
@@ -903,7 +909,7 @@ class WebAPIContractTests(unittest.TestCase):
         original = b"\x89PNG\r\n\x1a\noriginal-user-reference"
         reference = store.images_dir(task["id"]) / "01.png"
         reference.write_bytes(original)
-        store.set_task_images(task["id"], [reference])
+        store.set_task_images(task["id"], [reference], ["source-photo.png"])
 
         response = self.client.get(
             f"/tasks/{task['id']}/references/1",
@@ -913,6 +919,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.content, original)
         self.assertEqual(response.headers["content-type"], "image/png")
         self.assertIn("inline", response.headers["content-disposition"])
+        self.assertIn("source-photo.png", response.headers["content-disposition"])
         self.assertEqual(
             self.client.get(f"/tasks/{task['id']}/references/1", headers={"X-API-Token": other["token"]}).status_code,
             404,
@@ -921,6 +928,22 @@ class WebAPIContractTests(unittest.TestCase):
             self.client.get(f"/tasks/{task['id']}/references/2", headers={"X-API-Token": owner["token"]}).status_code,
             404,
         )
+
+    def test_direct_reference_upload_persists_original_filename_in_task_list(self) -> None:
+        owner = self.register("reference_filename_owner")
+        headers = {"X-API-Token": owner["token"]}
+        response = self.client.post(
+            "/tasks",
+            headers=headers,
+            data={"prompt": "保留参考图文件名", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0"},
+            files=[("images", ("scene-reference.png", b"\x89PNG\r\n\x1a\nreference-name", "image/png"))],
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        task_id = response.json()["id"]
+        self.assertEqual(store.get_meta(task_id)["reference_image_names"], ["scene-reference.png"])
+        tasks = self.client.get("/tasks", headers=headers).json()["tasks"]
+        listed = next(item for item in tasks if item["id"] == task_id)
+        self.assertEqual(listed["reference_image_names"], ["scene-reference.png"])
 
     def test_task_pagination_search_statistics_and_legacy_contract(self) -> None:
         registered = self.register()

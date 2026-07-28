@@ -434,7 +434,9 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
         self.assertTrue(store.images_dir(task_id).is_dir())
         reference = store.images_dir(task_id) / "01.png"
         reference.write_bytes(b"postgres-reference-image")
+        store.set_task_images(task_id, [reference], ["postgres-source.png"])
         self.assertEqual(store.task_image_paths(task_id), [reference])
+        self.assertEqual(store.get_meta(task_id)["reference_image_names"], ["postgres-source.png"])
         reference.unlink()
         store.images_dir(task_id).rmdir()
         store.task_dir(task_id).rmdir()

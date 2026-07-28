@@ -3598,7 +3598,7 @@ function renderTaskTable(options = {}) {
   const signature = JSON.stringify({
     page: state.page,
     totalPages: page.totalPages,
-    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.owner_name, task.status, task.error, task.status_reason, task.execution_phase, task.phase_updated_at, task.queue_reason, task.queue_category, task.retry_count, task.infrastructure_retry_count, task.result_timeout_retry_count, task.attempt_history, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
+    tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.reference_image_names, task.owner_name, task.status, task.error, task.status_reason, task.execution_phase, task.phase_updated_at, task.queue_reason, task.queue_category, task.retry_count, task.infrastructure_retry_count, task.result_timeout_retry_count, task.attempt_history, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
   });
   if (options.skipUnchanged && signature === state.taskRenderSignature) return;
   state.taskRenderSignature = signature;
@@ -3621,6 +3621,10 @@ function renderTaskTable(options = {}) {
     const statusMeta = retryCount > 0 && ["pending", "running", "submitted"].includes(String(task.status || "").toLowerCase()) ? `第 ${Math.min(retryCount, 2)} / 2 次重试` : "";
     const fullPrompt = String(task.prompt || task.prompt_preview || "").trim();
     const promptPreview = String(task.prompt_preview || "").trim() || "-";
+    const referenceNames = Array.isArray(task.reference_image_names)
+      ? task.reference_image_names.map((name) => String(name || "").trim()).filter(Boolean)
+      : [];
+    const referenceNameText = referenceNames.length ? referenceNames.join("、") : (Number(task.image_count || 0) > 0 ? "参考图" : "");
     const ownerName = String(task.owner_name || "未备注").trim() || "未备注";
     const modelLabel = String(task.model || "").trim();
     const platformLabel = portal === "client" ? modelLabel : (PLATFORM_LABELS[String(task.platform || "dola")] || String(task.platform || "Dola"));
@@ -3640,7 +3644,10 @@ function renderTaskTable(options = {}) {
         <td>
           <div class="task-id">
             <div class="task-prompt-row">
-              <span class="task-prompt" title="${escapeHtml(fullPrompt || task.prompt_preview || "")}">${escapeHtml(promptPreview)}</span>
+              <div class="task-prompt-content">
+                <span class="task-prompt" title="${escapeHtml(fullPrompt || task.prompt_preview || "")}">${escapeHtml(promptPreview)}</span>
+                ${referenceNameText ? `<span class="task-reference-names" title="${escapeHtml(referenceNameText)}">${escapeHtml(referenceNameText)}</span>` : ""}
+              </div>
               <button class="task-copy-prompt" type="button" data-action="copy-prompt" data-id="${escapeHtml(task.id)}">复制</button>
             </div>
             <code title="${escapeHtml(task.id)}">${escapeHtml(shortId(task.id))}</code>

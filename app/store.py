@@ -386,18 +386,21 @@ def fail_initializing_tasks(reason: str = "任务未成功进入队列，请重�
     return failed
 
 
-def set_task_images(task_id: str, paths: Iterable[Path]) -> None:
+def set_task_images(task_id: str, paths: Iterable[Path], reference_image_names: Iterable[str] | None = None) -> None:
     with task_lock(task_id):
         image_count = len(list(paths))
+        names = [str(name or "").strip()[:180] for name in (reference_image_names or [])][:image_count]
         if postgres.enabled():
             def mutate(meta: dict[str, Any]) -> None:
                 meta["image_count"] = image_count
+                meta["reference_image_names"] = names
                 meta["updated_at"] = utc_now()
 
             postgres.mutate_task_part(task_id, "meta", mutate)
             return
         meta = get_meta(task_id)
         meta["image_count"] = image_count
+        meta["reference_image_names"] = names
         meta["updated_at"] = utc_now()
         _write_storage_json(meta_path(task_id), meta)
 
@@ -1152,6 +1155,7 @@ def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str])
         "status_reason": str(meta.get("status_reason") or ""),
         "phase_updated_at": str(meta.get("phase_updated_at") or ""),
         "image_count": int(meta.get("image_count") or 0),
+        "reference_image_names": [str(name) for name in meta.get("reference_image_names") or [] if str(name).strip()],
         "error": str(meta.get("error") or ""),
         "owner_token_hash": owner,
         "owner_name": remarks.get(owner, "") if owner else "管理员",

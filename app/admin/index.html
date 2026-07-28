@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.53" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.54" />
   </head>
   <body>
     <script>
@@ -281,31 +281,13 @@
               </section>
               <section class="panel config-panel" id="adminAuditPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="scroll-text" aria-hidden="true"></i></span><h2>管理员操作日志</h2><p>记录邀请码管理操作及异常注册拦截。</p></div><span class="settings-state" id="adminAuditState">等待读取</span></div>
-                <div class="admin-audit-toolbar">
-                  <label class="field"><span>搜索</span><input id="adminAuditSearch" type="search" maxlength="100" placeholder="搜索操作、详情或管理员" /></label>
-                  <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="invitation_generate">生成邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
-                  <label class="field"><span>每页数量</span><select id="adminAuditPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
-                </div>
-                <div class="admin-audit-list" id="adminAuditList" aria-live="polite"></div>
-                <div class="invitation-pagination"><span id="adminAuditPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevAdminAuditPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextAdminAuditPage" type="button">下一页</button></div></div>
+                <button class="secondary-button settings-entry-button" id="openAdminAuditModal" type="button"><i data-lucide="list-filter" aria-hidden="true"></i>日志详情</button>
               </section>
                 </div>
                 <div class="admin-settings-column">
               <section class="panel config-panel" id="invitationConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="ticket-check" aria-hidden="true"></i></span><h2>注册邀请码</h2><p>邀请码可长期重复使用，手动删除后失效。</p></div><span class="settings-state" id="invitationConfigState">等待读取</span></div>
-                <div class="invitation-config-controls">
-                  <label class="invitation-toggle-control"><input id="registrationInvitationRequired" type="checkbox" checked /><span class="switch-track" aria-hidden="true"><span></span></span><span><strong>启用邀请码注册</strong><small>关闭后新用户无需邀请码即可注册</small></span></label>
-                  <label class="field"><span>生成数量</span><input id="invitationCodeCount" type="number" min="1" max="200" step="1" value="1" /></label>
-                  <button class="primary-button" id="generateInvitationCodes" type="button"><i data-lucide="plus" aria-hidden="true"></i>生成邀请码</button>
-                </div>
-                <div class="generated-codes hidden" id="generatedInvitationCodes"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedInvitationCodes" type="button">复制全部</button></div><pre id="generatedInvitationCodeList"></pre></div>
-                <div class="invitation-list-toolbar">
-                  <label class="field"><span>搜索</span><input id="invitationSearch" type="search" maxlength="80" placeholder="搜索邀请码或使用者" /></label>
-                  <label class="field"><span>使用状态</span><select id="invitationUsageFilter"><option value="all">全部</option><option value="unused">未使用</option><option value="used">已使用</option></select></label>
-                  <label class="field"><span>每页数量</span><select id="invitationPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
-                </div>
-                <div class="invitation-code-list" id="invitationCodeList" aria-live="polite"></div>
-                <div class="invitation-pagination"><span id="invitationPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevInvitationPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextInvitationPage" type="button">下一页</button></div></div>
+                <button class="primary-button settings-entry-button" id="openInvitationManagementModal" type="button"><i data-lucide="settings-2" aria-hidden="true"></i>邀请码管理</button>
               </section>
               <section class="panel config-panel" id="modelConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>生成模型</h2><p>控制各平台可选模型及默认模型列表。</p></div><span class="settings-state" id="modelConfigState">自动同步</span></div>
@@ -1114,6 +1096,51 @@
     <div class="modal-backdrop hidden" id="pointCardModal" aria-hidden="true">
       <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><h2 id="pointCardModalTitle">生成兑换码</h2><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
     </div>
+    <div class="modal-backdrop hidden" id="invitationManagementModal" aria-hidden="true">
+      <section class="modal-panel admin-management-modal" role="dialog" aria-modal="true" aria-labelledby="invitationManagementTitle">
+        <div class="modal-header"><div><h2 id="invitationManagementTitle">邀请码管理</h2><p>生成纯英文字母邀请码，长期有效，手动删除后失效。</p></div><button class="modal-close" id="closeInvitationManagementModal" type="button" aria-label="关闭">×</button></div>
+        <div class="admin-management-body">
+          <div class="invitation-config-controls">
+            <label class="invitation-toggle-control"><input id="registrationInvitationRequired" type="checkbox" checked /><span class="switch-track" aria-hidden="true"><span></span></span><span><strong>启用邀请码注册</strong><small>关闭后新用户无需邀请码即可注册</small></span></label>
+            <label class="field"><span>邀请码长度</span><input id="invitationCodeLength" type="number" min="4" max="32" step="1" value="7" /></label>
+            <label class="field"><span>生成数量</span><input id="invitationCodeCount" type="number" min="1" max="200" step="1" value="1" /></label>
+            <label class="field invitation-note-field"><span>备注名称</span><input id="invitationCodeNote" type="text" maxlength="120" placeholder="例如：渠道名称或使用对象" /></label>
+            <button class="primary-button" id="generateInvitationCodes" type="button"><i data-lucide="plus" aria-hidden="true"></i>生成邀请码</button>
+          </div>
+          <div class="generated-codes hidden" id="generatedInvitationCodes"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedInvitationCodes" type="button">复制全部</button></div><pre id="generatedInvitationCodeList"></pre></div>
+          <div class="invitation-list-toolbar">
+            <label class="field"><span>搜索</span><input id="invitationSearch" type="search" maxlength="80" placeholder="搜索邀请码、备注或使用者" /></label>
+            <label class="field"><span>使用状态</span><select id="invitationUsageFilter"><option value="all">全部</option><option value="unused">未使用</option><option value="used">已使用</option></select></label>
+            <label class="field"><span>每页数量</span><select id="invitationPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
+          </div>
+          <div class="invitation-code-list" id="invitationCodeList" aria-live="polite"></div>
+          <div class="invitation-pagination"><span id="invitationPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevInvitationPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextInvitationPage" type="button">下一页</button></div></div>
+        </div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelInvitationManagementModal" type="button">关闭</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="adminAuditModal" aria-hidden="true">
+      <section class="modal-panel admin-management-modal" role="dialog" aria-modal="true" aria-labelledby="adminAuditModalTitle">
+        <div class="modal-header"><div><h2 id="adminAuditModalTitle">管理员操作日志</h2><p>查看设置修改、邀请码操作和异常注册拦截记录。</p></div><button class="modal-close" id="closeAdminAuditModal" type="button" aria-label="关闭">×</button></div>
+        <div class="admin-management-body">
+          <div class="admin-audit-toolbar">
+            <label class="field"><span>搜索</span><input id="adminAuditSearch" type="search" maxlength="100" placeholder="搜索操作、详情或管理员" /></label>
+            <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="invitation_generate">生成邀请码</option><option value="invitation_update">修改邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
+            <label class="field"><span>每页数量</span><select id="adminAuditPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
+          </div>
+          <div class="admin-audit-list" id="adminAuditList" aria-live="polite"></div>
+          <div class="invitation-pagination"><span id="adminAuditPageState">第 1 / 1 页</span><div><button class="secondary-button compact-button" id="prevAdminAuditPage" type="button">上一页</button><button class="secondary-button compact-button" id="nextAdminAuditPage" type="button">下一页</button></div></div>
+        </div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelAdminAuditModal" type="button">关闭</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden elevated-modal" id="adminAuditDetailsModal" aria-hidden="true">
+      <section class="modal-panel admin-audit-details-modal" role="dialog" aria-modal="true" aria-labelledby="adminAuditDetailsTitle">
+        <div class="modal-header"><div><h2 id="adminAuditDetailsTitle">日志详情</h2><p id="adminAuditDetailsSubtitle"></p></div><button class="modal-close" id="closeAdminAuditDetailsModal" type="button" aria-label="关闭">×</button></div>
+        <dl class="admin-audit-details" id="adminAuditDetails"></dl>
+        <div class="modal-actions"><button class="primary-button" id="cancelAdminAuditDetailsModal" type="button">关闭</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="promptPickerModal" aria-hidden="true">
       <section class="modal-panel prompt-picker-modal" role="dialog" aria-modal="true" aria-labelledby="promptPickerTitle">
         <div class="modal-header"><div><h2 id="promptPickerTitle">选择提示词</h2><p>选择后会直接带入当前生成任务。</p></div><button class="modal-close" id="closePromptPickerModal" type="button" aria-label="关闭">×</button></div>
@@ -1240,6 +1267,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.53"></script>
+    <script src="/admin/assets/app.js?v=1.4.54"></script>
   </body>
 </html>

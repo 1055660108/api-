@@ -9,11 +9,13 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .store import task_dir, task_image_paths, update_meta
+from .store import get_meta, task_dir, task_image_paths, update_meta
 
 
 LOGGER = logging.getLogger(__name__)
 DETECTION_MAX_SIDE = 1600
+MANIFEST_VERSION = 2
+GRID_ALPHA = 0.4
 
 
 def _source_fingerprint(path: Path) -> str:
@@ -26,8 +28,14 @@ def _read_manifest(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {"version": 1, "images": {}}
-    return value if isinstance(value, dict) else {"version": 1, "images": {}}
+        return {"version": MANIFEST_VERSION, "images": {}}
+    try:
+        version = int(value.get("version") or 0) if isinstance(value, dict) else 0
+    except (TypeError, ValueError):
+        version = 0
+    if not isinstance(value, dict) or version != MANIFEST_VERSION:
+        return {"version": MANIFEST_VERSION, "images": {}}
+    return value
 
 
 def _write_manifest(path: Path, value: dict[str, Any]) -> None:
@@ -101,10 +109,35 @@ def _detect_faces(image: np.ndarray) -> list[tuple[int, int, int, int]]:
     return _merge_faces(detected)
 
 
-def _mask_faces(image: np.ndarray, faces: list[tuple[int, int, int, int]]) -> np.ndarray:
+def _grid_region(region: np.ndarray, seed: str) -> np.ndarray:
+    height, width = region.shape[:2]
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    rng = np.random.default_rng(int.from_bytes(digest[:8], "big"))
+    overlay = region.copy()
+    scale = max(1.0, min(height, width) / 640.0)
+    min_spacing = max(10, int(14 * scale))
+    max_spacing = max(min_spacing + 2, int(26 * scale))
+
+    x = int(rng.integers(0, max(1, min_spacing)))
+    while x < width:
+        line_width = max(2, int(rng.integers(2, 5) * scale))
+        color = tuple(int(value) for value in rng.integers(20, 236, size=3))
+        cv2.line(overlay, (x, 0), (x, height - 1), color, line_width, cv2.LINE_AA)
+        x += int(rng.integers(min_spacing, max_spacing + 1))
+
+    y = int(rng.integers(0, max(1, min_spacing)))
+    while y < height:
+        line_width = max(2, int(rng.integers(2, 5) * scale))
+        color = tuple(int(value) for value in rng.integers(20, 236, size=3))
+        cv2.line(overlay, (0, y), (width - 1, y), color, line_width, cv2.LINE_AA)
+        y += int(rng.integers(min_spacing, max_spacing + 1))
+    return cv2.addWeighted(overlay, GRID_ALPHA, region, 1.0 - GRID_ALPHA, 0)
+
+
+def _apply_face_grids(image: np.ndarray, faces: list[tuple[int, int, int, int]], seed: str) -> np.ndarray:
     output = image.copy()
     image_height, image_width = output.shape[:2]
-    for x, y, width, height in faces:
+    for index, (x, y, width, height) in enumerate(faces):
         pad_x, pad_y = int(width * 0.2), int(height * 0.28)
         left, top = max(0, x - pad_x), max(0, y - pad_y)
         right, bottom = min(image_width, x + width + pad_x), min(image_height, y + height + pad_y)
@@ -113,20 +146,7 @@ def _mask_faces(image: np.ndarray, faces: list[tuple[int, int, int, int]]) -> np
             continue
 
         region_height, region_width = region.shape[:2]
-        block_width = max(8, region_width // 14)
-        block_height = max(8, region_height // 14)
-        pixelated = cv2.resize(region, (block_width, block_height), interpolation=cv2.INTER_AREA)
-        pixelated = cv2.resize(pixelated, (region_width, region_height), interpolation=cv2.INTER_NEAREST)
-        kernel = max(9, (min(region_width, region_height) // 7) | 1)
-        blurred = cv2.GaussianBlur(pixelated, (kernel, kernel), 0)
-        protected = cv2.addWeighted(pixelated, 0.68, blurred, 0.32, 0)
-
-        eye_top = max(0, int(region_height * 0.34))
-        eye_bottom = min(region_height, int(region_height * 0.59))
-        if eye_bottom > eye_top:
-            eye_band = protected[eye_top:eye_bottom]
-            dark = np.full_like(eye_band, 34)
-            protected[eye_top:eye_bottom] = cv2.addWeighted(eye_band, 0.42, dark, 0.58, 0)
+        protected = _grid_region(region, f"{seed}:face:{index}:{left}:{top}:{right}:{bottom}")
 
         mask = np.zeros((region_height, region_width), dtype=np.uint8)
         cv2.ellipse(
@@ -145,7 +165,14 @@ def _mask_faces(image: np.ndarray, faces: list[tuple[int, int, int, int]]) -> np
     return output
 
 
-def prepare_task_reference_images(task_id: str) -> list[Path]:
+def _force_grid_enabled(task_id: str) -> bool:
+    try:
+        return bool(get_meta(task_id).get("reference_force_grid"))
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def prepare_task_reference_images(task_id: str, force_grid: bool | None = None) -> list[Path]:
     originals = task_image_paths(task_id)
     if not originals:
         return []
@@ -155,6 +182,7 @@ def prepare_task_reference_images(task_id: str) -> list[Path]:
     manifest_path = internal_dir / "manifest.json"
     manifest = _read_manifest(manifest_path)
     entries = manifest.setdefault("images", {})
+    force_grid = _force_grid_enabled(task_id) if force_grid is None else bool(force_grid)
     prepared: list[Path] = []
     total_faces = 0
     processing_errors: list[str] = []
@@ -162,7 +190,10 @@ def prepare_task_reference_images(task_id: str) -> list[Path]:
     for index, source in enumerate(originals, start=1):
         fingerprint = _source_fingerprint(source)
         cached = entries.get(source.name) if isinstance(entries, dict) else None
-        if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint:
+        expected_force_mode = "full-grid" if force_grid else ""
+        cached_mode = str(cached.get("mode") or "") if isinstance(cached, dict) else ""
+        cache_mode_matches = cached_mode == expected_force_mode if force_grid else cached_mode in {"original", "face-grid"}
+        if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and cache_mode_matches:
             face_count = max(0, int(cached.get("face_count") or 0))
             processed_name = str(cached.get("processed_name") or "")
             processed_path = internal_dir / processed_name if processed_name else source
@@ -174,17 +205,18 @@ def prepare_task_reference_images(task_id: str) -> list[Path]:
         image = _load_image(source)
         if image is None:
             processing_errors.append(source.name)
-            entries[source.name] = {"fingerprint": fingerprint, "face_count": 0, "processed_name": ""}
+            entries[source.name] = {"fingerprint": fingerprint, "face_count": 0, "processed_name": "", "mode": "original"}
             prepared.append(source)
             continue
 
         faces = _detect_faces(image)
         total_faces += len(faces)
+        mode = "full-grid" if force_grid else ("face-grid" if faces else "original")
         processed_name = ""
         prepared_path = source
-        if faces:
-            protected = _mask_faces(image, faces)
-            processed_name = f"{index:02d}-{fingerprint}.jpg"
+        if mode != "original":
+            protected = _grid_region(image, f"{fingerprint}:full") if force_grid else _apply_face_grids(image, faces, fingerprint)
+            processed_name = f"{index:02d}-{fingerprint}-{mode}.jpg"
             prepared_path = internal_dir / processed_name
             success, encoded = cv2.imencode(".jpg", protected, [cv2.IMWRITE_JPEG_QUALITY, 93])
             if not success:
@@ -194,10 +226,11 @@ def prepare_task_reference_images(task_id: str) -> list[Path]:
             "fingerprint": fingerprint,
             "face_count": len(faces),
             "processed_name": processed_name,
+            "mode": mode,
         }
         prepared.append(prepared_path)
 
-    manifest["version"] = 1
+    manifest["version"] = MANIFEST_VERSION
     _write_manifest(manifest_path, manifest)
     try:
         update_meta(
@@ -205,6 +238,7 @@ def prepare_task_reference_images(task_id: str) -> list[Path]:
             reference_face_detection_completed=True,
             reference_face_count=total_faces,
             reference_face_processing_errors=processing_errors,
+            reference_grid_mode="full-grid" if force_grid else ("face-grid" if total_faces else "original"),
         )
     except (FileNotFoundError, OSError):
         LOGGER.warning("could not persist reference face metadata for task %s", task_id)

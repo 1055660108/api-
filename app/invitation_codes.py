@@ -14,7 +14,10 @@ from .config import DATA_DIR, ensure_dirs
 
 
 INVITATION_CODES_PATH = DATA_DIR / "invitation_codes.json"
-_ALPHABET = string.ascii_uppercase + string.digits
+_ALPHABET = string.ascii_uppercase
+DEFAULT_CODE_LENGTH = 7
+MIN_CODE_LENGTH = 4
+MAX_CODE_LENGTH = 32
 _LOCK = threading.RLock()
 _MAX_USE_HISTORY = 100
 T = TypeVar("T")
@@ -32,9 +35,8 @@ def _digest(code: object) -> str:
     return hashlib.sha256(_normalize(code).encode("ascii", errors="ignore")).hexdigest()
 
 
-def _new_code() -> str:
-    raw = "".join(secrets.choice(_ALPHABET) for _ in range(12))
-    return "HSI-" + "-".join(raw[index:index + 4] for index in range(0, 12, 4))
+def _new_code(length: int = DEFAULT_CODE_LENGTH) -> str:
+    return "".join(secrets.choice(_ALPHABET) for _ in range(length))
 
 
 def _default() -> dict[str, Any]:
@@ -54,6 +56,7 @@ def _normalize_data(data: dict[str, Any]) -> dict[str, Any]:
         record.setdefault("code_hash", str(code_hash))
         record.setdefault("code", "")
         record.setdefault("created_at", "")
+        record["note"] = str(record.get("note") or "").strip()[:120]
         # Codes created by the earlier one-time implementation remain active.
         previous_uses = 1 if str(record.get("status") or "") == "used" else 0
         record["use_count"] = max(0, int(record.get("use_count") or previous_uses))
@@ -122,24 +125,29 @@ def set_registration_required(required: bool) -> dict[str, Any]:
     return _mutate(mutate)
 
 
-def generate_codes(count: int) -> list[dict[str, Any]]:
+def generate_codes(count: int, length: int = DEFAULT_CODE_LENGTH, note: str = "") -> list[dict[str, Any]]:
     count = int(count)
     if count < 1 or count > 200:
         raise ValueError("生成数量需为 1-200")
+    length = int(length)
+    if length < MIN_CODE_LENGTH or length > MAX_CODE_LENGTH:
+        raise ValueError(f"邀请码长度需为 {MIN_CODE_LENGTH}-{MAX_CODE_LENGTH}")
+    normalized_note = str(note or "").strip()[:120]
 
     def mutate(data: dict[str, Any]) -> list[dict[str, Any]]:
         codes = data.setdefault("codes", {})
         created = []
         for _ in range(count):
-            code = _new_code()
+            code = _new_code(length)
             while _digest(code) in codes:
-                code = _new_code()
+                code = _new_code(length)
             now = _now()
             record = {
                 "id": secrets.token_hex(12),
                 "code": code,
                 "code_hash": _digest(code),
                 "created_at": now,
+                "note": normalized_note,
                 "use_count": 0,
                 "last_used_at": "",
                 "last_used_by": "",
@@ -156,7 +164,7 @@ def generate_codes(count: int) -> list[dict[str, Any]]:
 
 def reserve_code(code: object) -> dict[str, str]:
     normalized = _normalize(code)
-    if len(normalized) < 8:
+    if len(normalized) < MIN_CODE_LENGTH:
         raise ValueError("邀请码无效")
     code_hash = _digest(normalized)
 
@@ -227,6 +235,23 @@ def delete_code(code_id: object) -> dict[str, Any] | None:
     return _mutate(mutate)
 
 
+def update_code_note(code_id: object, note: object) -> dict[str, Any] | None:
+    normalized_id = str(code_id or "").strip()
+    normalized_note = str(note or "").strip()[:120]
+    if not normalized_id:
+        return None
+
+    def mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        for record in data.get("codes", {}).values():
+            if isinstance(record, dict) and str(record.get("id") or "") == normalized_id:
+                record["note"] = normalized_note
+                data["updated_at"] = _now()
+                return dict(record)
+        return None
+
+    return _mutate(mutate)
+
+
 def invitation_state(
     data: dict[str, Any] | None = None,
     page: int = 1,
@@ -251,6 +276,7 @@ def invitation_state(
             for item in rows
             if normalized_query in _normalize(item.get("code"))
             or normalized_query in _normalize(item.get("last_used_username"))
+            or normalized_query in _normalize(item.get("note"))
         ]
     rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     normalized_page_size = max(10, min(100, int(page_size)))

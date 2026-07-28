@@ -53,3 +53,24 @@ class ReferenceImageTests(unittest.TestCase):
                 prepared = reference_images.prepare_task_reference_images("0" * 32)
 
             self.assertEqual(prepared, [source])
+
+    def test_force_grid_processes_image_without_detected_face_and_keeps_original(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "01.jpg"
+            success, encoded = cv2.imencode(".jpg", np.full((120, 160, 3), 180, dtype=np.uint8))
+            self.assertTrue(success)
+            original = encoded.tobytes()
+            source.write_bytes(original)
+
+            with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
+                reference_images, "task_dir", return_value=root
+            ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
+                reference_images, "_detect_faces", return_value=[]
+            ):
+                prepared = reference_images.prepare_task_reference_images("0" * 32, force_grid=True)
+
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(prepared[0].parent.name, "processed_references")
+            self.assertNotEqual(prepared[0].read_bytes(), original)
+            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "full-grid")

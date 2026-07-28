@@ -73,9 +73,11 @@ class ClientFeatureTests(unittest.TestCase):
             json={"username": "chosen-admin", "password": "StrongPassword123"},
         )
         self.assertEqual(logged_in.status_code, 200, logged_in.text)
-        generated = self.client.post("/admin/invitation-codes", json={"count": 2})
+        generated = self.client.post("/admin/invitation-codes", json={"count": 2, "length": 7, "note": "测试渠道"})
         self.assertEqual(generated.status_code, 201, generated.text)
         code = generated.json()["generated"][0]["code"]
+        self.assertTrue(all(len(item["code"]) == 7 and item["code"].isalpha() for item in generated.json()["generated"]))
+        self.assertTrue(all(item["note"] == "测试渠道" for item in generated.json()["generated"]))
         registered = self.client.post(
             "/auth/register",
             json={"username": "invited_user", "password": "password123", "confirm_password": "password123", "invitation_code": code},
@@ -94,8 +96,13 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(state["counts"], {"total": 2, "uses": 2})
         used_record = next(item for item in state["codes"] if item["code"] == code)
         self.assertEqual(used_record["use_count"], 2)
+        renamed = self.client.patch(f"/admin/invitation-codes/{used_record['id']}/note", json={"note": "渠道 A"})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["code"]["note"], "渠道 A")
         filtered = self.client.get(f"/admin/invitation-codes?page=1&page_size=10&usage=used&q={code}").json()
         self.assertEqual((filtered["filtered_total"], filtered["total_pages"]), (1, 1))
+        filtered_by_note = self.client.get("/admin/invitation-codes?page=1&page_size=10&q=%E6%B8%A0%E9%81%93A").json()
+        self.assertEqual(filtered_by_note["filtered_total"], 1)
 
         deleted = self.client.delete(f"/admin/invitation-codes/{used_record['id']}")
         self.assertEqual(deleted.status_code, 200, deleted.text)

@@ -6013,7 +6013,21 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .announcement-lock-control > input:checked + .switch-track { background: #b6403a; }
 .announcement-lock-control > input:checked + .switch-track > span { transform: translateX(18px); }
 .announcement-lock-control > input:focus-visible + .switch-track { outline: 2px solid #4da59d; outline-offset: 2px; }
-.invitation-config-controls { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(110px, 140px) auto; gap: 12px; align-items: end; }
+.settings-entry-button { justify-content: center; width: 100%; min-height: 42px; margin-top: 14px; }
+.admin-management-modal { grid-template-rows: auto minmax(0, 1fr) auto; width: min(calc(100vw - 48px), 1180px); height: min(calc(100vh - 48px), 820px); max-height: calc(100vh - 48px); padding: 24px; overflow: hidden; }
+.admin-management-body { min-height: 0; padding-right: 4px; overflow-y: auto; }
+.admin-management-modal .modal-header h2 { margin: 0; font-size: 20px; }
+.admin-management-modal .modal-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.elevated-modal { z-index: 72; }
+.admin-audit-details-modal { width: min(calc(100vw - 48px), 720px); max-height: calc(100vh - 48px); }
+.admin-audit-details { display: grid; margin: 0; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.admin-audit-details > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); border-bottom: 1px solid var(--line); }
+.admin-audit-details > div:last-child { border-bottom: 0; }
+.admin-audit-details dt,
+.admin-audit-details dd { margin: 0; padding: 12px 14px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-audit-details dt { color: var(--muted); background: #f7f9f8; font-weight: 800; }
+.admin-audit-details dd { color: #252b29; }
+.invitation-config-controls { display: grid; grid-template-columns: minmax(210px, 1.2fr) 110px 110px minmax(180px, 1fr) auto; gap: 12px; align-items: end; }
 .settings-stack { align-items: start; }
 .settings-stack .config-panel { min-height: 0; align-self: start; }
 .admin-settings-columns,
@@ -6054,16 +6068,20 @@ body[data-portal="client"] .admin-settings-compact-grid { display: none !importa
 #generatedInvitationCodes { margin-top: 14px; }
 .invitation-list-toolbar,
 .admin-audit-toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(140px, 180px) minmax(110px, 130px); gap: 10px; align-items: end; margin-top: 14px; }
-.invitation-code-list { display: grid; max-height: 300px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
-.invitation-code-row { display: grid; grid-template-columns: minmax(180px, 1fr) 92px minmax(110px, 150px) 170px auto; gap: 12px; align-items: center; min-height: 52px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.invitation-code-list { display: grid; max-height: 430px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.invitation-code-row { display: grid; grid-template-columns: minmax(150px, .75fr) minmax(180px, 1fr) minmax(180px, .8fr) auto; gap: 12px; align-items: center; min-height: 64px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
 .invitation-code-row:last-child { border-bottom: 0; }
-.invitation-code-row code { color: #1f2523; font-weight: 700; }
+.invitation-code-row code { color: #1f2523; font-size: 14px; font-weight: 800; }
 .invitation-code-row > span { color: var(--muted); font-size: 12px; }
+.invitation-code-identity { display: grid; gap: 4px; }
+.invitation-code-identity span { color: var(--muted); font-size: 11px; }
+.invitation-row-note input { width: 100%; height: 38px; }
+.invitation-row-actions { display: flex; gap: 7px; justify-content: flex-end; }
 .invitation-code-empty { min-height: 92px; }
 .invitation-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding-top: 10px; color: var(--muted); font-size: 12px; }
 .invitation-pagination > div { display: flex; gap: 8px; }
-.admin-audit-list { display: grid; max-height: 360px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
-.admin-audit-row { display: grid; grid-template-columns: minmax(130px, 180px) minmax(200px, 1fr) minmax(110px, 160px) 170px; gap: 12px; align-items: center; min-height: 62px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.admin-audit-list { display: grid; max-height: 520px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.admin-audit-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(110px, 150px) minmax(110px, 150px) 170px auto; gap: 12px; align-items: center; min-height: 62px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .admin-audit-row:last-child { border-bottom: 0; }
 .admin-audit-row strong { color: #252b29; font-size: 13px; }
 .admin-audit-row p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
@@ -6075,14 +6093,26 @@ body[data-portal="client"] .admin-settings-compact-grid { display: none !importa
   .invitation-config-controls { grid-template-columns: 1fr; }
   .invitation-list-toolbar,
   .admin-audit-toolbar { grid-template-columns: 1fr; }
-  .invitation-code-row { grid-template-columns: 1fr auto; }
-  .invitation-code-row > span { grid-column: 1; }
-  .invitation-code-row > button { grid-column: 2; grid-row: 1 / span 4; }
+  .admin-management-modal { width: 100%; height: calc(100vh - 24px); max-height: calc(100vh - 24px); padding: 16px; }
+  .invitation-code-row { grid-template-columns: 1fr; }
+  .invitation-row-actions { justify-content: flex-start; }
   .admin-audit-row { grid-template-columns: 1fr; gap: 5px; }
+  .admin-audit-row > button { justify-self: start; }
+  .admin-audit-details > div { grid-template-columns: 1fr; }
+  .admin-audit-details dt { padding-bottom: 3px; }
+  .admin-audit-details dd { padding-top: 3px; }
 }
 @media (min-width: 761px) and (max-width: 1350px) {
   .admin-settings-columns { grid-template-columns: 1fr; }
   .admin-settings-compact-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .invitation-config-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .invitation-toggle-control,
+  .invitation-note-field { grid-column: span 2; }
+  .invitation-config-controls > button { justify-self: start; }
+  .invitation-code-row { grid-template-columns: minmax(150px, .8fr) minmax(180px, 1fr); }
+  .invitation-row-actions { justify-content: flex-start; }
+  .admin-audit-row { grid-template-columns: minmax(180px, 1fr) minmax(100px, 140px) 160px auto; }
+  .admin-audit-row > span:nth-of-type(2) { display: none; }
 }
 .announcement-lock-copy { display: grid; gap: 3px; }
 .announcement-lock-copy strong { color: #782c29; font-size: 13px; }

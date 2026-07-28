@@ -456,8 +456,14 @@ const els = {
   deleteSelectedVideos: document.getElementById("deleteSelectedVideos"),
   accountPlatformFilter: document.getElementById("accountPlatformFilter"),
   accountStatusFilter: document.getElementById("accountStatusFilter"),
+  openInvitationManagementModal: document.getElementById("openInvitationManagementModal"),
+  invitationManagementModal: document.getElementById("invitationManagementModal"),
+  closeInvitationManagementModal: document.getElementById("closeInvitationManagementModal"),
+  cancelInvitationManagementModal: document.getElementById("cancelInvitationManagementModal"),
   registrationInvitationRequired: document.getElementById("registrationInvitationRequired"),
+  invitationCodeLength: document.getElementById("invitationCodeLength"),
   invitationCodeCount: document.getElementById("invitationCodeCount"),
+  invitationCodeNote: document.getElementById("invitationCodeNote"),
   generateInvitationCodes: document.getElementById("generateInvitationCodes"),
   invitationConfigState: document.getElementById("invitationConfigState"),
   generatedInvitationCodes: document.getElementById("generatedInvitationCodes"),
@@ -470,6 +476,10 @@ const els = {
   invitationPageState: document.getElementById("invitationPageState"),
   prevInvitationPage: document.getElementById("prevInvitationPage"),
   nextInvitationPage: document.getElementById("nextInvitationPage"),
+  openAdminAuditModal: document.getElementById("openAdminAuditModal"),
+  adminAuditModal: document.getElementById("adminAuditModal"),
+  closeAdminAuditModal: document.getElementById("closeAdminAuditModal"),
+  cancelAdminAuditModal: document.getElementById("cancelAdminAuditModal"),
   adminAuditState: document.getElementById("adminAuditState"),
   adminAuditSearch: document.getElementById("adminAuditSearch"),
   adminAuditAction: document.getElementById("adminAuditAction"),
@@ -478,6 +488,11 @@ const els = {
   adminAuditPageState: document.getElementById("adminAuditPageState"),
   prevAdminAuditPage: document.getElementById("prevAdminAuditPage"),
   nextAdminAuditPage: document.getElementById("nextAdminAuditPage"),
+  adminAuditDetailsModal: document.getElementById("adminAuditDetailsModal"),
+  closeAdminAuditDetailsModal: document.getElementById("closeAdminAuditDetailsModal"),
+  cancelAdminAuditDetailsModal: document.getElementById("cancelAdminAuditDetailsModal"),
+  adminAuditDetailsSubtitle: document.getElementById("adminAuditDetailsSubtitle"),
+  adminAuditDetails: document.getElementById("adminAuditDetails"),
   clientEntryUrl: document.getElementById("clientEntryUrl"),
   copyClientEntryUrl: document.getElementById("copyClientEntryUrl"),
   refreshTempTokens: document.getElementById("refreshTempTokens"),
@@ -588,6 +603,7 @@ const state = {
   adminAuditPageSize: 10,
   adminAuditTotalPages: 1,
   adminAuditSearchTimer: 0,
+  adminAuditEntries: [],
   accountQuotaSummary: null,
   savingTokenIds: new Set(),
   autoRefreshing: false,
@@ -2345,6 +2361,61 @@ async function loadEmailDomains() {
   if (els.changeEmailDomain) els.changeEmailDomain.innerHTML = options;
 }
 
+async function openInvitationManagement() {
+  if (portal !== "admin") return;
+  els.invitationManagementModal?.classList.remove("hidden");
+  els.invitationManagementModal?.setAttribute("aria-hidden", "false");
+  try {
+    await loadInvitationConfig();
+    els.invitationSearch?.focus();
+  } catch (error) {
+    toast(`邀请码读取失败：${error.message}`, "error");
+  }
+}
+
+function closeInvitationManagement() {
+  closeSettingsModal(els.invitationManagementModal);
+}
+
+async function openAdminAuditManagement() {
+  if (portal !== "admin") return;
+  els.adminAuditModal?.classList.remove("hidden");
+  els.adminAuditModal?.setAttribute("aria-hidden", "false");
+  try {
+    await loadAdminAuditLogs();
+    els.adminAuditSearch?.focus();
+  } catch (error) {
+    toast(`日志读取失败：${error.message}`, "error");
+  }
+}
+
+function closeAdminAuditManagement() {
+  closeSettingsModal(els.adminAuditDetailsModal);
+  closeSettingsModal(els.adminAuditModal);
+}
+
+function openAdminAuditDetails(entryId) {
+  const entry = state.adminAuditEntries.find((item) => String(item.id || "") === String(entryId || ""));
+  if (!entry || !els.adminAuditDetails) return;
+  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截" };
+  if (els.adminAuditDetailsSubtitle) els.adminAuditDetailsSubtitle.textContent = `${actionLabels[entry.action] || "管理操作"} · ${formatTime(entry.created_at)}`;
+  const details = [
+    ["操作名称", entry.title || "管理操作"],
+    ["操作详情", entry.detail || "-"],
+    ["管理员", entry.actor || "管理员"],
+    ["IP 地址", entry.ip_address || "-"],
+    ["关联 ID", entry.reference_id || "-"],
+    ["记录时间", formatTime(entry.created_at)],
+  ];
+  els.adminAuditDetails.innerHTML = details.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+  els.adminAuditDetailsModal?.classList.remove("hidden");
+  els.adminAuditDetailsModal?.setAttribute("aria-hidden", "false");
+}
+
+function closeAdminAuditDetails() {
+  closeSettingsModal(els.adminAuditDetailsModal);
+}
+
 async function loadInvitationConfig() {
   if (portal !== "admin" || !els.registrationInvitationRequired) return;
   const params = new URLSearchParams({
@@ -2371,11 +2442,10 @@ function renderInvitationCodes(codes) {
   const rows = Array.isArray(codes) ? codes : [];
   els.invitationCodeList.innerHTML = rows.length ? rows.map((item) => `
     <div class="invitation-code-row">
-      <code>${escapeHtml(item.code || "-")}</code>
-      <span>使用 ${Number(item.use_count || 0)} 次</span>
-      <span>${escapeHtml(item.last_used_username ? `最近 ${item.last_used_username}` : "尚未使用")}</span>
-      <span>${escapeHtml(formatTime(item.created_at))}</span>
-      <button class="danger-button compact-button" type="button" data-delete-invitation-code="${escapeHtml(item.id || "")}">删除</button>
+      <div class="invitation-code-identity"><code>${escapeHtml(item.code || "-")}</code><span>${escapeHtml(formatTime(item.created_at))}</span></div>
+      <label class="invitation-row-note"><span class="sr-only">邀请码备注</span><input type="text" maxlength="120" value="${escapeHtml(item.note || "")}" placeholder="添加备注名称" data-invitation-note="${escapeHtml(item.id || "")}" /></label>
+      <span>使用 ${Number(item.use_count || 0)} 次 · ${escapeHtml(item.last_used_username ? `最近 ${item.last_used_username}` : "尚未使用")}</span>
+      <div class="invitation-row-actions"><button class="secondary-button compact-button" type="button" data-save-invitation-note="${escapeHtml(item.id || "")}">保存备注</button><button class="danger-button compact-button" type="button" data-delete-invitation-code="${escapeHtml(item.id || "")}">删除</button></div>
     </div>
   `).join("") : '<div class="empty-state invitation-code-empty">暂无邀请码</div>';
 }
@@ -2392,19 +2462,36 @@ async function loadAdminAuditLogs() {
   state.adminAuditPage = Number(data.page || 1);
   state.adminAuditTotalPages = Number(data.total_pages || 1);
   const rows = Array.isArray(data.entries) ? data.entries : [];
-  const actionLabels = { invitation_generate: "生成邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截" };
+  state.adminAuditEntries = rows;
+  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截" };
   els.adminAuditList.innerHTML = rows.length ? rows.map((item) => `
     <div class="admin-audit-row">
-      <div><strong>${escapeHtml(item.title || "管理操作")}</strong><p>${escapeHtml(item.detail || "-")}</p></div>
-      <span>${escapeHtml(item.actor || "管理员")}${item.ip_address ? ` · ${escapeHtml(item.ip_address)}` : ""}</span>
+      <div><strong>${escapeHtml(item.title || "管理操作")}</strong><p>${escapeHtml(actionLabels[item.action] || "管理操作")}</p></div>
+      <span>${escapeHtml(item.actor || "管理员")}</span>
       <span>${escapeHtml(actionLabels[item.action] || "管理操作")}</span>
       <span>${escapeHtml(formatTime(item.created_at))}</span>
+      <button class="secondary-button compact-button" type="button" data-admin-audit-details="${escapeHtml(item.id || "")}">日志详情</button>
     </div>
   `).join("") : '<div class="empty-state admin-audit-empty">暂无操作日志</div>';
   if (els.adminAuditState) els.adminAuditState.textContent = `共 ${Number(data.total || 0)} 条`;
   if (els.adminAuditPageState) els.adminAuditPageState.textContent = `第 ${state.adminAuditPage} / ${state.adminAuditTotalPages} 页`;
   if (els.prevAdminAuditPage) els.prevAdminAuditPage.disabled = state.adminAuditPage <= 1;
   if (els.nextAdminAuditPage) els.nextAdminAuditPage.disabled = state.adminAuditPage >= state.adminAuditTotalPages;
+}
+
+async function saveInvitationNote(codeId, button) {
+  const input = Array.from(els.invitationCodeList?.querySelectorAll("[data-invitation-note]") || []).find((item) => item.dataset.invitationNote === String(codeId || ""));
+  if (!input) return;
+  setBusy(button, true, "保存中");
+  try {
+    await apiFetch(`/admin/invitation-codes/${encodeURIComponent(codeId)}/note`, { method: "PATCH", body: { note: input.value.trim() } });
+    await Promise.all([loadInvitationConfig(), loadAdminAuditLogs()]);
+    toast("邀请码备注已保存");
+  } catch (error) {
+    toast(`备注保存失败：${error.message}`, "error");
+  } finally {
+    setBusy(button, false);
+  }
 }
 
 async function deleteRegistrationInvitationCode(codeId) {
@@ -2437,10 +2524,13 @@ async function saveInvitationRequirement() {
 
 async function generateRegistrationInvitationCodes() {
   const count = Math.trunc(Number(els.invitationCodeCount?.value || 1));
+  const length = Math.trunc(Number(els.invitationCodeLength?.value || 7));
+  const note = String(els.invitationCodeNote?.value || "").trim();
   if (count < 1 || count > 200) return toast("邀请码生成数量需为 1-200", "error");
+  if (length < 4 || length > 32) return toast("邀请码长度需为 4-32", "error");
   setBusy(els.generateInvitationCodes, true, "生成中");
   try {
-    const data = await apiFetch("/admin/invitation-codes", { method: "POST", body: { count } });
+    const data = await apiFetch("/admin/invitation-codes", { method: "POST", body: { count, length, note } });
     const codes = (data.generated || []).map((item) => String(item.code || "")).filter(Boolean).join("\n");
     if (els.generatedInvitationCodeList) els.generatedInvitationCodeList.textContent = codes;
     els.generatedInvitationCodes?.classList.toggle("hidden", !codes);
@@ -5289,12 +5379,21 @@ function bindEvents() {
     updateNotificationRecipientState();
   });
   els.packageForm?.addEventListener("submit", createPointPackage);
+  els.openInvitationManagementModal?.addEventListener("click", openInvitationManagement);
+  els.closeInvitationManagementModal?.addEventListener("click", closeInvitationManagement);
+  els.cancelInvitationManagementModal?.addEventListener("click", closeInvitationManagement);
+  els.invitationManagementModal?.addEventListener("click", (event) => { if (event.target === els.invitationManagementModal) closeInvitationManagement(); });
   els.registrationInvitationRequired?.addEventListener("change", saveInvitationRequirement);
   els.generateInvitationCodes?.addEventListener("click", generateRegistrationInvitationCodes);
   els.copyGeneratedInvitationCodes?.addEventListener("click", () => copyText(els.generatedInvitationCodeList?.textContent || "", "邀请码"));
   els.invitationCodeList?.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-delete-invitation-code]");
-    if (button) deleteRegistrationInvitationCode(button.dataset.deleteInvitationCode);
+    const saveButton = event.target.closest("[data-save-invitation-note]");
+    if (saveButton) {
+      saveInvitationNote(saveButton.dataset.saveInvitationNote, saveButton);
+      return;
+    }
+    const deleteButton = event.target.closest("[data-delete-invitation-code]");
+    if (deleteButton) deleteRegistrationInvitationCode(deleteButton.dataset.deleteInvitationCode);
   });
   els.invitationSearch?.addEventListener("input", () => {
     window.clearTimeout(state.invitationSearchTimer);
@@ -5304,6 +5403,17 @@ function bindEvents() {
   els.invitationPageSize?.addEventListener("change", () => { state.invitationPageSize = Number(els.invitationPageSize.value || 10); state.invitationPage = 1; loadInvitationConfig(); });
   els.prevInvitationPage?.addEventListener("click", () => { state.invitationPage = Math.max(1, state.invitationPage - 1); loadInvitationConfig(); });
   els.nextInvitationPage?.addEventListener("click", () => { state.invitationPage = Math.min(state.invitationTotalPages, state.invitationPage + 1); loadInvitationConfig(); });
+  els.openAdminAuditModal?.addEventListener("click", openAdminAuditManagement);
+  els.closeAdminAuditModal?.addEventListener("click", closeAdminAuditManagement);
+  els.cancelAdminAuditModal?.addEventListener("click", closeAdminAuditManagement);
+  els.adminAuditModal?.addEventListener("click", (event) => { if (event.target === els.adminAuditModal) closeAdminAuditManagement(); });
+  els.adminAuditList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-admin-audit-details]");
+    if (button) openAdminAuditDetails(button.dataset.adminAuditDetails);
+  });
+  els.closeAdminAuditDetailsModal?.addEventListener("click", closeAdminAuditDetails);
+  els.cancelAdminAuditDetailsModal?.addEventListener("click", closeAdminAuditDetails);
+  els.adminAuditDetailsModal?.addEventListener("click", (event) => { if (event.target === els.adminAuditDetailsModal) closeAdminAuditDetails(); });
   els.adminAuditSearch?.addEventListener("input", () => {
     window.clearTimeout(state.adminAuditSearchTimer);
     state.adminAuditSearchTimer = window.setTimeout(() => { state.adminAuditPage = 1; loadAdminAuditLogs(); }, 250);

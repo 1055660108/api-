@@ -58,7 +58,7 @@ from .config import (
 )
 from .email_verification import consume_registration_code, normalize_domains, normalize_email, send_registration_code, validate_allowed_email
 from .feedback import create_feedback, delete_feedback, list_feedback, list_feedback_for_user, update_feedback
-from .invitation_codes import complete_reservation as complete_invitation_reservation, delete_code as delete_invitation_code, generate_codes as generate_invitation_codes, invitation_state, registration_required as invitation_registration_required, release_reservation as release_invitation_reservation, reserve_code as reserve_invitation_code, set_registration_required as set_invitation_registration_required
+from .invitation_codes import complete_reservation as complete_invitation_reservation, delete_code as delete_invitation_code, generate_codes as generate_invitation_codes, invitation_state, registration_required as invitation_registration_required, release_reservation as release_invitation_reservation, reserve_code as reserve_invitation_code, set_registration_required as set_invitation_registration_required, update_code_note as update_invitation_code_note
 from .notifications import create_announcement, create_notifications, delete_announcement, delete_notification, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, update_announcement
 from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, normalize_platform
 from .query import query_task
@@ -2361,17 +2361,38 @@ async def admin_invitation_codes(
 async def admin_generate_invitation_codes(request: Request):
     payload = await _request_payload(request)
     try:
-        cards = await asyncio.to_thread(generate_invitation_codes, int(payload.get("count") or 1))
+        count = int(payload.get("count") or 1)
+        length = int(payload.get("length") or 7)
+        note = str(payload.get("note") or "").strip()[:120]
+        cards = await asyncio.to_thread(generate_invitation_codes, count, length, note)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     await _record_admin_action_safe(
         "invitation_generate",
         "生成邀请码",
-        detail=f"生成 {len(cards)} 个长期邀请码",
+        detail=f"生成 {len(cards)} 个 {length} 位长期邀请码" + (f"，备注：{note}" if note else ""),
         actor=load_settings().admin_username,
         ip_address=_request_client_key(request),
     )
     return {"ok": True, "count": len(cards), "generated": cards, **invitation_state()}
+
+
+@app.patch("/admin/invitation-codes/{code_id}/note", dependencies=[Depends(require_admin)])
+async def admin_update_invitation_code(code_id: str, request: Request):
+    payload = await _request_payload(request)
+    note = str(payload.get("note") or "").strip()[:120]
+    updated = await asyncio.to_thread(update_invitation_code_note, code_id, note)
+    if not updated:
+        raise HTTPException(status_code=404, detail="邀请码不存在")
+    await _record_admin_action_safe(
+        "invitation_update",
+        "修改邀请码备注",
+        detail=f"{updated.get('code') or ''}：{note or '清空备注'}",
+        actor=load_settings().admin_username,
+        ip_address=_request_client_key(request),
+        reference_id=code_id,
+    )
+    return {"ok": True, "code": updated, **invitation_state()}
 
 
 @app.patch("/admin/invitation-codes/settings", dependencies=[Depends(require_admin)])

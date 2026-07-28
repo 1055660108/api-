@@ -2350,15 +2350,34 @@ async function changeClientPassword(event) {
   }
 }
 
+function syncClientRegistrationControls() {
+  const register = portal === "client" && state.clientRegisterMode;
+  const emailEnabled = register && state.registrationEmailVerificationEnabled;
+  const invitationRequired = register && state.registrationInvitationRequired;
+  const controls = [
+    [els.clientConfirmPassword, register, register],
+    [els.clientInvitationCode, register, invitationRequired],
+    [els.clientEmailLocal, emailEnabled, emailEnabled],
+    [els.clientEmailDomain, emailEnabled, emailEnabled],
+    [els.clientEmailCode, emailEnabled, emailEnabled],
+  ];
+  controls.forEach(([control, enabled, required]) => {
+    if (!control) return;
+    control.disabled = !enabled;
+    control.required = Boolean(required);
+  });
+  if (els.sendEmailCode) els.sendEmailCode.disabled = !emailEnabled;
+}
+
 async function loadEmailDomains() {
   const data = await requestJson("/auth/register/email-domains", "");
   state.registrationEmailVerificationEnabled = data.enabled !== false;
   state.registrationInvitationRequired = data.invitation_required !== false;
-  if (els.clientInvitationCode) els.clientInvitationCode.required = state.registrationInvitationRequired;
   const domains = Array.isArray(data.domains) ? data.domains : [];
   const options = domains.map((domain) => `<option value="${escapeHtml(domain)}">${escapeHtml(domain)}</option>`).join("");
   if (els.clientEmailDomain) els.clientEmailDomain.innerHTML = options;
   if (els.changeEmailDomain) els.changeEmailDomain.innerHTML = options;
+  syncClientRegistrationControls();
 }
 
 async function openInvitationManagement() {
@@ -5427,6 +5446,7 @@ function bindEvents() {
     els.clientLoginTab?.classList.toggle("active", !register);
     els.clientRegisterTab?.classList.toggle("active", register);
     document.querySelectorAll(".client-register-only").forEach((item) => item.classList.toggle("hidden", !register || (item.classList.contains("registration-code-row") || item.querySelector("#clientEmailLocal")) && !state.registrationEmailVerificationEnabled));
+    syncClientRegistrationControls();
     els.loginForm?.classList.toggle("register-mode", register);
     if (portal === "client" && els.loginHeadingTitle) els.loginHeadingTitle.textContent = register ? "注册" : "登录";
     els.loginButton.textContent = register ? "注册并进入" : "登录";

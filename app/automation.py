@@ -84,6 +84,7 @@ REFERENCE_CACHE_TTL_SECONDS = max(60, min(86400, int(os.environ.get("DOLA_REFERE
 REFERENCE_CACHE_MAX_ENTRIES = max(16, min(4096, int(os.environ.get("DOLA_REFERENCE_CACHE_MAX_ENTRIES") or 512)))
 _REFERENCE_CACHE_LOCK = threading.RLock()
 _REFERENCE_ATTACHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_REFERENCE_UPLOADS_IN_FLIGHT: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
 
 
 class ProxyCoolingDownError(RuntimeError):
@@ -112,6 +113,36 @@ def reference_image_cache_key(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def reference_attachment_account_scope(account: dict[str, Any]) -> str:
+    account_id = str(account.get("id") or "").strip()
+    if not account_id:
+        return ""
+    cookies = account.get("cookies") if isinstance(account.get("cookies"), list) else []
+    cookie_values = sorted(
+        (
+            str(item.get("name") or ""),
+            str(item.get("value") or ""),
+            str(item.get("domain") or ""),
+            str(item.get("path") or ""),
+        )
+        for item in cookies
+        if isinstance(item, dict) and item.get("name")
+    )
+    if not cookie_values:
+        return account_id
+    session_key = hashlib.sha256(json.dumps(cookie_values, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return f"{account_id}:{session_key}"
+
+
+def reference_attachment_cache_key(account_scope: str, image_key: str) -> str:
+    """Scope uploaded Dola attachments to the account that created them."""
+    normalized_account = str(account_scope or "").strip()
+    normalized_image = str(image_key or "").strip()
+    if not normalized_account or not normalized_image:
+        return ""
+    return hashlib.sha256(f"{normalized_account}:{normalized_image}".encode("utf-8")).hexdigest()
 
 
 def cached_reference_attachment(key: str) -> dict[str, Any] | None:
@@ -145,6 +176,7 @@ def invalidate_reference_attachment_keys(keys: list[str] | tuple[str, ...]) -> N
 def clear_reference_attachment_cache() -> None:
     with _REFERENCE_CACHE_LOCK:
         _REFERENCE_ATTACHMENT_CACHE.clear()
+        _REFERENCE_UPLOADS_IN_FLIGHT.clear()
 
 
 BROWSER_INIT_SCRIPT = r"""
@@ -844,7 +876,7 @@ class DolaFetchAutomation:
                     self._mark_pending("region restricted")
                     return {"success": False, "retryable": True, "reason": "region restricted"}
 
-                self._set_phase("uploading_references", "正在上传参考图" if task_image_paths(self.task_id) else "正在准备生成请求")
+                self._set_phase("preparing_references", "正在准备参考图" if task_image_paths(self.task_id) else "正在准备生成请求")
                 attachments = await self._upload_images_if_needed(page)
                 self._set_phase("submitting_request", "正在提交生成请求")
                 if not begin_task_submission(self.task_id):
@@ -1168,33 +1200,71 @@ class DolaFetchAutomation:
             bypass_cache = bool(get_meta(self.task_id).get("reference_upload_cache_bypass"))
         except FileNotFoundError:
             return []
+        account_id = str(self.account.get("id") or "").strip()
+        account_scope = reference_attachment_account_scope(self.account)
         unique_paths: list[tuple[Path, str]] = []
-        seen_keys: set[str] = set()
+        seen_content_keys: set[str] = set()
         for path in paths:
-            cache_key = reference_image_cache_key(path)
-            if cache_key in seen_keys:
+            content_key = reference_image_cache_key(path)
+            if content_key in seen_content_keys:
                 continue
-            seen_keys.add(cache_key)
-            unique_paths.append((path, cache_key))
-        keys = [cache_key for _, cache_key in unique_paths]
+            seen_content_keys.add(content_key)
+            unique_paths.append((path, reference_attachment_cache_key(account_scope, content_key)))
+        keys = [cache_key for _, cache_key in unique_paths if cache_key]
         if bypass_cache:
             invalidate_reference_attachment_keys(keys)
         images: list[dict[str, Any]] = []
         cache_hits = 0
         cache_misses = 0
+        cache_waits = 0
         for index, (path, cache_key) in enumerate(unique_paths, start=1):
             if not self._task_exists():
                 return []
-            cached = None if bypass_cache else cached_reference_attachment(cache_key)
+            cached = None if bypass_cache or not cache_key else cached_reference_attachment(cache_key)
             if cached:
                 images.append(cached)
                 cache_hits += 1
                 continue
-            self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
-            uploaded = await self._upload_one_image_by_fetch(page, path)
-            cache_reference_attachment(cache_key, uploaded)
+            uploaded: dict[str, Any] | None = None
+            performed_upload = False
+            while uploaded is None:
+                upload_future: asyncio.Future[dict[str, Any] | None] | None = None
+                owns_upload = True
+                if cache_key and not bypass_cache:
+                    with _REFERENCE_CACHE_LOCK:
+                        cached = cached_reference_attachment(cache_key)
+                        if cached:
+                            uploaded = cached
+                            cache_hits += 1
+                            break
+                        upload_future = _REFERENCE_UPLOADS_IN_FLIGHT.get(cache_key)
+                        if upload_future is None:
+                            upload_future = asyncio.get_running_loop().create_future()
+                            _REFERENCE_UPLOADS_IN_FLIGHT[cache_key] = upload_future
+                        else:
+                            owns_upload = False
+                if not owns_upload and upload_future is not None:
+                    self._set_phase(f"waiting_reference_{index}", f"正在复用参考图（{index}/{len(unique_paths)}）")
+                    cache_waits += 1
+                    uploaded = await asyncio.shield(upload_future)
+                    if uploaded:
+                        cache_hits += 1
+                    continue
+                self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
+                try:
+                    performed_upload = True
+                    uploaded = await self._upload_one_image_by_fetch(page, path)
+                    if cache_key:
+                        cache_reference_attachment(cache_key, uploaded)
+                finally:
+                    if cache_key and upload_future is not None:
+                        with _REFERENCE_CACHE_LOCK:
+                            current = _REFERENCE_UPLOADS_IN_FLIGHT.pop(cache_key, None)
+                            if current is upload_future and not current.done():
+                                current.set_result(dict(uploaded) if uploaded else None)
             images.append(uploaded)
-            cache_misses += 1
+            if performed_upload:
+                cache_misses += 1
         self.uploaded_images = self._unique_images(images)
         if len(self.uploaded_images) < len(unique_paths):
             raise RuntimeError("image upload did not return uri")
@@ -1203,6 +1273,8 @@ class DolaFetchAutomation:
             "reference_image_cache_keys": keys,
             "reference_image_cache_hits": cache_hits,
             "reference_image_cache_misses": cache_misses,
+            "reference_image_cache_waits": cache_waits,
+            "reference_image_cache_account_id": account_id,
         })
         return self.uploaded_images[: len(unique_paths)]
 

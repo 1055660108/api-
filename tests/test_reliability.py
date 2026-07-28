@@ -501,7 +501,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn("ApplyImageUpload", history[0]["reason"])
         self.assertEqual(history[-1]["reason"], "多次生成失败")
 
-    def test_reference_attachment_cache_reuses_identical_images(self) -> None:
+    def test_reference_attachment_cache_reuses_identical_images_for_same_account(self) -> None:
         automation.clear_reference_attachment_cache()
         first = self.create_task("owner-a")
         second = self.create_task("owner-b")
@@ -513,8 +513,9 @@ class ReliabilityTests(unittest.TestCase):
         upload = AsyncMock(return_value=attachment)
 
         async def run() -> None:
-            first_runner = DolaFetchAutomation(first["id"], "first", "9:16")
-            second_runner = DolaFetchAutomation(second["id"], "second", "9:16")
+            account = {"id": "dola-account-a"}
+            first_runner = DolaFetchAutomation(first["id"], "first", "9:16", account=account)
+            second_runner = DolaFetchAutomation(second["id"], "second", "9:16", account=account)
             first_runner._upload_one_image_by_fetch = upload
             second_runner._upload_one_image_by_fetch = upload
             self.assertEqual(await first_runner._upload_images_if_needed(object()), [attachment])
@@ -530,6 +531,104 @@ class ReliabilityTests(unittest.TestCase):
         asyncio.run(run())
         self.assertEqual(upload.await_count, 2)
         self.assertFalse(store.get_meta(second["id"])["reference_upload_cache_bypass"])
+        automation.clear_reference_attachment_cache()
+
+    def test_reference_attachment_cache_does_not_cross_accounts(self) -> None:
+        automation.clear_reference_attachment_cache()
+        first = self.create_task("owner-a")
+        second = self.create_task("owner-b")
+        for task in (first, second):
+            image = store.images_dir(task["id"]) / "01.png"
+            image.write_bytes(b"same-reference-image")
+            store.set_task_images(task["id"], [image])
+        first_attachment = {"uri": "tos/account-a", "name": "01.png"}
+        second_attachment = {"uri": "tos/account-b", "name": "01.png"}
+        upload = AsyncMock(side_effect=[first_attachment, second_attachment])
+
+        async def run() -> None:
+            first_runner = DolaFetchAutomation(first["id"], "first", "9:16", account={"id": "dola-account-a"})
+            second_runner = DolaFetchAutomation(second["id"], "second", "9:16", account={"id": "dola-account-b"})
+            first_runner._upload_one_image_by_fetch = upload
+            second_runner._upload_one_image_by_fetch = upload
+            self.assertEqual(await first_runner._upload_images_if_needed(object()), [first_attachment])
+            self.assertEqual(await second_runner._upload_images_if_needed(object()), [second_attachment])
+
+        asyncio.run(run())
+        self.assertEqual(upload.await_count, 2)
+        self.assertEqual(store.load_result(second["id"])["reference_image_cache_hits"], 0)
+        automation.clear_reference_attachment_cache()
+
+    def test_reference_attachment_cache_does_not_cross_login_sessions(self) -> None:
+        automation.clear_reference_attachment_cache()
+        first = self.create_task("owner-a")
+        second = self.create_task("owner-b")
+        for task in (first, second):
+            image = store.images_dir(task["id"]) / "01.png"
+            image.write_bytes(b"same-reference-image")
+            store.set_task_images(task["id"], [image])
+        upload = AsyncMock(side_effect=[{"uri": "tos/session-a"}, {"uri": "tos/session-b"}])
+
+        async def run() -> None:
+            first_runner = DolaFetchAutomation(first["id"], "first", "9:16", account={"id": "dola-account-a", "cookies": [{"name": "session", "value": "a"}]})
+            second_runner = DolaFetchAutomation(second["id"], "second", "9:16", account={"id": "dola-account-a", "cookies": [{"name": "session", "value": "b"}]})
+            first_runner._upload_one_image_by_fetch = upload
+            second_runner._upload_one_image_by_fetch = upload
+            await first_runner._upload_images_if_needed(object())
+            await second_runner._upload_images_if_needed(object())
+
+        asyncio.run(run())
+        self.assertEqual(upload.await_count, 2)
+        automation.clear_reference_attachment_cache()
+
+    def test_reference_attachment_cache_coalesces_concurrent_uploads(self) -> None:
+        automation.clear_reference_attachment_cache()
+        first = self.create_task("owner-a")
+        second = self.create_task("owner-b")
+        for task in (first, second):
+            image = store.images_dir(task["id"]) / "01.png"
+            image.write_bytes(b"same-reference-image")
+            store.set_task_images(task["id"], [image])
+        attachment = {"uri": "tos/shared", "name": "01.png"}
+        upload_started = asyncio.Event()
+        release_upload = asyncio.Event()
+        second_waiting = asyncio.Event()
+        upload_count = 0
+
+        async def upload_once(_page, _path):
+            nonlocal upload_count
+            upload_count += 1
+            upload_started.set()
+            await release_upload.wait()
+            return attachment
+
+        async def run() -> None:
+            account = {"id": "dola-account-a"}
+            first_runner = DolaFetchAutomation(first["id"], "first", "9:16", account=account)
+            second_runner = DolaFetchAutomation(second["id"], "second", "9:16", account=account)
+            first_runner._upload_one_image_by_fetch = upload_once
+            second_runner._upload_one_image_by_fetch = upload_once
+            original_set_phase = second_runner._set_phase
+
+            def track_second_phase(phase, status_reason):
+                original_set_phase(phase, status_reason)
+                if phase.startswith("waiting_reference_"):
+                    second_waiting.set()
+
+            second_runner._set_phase = track_second_phase
+            first_upload = asyncio.create_task(first_runner._upload_images_if_needed(object()))
+            await upload_started.wait()
+            second_upload = asyncio.create_task(second_runner._upload_images_if_needed(object()))
+            await second_waiting.wait()
+            release_upload.set()
+            self.assertEqual(await first_upload, [attachment])
+            self.assertEqual(await second_upload, [attachment])
+
+        asyncio.run(run())
+        self.assertEqual(upload_count, 1)
+        second_result = store.load_result(second["id"])
+        self.assertEqual(second_result["reference_image_cache_waits"], 1)
+        self.assertEqual(second_result["reference_image_cache_hits"], 1)
+        self.assertEqual(second_result["reference_image_cache_misses"], 0)
         automation.clear_reference_attachment_cache()
 
     def test_worker_has_independent_image_submission_limit(self) -> None:

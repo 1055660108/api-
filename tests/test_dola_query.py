@@ -204,7 +204,8 @@ class DolaQueryTests(unittest.TestCase):
         )
 
     def test_reference_submission_waits_for_ack_and_returns_recovery_ids(self) -> None:
-        self.assertIn("attachments && attachments.length ? 60000 : 30000", automation.SUBMIT_SCRIPT)
+        self.assertIn("attachments && attachments.length ? 120000 : 60000", automation.SUBMIT_SCRIPT)
+        self.assertEqual(query.AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS, 120)
         self.assertIn("suppliedCollectionId", automation.SUBMIT_SCRIPT)
         self.assertIn("suppliedUniqueKey", automation.SUBMIT_SCRIPT)
         self.assertIn("suppliedLocalConversationId", automation.SUBMIT_SCRIPT)

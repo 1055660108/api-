@@ -641,7 +641,7 @@ async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId
   const reader = response.body && response.body.getReader ? response.body.getReader() : null;
   if (reader) {
     const decoder = new TextDecoder("utf-8");
-    const deadline = Date.now() + (attachments && attachments.length ? 60000 : 30000);
+    const deadline = Date.now() + (attachments && attachments.length ? 120000 : 60000);
     for (;;) {
       const remain = Math.max(1, deadline - Date.now());
       const timer = new Promise(resolve => setTimeout(() => resolve({timeout: true}), remain));

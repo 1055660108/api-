@@ -5338,6 +5338,21 @@ function waitForBatchPoll(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function batchPlanUploadTimeout(selected) {
+  let imageCount = 0;
+  let imageBytes = 0;
+  selected.forEach(({ item }) => {
+    (item.images || []).forEach((entryImage) => {
+      imageCount += 1;
+      imageBytes += Math.max(0, Number(entryImage?.file?.size || 0));
+    });
+  });
+  if (!imageCount) return 120000;
+  const transferMilliseconds = Math.ceil(imageBytes / (128 * 1024)) * 1000;
+  const processingMilliseconds = imageCount * 1500;
+  return Math.max(300000, Math.min(1800000, 60000 + transferMilliseconds + processingMilliseconds));
+}
+
 async function autoSubmitBatchTasks() {
   if (state.batchAutoRunning) {
     if (state.batchAutoStopRequested) return;
@@ -5393,7 +5408,11 @@ async function autoSubmitBatchTasks() {
       rows,
     }));
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在保存 ${selected.length} 条批量计划`;
-    const result = await apiFetch("/batch-prompts/jobs", { method: "POST", body: form, timeout: 120000 });
+    const result = await apiFetch("/batch-prompts/jobs", {
+      method: "POST",
+      body: form,
+      timeout: batchPlanUploadTimeout(selected),
+    });
     state.batchJobId = String(result.job?.id || "");
     state.batchJobRevision = 0;
     state.batchJobCursorReady = false;

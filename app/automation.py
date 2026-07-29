@@ -483,8 +483,8 @@ async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId
   function extractConversationId(text) {
     if (!text) return "";
     const patterns = [
-      /"conversation_id"\s*:\s*"(\d{15,24})"/,
-      /conversation_id(?:\\?"|)\s*[:=]\s*(?:\\?")?(\d{15,24})/,
+      /"(?:conversation_id|conversationId|conversationID|conv_id|convId)"\s*:\s*"?(\d{15,24})"?/,
+      /(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:\\?"|)\s*[:=]\s*(?:\\?")?(\d{15,24})/,
       /\/chat\/(\d{15,24})(?:\D|$)/
     ];
     for (const re of patterns) {

@@ -141,6 +141,12 @@ class DolaQueryTests(unittest.TestCase):
         for conversation_id in ("123456789012345", "123456789012345678901234"):
             self.assertEqual(query.extract_conversation_id_from_sse(f'{{"conversation_id":"{conversation_id}"}}'), conversation_id)
 
+    def test_conversation_ids_accept_current_field_variants(self) -> None:
+        conversation_id = "22345678901234567"
+        for field in ("conversationId", "conversationID", "conv_id", "convId"):
+            self.assertEqual(query.extract_conversation_id_from_sse(f'{{"{field}":"{conversation_id}"}}'), conversation_id)
+            self.assertEqual(query.extract_conversation_id({field: conversation_id}), conversation_id)
+
     def test_reference_conversation_recovery_requires_submission_match(self) -> None:
         data = {
             "conversations": [
@@ -245,6 +251,22 @@ class DolaQueryTests(unittest.TestCase):
         self.assertNotIn("secret", diagnostic["last_query_error"])
         self.assertNotIn("bearer-token", diagnostic["last_query_error"])
         self.assertNotIn("signature", diagnostic["last_query_error"])
+
+    def test_ambiguous_submission_diagnostic_keeps_safe_response_context(self) -> None:
+        diagnostic = query.ambiguous_submission_diagnostic(
+            {
+                "chat_status": 200,
+                "chat_content_type": "text/event-stream",
+                "chat_response_bytes": 42,
+                "sse_timed_out": True,
+                "submission_response_preview": 'cookie=sessionid=secret {"code":710022002}',
+            }
+        )
+        self.assertIn("HTTP 200", diagnostic)
+        self.assertIn("响应 42 字节", diagnostic)
+        self.assertIn("SSE读取达到等待上限", diagnostic)
+        self.assertIn("710022002", diagnostic)
+        self.assertNotIn("secret", diagnostic)
 
     def test_diagnostic_classifies_http_and_structured_errors(self) -> None:
         request = httpx.Request("POST", "https://www.dola.com/im/chain/single")
@@ -547,13 +569,11 @@ class DolaQueryTests(unittest.TestCase):
         clear_account.assert_not_called()
         refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
         record_failed.assert_not_called()
-        retry_proxy.assert_called_once_with(
-            task_id,
-            "提交后未取得有效会话，正在更换代理重试",
-            "account-1",
-            "node-old",
-            delay_seconds=3,
-        )
+        retry_proxy.assert_called_once()
+        retry_args, retry_kwargs = retry_proxy.call_args
+        self.assertEqual((retry_args[0], retry_args[2], retry_args[3]), (task_id, "account-1", "node-old"))
+        self.assertTrue(retry_args[1].startswith("提交后未取得有效会话，正在更换代理重试；后台诊断："))
+        self.assertEqual(retry_kwargs, {"delay_seconds": 3})
         retry_task.assert_not_called()
         clear_result.assert_called_once_with(task_id)
 
@@ -598,7 +618,11 @@ class DolaQueryTests(unittest.TestCase):
         clear_account.assert_called_once_with("account-1", task_id)
         record_failed.assert_called_once_with(task_id, "account-1")
         retry_proxy.assert_not_called()
-        retry_task.assert_called_once_with(task_id, "提交后未取得有效会话，正在安全重试", max_retries=2, delay_seconds=3)
+        retry_task.assert_called_once()
+        retry_args, retry_kwargs = retry_task.call_args
+        self.assertEqual(retry_args[0], task_id)
+        self.assertTrue(retry_args[1].startswith("提交后未取得有效会话，正在安全重试；后台诊断："))
+        self.assertEqual(retry_kwargs, {"max_retries": 2, "delay_seconds": 3})
         clear_result.assert_called_once_with(task_id)
         update_meta.assert_called_once_with(task_id, proxy_retry_avoid_node_id="node-fourth")
 

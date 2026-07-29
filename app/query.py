@@ -160,6 +160,44 @@ def sanitize_query_diagnostic(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()[:500]
 
 
+def ambiguous_submission_diagnostic(result: dict[str, Any]) -> str:
+    parts: list[str] = []
+    try:
+        status = int(result.get("chat_status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    if status:
+        parts.append(f"HTTP {status}")
+    content_type = sanitize_query_diagnostic(result.get("chat_content_type"))
+    if content_type:
+        parts.append(content_type[:80])
+    try:
+        response_bytes = max(0, int(result.get("chat_response_bytes") or 0))
+    except (TypeError, ValueError):
+        response_bytes = 0
+    parts.append(f"响应 {response_bytes} 字节")
+    if bool(result.get("sse_timed_out")):
+        parts.append("SSE读取达到等待上限")
+    category = sanitize_query_diagnostic(result.get("submit_error_category"))
+    if category:
+        parts.append(f"提交分类 {category[:80]}")
+    recovery_error = sanitize_query_diagnostic(result.get("conversation_recovery_error"))
+    if recovery_error:
+        parts.append(f"恢复查询 {recovery_error[:180]}")
+    preview = sanitize_query_diagnostic(
+        result.get("submission_response_preview")
+        or result.get("chat_response_preview")
+        or result.get("sse_response_text")
+    )
+    parts.append(f"响应摘要 {preview[:320]}" if preview else "响应正文为空")
+    return "；".join(parts)[:900]
+
+
+def ambiguous_retry_reason(base: str, result: dict[str, Any]) -> str:
+    diagnostic = ambiguous_submission_diagnostic(result)
+    return f"{base}；后台诊断：{diagnostic}"[:1000] if diagnostic else str(base or "")[:1000]
+
+
 def classify_query_error(exc: Exception) -> str:
     if isinstance(exc, DolaQueryError):
         return exc.category
@@ -269,7 +307,7 @@ def extract_conversation_id(data: Any) -> str:
     for position, item in enumerate(_walk(data)):
         if not isinstance(item, dict):
             continue
-        cid = _normalize_conversation_id(item.get("conversation_id"))
+        cid = _item_conversation_id(item)
         if not cid:
             continue
         candidates.append((_item_order_key(item, position), cid))
@@ -280,8 +318,8 @@ def extract_conversation_id_from_sse(text: str) -> str:
     if not text:
         return ""
     patterns = (
-        r'\\?"conversation_id\\?"\s*:\s*\\?"?(\d{15,24})',
-        r"conversation_id(?:\\\\?\"|)\s*[:=]\s*(?:\\\\?\")?(\d{15,24})",
+        r'\\?"(?:conversation_id|conversationId|conversationID|conv_id|convId)\\?"\s*:\s*\\?"?(\d{15,24})',
+        r"(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:\\\\?\"|)\s*[:=]\s*(?:\\\\?\")?(\d{15,24})",
         r"/chat/(\d{15,24})(?:\D|$)",
     )
     for pattern in patterns:
@@ -342,6 +380,14 @@ def _normalize_conversation_id(value: Any) -> str:
     return text if text.isdigit() and 15 <= len(text) <= 24 else ""
 
 
+def _item_conversation_id(item: dict[str, Any]) -> str:
+    for key in ("conversation_id", "conversationId", "conversationID", "conv_id", "convId"):
+        normalized = _normalize_conversation_id(item.get(key))
+        if normalized:
+            return normalized
+    return ""
+
+
 def _normalized_match_text(value: str) -> str:
     return re.sub(r"\s+", "", repair_text(str(value or ""))).casefold()
 
@@ -365,7 +411,7 @@ def extract_matching_conversation_id(
     for position, item in enumerate(_walk(data)):
         if not isinstance(item, dict):
             continue
-        conversation_id = _normalize_conversation_id(item.get("conversation_id"))
+        conversation_id = _item_conversation_id(item)
         if not conversation_id:
             continue
         strings = _collect_strings(item)
@@ -416,10 +462,10 @@ def validate_conversation_ownership(data: Any, conversation_id: str) -> None:
         normalized
         for item in _walk(chain)
         if isinstance(item, dict)
-        for normalized in [_normalize_conversation_id(item.get("conversation_id"))]
+        for normalized in [_item_conversation_id(item)]
         if normalized
     }
-    chain_id = _normalize_conversation_id(chain.get("conversation_id")) if isinstance(chain, dict) else ""
+    chain_id = _item_conversation_id(chain) if isinstance(chain, dict) else ""
     if chain_id:
         observed.add(chain_id)
     if observed and expected not in observed:
@@ -727,6 +773,8 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         if bool(result.get("submission_ambiguous")) and ambiguous_at and (
             datetime.now(timezone.utc) - ambiguous_at
         ).total_seconds() >= AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS:
+            diagnostic = ambiguous_submission_diagnostic(result)
+            save_result(task_id, extra={"ambiguous_submission_diagnostic": diagnostic})
             account_id = str(result.get("account_id") or "")
             if account_id:
                 refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
@@ -736,7 +784,7 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             if account_id and proxy_source == "api" and proxy_retry_count < AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT:
                 retry_ambiguous_proxy_task(
                     task_id,
-                    "提交后未取得有效会话，正在更换代理重试",
+                    ambiguous_retry_reason("提交后未取得有效会话，正在更换代理重试", result),
                     account_id,
                     proxy_node_id,
                     delay_seconds=3,
@@ -747,7 +795,12 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
                 clear_account_current_task(account_id, task_id)
                 record_failed_account(task_id, account_id)
             update_meta(task_id, proxy_retry_avoid_node_id=proxy_node_id)
-            retry_count = retry_ambiguous_submitted_task(task_id, "提交后未取得有效会话，正在安全重试", max_retries=retry_limit, delay_seconds=3)
+            retry_count = retry_ambiguous_submitted_task(
+                task_id,
+                ambiguous_retry_reason("提交后未取得有效会话，正在安全重试", result),
+                max_retries=retry_limit,
+                delay_seconds=3,
+            )
             if retry_count <= retry_limit:
                 clear_transient_result(task_id)
                 return {"code": "1", "text": "正在重试中，请稍等！", "url": ""}

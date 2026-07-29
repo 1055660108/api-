@@ -4189,6 +4189,22 @@ body[data-portal="admin"] .client-billing-panel {
 }
 
 @media (max-width: 560px) {
+  body[data-portal="client"] .settings-card-value {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 12px;
+  }
+
+  body[data-portal="client"] .settings-card-value .primary-button {
+    width: 100%;
+  }
+
+  body[data-portal="client"] .settings-card-value strong {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
   .node-controls {
     grid-template-columns: 1fr;
   }
@@ -6070,6 +6086,18 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .invitation-config-controls { display: grid; grid-template-columns: minmax(210px, 1.2fr) 110px 110px minmax(180px, 1fr) auto; gap: 12px; align-items: end; }
 .settings-stack { align-items: start; }
 .settings-stack .config-panel { min-height: 0; align-self: start; }
+body[data-portal="client"] .settings-stack {
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+body[data-portal="client"] .client-password-panel,
+body[data-portal="client"] .client-email-panel {
+  height: 100%;
+}
+body[data-portal="client"] .client-billing-panel {
+  grid-column: 1 / -1;
+  width: 100%;
+}
 .admin-settings-columns,
 .admin-settings-compact-grid { grid-column: 1 / -1; min-width: 0; }
 .admin-settings-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
@@ -7437,6 +7465,10 @@ body[data-portal="client"] .admin-settings-grid {
 
   .admin-settings-grid .config-panel {
     min-height: 0;
+  }
+
+  body[data-portal="client"] .client-billing-panel {
+    grid-column: auto;
   }
 
   .accounts-panel > .panel-header,

@@ -38,6 +38,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="resourceMonitorPanel"', self.html)
         self.assertIn('id="resourceAlertBanner"', self.html)
         self.assertIn('renderResourceMonitoring(data.components?.monitoring || {})', self.javascript)
+        self.assertIn('body[data-portal="client"] .settings-stack {\n  align-content: start;', styles)
+        self.assertIn('body[data-portal="client"] .client-billing-panel {\n  grid-column: 1 / -1;', styles)
+        self.assertIn('body[data-portal="client"] .settings-card-value {\n    display: grid;', styles)
 
     def test_account_header_uses_wrapping_grid_without_overflow(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")

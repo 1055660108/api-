@@ -9,6 +9,7 @@ from .proxy_manager import dola_proxy_available, fetch_proxy_from_api
 
 ProxyFetcher = Callable[..., Awaitable[dict[str, str]]]
 ProxyProbe = Callable[[str, float], Awaitable[bool]]
+DUPLICATE_REFRESH_BACKOFF_SECONDS = 1.0
 
 
 @dataclass(eq=False)
@@ -45,16 +46,19 @@ class ReusableApiProxyPool:
         max_endpoints: int,
         contexts_per_endpoint: int,
         *,
+        max_concurrent_refreshes: int = 2,
         fetcher: ProxyFetcher = fetch_proxy_from_api,
         probe: ProxyProbe = dola_proxy_available,
     ):
         self.max_endpoints = max(1, int(max_endpoints))
         self.contexts_per_endpoint = max(1, int(contexts_per_endpoint))
         self.capacity = self.max_endpoints * self.contexts_per_endpoint
+        self.max_concurrent_refreshes = max(1, min(self.max_endpoints, int(max_concurrent_refreshes)))
         self.fetcher = fetcher
         self.probe = probe
         self._slots: list[_ApiProxySlot] = []
         self._launching = 0
+        self._last_error = ""
         self._condition = asyncio.Condition()
         self._stopping = False
 
@@ -84,7 +88,10 @@ class ReusableApiProxyPool:
                     selected.active += 1
                     return ApiProxyLease(self, selected)
                 known_node_ids = {slot.node_id for slot in self._slots}
-                if len(self._slots) + self._launching < self.max_endpoints:
+                if (
+                    len(self._slots) + self._launching < self.max_endpoints
+                    and self._launching < self.max_concurrent_refreshes
+                ):
                     self._launching += 1
                     create_endpoint = True
                 else:
@@ -100,6 +107,7 @@ class ReusableApiProxyPool:
                     excluded_node_ids=excluded | known_node_ids,
                 )
                 slot = _ApiProxySlot(**endpoint, active=1)
+                duplicate_saturated = False
                 async with self._condition:
                     self._launching = max(0, self._launching - 1)
                     if self._stopping:
@@ -109,14 +117,22 @@ class ReusableApiProxyPool:
                     if duplicate is not None:
                         if duplicate.node_id not in excluded and duplicate.active < self.contexts_per_endpoint:
                             duplicate.active += 1
+                            self._last_error = ""
                             self._condition.notify_all()
                             return ApiProxyLease(self, duplicate)
+                        duplicate_saturated = True
                         self._condition.notify_all()
-                        continue
-                    self._slots.append(slot)
-                    self._condition.notify_all()
-                    return ApiProxyLease(self, slot)
-            except Exception:
+                    else:
+                        self._slots.append(slot)
+                        self._last_error = ""
+                        self._condition.notify_all()
+                        return ApiProxyLease(self, slot)
+                if duplicate_saturated:
+                    await asyncio.sleep(DUPLICATE_REFRESH_BACKOFF_SECONDS)
+                    continue
+            except Exception as exc:
+                detail = str(exc).strip()
+                self._last_error = f"{type(exc).__name__}: {detail or 'no detail'}"[:500]
                 async with self._condition:
                     self._launching = max(0, self._launching - 1)
                     self._condition.notify_all()
@@ -140,7 +156,8 @@ class ReusableApiProxyPool:
                 proxy = await self.fetcher(api_url, timeout_seconds=timeout_seconds, scheme=scheme)
             except Exception as exc:
                 fetch_errors += 1
-                errors.append(str(exc)[:120])
+                detail = str(exc).strip()
+                errors.append(f"{type(exc).__name__}: {detail or 'no detail'}"[:160])
                 if fetch_errors >= 3:
                     break
                 continue
@@ -175,13 +192,22 @@ class ReusableApiProxyPool:
             self._slots.clear()
             self._condition.notify_all()
 
-    def snapshot(self) -> dict[str, int]:
+    def snapshot(self) -> dict[str, Any]:
         active = sum(slot.active for slot in self._slots)
+        available = sum(
+            max(0, self.contexts_per_endpoint - slot.active)
+            for slot in self._slots
+            if not slot.invalid
+        )
         return {
             "endpoint_limit": self.max_endpoints,
             "contexts_per_endpoint": self.contexts_per_endpoint,
             "capacity": self.capacity,
+            "refresh_concurrency_limit": self.max_concurrent_refreshes,
+            "refreshing": self._launching,
             "endpoints": len(self._slots),
             "active": active,
-            "available": max(0, self.capacity - active),
+            "available": available,
+            "potential_available": max(0, self.capacity - active),
+            "last_error": self._last_error,
         }

@@ -72,6 +72,7 @@ RESULT_POLL_BATCH_SIZE = _bounded_env_int("DOLA_RESULT_POLL_BATCH_SIZE", 256, RE
 RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_SECONDS", 20, 10, 120)
 RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
 IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 8, 1, 16)
+API_PROXY_REFRESH_CONCURRENCY = _bounded_env_int("DOLA_API_PROXY_REFRESH_CONCURRENCY", 2, 1, 4)
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -170,6 +171,7 @@ class WorkerManager:
         self._api_proxy_pool = ReusableApiProxyPool(
             max_endpoints=BROWSER_POOL_PROCESSES,
             contexts_per_endpoint=BROWSER_CONTEXTS_PER_PROCESS,
+            max_concurrent_refreshes=API_PROXY_REFRESH_CONCURRENCY,
         )
         self._remote_generation_reservations: dict[str, str] = {}
 

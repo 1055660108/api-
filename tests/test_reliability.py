@@ -1005,6 +1005,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 4)
         self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 48)
         self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 48)
+        self.assertEqual(snapshot["api_proxy_pool"]["refresh_concurrency_limit"], 2)
 
     def test_fair_owner_limits_split_capacity_across_concurrent_members(self) -> None:
         self.assertEqual(

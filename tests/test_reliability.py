@@ -627,6 +627,77 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(outcome["reason"], "browser timeout")
         mark_proxy.assert_called_once_with()
 
+    def test_browser_timeout_after_conversation_id_keeps_submission(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.save_result(task["id"], conversation_id="conversation-1")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner._run_once = AsyncMock(side_effect=asyncio.TimeoutError())
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["success"])
+        self.assertFalse(outcome["confirmation_pending"])
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
+        result = store.load_result(task["id"])
+        self.assertEqual(result["conversation_id"], "conversation-1")
+        self.assertTrue(result["post_submission_cleanup_timeout"])
+        mark_proxy.assert_not_called()
+
+    def test_browser_timeout_after_ambiguous_submission_enters_recovery(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.save_result(
+            task["id"],
+            extra={
+                "submission_ambiguous": True,
+                "submit_confirmation_state": "awaiting_conversation",
+            },
+        )
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner._run_once = AsyncMock(side_effect=asyncio.TimeoutError())
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["success"])
+        self.assertTrue(outcome["confirmation_pending"])
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
+        self.assertTrue(store.load_result(task["id"])["post_submission_cleanup_timeout"])
+        mark_proxy.assert_not_called()
+
+    def test_browser_timeout_does_not_treat_pre_submit_marker_as_submission(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.save_result(task["id"], extra={"submission_ambiguous": False})
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner._run_once = AsyncMock(side_effect=asyncio.TimeoutError())
+        outcome = asyncio.run(runner.run())
+        self.assertFalse(outcome["success"])
+        self.assertEqual(outcome["reason"], "browser timeout")
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_RUNNING)
+
+    def test_browser_timeout_does_not_treat_rejected_response_as_submission(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.save_result(
+            task["id"],
+            extra={
+                "submission_ambiguous": True,
+                "submit_confirmation_state": "awaiting_conversation",
+                "submit_error_category": "service_frequent",
+            },
+        )
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner._run_once = AsyncMock(side_effect=asyncio.TimeoutError())
+        outcome = asyncio.run(runner.run())
+        self.assertFalse(outcome["success"])
+        self.assertEqual(outcome["reason"], "browser timeout")
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_RUNNING)
+
+    def test_cleanup_timeout_is_suppressed(self) -> None:
+        async def never_finishes() -> None:
+            await asyncio.Event().wait()
+
+        asyncio.run(automation._bounded_cleanup(never_finishes(), timeout_seconds=0.01))
+
     def test_navigation_context_loss_is_infrastructure_without_blacking_out_node(self) -> None:
         task = self.create_task("owner")
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")

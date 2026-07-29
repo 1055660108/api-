@@ -44,6 +44,7 @@ from .proxy_manager import (
 from .store import (
     begin_task_submission,
     clear_transient_result,
+    load_result,
     mark_success,
     mark_submitted,
     release_task_submission,
@@ -822,6 +823,13 @@ async def _fetch_json(client: httpx.AsyncClient, url: str, *, label: str, **kwar
     return data, response
 
 
+async def _bounded_cleanup(awaitable: Awaitable[Any], timeout_seconds: float = 12.0) -> None:
+    try:
+        await asyncio.wait_for(awaitable, timeout=max(0.1, float(timeout_seconds)))
+    except Exception:
+        pass
+
+
 class DolaFetchAutomation:
     def __init__(
         self,
@@ -927,9 +935,43 @@ class DolaFetchAutomation:
 
     async def run(self) -> dict[str, Any]:
         try:
-            timeout = max(self.settings.task_timeout_seconds, 240)
+            timeout = max(self.settings.task_timeout_seconds, 360)
             return await asyncio.wait_for(self._run_once(), timeout=timeout)
         except asyncio.TimeoutError:
+            if self._task_exists():
+                result = load_result(self.task_id)
+                conversation_id = str(result.get("conversation_id") or "").strip()
+                confirmation_pending = not bool(conversation_id)
+                error_category = str(result.get("submit_error_category") or "")
+                submission_was_rejected = error_category in {
+                    "slider_verification",
+                    "service_frequent",
+                    "country_restricted",
+                    "region_restricted",
+                } or error_category.startswith("http_")
+                submission_was_received = bool(conversation_id) or (
+                    not submission_was_rejected
+                    and (
+                        result.get("submission_ambiguous") is True
+                        or str(result.get("submit_confirmation_state") or "") == "awaiting_conversation"
+                    )
+                )
+                if submission_was_received:
+                    meta = get_meta(self.task_id)
+                    if str(meta.get("status") or "") == "running":
+                        mark_submitted(self.task_id, result_poll_delay_seconds=5)
+                    self._save_result(
+                        extra={
+                            "post_submission_cleanup_timeout": True,
+                            "post_submission_cleanup_timeout_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                    return {
+                        "success": True,
+                        "retryable": False,
+                        "reason": "",
+                        "confirmation_pending": confirmation_pending,
+                    }
             self._mark_active_proxy_unavailable()
             self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_timeout"})
             return {"success": False, "retryable": True, "reason": "browser timeout", "infrastructure_fault": True}
@@ -1188,16 +1230,16 @@ class DolaFetchAutomation:
                     "confirmation_pending": confirmation_pending,
                 }
             finally:
-                await safe_unroute_all(page)
+                await _bounded_cleanup(safe_unroute_all(page))
                 if lease is not None:
-                    await lease.release()
+                    await _bounded_cleanup(lease.release())
                 else:
-                    await safe_close(context)
-                    await safe_close(browser)
-                await release_dola_subscription_proxy(self.subscription_proxy)
+                    await _bounded_cleanup(safe_close(context))
+                    await _bounded_cleanup(safe_close(browser))
+                await _bounded_cleanup(release_dola_subscription_proxy(self.subscription_proxy))
                 self.subscription_proxy = None
                 if getattr(self, "api_proxy_lease", None) is not None:
-                    await self.api_proxy_lease.release()
+                    await _bounded_cleanup(self.api_proxy_lease.release())
                     self.api_proxy_lease = None
 
     async def _api_browser_proxy_config(self, excluded_node_ids: set[str]) -> dict[str, str]:

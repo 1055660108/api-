@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+from concurrent.futures import Future
 import json
 import hmac
 import hashlib
@@ -137,6 +139,12 @@ IMAGE_MAGIC = {
 VALID_VIDEO_DURATIONS = {5, 10, 15}
 MAX_REFERENCE_IMAGE_NAME_LENGTH = 180
 logger = logging.getLogger(__name__)
+
+ACCOUNT_LIST_MAINTENANCE_SECONDS = 60.0
+_ACCOUNT_LIST_CACHE_LOCK = threading.RLock()
+_ACCOUNT_LIST_MAINTENANCE_LOCK = threading.Lock()
+_ACCOUNT_LIST_IN_FLIGHT: Future | None = None
+_ACCOUNT_LIST_MAINTENANCE_AT = 0.0
 
 
 def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
@@ -860,7 +868,7 @@ async def batch_scheduler_loop() -> None:
 async def lifespan(app: FastAPI):
     import asyncio
 
-    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task, resource_alert_task, batch_scheduler_task
+    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task, resource_alert_task, batch_scheduler_task, _ACCOUNT_LIST_MAINTENANCE_AT
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
     clear_registration_security_state()
@@ -877,6 +885,8 @@ async def lifespan(app: FastAPI):
         refund_temp_quota_once(str(stale_task.get("id") or ""), str(stale_task.get("owner_token_hash") or ""))
     reset_daily_account_quotas_if_needed()
     reconcile_account_quotas()
+    _clear_account_list_cache()
+    _ACCOUNT_LIST_MAINTENANCE_AT = time.monotonic() + ACCOUNT_LIST_MAINTENANCE_SECONDS
     create_sem = asyncio.Semaphore(4)
     query_sem = asyncio.Semaphore(5)
     list_sem = asyncio.Semaphore(8)
@@ -3021,6 +3031,7 @@ async def account_access_create_account(
             quota_limit,
             platform,
         )
+        _clear_account_list_cache()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     await _record_admin_action_safe(
@@ -3054,6 +3065,7 @@ async def account_access_update_account(
             name=payload.get("name") if "name" in payload else None,
             quota_limit=payload.get("quota_limit") if "quota_limit" in payload else None,
         )
+        _clear_account_list_cache()
     except KeyError:
         raise HTTPException(status_code=404, detail="account not found")
     except ValueError as exc:
@@ -3082,15 +3094,49 @@ async def accounts_list(
     platform: str | None = Query(None),
     status: str | None = Query(None),
 ):
-    reset_daily_account_quotas_if_needed()
-    reconcile_account_quotas()
-    task_statuses = {item["id"]: str(item.get("status") or "") for item in list_tasks()}
+    return await asyncio.to_thread(_accounts_list_payload, page, page_size, q, platform, status)
+
+
+def _run_account_list_maintenance() -> None:
+    global _ACCOUNT_LIST_MAINTENANCE_AT
+
+    now = time.monotonic()
+    if now < _ACCOUNT_LIST_MAINTENANCE_AT or not _ACCOUNT_LIST_MAINTENANCE_LOCK.acquire(blocking=False):
+        return
+    try:
+        if time.monotonic() < _ACCOUNT_LIST_MAINTENANCE_AT:
+            return
+        reset_daily_account_quotas_if_needed()
+        reconcile_account_quotas()
+        _ACCOUNT_LIST_MAINTENANCE_AT = time.monotonic() + ACCOUNT_LIST_MAINTENANCE_SECONDS
+    except Exception:
+        _ACCOUNT_LIST_MAINTENANCE_AT = time.monotonic() + 5.0
+        raise
+    finally:
+        _ACCOUNT_LIST_MAINTENANCE_LOCK.release()
+
+
+def _clear_account_list_cache() -> None:
+    global _ACCOUNT_LIST_IN_FLIGHT
+
+    with _ACCOUNT_LIST_CACHE_LOCK:
+        _ACCOUNT_LIST_IN_FLIGHT = None
+
+
+def _build_account_list_snapshot() -> dict:
+    _run_account_list_maintenance()
+    accounts = list_accounts()
+    current_task_ids = [str(item.get("current_task_id") or "") for item in accounts if item.get("current_task_id")]
+    current_tasks = {
+        task_id: (meta, result)
+        for task_id, meta, result in task_states(current_task_ids)
+    }
     active_by_account = account_active_tasks()
-    accounts = []
-    for account in list_accounts():
+    normalized_accounts = []
+    for account in accounts:
         current_task_id = str(account.get("current_task_id") or "")
-        current_status = task_statuses.get(current_task_id, "")
-        current_result = load_result(current_task_id) if current_task_id and current_task_id in task_statuses else {}
+        current_meta, current_result = current_tasks.get(current_task_id, ({}, {}))
+        current_status = str(current_meta.get("status") or "")
         keep_current = current_status == "running" or (current_status == "success" and not current_result.get("decoded_main_url"))
         if current_task_id and not keep_current:
             clear_account_current_task(str(account.get("id") or ""), current_task_id)
@@ -3107,12 +3153,12 @@ async def accounts_list(
             }
         else:
             account = {**account, "active_tasks": [], "active_task_count": 0}
-        accounts.append(account)
-    total_limit = sum(max(0, int(item.get("quota_limit") or 0)) for item in accounts)
-    total_used = sum(max(0, int(item.get("quota_used") or 0)) for item in accounts)
-    unlimited_count = sum(1 for item in accounts if not int(item.get("quota_limit") or 0))
-    response = {
-        "accounts": accounts,
+        normalized_accounts.append(account)
+    total_limit = sum(max(0, int(item.get("quota_limit") or 0)) for item in normalized_accounts)
+    total_used = sum(max(0, int(item.get("quota_used") or 0)) for item in normalized_accounts)
+    unlimited_count = sum(1 for item in normalized_accounts if not int(item.get("quota_limit") or 0))
+    return {
+        "accounts": normalized_accounts,
         "quota_summary": {
             "total_limit": total_limit,
             "total_used": total_used,
@@ -3121,6 +3167,42 @@ async def accounts_list(
         },
         "next_quota_reset_at": next_quota_reset_at(),
     }
+
+
+def _account_list_snapshot() -> dict:
+    global _ACCOUNT_LIST_IN_FLIGHT
+
+    with _ACCOUNT_LIST_CACHE_LOCK:
+        current = _ACCOUNT_LIST_IN_FLIGHT
+        owns_build = current is None
+        if owns_build:
+            current = Future()
+            _ACCOUNT_LIST_IN_FLIGHT = current
+    assert current is not None
+    if not owns_build:
+        return copy.deepcopy(current.result(timeout=120))
+    try:
+        snapshot = _build_account_list_snapshot()
+        current.set_result(snapshot)
+        return copy.deepcopy(snapshot)
+    except BaseException as exc:
+        current.set_exception(exc)
+        raise
+    finally:
+        with _ACCOUNT_LIST_CACHE_LOCK:
+            if _ACCOUNT_LIST_IN_FLIGHT is current:
+                _ACCOUNT_LIST_IN_FLIGHT = None
+
+
+def _accounts_list_payload(
+    page: int | None,
+    page_size: int | None,
+    q: str | None,
+    platform: str | None,
+    status: str | None,
+) -> dict:
+    response = _account_list_snapshot()
+    accounts = response["accounts"]
     if page is None and page_size is None and q is None and platform is None and status is None:
         return response
     selected_platform = str(platform or "").strip().lower()
@@ -3193,8 +3275,17 @@ async def accounts_create(request: Request):
         enabled = str(payload.get("enabled") if payload.get("enabled") is not None else "true").lower() not in {"0", "false", "no", "off"}
         if bulk:
             result = await asyncio.to_thread(add_accounts_bulk_result, cookie_data, quota_limit, enabled, platform)
+            _clear_account_list_cache()
             return {"ok": True, **result}
-        account = add_account(payload.get("name") or "", cookie_data, enabled=enabled, quota_limit=quota_limit, platform=platform)
+        account = await asyncio.to_thread(
+            add_account,
+            payload.get("name") or "",
+            cookie_data,
+            enabled,
+            quota_limit,
+            platform,
+        )
+        _clear_account_list_cache()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"ok": True, "account": account}
@@ -3206,32 +3297,35 @@ async def accounts_update(account_id: str, request: Request):
     payload = await _request_payload(request)
     try:
         if "reset_quota" in payload and str(payload.get("reset_quota") or "").strip().lower() in {"1", "true", "yes", "y", "on"}:
-            account = reset_account_quota(account_id)
+            account = await asyncio.to_thread(reset_account_quota, account_id)
         elif "quota_limit" in payload:
-            account = update_account_quota(account_id, int(payload.get("quota_limit") or 0))
+            account = await asyncio.to_thread(update_account_quota, account_id, int(payload.get("quota_limit") or 0))
         elif "enabled" in payload:
             enabled = str(payload.get("enabled") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
-            account = set_account_enabled(account_id, enabled)
+            account = await asyncio.to_thread(set_account_enabled, account_id, enabled)
         else:
             raise HTTPException(status_code=400, detail="enabled or quota_limit is required")
     except KeyError:
         raise HTTPException(status_code=404, detail="account not found")
     except ValueError:
         raise HTTPException(status_code=400, detail="quota_limit must be an integer")
+    _clear_account_list_cache()
     return {"ok": True, "account": account}
 
 
 @app.delete("/accounts/{account_id}", dependencies=[Depends(require_admin)])
 async def accounts_delete(account_id: str):
-    if not delete_account(account_id):
+    if not await asyncio.to_thread(delete_account, account_id):
         raise HTTPException(status_code=404, detail="account not found")
+    _clear_account_list_cache()
     return {"ok": True}
 
 
 @app.post("/accounts/{account_id}/delete", dependencies=[Depends(require_admin)])
 async def accounts_delete_action(account_id: str):
-    if not delete_account(account_id):
+    if not await asyncio.to_thread(delete_account, account_id):
         raise HTTPException(status_code=404, detail="account not found")
+    _clear_account_list_cache()
     return {"ok": True}
 
 

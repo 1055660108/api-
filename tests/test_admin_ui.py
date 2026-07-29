@@ -197,6 +197,15 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('const requestId = ++state.accountRefreshRequestId', self.javascript)
         self.assertNotIn('const filteredAccounts = state.accounts.filter', self.javascript)
 
+    def test_expired_sessions_stop_polling_and_account_refreshes_are_coalesced(self) -> None:
+        self.assertIn('function stopAutoRefresh()', self.javascript)
+        self.assertIn('function showLogin(message = "等待输入") {\n  stopAutoRefresh();', self.javascript)
+        self.assertIn('if (state.proxyCountdownTimer) window.clearInterval(state.proxyCountdownTimer);', self.javascript)
+        self.assertIn('state.accountRefreshPending = true;', self.javascript)
+        self.assertIn('state.accountRefreshPromise = request;', self.javascript)
+        self.assertIn('if (!state.authenticated || els.appShell.classList.contains("hidden")) return;', self.javascript)
+        self.assertIn('state.nextQuotaResetAt = "";\n    refreshAccounts({ quiet: true }).catch(() => {});', self.javascript)
+
     def test_task_status_contract_uses_authoritative_terminal_state(self) -> None:
         success_index = self.javascript.index('if (rawStatus === "success") return')
         running_index = self.javascript.index('if (rawStatus === "running" || rawStatus === "submitted")')

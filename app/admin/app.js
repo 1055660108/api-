@@ -690,6 +690,8 @@ const state = {
   announcementTimer: 0,
   taskRefreshRequestId: 0,
   accountRefreshRequestId: 0,
+  accountRefreshPromise: null,
+  accountRefreshPending: false,
   taskSearchTimer: 0,
   accountSearchTimer: 0,
   taskRenderSignature: "",
@@ -1389,6 +1391,7 @@ function createClientInkSplash(event) {
 }
 
 function showLogin(message = "等待输入") {
+  stopAutoRefresh();
   state.authenticated = false;
   document.body.dataset.portal = portal;
   els.appShell.classList.add("hidden");
@@ -1432,6 +1435,9 @@ function showApp() {
 }
 
 function startAutoRefresh() {
+  if (portal === "admin" && !state.proxyCountdownTimer) {
+    state.proxyCountdownTimer = window.setInterval(updateProxyRefreshCountdown, 1000);
+  }
   if (portal === "client" && !state.accessRefreshTimer) {
     state.accessRefreshTimer = window.setInterval(async () => {
       if (!state.authenticated || document.hidden || els.appShell.classList.contains("hidden") || state.submitting || state.accessRefreshing) return;
@@ -1706,12 +1712,6 @@ async function logout() {
   localStorage.removeItem(portalStorageKey(TOKEN_KEY));
   sessionStorage.removeItem(portalStorageKey(API_TOKEN_SESSION_KEY));
   sessionStorage.removeItem(portalStorageKey(AUTH_KEY));
-  if (state.refreshTimer) window.clearInterval(state.refreshTimer);
-  if (state.accessRefreshTimer) window.clearInterval(state.accessRefreshTimer);
-  if (state.countdownTimer) window.clearInterval(state.countdownTimer);
-  state.refreshTimer = 0;
-  state.accessRefreshTimer = 0;
-  state.countdownTimer = 0;
   showLogin("已退出");
 }
 
@@ -2439,6 +2439,23 @@ async function openAccountAccessManagement() {
   } catch (error) {
     toast(`访问密钥读取失败：${error.message}`, "error");
   }
+}
+
+function stopAutoRefresh() {
+  if (state.refreshTimer) window.clearInterval(state.refreshTimer);
+  if (state.accessRefreshTimer) window.clearInterval(state.accessRefreshTimer);
+  if (state.countdownTimer) window.clearInterval(state.countdownTimer);
+  if (state.proxyCountdownTimer) window.clearInterval(state.proxyCountdownTimer);
+  state.refreshTimer = 0;
+  state.accessRefreshTimer = 0;
+  state.countdownTimer = 0;
+  state.proxyCountdownTimer = 0;
+  state.autoRefreshing = false;
+  state.accessRefreshing = false;
+  state.accountRefreshRequestId += 1;
+  state.accountRefreshPromise = null;
+  state.accountRefreshPending = false;
+  state.nextQuotaResetAt = "";
 }
 
 function closeAccountAccessManagement() {
@@ -3308,10 +3325,14 @@ async function saveRuntimeConfig(event) {
 }
 
 async function refreshAccounts(options = {}) {
-  if (portal === "client") return;
+  if (portal === "client" || !state.authenticated || els.appShell.classList.contains("hidden")) return;
+  if (state.accountRefreshPromise) {
+    state.accountRefreshPending = true;
+    return state.accountRefreshPromise;
+  }
   const requestId = ++state.accountRefreshRequestId;
   if (!options.quiet) setBusy(els.refreshAccounts, true, "刷新中");
-  try {
+  const request = (async () => {
     const params = new URLSearchParams({ page: String(state.accountPage), page_size: String(state.accountPageSize) });
     const keyword = (els.accountTaskSearch?.value || "").trim();
     if (keyword) params.set("q", keyword);
@@ -3330,11 +3351,20 @@ async function refreshAccounts(options = {}) {
     renderAccountQuotaSummary();
     updateAccountResetCountdown();
     if (!options.quiet) toast(`已加载 ${state.accountTotal} 个账号`);
+  })();
+  state.accountRefreshPromise = request;
+  try {
+    return await request;
   } catch (error) {
     if (!options.quiet) toast(`账号列表读取失败：${error.message}`, "error");
     throw error;
   } finally {
+    if (state.accountRefreshPromise === request) state.accountRefreshPromise = null;
     if (!options.quiet && requestId === state.accountRefreshRequestId) setBusy(els.refreshAccounts, false);
+    if (state.accountRefreshPending && state.authenticated && !els.appShell.classList.contains("hidden")) {
+      state.accountRefreshPending = false;
+      refreshAccounts({ quiet: true }).catch(() => {});
+    }
   }
 }
 
@@ -3363,6 +3393,7 @@ function formatDuration(ms) {
 
 function updateAccountResetCountdown() {
   if (!els.accountResetCountdown) return;
+  if (!state.authenticated || els.appShell.classList.contains("hidden")) return;
   if (!state.nextQuotaResetAt) {
     els.accountResetCountdown.textContent = "清零倒计时 --:--:--";
     return;
@@ -3370,7 +3401,10 @@ function updateAccountResetCountdown() {
   const target = new Date(state.nextQuotaResetAt).getTime();
   const left = target - Date.now();
   els.accountResetCountdown.textContent = `清零倒计时 ${formatDuration(left)}`;
-  if (left <= 0) refreshAccounts({ quiet: true });
+  if (left <= 0 && !state.accountRefreshPromise) {
+    state.nextQuotaResetAt = "";
+    refreshAccounts({ quiet: true }).catch(() => {});
+  }
 }
 
 function countCookieAccounts(raw) {

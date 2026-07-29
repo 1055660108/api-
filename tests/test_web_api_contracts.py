@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import inspect
+import threading
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -1279,6 +1280,53 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in disabled["accounts"]], [disabled_account["id"]])
         self.assertEqual(self.client.get("/accounts?page=1&status=unknown").status_code, 422)
         self.assertEqual(self.client.get("/accounts?page=1&platform=unknown").status_code, 422)
+
+    def test_account_list_snapshot_coalesces_repeated_expensive_builds(self) -> None:
+        snapshot = {
+            "accounts": [],
+            "quota_summary": {"total_limit": 0, "total_used": 0, "total_remaining": 0, "unlimited_count": 0},
+            "next_quota_reset_at": "2026-07-30T00:00:00+08:00",
+        }
+        main._clear_account_list_cache()
+        started = threading.Event()
+        release = threading.Event()
+
+        def build_snapshot():
+            started.set()
+            release.wait(5)
+            return snapshot
+
+        try:
+            with patch.object(main, "_build_account_list_snapshot", side_effect=build_snapshot) as build, ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(main._account_list_snapshot)
+                self.assertTrue(started.wait(2))
+                second = executor.submit(main._account_list_snapshot)
+                release.set()
+                self.assertEqual(first.result(5), snapshot)
+                self.assertEqual(second.result(5), snapshot)
+            build.assert_called_once_with()
+        finally:
+            main._clear_account_list_cache()
+
+    def test_account_list_maintenance_is_rate_limited(self) -> None:
+        previous_due = main._ACCOUNT_LIST_MAINTENANCE_AT
+        main._ACCOUNT_LIST_MAINTENANCE_AT = 0
+        try:
+            with patch.object(main, "reset_daily_account_quotas_if_needed") as reset, patch.object(
+                main, "reconcile_account_quotas"
+            ) as reconcile:
+                main._run_account_list_maintenance()
+                main._run_account_list_maintenance()
+            reset.assert_called_once_with()
+            reconcile.assert_called_once_with()
+        finally:
+            main._ACCOUNT_LIST_MAINTENANCE_AT = previous_due
+
+    def test_account_list_work_is_offloaded_from_the_api_event_loop(self) -> None:
+        source = inspect.getsource(main.accounts_list)
+        self.assertIn("await asyncio.to_thread(_accounts_list_payload", source)
+        self.assertNotIn("list_tasks()", inspect.getsource(main._build_account_list_snapshot))
+        self.assertNotIn("list_tasks()", inspect.getsource(store.account_active_tasks))
 
     def test_account_user_and_configuration_responses_keep_web_contracts(self) -> None:
         registered = self.register()

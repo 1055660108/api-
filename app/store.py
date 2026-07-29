@@ -1191,18 +1191,16 @@ def active_task_count_for_owner(owner_token_hash: str) -> int:
 
 def account_active_tasks() -> dict[str, list[dict[str, str]]]:
     active: dict[str, list[dict[str, str]]] = {}
-    for item in list_tasks():
-        task_id = str(item.get("id") or "")
-        status = str(item.get("status") or "")
+    rows = list_task_metas_by_statuses({STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED})
+    for task_id, meta in rows:
+        status = str(meta.get("status") or "")
         if not task_id or not is_active_status(status):
             continue
         result = load_result(task_id)
         account_id = str(result.get("account_id") or "")
         if not account_id:
             continue
-        if status == STATUS_SUCCESS and result.get("decoded_main_url"):
-            continue
-        active.setdefault(account_id, []).append({"task_id": task_id, "status": status, "worker_id": str(item.get("worker_id") or "")})
+        active.setdefault(account_id, []).append({"task_id": task_id, "status": status, "worker_id": str(meta.get("worker_id") or "")})
     return active
 
 

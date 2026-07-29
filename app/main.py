@@ -69,7 +69,7 @@ from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
 from .proxy_manager import activate_mihomo_node, fetch_subscription_node_list, measure_node_delays, node_payload, probe_dola_proxy, rebuild_mihomo_from_snapshot
-from .resilience import PlatformGuard, adaptive_worker_limit, queue_admission
+from .resilience import PlatformGuard, adaptive_worker_limit, fair_owner_capacity_limits, queue_admission
 from .registration_security import block_retry_after as registration_block_retry_after, clear_local_state as clear_registration_security_state, record_failure as record_registration_failure, reset_failures as reset_registration_failures
 from .repository_update import repository_status, update_repository
 from .resource_monitor import collect_resource_snapshot, latest_resource_snapshot
@@ -817,17 +817,24 @@ async def batch_scheduler_tick() -> bool:
         global_capacity = BROWSER_SUBMISSION_CONCURRENCY
         if len(active_rows) >= global_capacity:
             return False
-        eligible: set[str] = set()
+        owner_limits: dict[str, int] = {}
+        access_cache: dict[str, AccessContext | None] = {}
         for job in jobs:
             if not any(str(row.get("status") or "") == "queued" for row in job.get("rows", []) if isinstance(row, dict)):
                 continue
             owner_hash = str(job.get("owner_token_hash") or "")
-            access = await _storage_call(get_temp_context_by_hash, owner_hash)
+            if owner_hash not in access_cache:
+                access_cache[owner_hash] = await _storage_call(get_temp_context_by_hash, owner_hash)
+            access = access_cache[owner_hash]
             if not access or not user_token_is_enabled(owner_hash):
                 continue
             owner_limit = min(max(1, int(job.get("concurrency") or 1)), max(1, int(access.concurrency or 1)))
+            owner_limits[owner_hash] = max(owner_limits.get(owner_hash, 0), owner_limit)
+        fair_limits = fair_owner_capacity_limits(owner_limits, global_capacity)
+        eligible: set[str] = set()
+        for owner_hash, fair_limit in fair_limits.items():
             owner_active = await _storage_call(active_task_count_for_owner, owner_hash)
-            if owner_active < owner_limit:
+            if owner_active < fair_limit:
                 eligible.add(owner_hash)
         owner = await asyncio.to_thread(coordinator.next_owner, eligible)
         if not owner:

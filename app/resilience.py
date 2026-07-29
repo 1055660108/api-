@@ -57,6 +57,32 @@ class Admission:
     retry_after: int = 0
 
 
+def fair_owner_capacity_limits(requested_limits: dict[str, int], capacity: int) -> dict[str, int]:
+    requested = {
+        str(owner): max(1, int(limit))
+        for owner, limit in requested_limits.items()
+        if str(owner)
+    }
+    if not requested:
+        return {}
+    owners = sorted(requested)
+    limits = {owner: 1 for owner in owners}
+    remaining = max(0, int(capacity) - len(owners))
+    while remaining > 0:
+        progressed = False
+        for owner in owners:
+            if limits[owner] >= requested[owner]:
+                continue
+            limits[owner] += 1
+            remaining -= 1
+            progressed = True
+            if remaining <= 0:
+                break
+        if not progressed:
+            break
+    return limits
+
+
 _LOCAL_LOCK = threading.RLock()
 _LOCAL_BUCKETS: dict[str, tuple[float, float]] = {}
 _LOCAL_CIRCUITS: dict[str, dict[str, float]] = {}

@@ -766,6 +766,11 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
         self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).credit_units, 10)
 
+    def test_batch_scheduler_uses_fair_owner_capacity_limits(self) -> None:
+        source = inspect.getsource(main.batch_scheduler_tick)
+        self.assertIn("fair_owner_capacity_limits(owner_limits, global_capacity)", source)
+        self.assertIn("owner_active < fair_limit", source)
+
     def test_canceled_batch_plan_is_rejected_before_persistent_job_creation(self) -> None:
         registered = self.register("cancel_batch_plan_client")
         owner_hash = temp_access.hash_token(registered["token"])

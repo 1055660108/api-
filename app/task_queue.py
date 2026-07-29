@@ -244,7 +244,14 @@ class RedisTaskQueue:
                 meta = get_meta(task_id)
                 if str(meta.get("status") or "") == STATUS_RUNNING:
                     result = load_result(task_id)
-                    submitted = bool(result.get("conversation_id") or result.get("doubao_submit_confirmed") or result.get("qianwen_submit_confirmed") or result.get("qianwen_remote_task_ids"))
+                    submitted = bool(
+                        result.get("conversation_id")
+                        or result.get("submission_ambiguous")
+                        or str(result.get("submit_confirmation_state") or "") == "awaiting_conversation"
+                        or result.get("doubao_submit_confirmed")
+                        or result.get("qianwen_submit_confirmed")
+                        or result.get("qianwen_remote_task_ids")
+                    )
                     if submitted:
                         mark_submitted(task_id)
                     else:
@@ -267,7 +274,7 @@ class RedisTaskQueue:
                 continue
             meta = get_meta(str(item["id"]))
             available_at = parse_time(str(meta.get("next_attempt_at") or ""))
-            added += int(self.enqueue(str(item["id"]), available_at))
+            added += int(self.requeue(str(item["id"]), available_at))
         return added
 
     def health(self) -> dict[str, Any]:

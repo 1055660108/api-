@@ -48,7 +48,7 @@ from .store import (
     utc_now,
 )
 from .query import query_task
-from .resilience import PlatformGuard, adaptive_worker_limit
+from .resilience import PlatformGuard, adaptive_worker_limit, fair_owner_capacity_limits
 from .task_queue import get_task_queue, queue_backend
 from .temp_access import refund_temp_quota_hash
 from .temp_access import temp_token_concurrency_limits, temp_token_remote_generation_limits
@@ -140,7 +140,9 @@ class WorkerManager:
         self._last_dola_submit_at: dict[str, float] = {}
         self._image_submission_semaphore = asyncio.Semaphore(IMAGE_SUBMISSION_CONCURRENCY)
         self._image_submission_active = 0
-        self._image_submission_reservations: set[str] = set()
+        self._image_submission_reservations: dict[str, str] = {}
+        self._image_owner_limits: dict[str, int] = {}
+        self._image_owner_limits_refreshed_at = 0.0
         self._result_poll_semaphore = asyncio.Semaphore(RESULT_POLL_CONCURRENCY)
         self._result_poll_pace_lock = asyncio.Lock()
         self._last_result_poll_at = 0.0
@@ -174,10 +176,9 @@ class WorkerManager:
     async def start(self) -> None:
         if self._supervisor and not self._supervisor.done():
             return
-        if queue_backend() == "file":
-            reset_running_tasks()
-        else:
+        if queue_backend() != "file":
             self._queue.recover()
+        reset_running_tasks()
         self._platform_guard.record_success("dola")
         self._queue.reconcile()
         self._requeue_stale_dola_guard_tasks()
@@ -495,9 +496,45 @@ class WorkerManager:
     def _owner_concurrency_limits(self) -> dict[str, int]:
         now = asyncio.get_running_loop().time()
         if now - self._token_concurrency_refreshed_at >= 1.0:
-            self._token_concurrency_limits = temp_token_concurrency_limits()
+            configured = temp_token_concurrency_limits()
+            try:
+                contenders = {
+                    str(meta.get("owner_token_hash") or "")
+                    for _, meta in list_task_metas_by_statuses({"pending", "running"})
+                    if str(meta.get("owner_token_hash") or "")
+                }
+                requested = {owner: configured[owner] for owner in contenders if owner in configured}
+                self._token_concurrency_limits = (
+                    fair_owner_capacity_limits(requested, self._dola_browser_pool.capacity)
+                    if requested
+                    else configured
+                )
+            except Exception as exc:
+                self._last_error = str(exc)[:500]
+                self._token_concurrency_limits = configured
             self._token_concurrency_refreshed_at = now
         return self._token_concurrency_limits
+
+    def _image_owner_limit(self, owner: str) -> int:
+        normalized_owner = str(owner or "")
+        if not normalized_owner:
+            return IMAGE_SUBMISSION_CONCURRENCY
+        now = asyncio.get_running_loop().time()
+        if now - self._image_owner_limits_refreshed_at >= 1.0 or normalized_owner not in self._image_owner_limits:
+            contenders = {
+                str(meta.get("owner_token_hash") or "")
+                for _, meta in list_task_metas_by_statuses({"pending", "running"}, platform="dola")
+                if int(meta.get("image_count") or 0) > 0 and str(meta.get("owner_token_hash") or "")
+            }
+            contenders.add(normalized_owner)
+            configured = self._owner_concurrency_limits()
+            requested = {
+                contender: min(IMAGE_SUBMISSION_CONCURRENCY, max(1, int(configured.get(contender) or IMAGE_SUBMISSION_CONCURRENCY)))
+                for contender in contenders
+            }
+            self._image_owner_limits = fair_owner_capacity_limits(requested, IMAGE_SUBMISSION_CONCURRENCY)
+            self._image_owner_limits_refreshed_at = now
+        return max(1, int(self._image_owner_limits.get(normalized_owner) or 1))
 
     def _remote_generation_count(self, fail_closed: bool = False) -> int:
         try:
@@ -562,16 +599,20 @@ class WorkerManager:
                     claimed_meta = get_meta(candidate_id)
                     candidate_platform = str(claimed_meta.get("platform") or "dola")
                     is_image_submission = candidate_platform == "dola" and int(claimed_meta.get("image_count") or 0) > 0
-                    if is_image_submission and len(self._image_submission_reservations) >= IMAGE_SUBMISSION_CONCURRENCY:
-                        defer_task(candidate_id, "等待参考图上传资源", "image_upload_limit", 2)
-                        self._queue.release(candidate_id, worker_id)
-                        continue
+                    candidate_owner = str(claimed_meta.get("owner_token_hash") or "")
+                    if is_image_submission:
+                        owner_limit = self._image_owner_limit(candidate_owner)
+                        owner_active = sum(owner == candidate_owner for owner in self._image_submission_reservations.values())
+                        if len(self._image_submission_reservations) >= IMAGE_SUBMISSION_CONCURRENCY or owner_active >= owner_limit:
+                            defer_task(candidate_id, "等待参考图上传资源", "image_upload_limit", 2)
+                            self._queue.release(candidate_id, worker_id)
+                            continue
                     if candidate_platform == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
                         defer_task(candidate_id, "当前用户远端生成任务已达上限，继续排队", "remote_limit", 5)
                         self._queue.release(candidate_id, worker_id)
                         continue
                     if is_image_submission:
-                        self._image_submission_reservations.add(candidate_id)
+                        self._image_submission_reservations[candidate_id] = candidate_owner
                     task_id = candidate_id
                     self._claimed.add(task_id)
                     self._worker_task_ids[worker_id] = task_id
@@ -731,7 +772,7 @@ class WorkerManager:
             finally:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
-                self._image_submission_reservations.discard(task_id)
+                self._image_submission_reservations.pop(task_id, None)
                 reserved_owner = self._remote_generation_reservations.pop(task_id, None)
                 if reserved_owner:
                     self._remote_owner_refreshed_at = 0.0

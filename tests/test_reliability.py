@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from app import accounts, automation, config, store, task_queue, temp_access
 from app.automation import DolaFetchAutomation, is_infrastructure_failure
+from app.resilience import fair_owner_capacity_limits
 from app.worker import IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
 
 
@@ -113,12 +114,16 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_restart_restores_submitted_and_pending_categories(self) -> None:
         submitted = self.create_task()
+        ambiguous = self.create_task()
         pending = self.create_task()
         store.mark_running(submitted["id"], "worker-1")
         store.save_result(submitted["id"], extra={"qianwen_submit_confirmed": True})
+        store.mark_running(ambiguous["id"], "worker-ambiguous")
+        store.save_result(ambiguous["id"], extra={"submission_ambiguous": True, "submit_confirmation_state": "awaiting_conversation"})
         store.mark_running(pending["id"], "worker-2")
         store.reset_running_tasks()
         self.assertEqual(store.get_meta(submitted["id"])["status"], store.STATUS_SUBMITTED)
+        self.assertEqual(store.get_meta(ambiguous["id"])["status"], store.STATUS_SUBMITTED)
         self.assertEqual(store.get_meta(pending["id"])["status"], store.STATUS_PENDING)
 
     def test_expired_video_cleanup_uses_owner_retention_without_touching_active_or_fresh_tasks(self) -> None:
@@ -820,7 +825,7 @@ class ReliabilityTests(unittest.TestCase):
         manager = WorkerManager()
         self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 8)
         self.assertEqual(manager._image_submission_semaphore._value, 8)
-        self.assertEqual(manager._image_submission_reservations, set())
+        self.assertEqual(manager._image_submission_reservations, {})
         snapshot = manager.health_snapshot()
         self.assertEqual(snapshot["image_upload_concurrency"], 8)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
@@ -828,6 +833,35 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 4)
         self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 48)
         self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 48)
+
+    def test_fair_owner_limits_split_capacity_across_concurrent_members(self) -> None:
+        self.assertEqual(
+            fair_owner_capacity_limits({"owner-a": 20, "owner-b": 20, "owner-c": 20}, 48),
+            {"owner-a": 16, "owner-b": 16, "owner-c": 16},
+        )
+        self.assertEqual(
+            fair_owner_capacity_limits({"owner-a": 1, "owner-b": 20, "owner-c": 20}, 48),
+            {"owner-a": 1, "owner-b": 20, "owner-c": 20},
+        )
+
+    def test_worker_applies_fair_browser_and_image_limits_per_owner(self) -> None:
+        manager = WorkerManager()
+        rows = [
+            (f"task-{owner}", {"status": "pending", "platform": "dola", "owner_token_hash": owner, "image_count": 1})
+            for owner in ("owner-a", "owner-b", "owner-c")
+        ]
+
+        async def calculate() -> None:
+            with patch("app.worker.temp_token_concurrency_limits", return_value={"owner-a": 20, "owner-b": 20, "owner-c": 20}), patch(
+                "app.worker.list_task_metas_by_statuses", return_value=rows
+            ):
+                self.assertEqual(manager._owner_concurrency_limits(), {"owner-a": 16, "owner-b": 16, "owner-c": 16})
+                self.assertEqual(
+                    {owner: manager._image_owner_limit(owner) for owner in ("owner-a", "owner-b", "owner-c")},
+                    {"owner-a": 3, "owner-b": 3, "owner-c": 2},
+                )
+
+        asyncio.run(calculate())
 
     def test_reconciliation_repairs_quota_used_from_charge_ledger(self) -> None:
         created = accounts.add_account("Dola", "session=value", quota_limit=3)

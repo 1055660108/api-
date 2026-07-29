@@ -1504,6 +1504,8 @@ def reset_running_tasks() -> None:
             result = load_result(task_id)
             submitted = bool(
                 result.get("conversation_id")
+                or result.get("submission_ambiguous")
+                or str(result.get("submit_confirmation_state") or "") == "awaiting_conversation"
                 or result.get("doubao_submit_confirmed")
                 or result.get("qianwen_submit_confirmed")
                 or result.get("qianwen_remote_task_ids")

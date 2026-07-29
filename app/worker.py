@@ -7,7 +7,7 @@ import socket
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import claim_account_for_worker, clear_account_current_task, disable_account_for_login, refund_account_quota, settle_account_quota
+from .accounts import claim_account_for_worker, clear_account_current_task, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
@@ -117,9 +117,8 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
     if not account_id:
         return
     clear_account_current_task(account_id, task_id)
-    disable_reason = str(outcome.get("account_disable_reason") or "").strip()
-    if disable_reason:
-        disable_account_for_login(account_id, disable_reason)
+    if outcome.get("account_slider_verification"):
+        mark_account_slider_verification(account_id)
         refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
         return
     if outcome.get("infrastructure_fault"):
@@ -152,6 +151,7 @@ class WorkerManager:
         self._remote_owner_limits: dict[str, int] = {}
         self._remote_owner_refreshed_at = 0.0
         self._last_pending_retry_reconcile_at = 0.0
+        self._account_maintenance_date = ""
         self._claimed: set[str] = set()
         self._stopping = False
         self._worker_seq = 0
@@ -291,6 +291,10 @@ class WorkerManager:
                             if error:
                                 self._last_error = str(error)[:500]
                         self._workers.pop(worker_id, None)
+                account_today = local_today()
+                if self._account_maintenance_date != account_today:
+                    reset_daily_account_quotas_if_needed()
+                    self._account_maintenance_date = account_today
                 settings = load_settings()
                 configured = self._dola_browser_pool.capacity
                 effective, self._resource_snapshot = adaptive_worker_limit(configured, self._dola_browser_pool.capacity)

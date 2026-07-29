@@ -2205,6 +2205,11 @@ textarea:focus {
   background: var(--ok-soft);
 }
 
+.account-status-counts .slider {
+  color: #8a5a00;
+  background: #fff4d6;
+}
+
 .account-status-counts .abnormal {
   color: var(--danger);
   background: var(--danger-soft);

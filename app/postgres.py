@@ -632,7 +632,7 @@ def claim_available_account(
     excluded = sorted({str(item) for item in excluded_ids if str(item)})
     conditions = [
         "COALESCE(payload->>'enabled', 'true') = 'true'",
-        "COALESCE(payload->>'account_status', 'normal') <> 'abnormal'",
+        "COALESCE(payload->>'account_status', 'normal') = 'normal'",
         "COALESCE(payload->>'platform', 'dola') = %s",
         "COALESCE(payload->>'current_task_id', '') = ''",
         "jsonb_typeof(payload->'cookies') = 'array'",

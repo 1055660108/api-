@@ -5,7 +5,7 @@ import hashlib
 import re
 import secrets
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from typing import Any
 
@@ -25,6 +25,31 @@ def utc_now() -> str:
 
 def local_today() -> str:
     return datetime.now(LOCAL_TZ).date().isoformat()
+
+
+def _restore_expired_slider_verification(account: dict[str, Any], today: str) -> bool:
+    if str(account.get("account_status") or "normal") != "slider_verification":
+        return False
+    event_date = str(account.get("slider_verification_date") or "")
+    if event_date and event_date >= today:
+        return False
+    account["account_status"] = "normal"
+    account["status_reason"] = ""
+    account.pop("disabled_reason", None)
+    account["updated_at"] = utc_now()
+    return True
+
+
+def _slider_verification_streak(account: dict[str, Any], today: str) -> int:
+    previous_date = str(account.get("slider_verification_date") or "")
+    previous_streak = max(0, int(account.get("slider_verification_streak") or 0))
+    if previous_date == today:
+        return max(1, previous_streak)
+    try:
+        consecutive = (date.fromisoformat(today) - date.fromisoformat(previous_date)).days == 1
+    except ValueError:
+        consecutive = False
+    return previous_streak + 1 if consecutive else 1
 
 
 def _quota_charges(account: dict[str, Any]) -> list[dict[str, Any]]:
@@ -131,6 +156,8 @@ def reset_daily_account_quotas_if_needed() -> bool:
                 today = local_today()
                 changed = False
                 for account in data.get("accounts") or []:
+                    if _restore_expired_slider_verification(account, today):
+                        changed = True
                     if str(account.get("quota_reset_date") or "") == today:
                         if _reconcile_account(account):
                             account["updated_at"] = utc_now()
@@ -151,6 +178,8 @@ def reset_daily_account_quotas_if_needed() -> bool:
         today = local_today()
         changed = False
         for account in data["accounts"]:
+            if _restore_expired_slider_verification(account, today):
+                changed = True
             if str(account.get("quota_reset_date") or "") == today:
                 if _reconcile_account(account):
                     account["updated_at"] = utc_now()
@@ -300,6 +329,8 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(account.get("enabled", True)),
         "account_status": str(account.get("account_status") or "normal"),
         "status_reason": str(account.get("disabled_reason") or account.get("status_reason") or ""),
+        "slider_verification_date": str(account.get("slider_verification_date") or ""),
+        "slider_verification_streak": max(0, int(account.get("slider_verification_streak") or 0)),
         "quota_limit": quota_limit,
         "quota_used": quota_used,
         "quota_remaining": max(0, quota_limit - quota_used) if quota_limit else None,
@@ -596,6 +627,8 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
                     now = utc_now()
                     account.update(cookies=normalized, cookie_header=_cookie_header_from_items(normalized), last_cookie_refresh_at=now, enabled=True, account_status="normal", status_reason="", updated_at=now)
                     account.pop("disabled_reason", None)
+                    account.pop("slider_verification_date", None)
+                    account.pop("slider_verification_streak", None)
                     return _public_account(account)
                 raise KeyError("account not found")
 
@@ -616,6 +649,8 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
             account["account_status"] = "normal"
             account["status_reason"] = ""
             account.pop("disabled_reason", None)
+            account.pop("slider_verification_date", None)
+            account.pop("slider_verification_streak", None)
             account["updated_at"] = account["last_cookie_refresh_at"]
             _write_data(data)
             return _public_account(account)
@@ -704,7 +739,7 @@ def _select_account(
     enabled_accounts = [
         item for item in accounts
         if item.get("enabled", True)
-        and str(item.get("account_status") or "normal") != "abnormal"
+        and str(item.get("account_status") or "normal") == "normal"
         and str(item.get("platform") or DEFAULT_PLATFORM) == target_platform
         and str(item.get("id") or "") not in excluded
         and (not preferred_id or str(item.get("id") or "") == preferred_id)
@@ -1224,6 +1259,49 @@ def update_account_quota(account_id: str, quota_limit: int) -> dict[str, Any]:
                 account["updated_at"] = utc_now()
                 _write_data(data)
                 return _public_account(account)
+    raise KeyError("account not found")
+
+
+def mark_account_slider_verification(account_id: str) -> dict[str, Any]:
+    account_id = str(account_id or "").strip().lower()
+    today = local_today()
+
+    def apply(account: dict[str, Any]) -> dict[str, Any]:
+        streak = _slider_verification_streak(account, today)
+        permanent = streak >= 3
+        reason = "连续 3 天跳验证" if permanent else f"跳验证（当日暂停，连续 {streak}/3 天）"
+        account.update(
+            account_status="abnormal" if permanent else "slider_verification",
+            status_reason=reason,
+            slider_verification_date=today,
+            slider_verification_streak=streak,
+            current_task_id="",
+            current_worker_id="",
+            current_started_at="",
+            updated_at=utc_now(),
+        )
+        if permanent:
+            account["enabled"] = False
+            account["disabled_reason"] = reason
+        else:
+            account.pop("disabled_reason", None)
+        return _public_account(account)
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> dict[str, Any]:
+                for account in data.get("accounts") or []:
+                    if str(account.get("id") or "") == account_id:
+                        return apply(account)
+                raise KeyError("account not found")
+
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") == account_id:
+                result = apply(account)
+                _write_data(data)
+                return result
     raise KeyError("account not found")
 
 

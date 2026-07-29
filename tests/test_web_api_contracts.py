@@ -1276,6 +1276,11 @@ class WebAPIContractTests(unittest.TestCase):
         accounts.disable_account_for_login(dola["id"], "登录失效")
         abnormal = self.client.get("/accounts?page=1&page_size=20&status=abnormal").json()
         self.assertEqual([item["id"] for item in abnormal["accounts"]], [dola["id"]])
+        slider_account = self.client.post("/accounts", json={"name": "跳验证账号", "cookie_data": "session=slider", "platform": "dola"}).json()["account"]
+        accounts.mark_account_slider_verification(slider_account["id"])
+        slider = self.client.get("/accounts?page=1&page_size=20&status=slider_verification").json()
+        self.assertEqual([item["id"] for item in slider["accounts"]], [slider_account["id"]])
+        self.assertEqual(slider["stats"]["slider_verification"], 1)
         disabled_account = self.client.post("/accounts", json={"name": "停用账号", "cookie_data": "session=disabled", "platform": "dola", "enabled": False}).json()["account"]
         self.assertFalse(disabled_account["enabled"])
         disabled = self.client.get("/accounts?page=1&page_size=20&status=disabled").json()

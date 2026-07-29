@@ -459,6 +459,7 @@ const els = {
   accountPageTotal: document.getElementById("accountPageTotal"),
   accountPlatformCount: document.getElementById("accountPlatformCount"),
   accountNormalCount: document.getElementById("accountNormalCount"),
+  accountSliderVerificationCount: document.getElementById("accountSliderVerificationCount"),
   accountAbnormalCount: document.getElementById("accountAbnormalCount"),
   videoLibrary: document.getElementById("videoLibrary"),
   selectAllVideos: document.getElementById("selectAllVideos"),
@@ -3995,6 +3996,7 @@ function renderAccountTable() {
   const accounts = state.accounts;
   if (els.accountPlatformCount) els.accountPlatformCount.textContent = `${platformLabel} ${Number(stats.total ?? state.accountTotal)} 个`;
   if (els.accountNormalCount) els.accountNormalCount.textContent = String(Number(stats.normal || 0));
+  if (els.accountSliderVerificationCount) els.accountSliderVerificationCount.textContent = String(Number(stats.slider_verification || 0));
   if (els.accountAbnormalCount) els.accountAbnormalCount.textContent = String(Number(stats.abnormal || 0));
   if (els.accountPageTotal) els.accountPageTotal.textContent = `本页 ${accounts.length} 条 · 共 ${state.accountTotal} 条 · ${state.accountPage} / ${state.accountTotalPages}`;
   if (els.prevAccountPage) els.prevAccountPage.disabled = state.accountPage <= 1;
@@ -4011,7 +4013,7 @@ function renderAccountTable() {
     const platformLabel = PLATFORM_LABELS[String(item.platform || "dola")] || String(item.platform || "Dola");
     const enabled = item.enabled !== false;
     const abnormal = item.account_status === "abnormal";
-    const sliderVerification = abnormal && /跳验证|滑块风控/i.test(String(item.status_reason || ""));
+    const sliderVerification = item.account_status === "slider_verification" || /跳验证|滑块风控/i.test(String(item.status_reason || "")) && !abnormal;
     const accountStatus = sliderVerification ? "跳验证" : (abnormal ? "登录异常" : (enabled ? "正常" : "停用"));
     const quotaLimit = Number(item.quota_limit || 0);
     const quotaUsed = Number(item.quota_used || 0);
@@ -4035,7 +4037,7 @@ function renderAccountTable() {
             <code>${escapeHtml(id)}</code>
           </div>
         </td>
-        <td><span class="account-card-label">状态</span><span class="chip ${abnormal ? "failed" : (enabled ? "success" : "unknown")}" title="${escapeHtml(item.status_reason || "")}">${accountStatus}</span></td>
+        <td><span class="account-card-label">状态</span><span class="chip ${abnormal ? "failed" : (sliderVerification ? "unknown" : (enabled ? "success" : "unknown"))}" title="${escapeHtml(item.status_reason || "")}">${accountStatus}</span></td>
         <td>
           <div class="account-quota-cell">
             <span class="account-card-label">额度</span>

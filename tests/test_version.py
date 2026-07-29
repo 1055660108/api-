@@ -17,7 +17,7 @@ class VersionTests(unittest.TestCase):
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
         admin_html = (root / "app" / "admin" / "index.html").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.4.74")
+        self.assertEqual(version, "1.4.75")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertEqual(compose.count("build:"), 1)
@@ -28,7 +28,7 @@ class VersionTests(unittest.TestCase):
         self.assertIn("DOLA_REFERENCE_CACHE_TTL_SECONDS: ${DOLA_REFERENCE_CACHE_TTL_SECONDS:-1800}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE=24", env_example)
         self.assertIn('os.environ.get("DOLA_DATABASE_POOL_SIZE") or 24', postgres_source)
-        self.assertIn("COALESCE(payload->>'account_status', 'normal') <> 'abnormal'", postgres_source)
+        self.assertIn("COALESCE(payload->>'account_status', 'normal') = 'normal'", postgres_source)
         self.assertIn("DOLA_DATABASE_POOL_TIMEOUT: ${DOLA_DATABASE_POOL_TIMEOUT:-3}", compose)
         self.assertIn("DOLA_DATABASE_POOL_TIMEOUT=3", env_example)
         self.assertIn("DOLA_API_MAX_CONNECTIONS: ${DOLA_API_MAX_CONNECTIONS:-512}", compose)

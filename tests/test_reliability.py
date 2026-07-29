@@ -499,29 +499,62 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
 
-    def test_slider_verification_disables_account_and_refunds_quota(self) -> None:
+    def test_slider_verification_pauses_account_until_next_day_and_escalates_after_three_days(self) -> None:
         task = self.create_task("slider-owner")
         created = accounts.add_account("Slider", "session=slider", quota_limit=2)
         claimed = accounts.claim_account_for_worker("worker-slider", task["id"])
         self.assertEqual(claimed["id"], created["id"])
 
-        release_account_after_retryable_failure(
-            task["id"],
-            claimed,
-            "dola",
-            {
-                "retryable": True,
-                "account_fault": True,
-                "account_disable_reason": "Dola 跳验证（滑块风控）",
-            },
-        )
+        with patch.object(accounts, "local_today", return_value="2030-01-01"):
+            release_account_after_retryable_failure(
+                task["id"],
+                claimed,
+                "dola",
+                {
+                    "retryable": True,
+                    "account_fault": True,
+                    "account_slider_verification": True,
+                },
+            )
 
         stored = accounts.list_accounts()[0]
-        self.assertFalse(stored["enabled"])
-        self.assertEqual(stored["account_status"], "abnormal")
+        self.assertTrue(stored["enabled"])
+        self.assertEqual(stored["account_status"], "slider_verification")
         self.assertIn("跳验证", stored["status_reason"])
+        self.assertEqual(stored["slider_verification_streak"], 1)
         self.assertEqual(stored["quota_used"], 0)
         self.assertIsNone(accounts.account_for_worker("worker-next"))
+
+        with patch.object(accounts, "local_today", return_value="2030-01-02"):
+            accounts.reset_daily_account_quotas_if_needed()
+            restored = accounts.list_accounts()[0]
+            self.assertEqual(restored["account_status"], "normal")
+            second = accounts.mark_account_slider_verification(created["id"])
+        self.assertEqual(second["account_status"], "slider_verification")
+        self.assertEqual(second["slider_verification_streak"], 2)
+
+        with patch.object(accounts, "local_today", return_value="2030-01-03"):
+            accounts.reset_daily_account_quotas_if_needed()
+            third = accounts.mark_account_slider_verification(created["id"])
+        self.assertFalse(third["enabled"])
+        self.assertEqual(third["account_status"], "abnormal")
+        self.assertEqual(third["slider_verification_streak"], 3)
+        self.assertIn("连续 3 天", third["status_reason"])
+
+        recovered = accounts.update_account_cookies(created["id"], accounts.parse_cookie_payload("session=slider-fresh"))
+        self.assertTrue(recovered["enabled"])
+        self.assertEqual(recovered["account_status"], "normal")
+        self.assertEqual(recovered["slider_verification_streak"], 0)
+
+    def test_slider_verification_streak_restarts_after_a_missed_day(self) -> None:
+        created = accounts.add_account("Slider gap", "session=slider-gap", quota_limit=2)
+        with patch.object(accounts, "local_today", return_value="2030-02-01"):
+            accounts.mark_account_slider_verification(created["id"])
+        with patch.object(accounts, "local_today", return_value="2030-02-03"):
+            accounts.reset_daily_account_quotas_if_needed()
+            repeated = accounts.mark_account_slider_verification(created["id"])
+        self.assertEqual(repeated["account_status"], "slider_verification")
+        self.assertEqual(repeated["slider_verification_streak"], 1)
 
     def test_queue_deferral_does_not_consume_generation_retry(self) -> None:
         task = self.create_task("owner")

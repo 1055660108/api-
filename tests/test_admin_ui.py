@@ -164,6 +164,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="accountPlatformCount"', self.html)
         self.assertIn('id="accountNormalCount"', self.html)
         self.assertIn('id="accountAbnormalCount"', self.html)
+        self.assertIn('id="accountSliderVerificationCount"', self.html)
+        self.assertIn('<option value="slider_verification">跳验证</option>', self.html)
         self.assertIn('全部平台 0 个', self.html)
         self.assertIn('`${platformLabel} ${Number(stats.total ?? state.accountTotal)} 个`', self.javascript)
 

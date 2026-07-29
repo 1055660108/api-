@@ -1135,7 +1135,7 @@ class DolaFetchAutomation:
                         "retryable": True,
                         "reason": "Dola slider verification required",
                         "account_fault": True,
-                        "account_disable_reason": "Dola 跳验证（滑块风控）",
+                        "account_slider_verification": True,
                     }
                 if result.get("service_frequent"):
                     self._mark_active_proxy_unavailable(

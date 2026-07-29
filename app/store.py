@@ -128,13 +128,13 @@ def is_local_today(value: str) -> bool:
 
 
 def is_task_expired(meta: dict[str, Any]) -> bool:
-    if str(meta.get("status") or "") in {STATUS_SUCCESS, STATUS_FAILED, STATUS_CANCELED}:
+    status = str(meta.get("status") or "")
+    if status in {STATUS_SUCCESS, STATUS_FAILED, STATUS_CANCELED}:
         return False
     retry_count = max(0, int(meta.get("retry_count") or 0))
-    retry_started_at = parse_time(str(meta.get("retry_started_at") or ""))
     created_at = parse_time(str(meta.get("created_at") or ""))
-    if retry_count > 0:
-        retry_origin = retry_started_at or created_at
+    if retry_count > 0 and status in {STATUS_RUNNING, STATUS_SUBMITTED}:
+        retry_origin = parse_time(str(meta.get("retry_attempt_started_at") or meta.get("claimed_at") or meta.get("retry_started_at") or "")) or created_at
         return bool(retry_origin and datetime.now(timezone.utc) - retry_origin >= timedelta(minutes=TASK_RETRY_TIMEOUT_MINUTES))
     if not created_at:
         return False
@@ -148,7 +148,7 @@ def expire_task_if_timeout(task_id: str) -> bool:
     result = load_result(task_id)
     if result.get("decoded_main_url"):
         return False
-    retry_expired = max(0, int(meta.get("retry_count") or 0)) > 0
+    retry_expired = max(0, int(meta.get("retry_count") or 0)) > 0 and str(meta.get("status") or "") in {STATUS_RUNNING, STATUS_SUBMITTED}
     result_account_id = str(result.get("account_id") or "")
     if result_account_id:
         from .accounts import clear_account_current_task, exhaust_timed_out_account
@@ -315,6 +315,7 @@ def create_task(prompt: str, ratio: str, owner_token_hash: str = "", platform: s
                     "owner_token_hash": owner_token_hash,
                     "created_at": now,
                     "queued_at": now,
+                    "queue_priority_at": now,
                     "claimed_at": "",
                     "attempt": 0,
                     "updated_at": now,
@@ -365,6 +366,7 @@ def find_or_create_task(prompt: str, ratio: str, owner_token_hash: str, platform
                 "owner_token_hash": owner_token_hash,
                 "created_at": now,
                 "queued_at": now,
+                "queue_priority_at": now,
                 "claimed_at": "",
                 "attempt": 0,
                 "updated_at": now,
@@ -399,7 +401,7 @@ def finalize_task_creation(task_id: str) -> dict[str, Any]:
         else:
             write_json(meta_path(task_id), meta)
         from .task_queue import get_task_queue
-        get_task_queue().enqueue(task_id)
+        get_task_queue().enqueue(task_id, parse_time(str(meta.get("next_attempt_at") or "")))
         return meta
 
 
@@ -554,7 +556,8 @@ def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int
         meta = get_meta(task_id)
         if str(meta.get("status") or "") != STATUS_PENDING or bool(meta.get("cancel_requested")):
             return False
-        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", queue_reason="", queue_category="", execution_miss_count=0, execution_phase="waiting_account", status_reason="正在分配生成资源", phase_updated_at=claimed_at, retry_queue_verified_at="", submit_phase="", submit_started_at="", updated_at=claimed_at)
+        retrying = max(0, int(meta.get("retry_count") or 0)) > 0
+        meta.update(status=STATUS_RUNNING, worker_id=worker_id, started_at=claimed_at, claimed_at=claimed_at, attempt=max(0, int(meta.get("attempt") or 0)) + 1, error="", queue_reason="", queue_category="", execution_miss_count=0, execution_phase="waiting_account", status_reason="正在分配生成资源", phase_updated_at=claimed_at, retry_queue_verified_at="", submit_phase="", submit_started_at="", retry_attempt_started_at=claimed_at if retrying else "", updated_at=claimed_at)
         _write_storage_json(meta_path(task_id), meta)
         return True
 
@@ -570,7 +573,6 @@ def defer_task(task_id: str, reason: str, category: str, delay_seconds: int = 5)
         {STATUS_PENDING, STATUS_RUNNING},
         status=STATUS_PENDING,
         worker_id="",
-        queued_at=now,
         error="",
         queue_reason=str(reason or "任务排队中")[:200],
         queue_category=str(category or "queue")[:40],
@@ -1284,6 +1286,7 @@ def _task_list_item(task_id: str, meta: dict[str, Any], remarks: dict[str, str])
         "queue_reason": str(meta.get("queue_reason") or ""),
         "queue_category": str(meta.get("queue_category") or ""),
         "queued_at": str(meta.get("queued_at") or meta.get("created_at") or ""),
+        "queue_priority_at": str(meta.get("queue_priority_at") or meta.get("created_at") or ""),
         "next_attempt_at": str(meta.get("next_attempt_at") or ""),
         "retry_queued_at": str(meta.get("retry_queued_at") or ""),
         "retry_queue_verified_at": str(meta.get("retry_queue_verified_at") or ""),
@@ -1586,7 +1589,7 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
             owner: max(supplied_counts.get(owner, 0), running_counts.get(owner, 0))
             for owner in set(supplied_counts) | set(running_counts)
         }
-        candidates.sort(key=lambda meta: (str(meta.get("queued_at") or meta.get("created_at") or ""), str(meta.get("created_at") or ""), str(meta.get("id") or "")))
+        candidates.sort(key=lambda meta: (str(meta.get("queue_priority_at") or meta.get("created_at") or meta.get("queued_at") or ""), str(meta.get("created_at") or ""), str(meta.get("id") or "")))
         for meta in candidates:
             task_id = str(meta["id"])
             next_attempt_at = parse_time(str(meta.get("next_attempt_at") or ""))

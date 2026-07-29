@@ -861,6 +861,7 @@ def claim_task(task_id: str, worker_id: str, owner_token_hash: str, concurrency_
             ).fetchone()
             if int(active[0]) >= max(1, int(concurrency_limit)):
                 return False
+        retrying = max(0, int(meta.get("retry_count") or 0)) > 0
         meta.update(
             status="running",
             worker_id=worker_id,
@@ -877,6 +878,7 @@ def claim_task(task_id: str, worker_id: str, owner_token_hash: str, concurrency_
             retry_queue_verified_at="",
             submit_phase="",
             submit_started_at="",
+            retry_attempt_started_at=claimed_at if retrying else "",
             updated_at=claimed_at,
         )
         conn.execute(

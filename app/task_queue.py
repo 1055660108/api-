@@ -109,8 +109,9 @@ class RedisTaskQueue:
         now = time.time()
         script = """
         local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)
-        for _, task_id in ipairs(tasks) do
-          if redis.call('ZREM', KEYS[1], task_id) == 1 then redis.call('LPUSH', KEYS[2], task_id) end
+        for index = #tasks, 1, -1 do
+          local task_id = tasks[index]
+          if redis.call('ZREM', KEYS[1], task_id) == 1 then redis.call('RPUSH', KEYS[2], task_id) end
         end
         return #tasks
         """
@@ -269,12 +270,20 @@ class RedisTaskQueue:
         from .store import STATUS_PENDING, get_meta, list_tasks, parse_time
 
         added = 0
+        pending: list[tuple[str, dict[str, Any]]] = []
         for item in list_tasks():
             if str(item.get("status") or "") != STATUS_PENDING:
                 continue
             meta = get_meta(str(item["id"]))
+            pending.append((str(item["id"]), meta))
+        pending.sort(key=lambda row: (
+            str(row[1].get("queue_priority_at") or row[1].get("created_at") or row[1].get("queued_at") or ""),
+            str(row[1].get("created_at") or ""),
+            row[0],
+        ))
+        for task_id, meta in pending:
             available_at = parse_time(str(meta.get("next_attempt_at") or ""))
-            added += int(self.requeue(str(item["id"]), available_at))
+            added += int(self.requeue(task_id, available_at))
         return added
 
     def health(self) -> dict[str, Any]:

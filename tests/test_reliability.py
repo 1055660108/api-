@@ -336,6 +336,22 @@ class ReliabilityTests(unittest.TestCase):
             task = store.create_task("入队任务", "9:16")
         queue.enqueue.assert_called_once_with(task["id"])
 
+    def test_finalized_bulk_retry_is_enqueued_at_its_scheduled_release_time(self) -> None:
+        task = store.create_task("间隔放行任务", "9:16", enqueue=False)
+        available_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+        store.update_meta(task["id"], next_attempt_at=available_at.isoformat())
+        queue = unittest.mock.Mock()
+        with patch("app.task_queue.get_task_queue", return_value=queue):
+            store.finalize_task_creation(task["id"])
+        queued_at = queue.enqueue.call_args.args[1]
+        self.assertEqual(queue.enqueue.call_args.args[0], task["id"])
+        self.assertAlmostEqual(queued_at.timestamp(), available_at.timestamp(), delta=0.1)
+
+    def test_due_redis_retries_are_promoted_ahead_of_newer_ready_tasks(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "app" / "task_queue.py").read_text(encoding="utf-8")
+        self.assertIn("for index = #tasks, 1, -1 do", source)
+        self.assertIn("redis.call('RPUSH', KEYS[2], task_id)", source)
+
     def test_initializing_tasks_are_failed_during_recovery(self) -> None:
         task = store.create_task("未完成创建", "9:16", owner_token_hash="owner", enqueue=False)
         failed = store.fail_initializing_tasks()
@@ -1356,7 +1372,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 1)
         self.assertTrue(store.load_result(task["id"])["temp_quota_refunded"])
 
-    def test_retry_is_failed_and_refunded_after_thirty_minutes(self) -> None:
+    def test_pending_retry_wait_does_not_consume_thirty_minute_execution_timeout(self) -> None:
         created = temp_access.create_temp_tokens(1, 1)[0]
         owner_hash = str(created["id"])
         access = temp_access.get_temp_context(str(created["token"]))
@@ -1369,9 +1385,30 @@ class ReliabilityTests(unittest.TestCase):
             status=store.STATUS_PENDING,
         )
         listed = next(item for item in store.list_tasks() if item["id"] == task["id"])
+        self.assertEqual(listed["status"], store.STATUS_PENDING)
+        self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 0)
+
+        self.assertTrue(store.mark_running(task["id"], "worker-retry-timeout"))
+        store.update_meta(
+            task["id"],
+            retry_attempt_started_at=(datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat(),
+        )
+        listed = next(item for item in store.list_tasks() if item["id"] == task["id"])
         self.assertEqual(listed["status"], store.STATUS_FAILED)
         self.assertEqual(listed["error"], "重试超过30分钟，生成失败")
         self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 1)
+
+    def test_file_queue_claims_originally_older_task_after_it_is_deferred(self) -> None:
+        older = self.create_task("owner-oldest")
+        newer = self.create_task("owner-newest")
+        old_priority = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        store.update_meta(older["id"], created_at=old_priority, queue_priority_at=old_priority)
+        store.defer_task(older["id"], "稍后重试", "test", 1)
+        store.update_meta(older["id"], next_attempt_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+
+        claimed = store.claim_next_pending("fifo-worker", set())
+        self.assertEqual(claimed, older["id"])
+        self.assertEqual(store.get_meta(newer["id"])["status"], store.STATUS_PENDING)
 
     def test_retry_budget_is_shared_across_execution_and_result_timeout(self) -> None:
         task = self.create_task("owner")

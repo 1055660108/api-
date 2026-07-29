@@ -4642,7 +4642,25 @@ async def _retry_access_for_owner(owner_hash: str, fallback: AccessContext) -> A
     return fallback
 
 
-async def _create_manual_retry_task(task_id: str, original: dict, retry_access: AccessContext) -> dict:
+def _manual_retry_priority(task_id: str) -> tuple[str, str, str]:
+    try:
+        meta = get_meta(task_id)
+    except (ValueError, FileNotFoundError):
+        return ("9999", "9999", task_id)
+    return (
+        str(meta.get("queue_priority_at") or meta.get("created_at") or meta.get("queued_at") or ""),
+        str(meta.get("created_at") or ""),
+        task_id,
+    )
+
+
+async def _create_manual_retry_task(
+    task_id: str,
+    original: dict,
+    retry_access: AccessContext,
+    *,
+    available_at: datetime | None = None,
+) -> dict:
     owner_hash = str(original.get("owner_token_hash") or "")
     platform = str(original.get("platform") or DEFAULT_PLATFORM)
     model = str(original.get("model") or "")
@@ -4703,12 +4721,19 @@ async def _create_manual_retry_task(task_id: str, original: dict, retry_access: 
             for index, source in enumerate(source_images)
         ]
         await asyncio.to_thread(set_task_images, str(retry_meta["id"]), copied_images, retry_reference_names)
-        await asyncio.to_thread(
-            update_meta,
-            str(retry_meta["id"]),
-            retry_of_task_id=task_id,
-            reference_is_real_person=bool(original.get("reference_is_real_person")),
-        )
+        retry_updates: dict[str, object] = {
+            "retry_of_task_id": task_id,
+            "reference_is_real_person": bool(original.get("reference_is_real_person")),
+            "queue_priority_at": str(original.get("queue_priority_at") or original.get("created_at") or retry_meta.get("created_at") or ""),
+        }
+        if available_at is not None:
+            retry_updates.update(
+                next_attempt_at=available_at.isoformat(),
+                queue_reason="批量重试任务按顺序排队",
+                queue_category="bulk_retry_pacing",
+                status_reason="等待按提交间隔执行",
+            )
+        await asyncio.to_thread(update_meta, str(retry_meta["id"]), **retry_updates)
         await asyncio.to_thread(finalize_task_creation, str(retry_meta["id"]))
     except QuotaExceeded as exc:
         if retry_meta:
@@ -4768,6 +4793,11 @@ async def bulk_retry_failed_tasks(
         if len(task_ids) > limit:
             raise HTTPException(status_code=400, detail=f"单次最多重试 {limit} 个任务")
 
+    task_ids = await asyncio.to_thread(lambda: sorted(task_ids, key=_manual_retry_priority))
+    release_started_at = datetime.now(timezone.utc)
+    release_interval_seconds = max(1.0, min(5.0, float(load_settings().dola_submit_interval_seconds)))
+    release_index = 0
+
     created: list[dict] = []
     skipped: list[dict] = []
     failed: list[dict] = []
@@ -4781,8 +4811,10 @@ async def bulk_retry_failed_tasks(
                 skipped.append({"id": task_id, "reason": "仅失败任务可以批量重试"})
                 continue
             retry_access = await _retry_access_for_owner(str(original.get("owner_token_hash") or ""), access)
-            retry_result = await _create_manual_retry_task(task_id, original, retry_access)
-            created.append({"id": task_id, "retry_id": retry_result["id"]})
+            available_at = release_started_at + timedelta(seconds=release_index * release_interval_seconds)
+            release_index += 1
+            retry_result = await _create_manual_retry_task(task_id, original, retry_access, available_at=available_at)
+            created.append({"id": task_id, "retry_id": retry_result["id"], "available_at": available_at.isoformat()})
         except (ValueError, FileNotFoundError):
             failed.append({"id": task_id, "reason": "任务不存在"})
         except HTTPException as exc:
@@ -4799,6 +4831,7 @@ async def bulk_retry_failed_tasks(
         "created": len(created),
         "skipped": len(skipped),
         "failed": len(failed),
+        "release_interval_seconds": release_interval_seconds,
         "results": {"created": created, "skipped": skipped, "failed": failed},
     }
 

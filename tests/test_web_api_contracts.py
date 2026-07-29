@@ -1065,6 +1065,7 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(store.task_image_paths(retry_id)[0].read_bytes(), f"reference-{index}".encode())
 
     def test_admin_bulk_retry_all_uses_all_matching_failures_not_current_page(self) -> None:
+        config.update_config({"dola_submit_interval_seconds": 1})
         registered = self.register("bulk_retry_all_owner")
         owner_hash = temp_access.hash_token(registered["token"])
         temp_access.add_temp_credit_units(owner_hash, 100)
@@ -1085,7 +1086,15 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertEqual((payload["matched_total"], payload["requested"], payload["created"]), (3, 3, 3))
-        self.assertEqual({item["id"] for item in payload["results"]["created"]}, set(matched_ids))
+        self.assertEqual([item["id"] for item in payload["results"]["created"]], matched_ids)
+        self.assertEqual(payload["release_interval_seconds"], 1)
+        available = [datetime.fromisoformat(item["available_at"]) for item in payload["results"]["created"]]
+        self.assertEqual([(available[index] - available[index - 1]).total_seconds() for index in range(1, len(available))], [1, 1])
+        for source_id, item in zip(matched_ids, payload["results"]["created"], strict=True):
+            source_meta = store.get_meta(source_id)
+            retry_meta = store.get_meta(item["retry_id"])
+            self.assertEqual(retry_meta["queue_priority_at"], source_meta["created_at"])
+            self.assertEqual(retry_meta["next_attempt_at"], item["available_at"])
         self.assertFalse(payload["truncated"])
 
     def test_concurrency_overflow_is_precharged_and_queued_until_capacity_is_free(self) -> None:

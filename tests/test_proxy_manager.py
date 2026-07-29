@@ -155,6 +155,25 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(factory.call_args.kwargs["proxy"], "socks5://proxy.example:1080")
         client.get.assert_awaited_once_with(proxy_manager.DOLA_HEALTHCHECK_URL)
 
+    async def test_proxy_api_connect_timeout_falls_back_to_independent_thread(self) -> None:
+        context = AsyncMock()
+        context.__aenter__.return_value.get.side_effect = proxy_manager.httpx.ConnectTimeout("timed out")
+        response = proxy_manager.httpx.Response(
+            200,
+            request=proxy_manager.httpx.Request("GET", "https://proxy-api.example/get"),
+            text="203.0.113.8:18080",
+        )
+
+        with patch.object(proxy_manager.httpx, "AsyncClient", return_value=context), patch.object(
+            proxy_manager.httpx,
+            "get",
+            return_value=response,
+        ) as sync_get:
+            result = await proxy_manager.fetch_proxy_from_api("https://proxy-api.example/get")
+
+        self.assertEqual(result["host_port"], "203.0.113.8:18080")
+        sync_get.assert_called_once()
+
     async def test_different_nodes_with_the_same_public_ip_share_an_exit_identity(self) -> None:
         response = proxy_manager.httpx.Response(
             200,

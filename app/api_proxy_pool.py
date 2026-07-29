@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -10,6 +11,8 @@ from .proxy_manager import dola_proxy_available, fetch_proxy_from_api
 ProxyFetcher = Callable[..., Awaitable[dict[str, str]]]
 ProxyProbe = Callable[[str, float], Awaitable[bool]]
 DUPLICATE_REFRESH_BACKOFF_SECONDS = 1.0
+API_FETCH_MIN_INTERVAL_SECONDS = 0.75
+REFRESH_FAILURE_BACKOFF_MAX_SECONDS = 15.0
 
 
 @dataclass(eq=False)
@@ -47,6 +50,7 @@ class ReusableApiProxyPool:
         contexts_per_endpoint: int,
         *,
         max_concurrent_refreshes: int = 2,
+        fetch_min_interval_seconds: float = API_FETCH_MIN_INTERVAL_SECONDS,
         fetcher: ProxyFetcher = fetch_proxy_from_api,
         probe: ProxyProbe = dola_proxy_available,
     ):
@@ -54,11 +58,16 @@ class ReusableApiProxyPool:
         self.contexts_per_endpoint = max(1, int(contexts_per_endpoint))
         self.capacity = self.max_endpoints * self.contexts_per_endpoint
         self.max_concurrent_refreshes = max(1, min(self.max_endpoints, int(max_concurrent_refreshes)))
+        self.fetch_min_interval_seconds = max(0.0, float(fetch_min_interval_seconds))
         self.fetcher = fetcher
         self.probe = probe
         self._slots: list[_ApiProxySlot] = []
         self._launching = 0
         self._last_error = ""
+        self._fetch_pace_lock = asyncio.Lock()
+        self._last_fetch_started_at = 0.0
+        self._consecutive_refresh_failures = 0
+        self._refresh_not_before = 0.0
         self._condition = asyncio.Condition()
         self._stopping = False
 
@@ -73,6 +82,7 @@ class ReusableApiProxyPool:
         excluded = {str(item) for item in excluded_node_ids or set() if str(item)}
         while True:
             create_endpoint = False
+            refresh_wait_seconds = 0.0
             known_node_ids: set[str] = set()
             async with self._condition:
                 if self._stopping:
@@ -88,7 +98,10 @@ class ReusableApiProxyPool:
                     selected.active += 1
                     return ApiProxyLease(self, selected)
                 known_node_ids = {slot.node_id for slot in self._slots}
-                if (
+                refresh_wait_seconds = max(0.0, self._refresh_not_before - time.monotonic())
+                if refresh_wait_seconds > 0:
+                    pass
+                elif (
                     len(self._slots) + self._launching < self.max_endpoints
                     and self._launching < self.max_concurrent_refreshes
                 ):
@@ -97,6 +110,9 @@ class ReusableApiProxyPool:
                 else:
                     await self._condition.wait()
                     continue
+            if refresh_wait_seconds > 0:
+                await asyncio.sleep(min(refresh_wait_seconds, 1.0))
+                continue
             if not create_endpoint:
                 continue
             try:
@@ -118,6 +134,8 @@ class ReusableApiProxyPool:
                         if duplicate.node_id not in excluded and duplicate.active < self.contexts_per_endpoint:
                             duplicate.active += 1
                             self._last_error = ""
+                            self._consecutive_refresh_failures = 0
+                            self._refresh_not_before = 0.0
                             self._condition.notify_all()
                             return ApiProxyLease(self, duplicate)
                         duplicate_saturated = True
@@ -125,6 +143,8 @@ class ReusableApiProxyPool:
                     else:
                         self._slots.append(slot)
                         self._last_error = ""
+                        self._consecutive_refresh_failures = 0
+                        self._refresh_not_before = 0.0
                         self._condition.notify_all()
                         return ApiProxyLease(self, slot)
                 if duplicate_saturated:
@@ -135,8 +155,22 @@ class ReusableApiProxyPool:
                 self._last_error = f"{type(exc).__name__}: {detail or 'no detail'}"[:500]
                 async with self._condition:
                     self._launching = max(0, self._launching - 1)
+                    self._consecutive_refresh_failures += 1
+                    backoff_seconds = min(
+                        REFRESH_FAILURE_BACKOFF_MAX_SECONDS,
+                        float(2 ** min(3, self._consecutive_refresh_failures)),
+                    )
+                    self._refresh_not_before = max(self._refresh_not_before, time.monotonic() + backoff_seconds)
                     self._condition.notify_all()
                 raise
+
+    async def _paced_fetch(self, api_url: str, *, timeout_seconds: int, scheme: str) -> dict[str, str]:
+        async with self._fetch_pace_lock:
+            wait_seconds = self.fetch_min_interval_seconds - (time.monotonic() - self._last_fetch_started_at)
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            self._last_fetch_started_at = time.monotonic()
+        return await self.fetcher(api_url, timeout_seconds=timeout_seconds, scheme=scheme)
 
     async def _fetch_available_endpoint(
         self,
@@ -153,7 +187,7 @@ class ReusableApiProxyPool:
         while len(seen) < 3 and fetch_count < 6:
             fetch_count += 1
             try:
-                proxy = await self.fetcher(api_url, timeout_seconds=timeout_seconds, scheme=scheme)
+                proxy = await self._paced_fetch(api_url, timeout_seconds=timeout_seconds, scheme=scheme)
             except Exception as exc:
                 fetch_errors += 1
                 detail = str(exc).strip()
@@ -204,7 +238,10 @@ class ReusableApiProxyPool:
             "contexts_per_endpoint": self.contexts_per_endpoint,
             "capacity": self.capacity,
             "refresh_concurrency_limit": self.max_concurrent_refreshes,
+            "fetch_min_interval_seconds": self.fetch_min_interval_seconds,
             "refreshing": self._launching,
+            "consecutive_refresh_failures": self._consecutive_refresh_failures,
+            "next_refresh_in_seconds": round(max(0.0, self._refresh_not_before - time.monotonic()), 1),
             "endpoints": len(self._slots),
             "active": active,
             "available": available,

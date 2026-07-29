@@ -30,7 +30,14 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             return True
 
-        pool = ReusableApiProxyPool(6, 1, max_concurrent_refreshes=2, fetcher=fetcher, probe=probe)
+        pool = ReusableApiProxyPool(
+            6,
+            1,
+            max_concurrent_refreshes=2,
+            fetch_min_interval_seconds=0.001,
+            fetcher=fetcher,
+            probe=probe,
+        )
         leases = await asyncio.wait_for(asyncio.gather(*(
             pool.acquire("https://proxy-api.example/get", timeout_seconds=20, scheme="http")
             for _ in range(6)
@@ -38,6 +45,7 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(maximum_fetching, 2)
         self.assertEqual(pool.snapshot()["refresh_concurrency_limit"], 2)
         self.assertEqual(pool.snapshot()["refreshing"], 0)
+        self.assertEqual(pool.snapshot()["consecutive_refresh_failures"], 0)
         self.assertEqual(pool.snapshot()["available"], 0)
         await asyncio.gather(*(lease.release() for lease in leases))
 
@@ -48,12 +56,14 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
         async def probe(server: str, timeout: float) -> bool:
             return True
 
-        pool = ReusableApiProxyPool(3, 4, fetcher=fetcher, probe=probe)
+        pool = ReusableApiProxyPool(3, 4, fetch_min_interval_seconds=0, fetcher=fetcher, probe=probe)
         with self.assertRaisesRegex(RuntimeError, "TimeoutError: no detail"):
             await pool.acquire("https://proxy-api.example/get", timeout_seconds=20, scheme="http")
         snapshot = pool.snapshot()
         self.assertEqual(snapshot["refreshing"], 0)
         self.assertIn("TimeoutError: no detail", snapshot["last_error"])
+        self.assertEqual(snapshot["consecutive_refresh_failures"], 1)
+        self.assertGreater(snapshot["next_refresh_in_seconds"], 0)
 
     async def test_endpoint_pool_provides_real_context_capacity(self) -> None:
         fetched = 0
@@ -69,7 +79,7 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
         async def probe(server: str, timeout: float) -> bool:
             return True
 
-        pool = ReusableApiProxyPool(3, 4, fetcher=fetcher, probe=probe)
+        pool = ReusableApiProxyPool(3, 4, fetch_min_interval_seconds=0, fetcher=fetcher, probe=probe)
         leases = await asyncio.gather(*(
             pool.acquire("https://proxy-api.example/get", timeout_seconds=20, scheme="http")
             for _ in range(12)
@@ -96,7 +106,7 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
         async def probe(server: str, timeout: float) -> bool:
             return True
 
-        pool = ReusableApiProxyPool(1, 4, fetcher=fetcher, probe=probe)
+        pool = ReusableApiProxyPool(1, 4, fetch_min_interval_seconds=0, fetcher=fetcher, probe=probe)
         first = await pool.acquire("https://proxy-api.example/get", timeout_seconds=20, scheme="http")
         first_node = first.node_id
         first.invalidate()
@@ -105,6 +115,39 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(second.node_id, first_node)
         self.assertEqual(fetched, 2)
         await second.release()
+
+    async def test_parallel_refreshes_stagger_proxy_api_requests(self) -> None:
+        started: list[float] = []
+
+        async def fetcher(api_url: str, *, timeout_seconds: int, scheme: str) -> dict[str, str]:
+            started.append(asyncio.get_running_loop().time())
+            endpoint = len(started)
+            return {
+                "server": f"http://proxy-{endpoint}.example:{18000 + endpoint}",
+                "host_port": f"proxy-{endpoint}.example:{18000 + endpoint}",
+            }
+
+        async def probe(server: str, timeout: float) -> bool:
+            await asyncio.sleep(0.02)
+            return True
+
+        pool = ReusableApiProxyPool(
+            2,
+            1,
+            max_concurrent_refreshes=2,
+            fetch_min_interval_seconds=0.08,
+            fetcher=fetcher,
+            probe=probe,
+        )
+        leases = await asyncio.gather(*(
+            pool.acquire("https://proxy-api.example/get", timeout_seconds=20, scheme="http")
+            for _ in range(2)
+        ))
+
+        self.assertEqual(len(started), 2)
+        self.assertGreaterEqual(started[1] - started[0], 0.05)
+        self.assertEqual(len({lease.node_id for lease in leases}), 2)
+        await asyncio.gather(*(lease.release() for lease in leases))
 
 
 if __name__ == "__main__":

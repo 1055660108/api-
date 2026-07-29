@@ -1210,8 +1210,20 @@ async def fetch_proxy_from_api(api_url: str, *, timeout_seconds: int = 20, schem
         raise RuntimeError("proxy api url is empty")
 
     timeout = httpx.Timeout(float(timeout_seconds), connect=min(10.0, float(timeout_seconds)))
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
-        response = await client.get(api_url, headers={"User-Agent": "dola-fetch-service/1.0"})
+    headers = {"User-Agent": "dola-fetch-service/1.0"}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+            response = await client.get(api_url, headers=headers)
+    except (httpx.ConnectTimeout, httpx.ConnectError):
+        # Keep proxy acquisition independent from a temporarily unhealthy worker event loop/network path.
+        response = await asyncio.to_thread(
+            httpx.get,
+            api_url,
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=True,
+            trust_env=False,
+        )
 
     text = response.content.decode("utf-8-sig", errors="replace")
     if response.status_code < 200 or response.status_code >= 300:

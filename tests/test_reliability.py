@@ -1022,6 +1022,18 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(outcome["infrastructure_fault"])
         self.assertEqual(store.load_result(task["id"])["submit_error_category"], "reference_upload")
 
+    def test_reference_upload_timeout_invalidates_only_the_active_api_proxy(self) -> None:
+        task = self.create_task("owner-reference-api-timeout")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner.active_proxy_source = "api"
+        runner._run_once = AsyncMock(side_effect=RuntimeError("prepare_upload timed out"))
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["retryable"])
+        self.assertTrue(outcome["infrastructure_fault"])
+        self.assertFalse(outcome.get("defer_only", False))
+        mark_proxy.assert_called_once_with(reason="reference_upload_timeout")
+
     def test_navigation_timeout_is_a_proxy_transport_failure(self) -> None:
         task = self.create_task("owner-navigation-timeout")
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
@@ -1093,6 +1105,8 @@ class ReliabilityTests(unittest.TestCase):
         snapshot = manager.health_snapshot()
         self.assertEqual(snapshot["image_upload_concurrency"], 8)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
+        self.assertEqual(snapshot["image_submission_claimed"], 0)
+        self.assertEqual(snapshot["image_submission_claim_limit"], 8)
         self.assertEqual(snapshot["browser_pool"]["process_limit"], 12)
         self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 4)
         self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 48)

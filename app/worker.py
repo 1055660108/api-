@@ -143,6 +143,7 @@ class WorkerManager:
         self._image_submission_condition = asyncio.Condition()
         self._image_submission_active = 0
         self._image_submission_reservations: dict[str, str] = {}
+        self._claimed_image_submissions: set[str] = set()
         self._image_owner_limits: dict[str, int] = {}
         self._image_owner_limits_refreshed_at = 0.0
         self._result_poll_semaphore = asyncio.Semaphore(RESULT_POLL_CONCURRENCY)
@@ -271,6 +272,8 @@ class WorkerManager:
             "image_upload_active": self._image_submission_active,
             "image_upload_concurrency": IMAGE_SUBMISSION_CONCURRENCY,
             "image_upload_reserved": len(self._image_submission_reservations),
+            "image_submission_claimed": len(self._claimed_image_submissions),
+            "image_submission_claim_limit": IMAGE_SUBMISSION_CONCURRENCY,
             "browser_pool": self._dola_browser_pool.snapshot(),
             "api_proxy_pool": self._api_proxy_pool.snapshot(),
             "proxy_exit_pool": task_mihomo_pool_snapshot(),
@@ -666,12 +669,18 @@ class WorkerManager:
                     candidate_platform = str(claimed_meta.get("platform") or "dola")
                     is_image_submission = candidate_platform == "dola" and int(claimed_meta.get("image_count") or 0) > 0
                     candidate_owner = str(claimed_meta.get("owner_token_hash") or "")
+                    if is_image_submission and len(self._claimed_image_submissions) >= IMAGE_SUBMISSION_CONCURRENCY:
+                        defer_task(candidate_id, "参考图任务等待上传通道", "image_prepare_limit", 15)
+                        self._queue.release(candidate_id, worker_id)
+                        continue
                     if candidate_platform == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
                         defer_task(candidate_id, "当前用户远端生成任务已达上限，继续排队", "remote_limit", 5)
                         self._queue.release(candidate_id, worker_id)
                         continue
                     task_id = candidate_id
                     self._claimed.add(task_id)
+                    if is_image_submission:
+                        self._claimed_image_submissions.add(task_id)
                     self._worker_task_ids[worker_id] = task_id
                     break
             if not task_id:
@@ -823,6 +832,7 @@ class WorkerManager:
             finally:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
+                self._claimed_image_submissions.discard(task_id)
                 reserved_owner = self._remote_generation_reservations.pop(task_id, None)
                 if reserved_owner:
                     self._remote_owner_refreshed_at = 0.0

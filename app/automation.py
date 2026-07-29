@@ -1026,6 +1026,9 @@ class DolaFetchAutomation:
             if gateway_status:
                 self._record_active_gateway_failure(gateway_status)
             if reference_upload_failure:
+                reference_transport_failure = "timed out" in reason.lower() or is_proxy_transport_failure(reason)
+                if self.active_proxy_source == "api" and reference_transport_failure:
+                    self._mark_active_proxy_unavailable(reason="reference_upload_timeout")
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
                 if is_proxy_transport_failure(reason):

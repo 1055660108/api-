@@ -166,6 +166,22 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertIn(content_type, response.headers["content-type"])
             self.assertTrue(response.content)
 
+    def test_video_download_filename_prefers_reference_then_task_prompt(self) -> None:
+        self.assertEqual(
+            main._video_download_filename(
+                {"prompt": "不会使用这个名称", "reference_image_names": ["角色正面参考图.png"]},
+                "task-id",
+            ),
+            "角色正面参考图.mp4",
+        )
+        self.assertEqual(
+            main._video_download_filename({"prompt": "清晨 酒店：镜头/一"}, "task-id"),
+            "清晨 酒店：镜头_一.mp4",
+        )
+        long_name = main._video_download_filename({"prompt": "长" * 200}, "task-id")
+        self.assertLessEqual(len(long_name.encode("utf-8")), 184)
+        self.assertTrue(long_name.endswith(".mp4"))
+
     def test_task_video_proxy_forwards_range_and_protects_task_ownership(self) -> None:
         registered = self.register("video_owner")
         owner_hash = temp_access.hash_token(registered["token"])

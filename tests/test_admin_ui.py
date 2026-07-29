@@ -547,6 +547,10 @@ class AdminUITests(unittest.TestCase):
             "batchAutoConcurrency",
             "batchAutoModal",
             "confirmBatchAutoSubmit",
+            "batchAutoDownload",
+            "batchDownloadFolderName",
+            "selectBatchDownloadFolder",
+            "clearBatchDownloadFolder",
             "batchPageSize",
             "batchPrevPage",
             "batchNextPage",
@@ -639,10 +643,14 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('<h2 id="batchAutoModalTitle">生成设置</h2>', self.html)
         self.assertIn('<span>生成数量</span><input id="batchSelectionLimit"', self.html)
         self.assertIn('<span>生成并发</span><input id="batchAutoConcurrency"', self.html)
+        self.assertIn('id="batchAutoDownload" type="checkbox"', self.html)
+        self.assertIn('id="selectBatchDownloadFolder"', self.html)
         self.assertIn('id="confirmBatchAutoSubmit" type="button">保存</button>', self.html)
         self.assertNotIn('id="confirmBatchAutoSubmit" type="button">开始生成</button>', self.html)
         self.assertNotIn('id="applyBatchSelectionLimit"', self.html)
         self.assertIn('toast("生成设置已保存")', self.javascript)
+        self.assertIn('id="downloadSelectedVideos"', self.html)
+        self.assertIn('els.downloadSelectedVideos?.addEventListener("click", downloadSelectedVideos)', self.javascript)
         settings_save_body = self.javascript.split('els.confirmBatchAutoSubmit?.addEventListener("click", () => {', 1)[1].split('els.batchAutoConcurrency?', 1)[0]
         self.assertNotIn('autoSubmitBatchTasks()', settings_save_body)
         self.assertIn('item.taskId = ""', windowed_submit_body)
@@ -660,7 +668,13 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('localStorage.setItem(key, JSON.stringify({', self.javascript)
         self.assertIn('function loadBatchDraft()', self.javascript)
         self.assertIn('const BATCH_IMAGE_DB_NAME = "dfyue_batch_images"', self.javascript)
+        self.assertIn('const BATCH_IMAGE_DB_VERSION = 2', self.javascript)
+        self.assertIn('const DOWNLOAD_DIRECTORY_STORE = "download_directories"', self.javascript)
         self.assertIn('window.indexedDB.open(BATCH_IMAGE_DB_NAME', self.javascript)
+        self.assertIn('window.showDirectoryPicker({ mode: "readwrite" })', self.javascript)
+        self.assertIn('async function downloadTaskToDirectory(taskId, directory = state.downloadDirectoryHandle)', self.javascript)
+        self.assertIn('response.body.pipeTo(writable)', self.javascript)
+        self.assertIn('function queueAutomaticVideoDownload(taskId)', self.javascript)
         self.assertIn('async function persistBatchReferenceImages()', self.javascript)
         self.assertIn('async function readBatchImageDraft(owner)', self.javascript)
         self.assertIn('state.batchSharedImages = createBatchImageEntries(restoredBatchImageFiles(storedImages.shared))', self.javascript)

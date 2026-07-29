@@ -223,19 +223,36 @@ class PlatformGuard:
         return f"{self.namespace}:{platform}"
 
 
+def _inactive_file_bytes(stat_path: Path) -> int:
+    try:
+        values = {}
+        for line in stat_path.read_text(encoding="utf-8").splitlines():
+            key, _, raw_value = line.partition(" ")
+            if key in {"inactive_file", "total_inactive_file"}:
+                values[key] = max(0, int(raw_value.strip() or 0))
+        return values.get("total_inactive_file", values.get("inactive_file", 0))
+    except (OSError, ValueError):
+        return 0
+
+
 def memory_pressure() -> tuple[float, int, int]:
     candidates = (
-        (Path("/sys/fs/cgroup/memory.current"), Path("/sys/fs/cgroup/memory.max")),
-        (Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"), Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")),
+        (Path("/sys/fs/cgroup/memory.current"), Path("/sys/fs/cgroup/memory.max"), Path("/sys/fs/cgroup/memory.stat")),
+        (
+            Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+            Path("/sys/fs/cgroup/memory/memory.stat"),
+        ),
     )
-    for usage_path, limit_path in candidates:
+    for usage_path, limit_path, stat_path in candidates:
         try:
             usage = int(usage_path.read_text(encoding="utf-8").strip())
             raw_limit = limit_path.read_text(encoding="utf-8").strip()
             if raw_limit != "max":
                 limit = int(raw_limit)
                 if 0 < limit < 1 << 60:
-                    return usage / limit, usage, limit
+                    working_set = max(0, usage - _inactive_file_bytes(stat_path))
+                    return working_set / limit, working_set, limit
         except (OSError, ValueError):
             pass
     if os.name != "nt":

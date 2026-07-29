@@ -186,10 +186,20 @@ def _reference_image_name(value: object, index: int, suffix: str = "") -> str:
 
 def _video_download_filename(meta: dict, task_id: str) -> str:
     names = meta.get("reference_image_names") if isinstance(meta.get("reference_image_names"), list) else []
-    source_name = _reference_image_name(names[0], 1) if names else ""
-    stem = Path(source_name).stem.strip() if source_name else ""
+    source_name = _reference_image_name(names[0], 1) if names else str(
+        meta.get("video_name") or meta.get("task_name") or meta.get("prompt") or ""
+    )
+    stem = Path(source_name).stem.strip() if names and source_name else source_name.strip()
+    stem = " ".join(stem.split())
     stem = "".join("_" if character in '<>:"/\\|?*' else character for character in stem).strip(" .")
-    return f"{(stem[:150] or task_id)}.mp4"
+    encoded = stem.encode("utf-8")[:180]
+    while encoded:
+        try:
+            stem = encoded.decode("utf-8")
+            break
+        except UnicodeDecodeError:
+            encoded = encoded[:-1]
+    return f"{(stem or task_id)}.mp4"
 
 
 def _video_referer(platform: str) -> str:

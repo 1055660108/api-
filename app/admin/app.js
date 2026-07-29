@@ -296,6 +296,11 @@ const els = {
   closeBatchAutoModal: document.getElementById("closeBatchAutoModal"),
   cancelBatchAutoModal: document.getElementById("cancelBatchAutoModal"),
   confirmBatchAutoSubmit: document.getElementById("confirmBatchAutoSubmit"),
+  batchAutoDownload: document.getElementById("batchAutoDownload"),
+  batchDownloadFolderName: document.getElementById("batchDownloadFolderName"),
+  batchDownloadFolderState: document.getElementById("batchDownloadFolderState"),
+  selectBatchDownloadFolder: document.getElementById("selectBatchDownloadFolder"),
+  clearBatchDownloadFolder: document.getElementById("clearBatchDownloadFolder"),
   imageInput: document.getElementById("imageInput"),
   clearImages: document.getElementById("clearImages"),
   imageList: document.getElementById("imageList"),
@@ -463,6 +468,7 @@ const els = {
   accountAbnormalCount: document.getElementById("accountAbnormalCount"),
   videoLibrary: document.getElementById("videoLibrary"),
   selectAllVideos: document.getElementById("selectAllVideos"),
+  downloadSelectedVideos: document.getElementById("downloadSelectedVideos"),
   deleteSelectedVideos: document.getElementById("deleteSelectedVideos"),
   accountPlatformFilter: document.getElementById("accountPlatformFilter"),
   accountStatusFilter: document.getElementById("accountStatusFilter"),
@@ -676,6 +682,14 @@ const state = {
   billingPriority: "video_first",
   version: "",
   selectedVideoIds: new Set(),
+  downloadDirectoryHandle: null,
+  downloadPreferencesOwner: "",
+  autoDownloadEnabled: false,
+  autoDownloadBaselineReady: false,
+  autoDownloadedTaskIds: new Set(),
+  autoDownloadPendingIds: new Set(),
+  downloadQueue: Promise.resolve(),
+  bulkDownloadRunning: false,
   adminUsername: "",
   queryingTaskIds: new Set(),
   retryingTaskIds: new Set(),
@@ -3711,6 +3725,13 @@ async function refreshTasks(options = {}) {
     state.taskTotalPages = Math.max(1, Number(data.total_pages || 1));
     state.page = Math.max(1, Number(data.page || state.page));
     state.taskStats = data.stats || null;
+    if (portal === "client" && state.autoDownloadEnabled) {
+      if (!state.autoDownloadBaselineReady) baselineAutoDownloadedTasks();
+      else tasks.forEach((task) => {
+        const status = getTaskStatus(task);
+        if (status.url) queueAutomaticVideoDownload(task.id);
+      });
+    }
     syncBatchPromptsFromTaskState();
     renderTaskTable({ skipUnchanged: true });
     updateDashboardMetrics();
@@ -3887,6 +3908,7 @@ function renderVideoLibrary() {
   if (!videos.length) {
     els.videoLibrary.innerHTML = `<div class="empty-state video-empty-state">暂无已完成视频</div>`;
     if (els.selectAllVideos) els.selectAllVideos.checked = false;
+    if (els.downloadSelectedVideos) els.downloadSelectedVideos.disabled = true;
     if (els.deleteSelectedVideos) els.deleteSelectedVideos.disabled = true;
     return;
   }
@@ -3901,8 +3923,10 @@ function renderVideoLibrary() {
       <div class="row-actions"><button class="secondary-button" type="button" data-action="download-video" data-id="${escapeHtml(task.id)}">下载视频</button><button class="danger-button" type="button" data-action="delete-video" data-id="${escapeHtml(task.id)}">删除</button></div>
     </article>`).join("");
   const ids = videos.map(({ task }) => task.id);
+  const hasSelection = ids.some((id) => state.selectedVideoIds.has(id));
   if (els.selectAllVideos) els.selectAllVideos.checked = ids.length > 0 && ids.every((id) => state.selectedVideoIds.has(id));
-  if (els.deleteSelectedVideos) els.deleteSelectedVideos.disabled = !ids.some((id) => state.selectedVideoIds.has(id));
+  if (els.downloadSelectedVideos) els.downloadSelectedVideos.disabled = state.bulkDownloadRunning || !hasSelection;
+  if (els.deleteSelectedVideos) els.deleteSelectedVideos.disabled = !hasSelection;
 }
 
 async function deleteVideoTasks(ids) {
@@ -4241,6 +4265,7 @@ async function queryTask(id, options = {}) {
   try {
     const data = await apiFetch(`/tasks/${encodeURIComponent(id)}`, { timeout: 30000 });
     state.results[id] = data;
+    if (String(data?.code || "") === "2" && data?.url) queueAutomaticVideoDownload(id);
     syncBatchPromptsFromTaskState();
     if (!options.quiet) toast(`${shortId(id)} 查询完成`);
     if (!options.deferRender) {
@@ -4578,8 +4603,10 @@ async function submitTask(event) {
 const BATCH_VIDEO_DURATION = "15";
 const BATCH_DRAFT_VERSION = 1;
 const BATCH_IMAGE_DB_NAME = "dfyue_batch_images";
-const BATCH_IMAGE_DB_VERSION = 1;
+const BATCH_IMAGE_DB_VERSION = 2;
 const BATCH_IMAGE_STORE = "drafts";
+const DOWNLOAD_DIRECTORY_STORE = "download_directories";
+const AUTO_DOWNLOADED_TASK_LIMIT = 1000;
 let batchImageDatabasePromise = null;
 
 function batchConcurrencyLimit() {
@@ -4619,6 +4646,7 @@ function openBatchImageDatabase() {
     request.onupgradeneeded = () => {
       const database = request.result;
       if (!database.objectStoreNames.contains(BATCH_IMAGE_STORE)) database.createObjectStore(BATCH_IMAGE_STORE, { keyPath: "owner" });
+      if (!database.objectStoreNames.contains(DOWNLOAD_DIRECTORY_STORE)) database.createObjectStore(DOWNLOAD_DIRECTORY_STORE, { keyPath: "owner" });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error("参考图缓存不可用"));
@@ -4692,6 +4720,143 @@ async function readBatchImageDraft(owner) {
   });
 }
 
+function downloadPreferencesStorageKey(owner = state.userName) {
+  const normalizedOwner = normalizedBatchDraftOwner(owner);
+  return normalizedOwner ? `dfyue_download_preferences_${encodeURIComponent(normalizedOwner)}` : "";
+}
+
+function saveDownloadPreferences() {
+  if (portal !== "client") return;
+  const key = downloadPreferencesStorageKey();
+  if (!key) return;
+  try {
+    const completed = Array.from(state.autoDownloadedTaskIds).slice(-AUTO_DOWNLOADED_TASK_LIMIT);
+    localStorage.setItem(key, JSON.stringify({ enabled: Boolean(state.autoDownloadEnabled), completed }));
+  } catch (_) {
+    // Downloading remains usable when browser preference storage is unavailable.
+  }
+}
+
+async function writeDownloadDirectory(owner, handle) {
+  const database = await openBatchImageDatabase();
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(DOWNLOAD_DIRECTORY_STORE, "readwrite");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error("下载文件夹保存失败"));
+    transaction.onabort = () => reject(transaction.error || new Error("下载文件夹保存已取消"));
+    const store = transaction.objectStore(DOWNLOAD_DIRECTORY_STORE);
+    if (handle) store.put({ owner, handle });
+    else store.delete(owner);
+  });
+}
+
+async function readDownloadDirectory(owner) {
+  const database = await openBatchImageDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(DOWNLOAD_DIRECTORY_STORE, "readonly");
+    const request = transaction.objectStore(DOWNLOAD_DIRECTORY_STORE).get(owner);
+    request.onsuccess = () => resolve(request.result?.handle || null);
+    request.onerror = () => reject(request.error || new Error("下载文件夹读取失败"));
+  });
+}
+
+async function directoryPermission(handle, request = false) {
+  if (!handle) return false;
+  const options = { mode: "readwrite" };
+  try {
+    if (await handle.queryPermission(options) === "granted") return true;
+    return request && await handle.requestPermission(options) === "granted";
+  } catch (_) {
+    return false;
+  }
+}
+
+function renderDownloadSettings(permissionGranted = null) {
+  const supported = typeof window.showDirectoryPicker === "function";
+  const handle = state.downloadDirectoryHandle;
+  if (els.batchAutoDownload) els.batchAutoDownload.checked = Boolean(state.autoDownloadEnabled);
+  if (els.batchDownloadFolderName) els.batchDownloadFolderName.textContent = handle?.name || "未选择文件夹";
+  if (els.selectBatchDownloadFolder) els.selectBatchDownloadFolder.disabled = !supported;
+  if (els.clearBatchDownloadFolder) els.clearBatchDownloadFolder.disabled = !handle;
+  if (!els.batchDownloadFolderState) return;
+  if (!supported) els.batchDownloadFolderState.textContent = "当前浏览器不支持自定义下载文件夹，请使用最新版 Chrome 或 Edge。";
+  else if (!handle) els.batchDownloadFolderState.textContent = "选择文件夹后，已完成视频会按顺序自动保存。";
+  else if (permissionGranted === false) els.batchDownloadFolderState.textContent = "已记住文件夹，请重新点击“选择文件夹”授权。";
+  else els.batchDownloadFolderState.textContent = `已选择“${handle.name}”，自动下载采用串行写入。`;
+}
+
+function baselineAutoDownloadedTasks() {
+  state.tasks.forEach((task) => {
+    if (getTaskStatus(task).url) state.autoDownloadedTaskIds.add(String(task.id || ""));
+  });
+  state.batchPrompts.forEach((item) => {
+    if (item.videoUrl && item.taskId) state.autoDownloadedTaskIds.add(String(item.taskId));
+  });
+  state.autoDownloadBaselineReady = true;
+  saveDownloadPreferences();
+}
+
+async function loadDownloadPreferences(owner = state.userName) {
+  if (portal !== "client") return;
+  const normalizedOwner = normalizedBatchDraftOwner(owner);
+  if (!normalizedOwner || state.downloadPreferencesOwner === normalizedOwner) return;
+  state.downloadPreferencesOwner = normalizedOwner;
+  state.downloadDirectoryHandle = null;
+  state.autoDownloadBaselineReady = false;
+  state.autoDownloadedTaskIds = new Set();
+  try {
+    const stored = JSON.parse(localStorage.getItem(downloadPreferencesStorageKey(owner)) || "null");
+    state.autoDownloadEnabled = Boolean(stored?.enabled);
+    state.autoDownloadedTaskIds = new Set((stored?.completed || []).map((id) => String(id || "")).filter(Boolean).slice(-AUTO_DOWNLOADED_TASK_LIMIT));
+  } catch (_) {
+    state.autoDownloadEnabled = false;
+  }
+  try {
+    state.downloadDirectoryHandle = await readDownloadDirectory(normalizedOwner);
+  } catch (_) {
+    state.downloadDirectoryHandle = null;
+  }
+  const granted = await directoryPermission(state.downloadDirectoryHandle);
+  if (state.autoDownloadEnabled && !granted) {
+    state.autoDownloadEnabled = false;
+    saveDownloadPreferences();
+  }
+  renderDownloadSettings(state.downloadDirectoryHandle ? granted : null);
+}
+
+async function selectDownloadDirectory() {
+  if (typeof window.showDirectoryPicker !== "function") {
+    toast("当前浏览器不支持自定义下载文件夹，请使用最新版 Chrome 或 Edge", "error");
+    return false;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+    if (!await directoryPermission(handle, true)) throw new Error("未授予文件夹写入权限");
+    state.downloadDirectoryHandle = handle;
+    await writeDownloadDirectory(normalizedBatchDraftOwner(), handle);
+    renderDownloadSettings(true);
+    toast(`下载文件夹已设为“${handle.name}”`);
+    return true;
+  } catch (error) {
+    if (error?.name !== "AbortError") toast(`选择文件夹失败：${error.message}`, "error");
+    return false;
+  }
+}
+
+async function clearDownloadDirectory() {
+  const owner = normalizedBatchDraftOwner();
+  state.downloadDirectoryHandle = null;
+  state.autoDownloadEnabled = false;
+  state.autoDownloadBaselineReady = false;
+  saveDownloadPreferences();
+  try {
+    if (owner) await writeDownloadDirectory(owner, null);
+  } catch (_) {
+    // Clearing the active handle is enough for this browser session.
+  }
+  renderDownloadSettings();
+}
+
 function restoredBatchImageFiles(items) {
   return (items || []).slice(0, 9).map((item) => {
     const source = item?.file;
@@ -4751,6 +4916,7 @@ async function loadBatchDraft() {
   const owner = String(state.userName).trim().toLocaleLowerCase();
   if (!owner || state.batchDraftOwner === owner) return;
   state.batchDraftOwner = owner;
+  await loadDownloadPreferences(owner);
   clearBatchReferenceImages();
   state.batchSpreadsheet = null;
   state.batchSpreadsheetName = "";
@@ -5113,6 +5279,7 @@ function applyBatchTaskResult(item, result) {
     item.status = "completed";
     item.error = "";
     item.videoUrl = String(result.url || "");
+    queueAutomaticVideoDownload(item.taskId);
   } else if (failed) {
     item.status = "failed";
     item.error = batchFriendlyError(result.text || "生成失败");
@@ -5262,6 +5429,9 @@ function applyPersistentBatchJob(job) {
   }
   if (rowsChanged || !incremental) saveBatchDraft();
   if (rowsChanged || summaryChanged || !incremental) renderBatchPrompts();
+  job.rows.forEach((row) => {
+    if (row.task_id && row.video_url) queueAutomaticVideoDownload(String(row.task_id));
+  });
   return ["queued", "running", "canceling"].includes(String(job.status || ""));
 }
 
@@ -5548,6 +5718,133 @@ async function copyText(value, label = "内容") {
   } catch (error) {
     console.warn("copy failed", error);
     toast("复制失败，请手动选择文本复制", "error");
+  }
+}
+
+function safeDownloadFilename(value, fallback = "video.mp4") {
+  const cleaned = String(value || "").replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "_").trim().replace(/[. ]+$/g, "");
+  const name = cleaned || fallback;
+  return /\.mp4$/i.test(name) ? name : `${name}.mp4`;
+}
+
+function responseDownloadFilename(response, taskId) {
+  const disposition = String(response.headers.get("Content-Disposition") || "");
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return safeDownloadFilename(decodeURIComponent(encoded), `${taskId}.mp4`);
+    } catch (_) {
+      // Fall back to the ASCII filename below.
+    }
+  }
+  const plain = disposition.match(/filename="([^"]+)"/i)?.[1];
+  return safeDownloadFilename(plain, `${taskId}.mp4`);
+}
+
+async function uniqueDirectoryFilename(directory, filename) {
+  const normalized = safeDownloadFilename(filename);
+  const dot = normalized.lastIndexOf(".");
+  const stem = dot > 0 ? normalized.slice(0, dot) : normalized;
+  const extension = dot > 0 ? normalized.slice(dot) : "";
+  for (let index = 1; index <= 9999; index += 1) {
+    const candidate = index === 1 ? normalized : `${stem} (${index})${extension}`;
+    try {
+      await directory.getFileHandle(candidate);
+    } catch (error) {
+      if (error?.name === "NotFoundError") return candidate;
+      throw error;
+    }
+  }
+  throw new Error("下载文件夹中存在过多同名视频");
+}
+
+async function downloadTaskToDirectory(taskId, directory = state.downloadDirectoryHandle) {
+  if (!directory) throw new Error("尚未选择下载文件夹");
+  if (!await directoryPermission(directory)) throw new Error("下载文件夹需要重新授权");
+  const response = await fetch(taskVideoPlaybackUrl(taskId, true), {
+    credentials: "same-origin",
+    headers: { "X-Dola-Portal": portal },
+  });
+  if (!response.ok) throw new Error(`视频下载失败（HTTP ${response.status}）`);
+  const filename = await uniqueDirectoryFilename(directory, responseDownloadFilename(response, taskId));
+  const fileHandle = await directory.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    if (response.body?.pipeTo) await response.body.pipeTo(writable);
+    else {
+      await writable.write(await response.blob());
+      await writable.close();
+    }
+  } catch (error) {
+    try { await writable.abort(); } catch (_) { /* already closed */ }
+    throw error;
+  }
+  return filename;
+}
+
+function queueAutomaticVideoDownload(taskId) {
+  const id = String(taskId || "").trim();
+  if (portal !== "client" || !state.autoDownloadEnabled || !state.autoDownloadBaselineReady || !id) return;
+  if (state.autoDownloadedTaskIds.has(id) || state.autoDownloadPendingIds.has(id)) return;
+  state.autoDownloadPendingIds.add(id);
+  state.downloadQueue = state.downloadQueue.catch(() => undefined).then(async () => {
+    try {
+      const filename = await downloadTaskToDirectory(id);
+      state.autoDownloadedTaskIds.add(id);
+      saveDownloadPreferences();
+      if (els.batchDownloadFolderState) els.batchDownloadFolderState.textContent = `已自动下载：${filename}`;
+    } catch (error) {
+      state.autoDownloadedTaskIds.add(id);
+      saveDownloadPreferences();
+      if (/重新授权|尚未选择/.test(String(error.message || ""))) {
+        state.autoDownloadEnabled = false;
+        saveDownloadPreferences();
+        renderDownloadSettings(false);
+      }
+      toast(`自动下载失败：${error.message}`, "error");
+    } finally {
+      state.autoDownloadPendingIds.delete(id);
+    }
+  });
+}
+
+function waitForDownload(milliseconds = 400) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function downloadSelectedVideos() {
+  if (state.bulkDownloadRunning) return;
+  const ids = Array.from(state.selectedVideoIds).filter((id) => {
+    const task = state.tasks.find((item) => item.id === id);
+    return task && Boolean(getTaskStatus(task).url);
+  });
+  if (!ids.length) return;
+  state.bulkDownloadRunning = true;
+  setBusy(els.downloadSelectedVideos, true, `下载中 0/${ids.length}`);
+  let directory = state.downloadDirectoryHandle;
+  if (directory && !await directoryPermission(directory, true)) directory = null;
+  let completed = 0;
+  let failed = 0;
+  try {
+    for (const id of ids) {
+      try {
+        if (directory) await downloadTaskToDirectory(id, directory);
+        else {
+          downloadVideo(getTaskStatus(state.tasks.find((item) => item.id === id) || {}).url, id);
+          await waitForDownload();
+        }
+        completed += 1;
+      } catch (error) {
+        failed += 1;
+        console.warn("video download failed", id, error);
+      }
+      if (els.downloadSelectedVideos) els.downloadSelectedVideos.textContent = `下载中 ${completed + failed}/${ids.length}`;
+    }
+    toast(failed ? `下载完成：成功 ${completed} 个，失败 ${failed} 个` : `已下载 ${completed} 个视频`, failed ? "error" : "success");
+  } finally {
+    state.bulkDownloadRunning = false;
+    setBusy(els.downloadSelectedVideos, false);
+    renderVideoLibrary();
   }
 }
 
@@ -6300,6 +6597,9 @@ function bindEvents() {
   els.confirmBatchAutoSubmit?.addEventListener("click", () => {
     applyBatchSelectionCount();
     syncBatchConcurrencyControls();
+    state.autoDownloadEnabled = Boolean(els.batchAutoDownload?.checked && state.downloadDirectoryHandle);
+    if (state.autoDownloadEnabled && !state.autoDownloadBaselineReady) baselineAutoDownloadedTasks();
+    saveDownloadPreferences();
     closeSettingsModal(els.batchAutoModal);
     saveBatchDraft();
     toast("生成设置已保存");
@@ -6519,6 +6819,24 @@ function bindEvents() {
   els.textModal.addEventListener("click", (event) => {
     if (event.target === els.textModal) closeTextModal();
   });
+  els.batchAutoDownload?.addEventListener("change", async () => {
+    const requested = els.batchAutoDownload.checked;
+    if (requested && !state.downloadDirectoryHandle) {
+      const selected = await selectDownloadDirectory();
+      els.batchAutoDownload.checked = selected;
+    }
+    if (els.batchAutoDownload.checked && !await directoryPermission(state.downloadDirectoryHandle, true)) {
+      els.batchAutoDownload.checked = false;
+      toast("请先授权下载文件夹", "error");
+    }
+    state.autoDownloadEnabled = Boolean(els.batchAutoDownload.checked && state.downloadDirectoryHandle);
+    state.autoDownloadBaselineReady = false;
+    if (state.autoDownloadEnabled) baselineAutoDownloadedTasks();
+    saveDownloadPreferences();
+    renderDownloadSettings(state.autoDownloadEnabled ? true : null);
+  });
+  els.selectBatchDownloadFolder?.addEventListener("click", selectDownloadDirectory);
+  els.clearBatchDownloadFolder?.addEventListener("click", clearDownloadDirectory);
   els.closeReferenceModal.addEventListener("click", closeReferenceModal);
   els.confirmReferenceModal.addEventListener("click", closeReferenceModal);
   els.referenceModal.addEventListener("click", (event) => {
@@ -6765,6 +7083,7 @@ function bindEvents() {
     ids.forEach((id) => els.selectAllVideos.checked ? state.selectedVideoIds.add(id) : state.selectedVideoIds.delete(id));
     renderVideoLibrary();
   });
+  els.downloadSelectedVideos?.addEventListener("click", downloadSelectedVideos);
   els.deleteSelectedVideos?.addEventListener("click", () => deleteVideoTasks(Array.from(state.selectedVideoIds)));
 }
 

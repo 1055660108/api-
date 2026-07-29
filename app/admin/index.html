@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.78" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.79" />
   </head>
   <body>
     <script>
@@ -541,7 +541,7 @@
 
         <section class="view" id="videosView" data-title="我的视频">
           <section class="panel">
-            <div class="panel-header panel-action-header"><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
+            <div class="panel-header panel-action-header"><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="secondary-button icon-text-button" id="downloadSelectedVideos" type="button" disabled><i data-lucide="download" aria-hidden="true"></i>下载所选</button><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
             <div class="video-library" id="videoLibrary"></div>
           </section>
         </section>
@@ -1210,6 +1210,15 @@
           <label class="field batch-count-field"><span>生成数量</span><input id="batchSelectionLimit" type="number" min="1" step="1" value="1" /></label>
           <label class="field"><span>生成并发</span><input id="batchAutoConcurrency" type="number" min="1" max="1" step="1" value="1" /></label>
         </div>
+        <div class="batch-download-settings">
+          <label class="invitation-toggle-control batch-auto-download-control"><input id="batchAutoDownload" type="checkbox" /><span class="switch-track" aria-hidden="true"><span></span></span><span><strong>任务完成后自动下载</strong><small>视频会按完成顺序写入所选文件夹</small></span></label>
+          <div class="batch-download-folder-row">
+            <div class="batch-download-folder-copy"><span>下载文件夹</span><strong id="batchDownloadFolderName">未选择文件夹</strong></div>
+            <button class="secondary-button icon-text-button" id="selectBatchDownloadFolder" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>选择文件夹</button>
+            <button class="icon-button" id="clearBatchDownloadFolder" type="button" aria-label="清除下载文件夹" title="清除下载文件夹" disabled><i data-lucide="x" aria-hidden="true"></i></button>
+          </div>
+          <p class="batch-download-note" id="batchDownloadFolderState">需要使用 Chrome 或 Edge 授权文件夹；未授权时仍可使用浏览器默认下载。</p>
+        </div>
         <div class="modal-actions"><button class="secondary-button" id="cancelBatchAutoModal" type="button">取消</button><button class="primary-button" id="confirmBatchAutoSubmit" type="button">保存</button></div>
       </section>
     </div>
@@ -1284,6 +1293,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.78"></script>
+    <script src="/admin/assets/app.js?v=1.4.79"></script>
   </body>
 </html>

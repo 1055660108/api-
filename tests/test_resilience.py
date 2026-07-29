@@ -115,6 +115,12 @@ class ResilienceUnitTests(unittest.TestCase):
         self.assertEqual(effective, 12)
         self.assertEqual(snapshot["level"], "normal")
 
+    def test_inactive_file_cache_is_excluded_from_container_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stat_path = Path(directory) / "memory.stat"
+            stat_path.write_text("anon 202461184\nfile 766197760\ninactive_file 687083520\n", encoding="utf-8")
+            self.assertEqual(resilience._inactive_file_bytes(stat_path), 687083520)
+
     def test_worker_limit_caps_low_pressure_browser_concurrency(self) -> None:
         with patch.dict(os.environ, {"DOLA_MAX_EFFECTIVE_WORKERS": "8"}), patch("app.resilience.memory_pressure", return_value=(0.03, 128, 4096)):
             effective, snapshot = resilience.adaptive_worker_limit(100)

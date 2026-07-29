@@ -7800,6 +7800,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 .batch-prompt-row.is-success .batch-prompt-status { color: #1f6250; }
 .batch-prompt-row.is-completed .batch-prompt-status { color: #1f6250; }
 .batch-prompt-row.is-running .batch-prompt-status { color: #314e46; }
+.batch-prompt-row.is-uploading .batch-prompt-status { color: #315a70; }
 .batch-prompt-row.is-queued .batch-prompt-status { color: #69716e; }
 .batch-prompt-row.is-failed .batch-prompt-status { color: #a23a35; }
 .batch-task-actions {

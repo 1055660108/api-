@@ -4853,7 +4853,7 @@ function clearBatchReferenceImages() {
 }
 
 function batchItemIsCreated(item) {
-  return ["queued", "creating", "success", "running", "completed"].includes(String(item.status || ""));
+  return ["uploading", "queued", "creating", "success", "running", "completed"].includes(String(item.status || ""));
 }
 
 function batchSelectedEntries() {
@@ -4905,6 +4905,7 @@ function syncBatchPromptsFromTaskState() {
 }
 
 function batchItemStatusText(item) {
+  if (item.status === "uploading") return "正在分片上传参考图";
   if (item.status === "queued") return "批次排队中，尚未创建任务";
   if (item.status === "creating") return "正在创建任务";
   if (item.status === "running") return `生成中 ${shortId(item.taskId)}`;
@@ -5342,19 +5343,77 @@ function waitForBatchPoll(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
-function batchPlanUploadTimeout(selected) {
-  let imageCount = 0;
-  let imageBytes = 0;
-  selected.forEach(({ item }) => {
-    (item.images || []).forEach((entryImage) => {
-      imageCount += 1;
-      imageBytes += Math.max(0, Number(entryImage?.file?.size || 0));
+const BATCH_ASSET_CHUNK_BYTES = 48 * 1024 * 1024;
+const BATCH_ASSET_CHUNK_FILES = 16;
+const BATCH_ASSET_FILE_BYTES = 20 * 1024 * 1024;
+
+function batchTaskImageEntries(selected) {
+  const entries = [];
+  selected.forEach(({ item }, rowOffset) => {
+    (item.images || []).forEach((entryImage, imageOffset) => {
+      const file = entryImage?.file;
+      if (!file) return;
+      if (Number(file.size || 0) > BATCH_ASSET_FILE_BYTES) throw new Error(`${file.name} 超过单张图片 20 MB 上限`);
+      entries.push({ file, rowIndex: rowOffset + 1, imageIndex: imageOffset + 1 });
     });
   });
-  if (!imageCount) return 120000;
-  const transferMilliseconds = Math.ceil(imageBytes / (128 * 1024)) * 1000;
-  const processingMilliseconds = imageCount * 1500;
-  return Math.max(300000, Math.min(1800000, 60000 + transferMilliseconds + processingMilliseconds));
+  return entries;
+}
+
+function splitBatchTaskImageEntries(entries) {
+  const chunks = [];
+  let current = [];
+  let bytes = 0;
+  entries.forEach((entry) => {
+    const size = Math.max(0, Number(entry.file?.size || 0));
+    if (current.length && (current.length >= BATCH_ASSET_CHUNK_FILES || bytes + size > BATCH_ASSET_CHUNK_BYTES)) {
+      chunks.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(entry);
+    bytes += size;
+  });
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
+function batchAssetChunkTimeout(chunk) {
+  const bytes = chunk.reduce((total, entry) => total + Math.max(0, Number(entry.file?.size || 0)), 0);
+  return Math.max(180000, Math.min(900000, 60000 + Math.ceil(bytes / (128 * 1024)) * 1000));
+}
+
+async function prepareBatchTaskImageAssets(sessionId, selected) {
+  const entries = batchTaskImageEntries(selected);
+  if (!entries.length) return "";
+  const chunks = splitBatchTaskImageEntries(entries);
+  let uploadId = "";
+  let uploaded = 0;
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (state.batchAutoStopRequested) throw new Error("批量提交已停止");
+    const chunk = chunks[index];
+    const form = new FormData();
+    form.append("batch_id", sessionId);
+    form.append("upload_id", uploadId);
+    form.append("manifest", JSON.stringify(chunk.map((entry) => ({
+      row_index: entry.rowIndex,
+      image_index: entry.imageIndex,
+      name: entry.file.name,
+    }))));
+    chunk.forEach((entry) => form.append("images", entry.file, entry.file.name));
+    if (els.batchTaskProgress) {
+      els.batchTaskProgress.textContent = `正在分片上传参考图 ${index + 1} / ${chunks.length}（已完成 ${uploaded} / ${entries.length} 张）`;
+    }
+    const result = await apiFetch("/batch-prompts/job-assets", {
+      method: "POST",
+      body: form,
+      timeout: batchAssetChunkTimeout(chunk),
+    });
+    uploadId = String(result.upload_id || uploadId);
+    uploaded += chunk.length;
+    if (!uploadId || Number(result.uploaded_count || 0) < uploaded) throw new Error("批量参考图分片上传不完整，请重试");
+  }
+  return uploadId;
 }
 
 async function autoSubmitBatchTasks() {
@@ -5382,8 +5441,9 @@ async function autoSubmitBatchTasks() {
   state.batchSubmitting = true;
   state.batchAutoRunning = true;
   state.batchAutoStopRequested = false;
+  const hasReferenceImages = state.batchSharedImages.length > 0 || selected.some(({ item }) => (item.images || []).length > 0);
   selected.forEach(({ item }) => {
-    item.status = "queued";
+    item.status = hasReferenceImages ? "uploading" : "queued";
     item.error = "";
     item.taskId = "";
     item.videoUrl = "";
@@ -5398,9 +5458,12 @@ async function autoSubmitBatchTasks() {
   try {
     const referenceBundle = await prepareBatchReferenceBundle(sessionId);
     if (state.batchAutoStopRequested) throw new Error("批次生成已停止");
+    const assetUploadId = await prepareBatchTaskImageAssets(sessionId, selected);
+    if (state.batchAutoStopRequested) throw new Error("批次生成已停止");
+    selected.forEach(({ item }) => { item.status = "queued"; });
+    renderBatchPrompts();
     const form = new FormData();
     const rows = selected.map(({ item, index }) => {
-      (item.images || []).forEach((entryImage) => form.append("images", entryImage.file, entryImage.file.name));
       return { client_index: index, sheet_row: Number(item.row || index + 1), prompt: item.prompt.trim(), image_count: (item.images || []).length };
     });
     form.append("manifest", JSON.stringify({
@@ -5409,13 +5472,14 @@ async function autoSubmitBatchTasks() {
       reference_id: referenceBundle?.id || "",
       reference_count: Number(referenceBundle?.count || 0),
       reference_batch_id: sessionId,
+      asset_upload_id: assetUploadId,
       rows,
     }));
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在保存 ${selected.length} 条批量计划`;
     const result = await apiFetch("/batch-prompts/jobs", {
       method: "POST",
       body: form,
-      timeout: batchPlanUploadTimeout(selected),
+      timeout: 120000,
     });
     state.batchJobId = String(result.job?.id || "");
     state.batchJobRevision = 0;
@@ -5435,11 +5499,13 @@ async function autoSubmitBatchTasks() {
     else state.batchAutoRunning = false;
   } catch (error) {
     const stopped = state.batchAutoStopRequested || Number(error.status || 0) === 409;
-    selected.forEach(({ item }) => { if (item.status === "queued" && !item.taskId) item.status = ""; });
+    const uploadTooLarge = Number(error.status || 0) === 413;
+    const failureText = uploadTooLarge ? "参考图分片超过服务器上传限制，请压缩单张图片后重试" : batchFriendlyError(error.message);
+    selected.forEach(({ item }) => { if (["uploading", "queued"].includes(item.status) && !item.taskId) item.status = ""; });
     state.batchAutoRunning = false;
     state.batchAutoStopRequested = false;
-    if (els.batchTaskProgress) els.batchTaskProgress.textContent = stopped ? "批量提交已停止" : "批次生成未开始";
-    toast(stopped ? "批量提交已停止" : `批次生成失败：${batchFriendlyError(error.message)}`, stopped ? "success" : "error");
+    if (els.batchTaskProgress) els.batchTaskProgress.textContent = stopped ? "批量提交已停止" : uploadTooLarge ? "参考图上传失败" : "批次生成未开始";
+    toast(stopped ? "批量提交已停止" : `批次生成失败：${failureText}`, stopped ? "success" : "error");
   } finally {
     state.batchSubmitting = false;
     await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth(), portal === "client" ? loadClientProfile() : Promise.resolve()]);

@@ -129,6 +129,8 @@ from .temp_access import (
 )
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_BATCH_ASSET_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+MAX_BATCH_ASSET_CHUNK_FILES = 16
 ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 IMAGE_MAGIC = {
     ".jpg": (b"\xff\xd8\xff",),
@@ -226,6 +228,7 @@ _RATE_BUCKETS: dict[str, list[float]] = {}
 _RATE_BUCKET_LIMIT = 10_000
 _BATCH_RECONCILE_AT = 0.0
 _BATCH_RECOVER_AT = 0.0
+_BATCH_ASSET_LOCK = threading.RLock()
 
 
 def _owner_create_semaphore(access: AccessContext) -> asyncio.Semaphore:
@@ -278,6 +281,200 @@ def _batch_job_assets_path(job_id: str) -> Path:
     if len(normalized) != 32 or any(character not in "0123456789abcdef" for character in normalized):
         raise ValueError("invalid batch job id")
     return app_config.DATA_DIR / "batch_job_assets" / normalized
+
+
+def _batch_asset_upload_path(upload_id: str) -> Path:
+    normalized = str(upload_id or "").strip().lower()
+    if len(normalized) != 32 or any(character not in "0123456789abcdef" for character in normalized):
+        raise ValueError("invalid batch asset upload id")
+    return app_config.DATA_DIR / "batch_asset_uploads" / normalized
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_suffix(f"{path.suffix}.{secrets.token_hex(4)}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _cleanup_batch_asset_uploads() -> None:
+    uploads_dir = app_config.DATA_DIR / "batch_asset_uploads"
+    if not uploads_dir.exists():
+        return
+    cutoff = time.time() - MAX_BATCH_REFERENCE_AGE_SECONDS
+    for path in uploads_dir.iterdir():
+        try:
+            if path.is_dir() and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path)
+        except OSError:
+            continue
+
+
+def _load_batch_asset_upload(upload_id: str) -> tuple[Path, dict[str, object]]:
+    try:
+        target_dir = _batch_asset_upload_path(upload_id)
+        metadata = json.loads((target_dir / "metadata.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="批量参考图上传已失效，请重新上传")
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("images"), list):
+        raise HTTPException(status_code=400, detail="批量参考图上传记录无效，请重新上传")
+    return target_dir, metadata
+
+
+def _save_batch_asset_chunk(
+    owner_token_hash: str,
+    batch_id: str,
+    upload_id: str,
+    entries: list[dict[str, object]],
+    uploads: list[UploadFile],
+) -> dict[str, object]:
+    if len(entries) != len(uploads) or not uploads:
+        raise HTTPException(status_code=400, detail="批量参考图分片不完整")
+    if len(uploads) > MAX_BATCH_ASSET_CHUNK_FILES:
+        raise HTTPException(status_code=400, detail="单次上传的参考图数量过多")
+    _cleanup_batch_asset_uploads()
+    normalized_upload_id = str(upload_id or "").strip().lower() or secrets.token_hex(16)
+    temporary_paths: list[Path] = []
+    with _BATCH_ASSET_LOCK:
+        created = False
+        if upload_id:
+            target_dir, metadata = _load_batch_asset_upload(normalized_upload_id)
+            if str(metadata.get("owner_token_hash") or "") != owner_token_hash or str(metadata.get("batch_id") or "") != batch_id:
+                raise HTTPException(status_code=403, detail="批量参考图上传记录不可用")
+        else:
+            target_dir = _batch_asset_upload_path(normalized_upload_id)
+            target_dir.mkdir(parents=True, exist_ok=False)
+            created = True
+            metadata = {
+                "id": normalized_upload_id,
+                "owner_token_hash": owner_token_hash,
+                "batch_id": batch_id,
+                "images": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        existing = {
+            (int(item.get("row_index") or 0), int(item.get("image_index") or 0)): dict(item)
+            for item in metadata.get("images", [])
+            if isinstance(item, dict)
+        }
+        prepared: list[tuple[tuple[int, int], Path, str, str]] = []
+        try:
+            seen: set[tuple[int, int]] = set()
+            for offset, (entry, upload) in enumerate(zip(entries, uploads, strict=True), start=1):
+                row_index = int(entry.get("row_index") or 0)
+                image_index = int(entry.get("image_index") or 0)
+                key = (row_index, image_index)
+                if row_index < 1 or row_index > 2000 or image_index < 1 or image_index > load_settings().max_image_count or key in seen:
+                    raise HTTPException(status_code=400, detail="批量参考图位置无效")
+                seen.add(key)
+                suffix = Path(upload.filename or "").suffix.lower()
+                if suffix not in IMAGE_MAGIC:
+                    raise HTTPException(status_code=400, detail="unsupported image type")
+                temporary = target_dir / f".{secrets.token_hex(8)}-{offset:02d}{suffix}"
+                temporary_paths.append(temporary)
+                _save_uploaded_image(upload, temporary)
+                filename = f"{row_index:06d}-{image_index:02d}{suffix}"
+                original_name = _reference_image_name(entry.get("name") or upload.filename, image_index, suffix)
+                prepared.append((key, temporary, filename, original_name))
+            replaced_keys = {item[0] for item in prepared}
+            retained_bytes = sum(
+                max(0, int(item.get("size") or 0))
+                for key, item in existing.items()
+                if key not in replaced_keys
+            )
+            total_bytes = retained_bytes + sum(path.stat().st_size for _, path, _, _ in prepared)
+            if total_bytes > MAX_BATCH_ASSET_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="批量参考图总大小超过 2 GB")
+            for key, temporary, filename, original_name in prepared:
+                previous = existing.get(key, {})
+                previous_name = str(previous.get("file") or "")
+                previous_path = target_dir / previous_name if previous_name else None
+                final_path = target_dir / filename
+                if previous_path is not None and previous_path != final_path:
+                    previous_path.unlink(missing_ok=True)
+                temporary.replace(final_path)
+                temporary_paths.remove(temporary)
+                existing[key] = {
+                    "row_index": key[0],
+                    "image_index": key[1],
+                    "file": filename,
+                    "original_name": original_name,
+                    "size": final_path.stat().st_size,
+                }
+            metadata["images"] = [existing[key] for key in sorted(existing)]
+            metadata["total_bytes"] = total_bytes
+            metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _write_json_atomic(target_dir / "metadata.json", metadata)
+            return {
+                "id": normalized_upload_id,
+                "uploaded_count": len(metadata["images"]),
+                "total_bytes": total_bytes,
+            }
+        except Exception:
+            for path in temporary_paths:
+                path.unlink(missing_ok=True)
+            if created:
+                shutil.rmtree(target_dir, ignore_errors=True)
+            raise
+
+
+def _consume_batch_asset_upload(
+    upload_id: str,
+    owner_token_hash: str,
+    batch_id: str,
+    rows: list[dict[str, object]],
+    target_dir: Path,
+) -> None:
+    with _BATCH_ASSET_LOCK:
+        source_dir, metadata = _load_batch_asset_upload(upload_id)
+        if str(metadata.get("owner_token_hash") or "") != owner_token_hash or str(metadata.get("batch_id") or "") != batch_id:
+            raise HTTPException(status_code=403, detail="批量参考图上传记录不可用")
+        records = {
+            (int(item.get("row_index") or 0), int(item.get("image_index") or 0)): dict(item)
+            for item in metadata.get("images", [])
+            if isinstance(item, dict)
+        }
+        expected = {
+            (row_index, image_index)
+            for row_index, row in enumerate(rows, start=1)
+            for image_index in range(1, int(row.get("image_count") or 0) + 1)
+        }
+        if set(records) != expected:
+            raise HTTPException(status_code=400, detail="批量任务参考图上传不完整，请重新提交")
+        for row_index, row in enumerate(rows, start=1):
+            row_records = [records[(row_index, image_index)] for image_index in range(1, int(row.get("image_count") or 0) + 1)]
+            paths = [source_dir / str(item.get("file") or "") for item in row_records]
+            if any(not path.is_file() for path in paths):
+                raise HTTPException(status_code=400, detail="批量任务参考图上传不完整，请重新提交")
+            row["image_files"] = [path.name for path in paths]
+            row["image_names"] = [str(item.get("original_name") or "") for item in row_records]
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        source_dir.replace(target_dir)
+
+
+def _restore_batch_asset_upload(upload_id: str, consumed_dir: Path) -> None:
+    with _BATCH_ASSET_LOCK:
+        target = _batch_asset_upload_path(upload_id)
+        if consumed_dir.exists() and not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            consumed_dir.replace(target)
+
+
+def _delete_batch_asset_uploads(owner_token_hash: str, batch_id: str) -> int:
+    uploads_dir = app_config.DATA_DIR / "batch_asset_uploads"
+    if not uploads_dir.exists():
+        return 0
+    removed = 0
+    with _BATCH_ASSET_LOCK:
+        for path in uploads_dir.iterdir():
+            try:
+                metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if str(metadata.get("owner_token_hash") or "") != owner_token_hash or str(metadata.get("batch_id") or "") != batch_id:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+    return removed
 
 
 def _cleanup_batch_references() -> None:
@@ -518,6 +715,7 @@ async def task_cache_cleanup_loop() -> None:
                     except ValueError:
                         pass
             await asyncio.to_thread(_cleanup_batch_references)
+            await asyncio.to_thread(_cleanup_batch_asset_uploads)
             await asyncio.to_thread(prune_admin_actions, 90, 10_000)
             await asyncio.to_thread(archive_old_transactions, 365, 5000)
         except asyncio.CancelledError:
@@ -3587,6 +3785,43 @@ async def delete_batch_references(reference_id: str, access: Annotated[AccessCon
     return {"ok": True, "deleted": deleted}
 
 
+@app.post("/batch-prompts/job-assets", dependencies=[Depends(require_temp)])
+async def upload_batch_job_assets(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_temp)],
+    batch_id: Annotated[str, Form()],
+    manifest: Annotated[str, Form()],
+    upload_id: Annotated[str, Form()] = "",
+    images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
+):
+    normalized_batch_id = str(batch_id or "").strip()[:100]
+    if not normalized_batch_id:
+        raise HTTPException(status_code=400, detail="批次 ID 不能为空")
+    _ensure_batch_active(access, normalized_batch_id)
+    try:
+        entries = json.loads(str(manifest or ""))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="批量参考图分片参数无效") from exc
+    if not isinstance(entries, list) or not all(isinstance(item, dict) for item in entries):
+        raise HTTPException(status_code=400, detail="批量参考图分片参数无效")
+    uploads = [item for item in (images or []) if item and item.filename]
+    await _rate_limit(request, "batch-job-asset-upload", 240, 60, access.token_hash)
+    result = await asyncio.to_thread(
+        _save_batch_asset_chunk,
+        access.token_hash,
+        normalized_batch_id,
+        str(upload_id or ""),
+        entries,
+        uploads,
+    )
+    return {
+        "ok": True,
+        "upload_id": result["id"],
+        "uploaded_count": result["uploaded_count"],
+        "total_bytes": result["total_bytes"],
+    }
+
+
 @app.post("/batch-prompts/jobs", dependencies=[Depends(require_temp)])
 async def create_persistent_batch_job(
     request: Request,
@@ -3612,6 +3847,7 @@ async def create_persistent_batch_job(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="生成并发无效") from exc
     reference_id = str(payload.get("reference_id") or "").strip()
+    asset_upload_id = str(payload.get("asset_upload_id") or "").strip().lower()
     reference_count = max(0, min(load_settings().max_image_count, int(payload.get("reference_count") or 0)))
     reference_batch_id = str(payload.get("reference_batch_id") or "").strip()[:100]
     _ensure_batch_active(access, reference_batch_id)
@@ -3643,30 +3879,44 @@ async def create_persistent_batch_job(
             "image_names": [],
         })
     uploads = [item for item in (images or []) if item and item.filename]
-    if len(uploads) != expected_images:
+    if asset_upload_id and uploads:
+        raise HTTPException(status_code=400, detail="批量参考图不能同时使用分片和直接上传")
+    if not asset_upload_id and len(uploads) != expected_images:
         raise HTTPException(status_code=400, detail="批量任务参考图上传不完整，请重新提交")
 
     job_id = secrets.token_hex(16)
     assets_root = _batch_job_assets_path(job_id)
-    assets_root.mkdir(parents=True, exist_ok=False)
+    assets_consumed = False
     upload_cursor = 0
     try:
-        for row_index, row in enumerate(normalized_rows, start=1):
-            _ensure_batch_active(access, reference_batch_id)
-            saved_names: list[str] = []
-            original_names: list[str] = []
-            for image_index in range(int(row["image_count"])):
-                upload = uploads[upload_cursor]
-                upload_cursor += 1
-                suffix = Path(upload.filename or "").suffix.lower()
-                if suffix not in IMAGE_MAGIC:
-                    raise HTTPException(status_code=400, detail="unsupported image type")
-                filename = f"{row_index:06d}-{image_index + 1:02d}{suffix}"
-                await asyncio.to_thread(_save_uploaded_image, upload, assets_root / filename)
-                saved_names.append(filename)
-                original_names.append(_reference_image_name(upload.filename, image_index + 1, suffix))
-            row["image_files"] = saved_names
-            row["image_names"] = original_names
+        if asset_upload_id:
+            await asyncio.to_thread(
+                _consume_batch_asset_upload,
+                asset_upload_id,
+                access.token_hash,
+                reference_batch_id,
+                normalized_rows,
+                assets_root,
+            )
+            assets_consumed = True
+        else:
+            assets_root.mkdir(parents=True, exist_ok=False)
+            for row_index, row in enumerate(normalized_rows, start=1):
+                _ensure_batch_active(access, reference_batch_id)
+                saved_names: list[str] = []
+                original_names: list[str] = []
+                for image_index in range(int(row["image_count"])):
+                    upload = uploads[upload_cursor]
+                    upload_cursor += 1
+                    suffix = Path(upload.filename or "").suffix.lower()
+                    if suffix not in IMAGE_MAGIC:
+                        raise HTTPException(status_code=400, detail="unsupported image type")
+                    filename = f"{row_index:06d}-{image_index + 1:02d}{suffix}"
+                    await asyncio.to_thread(_save_uploaded_image, upload, assets_root / filename)
+                    saved_names.append(filename)
+                    original_names.append(_reference_image_name(upload.filename, image_index + 1, suffix))
+                row["image_files"] = saved_names
+                row["image_names"] = original_names
         _ensure_batch_active(access, reference_batch_id)
         job = await _storage_call(
             create_batch_job,
@@ -3682,7 +3932,10 @@ async def create_persistent_batch_job(
         if reference_batch_id and _batch_is_canceled(access, reference_batch_id):
             job = await asyncio.to_thread(cancel_persistent_batch_job, job_id, access.token_hash)
     except Exception:
-        shutil.rmtree(assets_root, ignore_errors=True)
+        if assets_consumed:
+            await asyncio.to_thread(_restore_batch_asset_upload, asset_upload_id, assets_root)
+        else:
+            shutil.rmtree(assets_root, ignore_errors=True)
         raise
     return JSONResponse(status_code=201, content={"job": public_batch_job(job)})
 
@@ -3741,6 +3994,8 @@ async def cancel_batch_prompt_submission(
             canceled = await asyncio.to_thread(cancel_persistent_batch_job, normalized, access.token_hash)
             return {"ok": True, "batch_id": normalized, "job": public_batch_job(canceled)}
     _set_batch_canceled(access, normalized)
+    if access.is_temp:
+        await asyncio.to_thread(_delete_batch_asset_uploads, access.token_hash, normalized)
     return {"ok": True, "batch_id": normalized}
 
 

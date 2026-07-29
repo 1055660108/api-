@@ -488,6 +488,89 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(canceled.json()["job"]["counts"]["canceled"], 3)
         self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
 
+    def test_one_hundred_row_images_are_uploaded_in_chunks_before_job_creation(self) -> None:
+        registered = self.register("chunked_batch_images")
+        owner_hash = temp_access.hash_token(registered["token"])
+        headers = {"X-API-Token": registered["token"]}
+        batch_id = "chunked-images-100"
+        upload_id = ""
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            for start in range(0, 100, 16):
+                entries = [
+                    {"row_index": index + 1, "image_index": 1, "name": f"reference-{index + 1:03d}.png"}
+                    for index in range(start, min(100, start + 16))
+                ]
+                files = [
+                    ("images", (entry["name"], b"\x89PNG\r\n\x1a\n" + entry["name"].encode(), "image/png"))
+                    for entry in entries
+                ]
+                response = self.client.post(
+                    "/batch-prompts/job-assets",
+                    headers=headers,
+                    data={"batch_id": batch_id, "upload_id": upload_id, "manifest": json.dumps(entries)},
+                    files=files,
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                upload_id = response.json()["upload_id"]
+            self.assertEqual(response.json()["uploaded_count"], 100)
+            manifest = {
+                "ratio": "9:16",
+                "concurrency": 20,
+                "reference_batch_id": batch_id,
+                "asset_upload_id": upload_id,
+                "rows": [
+                    {"client_index": index, "sheet_row": index + 2, "prompt": f"分片参考图任务 {index + 1}", "image_count": 1}
+                    for index in range(100)
+                ],
+            }
+            created = self.client.post(
+                "/batch-prompts/jobs",
+                headers=headers,
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)},
+            )
+        self.assertEqual(created.status_code, 201, created.text)
+        job = created.json()["job"]
+        self.assertEqual(job["counts"]["queued"], 100)
+        self.assertFalse(main._batch_asset_upload_path(upload_id).exists())
+        asset_files = list(main._batch_job_assets_path(job["id"]).glob("*.png"))
+        self.assertEqual(len(asset_files), 100)
+        persisted = batch_jobs.get_job(job["id"], owner_hash)
+        self.assertEqual(persisted["rows"][0]["image_names"], ["reference-001.png"])
+        self.assertEqual(persisted["rows"][-1]["image_names"], ["reference-100.png"])
+
+    def test_chunked_batch_job_rejects_missing_row_image(self) -> None:
+        registered = self.register("chunked_batch_missing")
+        headers = {"X-API-Token": registered["token"]}
+        batch_id = "chunked-images-missing"
+        uploaded = self.client.post(
+            "/batch-prompts/job-assets",
+            headers=headers,
+            data={
+                "batch_id": batch_id,
+                "manifest": json.dumps([{"row_index": 1, "image_index": 1, "name": "first.png"}]),
+            },
+            files=[("images", ("first.png", b"\x89PNG\r\n\x1a\nfirst", "image/png"))],
+        )
+        self.assertEqual(uploaded.status_code, 200, uploaded.text)
+        upload_id = uploaded.json()["upload_id"]
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 2,
+            "reference_batch_id": batch_id,
+            "asset_upload_id": upload_id,
+            "rows": [
+                {"client_index": 0, "sheet_row": 2, "prompt": "第一行", "image_count": 1},
+                {"client_index": 1, "sheet_row": 3, "prompt": "第二行", "image_count": 1},
+            ],
+        }
+        created = self.client.post(
+            "/batch-prompts/jobs",
+            headers=headers,
+            data={"manifest": json.dumps(manifest, ensure_ascii=False)},
+        )
+        self.assertEqual(created.status_code, 400, created.text)
+        self.assertTrue(main._batch_asset_upload_path(upload_id).exists())
+
     def test_persistent_batch_claim_creates_and_charges_only_one_row(self) -> None:
         registered = self.register("persistent_batch_claim")
         owner_hash = temp_access.hash_token(registered["token"])

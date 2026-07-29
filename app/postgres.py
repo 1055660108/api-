@@ -959,9 +959,18 @@ def query_task_page(
     scope_conditions, scope_params = _task_scope_conditions(owner_token_hash, audience)
     conditions = list(scope_conditions)
     params = list(scope_params)
-    if status and status != "all":
-        conditions.append("LOWER(COALESCE(meta->>'status', '')) = %s")
-        params.append(status.lower())
+    selected_status = str(status or "").strip().lower()
+    status_groups = {
+        "generating": ["pending", "running", "submitted"],
+        "running": ["running", "submitted"],
+        "failed": ["failed"],
+        "canceled": ["canceled"],
+        "success": ["success"],
+        "pending": ["pending"],
+    }
+    if selected_status and selected_status != "all":
+        conditions.append("LOWER(COALESCE(meta->>'status', '')) = ANY(%s)")
+        params.append(status_groups.get(selected_status, [selected_status]))
     if platform and platform != "all":
         conditions.append("LOWER(COALESCE(meta->>'platform', '')) = %s")
         params.append(platform.lower())

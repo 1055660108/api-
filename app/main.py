@@ -23,7 +23,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 import httpx
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import config as app_config
 from .account_access import generate_key as generate_account_access_key, revoke_key as revoke_account_access_key, set_enabled as set_account_access_enabled, status as account_access_status, verify_key as verify_account_access_key
@@ -1360,6 +1360,14 @@ class OpenAIChatRequest(BaseModel):
     n: int = 1
     ratio: str = DEFAULT_RATIO
     task_type: str = "video"
+
+
+class BulkTaskRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_ids: list[str] = Field(default_factory=list)
+    retry_all: bool = False
+    q: str = ""
+    platform: str = ""
 
 
 async def require_temp(access: Annotated[AccessContext, Depends(require_token)]) -> AccessContext:
@@ -4625,28 +4633,17 @@ async def task_reference_image(
     )
 
 
-@app.post("/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
-async def retry_completed_task(request: Request, access: Annotated[AccessContext, Depends(require_token)], task_id: str):
-    try:
-        validate_task_id(task_id)
-        original = await asyncio.to_thread(get_meta, task_id)
-    except (ValueError, FileNotFoundError):
-        raise HTTPException(status_code=404, detail="task not found")
-    owner_hash = str(original.get("owner_token_hash") or "")
-    if access.is_temp and owner_hash != access.token_hash:
-        raise HTTPException(status_code=404, detail="task not found")
-    audience = "client" if access.is_temp else "admin"
-    if bool(original.get(f"task_hidden_for_{audience}", False)):
-        raise HTTPException(status_code=404, detail="task not found")
-    if str(original.get("status") or "") not in {"success", "failed"}:
-        raise HTTPException(status_code=409, detail="仅成功或失败任务可以重新生成")
-    await _rate_limit(request, "task-retry", 30, 60, owner_hash or "admin")
-
-    retry_access = access
+async def _retry_access_for_owner(owner_hash: str, fallback: AccessContext) -> AccessContext:
     if owner_hash:
-        retry_access = await asyncio.to_thread(get_temp_context_by_hash, owner_hash)
-        if retry_access is None:
+        owner_access = await asyncio.to_thread(get_temp_context_by_hash, owner_hash)
+        if owner_access is None:
             raise HTTPException(status_code=409, detail="任务所属用户已失效")
+        return owner_access
+    return fallback
+
+
+async def _create_manual_retry_task(task_id: str, original: dict, retry_access: AccessContext) -> dict:
+    owner_hash = str(original.get("owner_token_hash") or "")
     platform = str(original.get("platform") or DEFAULT_PLATFORM)
     model = str(original.get("model") or "")
     task_type = str(original.get("task_type") or "video")
@@ -4732,6 +4729,98 @@ async def retry_completed_task(request: Request, access: Annotated[AccessContext
             "points_used": units_to_points(int(reservation.get("units") or 0)),
         } if retry_access.is_temp else None,
     }
+
+
+@app.post("/tasks/bulk-retry", dependencies=[Depends(require_admin)])
+async def bulk_retry_failed_tasks(
+    request: Request,
+    payload: BulkTaskRetryRequest,
+    access: Annotated[AccessContext, Depends(require_admin)],
+):
+    await _rate_limit(request, "task-bulk-retry", 5, 60, "admin")
+    limit = 1000
+    matched_total = 0
+    truncated = False
+    if payload.retry_all:
+        result = await asyncio.to_thread(
+            lambda: list_tasks_page(
+                owner_token_hash=None,
+                owner_remarks=temp_token_remarks(),
+                audience="admin",
+                page=1,
+                page_size=limit,
+                keyword=str(payload.q or "").strip()[:200],
+                status="failed",
+                platform=str(payload.platform or "").strip().lower(),
+            )
+        )
+        task_ids = [str(item.get("id") or "") for item in result["items"]]
+        matched_total = int(result["total"])
+        truncated = matched_total > len(task_ids)
+        if truncated:
+            raise HTTPException(status_code=409, detail=f"筛选结果超过 {limit} 个，请增加搜索条件后分组重试")
+    else:
+        task_ids = list(dict.fromkeys(str(task_id or "").strip() for task_id in payload.task_ids))
+        task_ids = [task_id for task_id in task_ids if task_id]
+        matched_total = len(task_ids)
+        if not task_ids:
+            raise HTTPException(status_code=400, detail="请选择要重试的失败任务")
+        if len(task_ids) > limit:
+            raise HTTPException(status_code=400, detail=f"单次最多重试 {limit} 个任务")
+
+    created: list[dict] = []
+    skipped: list[dict] = []
+    failed: list[dict] = []
+    for task_id in task_ids:
+        try:
+            validate_task_id(task_id)
+            original = await asyncio.to_thread(get_meta, task_id)
+            if bool(original.get("task_hidden_for_admin", False)):
+                raise HTTPException(status_code=404, detail="task not found")
+            if str(original.get("status") or "") != "failed":
+                skipped.append({"id": task_id, "reason": "仅失败任务可以批量重试"})
+                continue
+            retry_access = await _retry_access_for_owner(str(original.get("owner_token_hash") or ""), access)
+            retry_result = await _create_manual_retry_task(task_id, original, retry_access)
+            created.append({"id": task_id, "retry_id": retry_result["id"]})
+        except (ValueError, FileNotFoundError):
+            failed.append({"id": task_id, "reason": "任务不存在"})
+        except HTTPException as exc:
+            failed.append({"id": task_id, "reason": str(exc.detail)})
+        except Exception as exc:
+            logger.exception("bulk retry failed for task %s", task_id)
+            failed.append({"id": task_id, "reason": f"{type(exc).__name__}: {exc}"})
+
+    return {
+        "ok": not failed,
+        "requested": len(task_ids),
+        "matched_total": matched_total,
+        "truncated": truncated,
+        "created": len(created),
+        "skipped": len(skipped),
+        "failed": len(failed),
+        "results": {"created": created, "skipped": skipped, "failed": failed},
+    }
+
+
+@app.post("/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
+async def retry_completed_task(request: Request, access: Annotated[AccessContext, Depends(require_token)], task_id: str):
+    try:
+        validate_task_id(task_id)
+        original = await asyncio.to_thread(get_meta, task_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="task not found")
+    owner_hash = str(original.get("owner_token_hash") or "")
+    if access.is_temp and owner_hash != access.token_hash:
+        raise HTTPException(status_code=404, detail="task not found")
+    audience = "client" if access.is_temp else "admin"
+    if bool(original.get(f"task_hidden_for_{audience}", False)):
+        raise HTTPException(status_code=404, detail="task not found")
+    if str(original.get("status") or "") not in {"success", "failed"}:
+        raise HTTPException(status_code=409, detail="仅成功或失败任务可以重新生成")
+    await _rate_limit(request, "task-retry", 30, 60, owner_hash or "admin")
+    retry_access = await _retry_access_for_owner(owner_hash, access)
+    return await _create_manual_retry_task(task_id, original, retry_access)
 
 
 @app.post("/tasks/{task_id}/video-visibility", dependencies=[Depends(require_token)])

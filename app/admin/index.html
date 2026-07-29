@@ -6,11 +6,11 @@
     <title>HS</title>
     <style id="criticalPortalStyles">
       .hidden,.view:not(.active){display:none!important}
-      body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
+      body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] .admin-task-bulk,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.85" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.86" />
   </head>
   <body>
     <script>
@@ -492,9 +492,19 @@
                   <strong id="taskTodayDoneCount">0</strong>
                 </div>
               </div>
-              <label class="field search-field">
-                <input id="taskSearch" type="search" aria-label="搜索任务" placeholder="任务 ID、状态、文本" />
-              </label>
+              <div class="task-filter-row">
+                <label class="field search-field">
+                  <input id="taskSearch" type="search" aria-label="搜索任务" placeholder="任务 ID、状态、文本" />
+                </label>
+                <select id="taskStatusFilter" aria-label="筛选任务状态">
+                  <option value="all">全部状态</option>
+                  <option value="generating">生成中</option>
+                  <option value="pending">排队中</option>
+                  <option value="success">成功</option>
+                  <option value="failed">失败</option>
+                  <option value="canceled">已取消</option>
+                </select>
+              </div>
               <div class="task-table-actions">
                 <div class="pager">
                   <span class="current-page-count">本页 <strong id="currentPageTaskCount">0</strong> 条</span>
@@ -510,6 +520,8 @@
                   <span id="pageState">第 1 / 1 页</span>
                 </div>
                 <div class="toolbar-actions">
+                  <button class="secondary-button admin-task-bulk" id="retrySelectedTasks" type="button" disabled>重试所选</button>
+                  <button class="secondary-button admin-task-bulk" id="retryAllFilteredTasks" type="button" disabled>重试全部筛选失败项</button>
                   <button class="secondary-button" id="refreshTasks" type="button">刷新列表</button>
                   <button class="secondary-button" id="queryVisibleTasks" type="button">查询本页</button>
                   <button class="danger-button" id="deleteFailedTasks" type="button">删除失败/取消任务</button>
@@ -521,6 +533,7 @@
             <div class="table-wrap">
               <table class="task-table">
                 <colgroup>
+                  <col class="task-select-col admin-task-bulk" />
                   <col class="task-col" />
                   <col class="owner-col" />
                   <col class="status-col" />
@@ -530,6 +543,7 @@
                 </colgroup>
                 <thead>
                   <tr>
+                    <th class="admin-task-bulk task-select-cell"><label class="table-checkbox" title="选择本页失败任务"><input id="selectVisibleFailedTasks" type="checkbox" aria-label="选择本页失败任务" /></label></th>
                     <th>任务</th>
                     <th>用户</th>
                     <th>状态</th>
@@ -1307,6 +1321,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.85"></script>
+    <script src="/admin/assets/app.js?v=1.4.86"></script>
   </body>
 </html>

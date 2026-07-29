@@ -221,6 +221,20 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('const requestId = ++state.accountRefreshRequestId', self.javascript)
         self.assertNotIn('const filteredAccounts = state.accounts.filter', self.javascript)
 
+    def test_admin_task_status_filter_and_bulk_retry_controls_are_bound(self) -> None:
+        self.assertIn('id="taskStatusFilter"', self.html)
+        self.assertIn('<option value="generating">生成中</option>', self.html)
+        self.assertIn('<option value="failed">失败</option>', self.html)
+        self.assertIn('id="selectVisibleFailedTasks"', self.html)
+        self.assertIn('id="retrySelectedTasks"', self.html)
+        self.assertIn('id="retryAllFilteredTasks"', self.html)
+        self.assertIn('params.set("status", state.taskStatusFilter)', self.javascript)
+        self.assertIn('apiFetch("/tasks/bulk-retry"', self.javascript)
+        self.assertIn('{ retry_all: true, q: els.taskSearch.value.trim(), platform: "" }', self.javascript)
+        self.assertIn('els.retrySelectedTasks?.addEventListener("click"', self.javascript)
+        self.assertIn('els.retryAllFilteredTasks?.addEventListener("click"', self.javascript)
+        self.assertIn('input[data-task-select]', self.javascript)
+
     def test_expired_sessions_stop_polling_and_account_refreshes_are_coalesced(self) -> None:
         self.assertIn('function stopAutoRefresh()', self.javascript)
         self.assertIn('function showLogin(message = "等待输入") {\n  stopAutoRefresh();', self.javascript)

@@ -321,6 +321,10 @@ const els = {
   clearTasks: document.getElementById("clearTasks"),
   deleteFailedTasks: document.getElementById("deleteFailedTasks"),
   taskSearch: document.getElementById("taskSearch"),
+  taskStatusFilter: document.getElementById("taskStatusFilter"),
+  selectVisibleFailedTasks: document.getElementById("selectVisibleFailedTasks"),
+  retrySelectedTasks: document.getElementById("retrySelectedTasks"),
+  retryAllFilteredTasks: document.getElementById("retryAllFilteredTasks"),
   prevPage: document.getElementById("prevPage"),
   nextPage: document.getElementById("nextPage"),
   pageState: document.getElementById("pageState"),
@@ -593,6 +597,9 @@ const state = {
   activeIds: [],
   page: 1,
   pageSize: 50,
+  taskStatusFilter: "all",
+  selectedTaskIds: new Set(),
+  bulkRetryRunning: false,
   quotaPage: 1,
   quotaPageSize: 50,
   userPage: 1,
@@ -3789,10 +3796,14 @@ async function refreshTasks(options = {}) {
     const params = new URLSearchParams({ page: String(state.page), page_size: String(state.pageSize) });
     const keyword = els.taskSearch.value.trim();
     if (keyword) params.set("q", keyword);
+    if (state.taskStatusFilter && state.taskStatusFilter !== "all") params.set("status", state.taskStatusFilter);
     const data = await apiFetch(`/tasks?${params}`);
     if (requestId !== state.taskRefreshRequestId) return;
     const tasks = Array.isArray(data.tasks) ? data.tasks : [];
     state.tasks = tasks;
+    tasks.forEach((task) => {
+      if (String(task.status || "").toLowerCase() !== "failed") state.selectedTaskIds.delete(task.id);
+    });
     state.taskTotal = Number(data.total || 0);
     state.taskTotalPages = Math.max(1, Number(data.total_pages || 1));
     state.page = Math.max(1, Number(data.page || state.page));
@@ -3880,11 +3891,38 @@ function pageTasks() {
   };
 }
 
+function failedTaskIdsOnPage() {
+  return state.tasks
+    .filter((task) => String(task.status || "").toLowerCase() === "failed")
+    .map((task) => task.id);
+}
+
+function updateTaskBulkControls() {
+  const visibleFailedIds = failedTaskIdsOnPage();
+  const selectedVisible = visibleFailedIds.filter((id) => state.selectedTaskIds.has(id)).length;
+  if (els.selectVisibleFailedTasks) {
+    els.selectVisibleFailedTasks.disabled = state.bulkRetryRunning || visibleFailedIds.length === 0;
+    els.selectVisibleFailedTasks.checked = visibleFailedIds.length > 0 && selectedVisible === visibleFailedIds.length;
+    els.selectVisibleFailedTasks.indeterminate = selectedVisible > 0 && selectedVisible < visibleFailedIds.length;
+  }
+  if (els.retrySelectedTasks) {
+    els.retrySelectedTasks.disabled = state.bulkRetryRunning || state.selectedTaskIds.size === 0;
+    els.retrySelectedTasks.textContent = state.bulkRetryRunning ? "重试处理中" : `重试所选${state.selectedTaskIds.size ? ` (${state.selectedTaskIds.size})` : ""}`;
+  }
+  if (els.retryAllFilteredTasks) {
+    const canRetryAll = state.taskStatusFilter === "failed" && state.taskTotal > 0;
+    els.retryAllFilteredTasks.disabled = state.bulkRetryRunning || !canRetryAll;
+    els.retryAllFilteredTasks.textContent = state.bulkRetryRunning ? "重试处理中" : `重试全部筛选失败项${canRetryAll ? ` (${state.taskTotal})` : ""}`;
+  }
+}
+
 function renderTaskTable(options = {}) {
   const page = pageTasks();
   const signature = JSON.stringify({
     page: state.page,
     totalPages: page.totalPages,
+    selectedTaskIds: Array.from(state.selectedTaskIds).sort(),
+    bulkRetryRunning: state.bulkRetryRunning,
     tasks: page.tasks.map((task) => [task.id, task.prompt_preview, task.reference_image_names, task.owner_name, task.status, task.error, task.status_reason, task.execution_phase, task.phase_updated_at, task.queue_reason, task.queue_category, task.retry_count, task.infrastructure_retry_count, task.result_timeout_retry_count, task.attempt_history, task.model, task.platform, task.created_at, task.updated_at, getTaskStatus(task), state.queryingTaskIds.has(task.id), state.retryingTaskIds.has(task.id), state.deletingTaskIds.has(task.id)]),
   });
   if (options.skipUnchanged && signature === state.taskRenderSignature) return;
@@ -3893,9 +3931,10 @@ function renderTaskTable(options = {}) {
   els.pageState.textContent = `第 ${state.page} / ${page.totalPages} 页`;
   els.prevPage.disabled = state.page <= 1;
   els.nextPage.disabled = state.page >= page.totalPages;
+  updateTaskBulkControls();
 
   if (!page.tasks.length) {
-    els.taskTableBody.innerHTML = `<tr><td colspan="6"><div class="empty-state">暂无任务</div></td></tr>`;
+    els.taskTableBody.innerHTML = `<tr><td colspan="7"><div class="empty-state">暂无任务</div></td></tr>`;
     return;
   }
 
@@ -3926,8 +3965,10 @@ function renderTaskTable(options = {}) {
     const isRetrying = state.retryingTaskIds.has(task.id);
     const isDeleting = state.deletingTaskIds.has(task.id);
     const canRetry = ["success", "failed"].includes(String(task.status || "").toLowerCase());
+    const canBulkRetry = String(task.status || "").toLowerCase() === "failed";
     return `
       <tr>
+        <td class="admin-task-bulk task-select-cell">${canBulkRetry ? `<input type="checkbox" data-task-select="${escapeHtml(task.id)}" aria-label="选择失败任务 ${escapeHtml(shortId(task.id))}" ${state.selectedTaskIds.has(task.id) ? "checked" : ""} ${state.bulkRetryRunning ? "disabled" : ""} />` : "-"}</td>
         <td>
           <div class="task-id">
             <div class="task-prompt-row">
@@ -4412,6 +4453,7 @@ async function retryTask(id) {
   renderTaskTable();
   try {
     const data = await apiFetch(`/tasks/${encodeURIComponent(id)}/retry`, { method: "POST", timeout: 60000 });
+    state.selectedTaskIds.delete(id);
     state.page = 1;
     await refreshTasks({ quiet: true });
     toast(`已创建重试任务 ${shortId(data.id)}`);
@@ -4419,6 +4461,44 @@ async function retryTask(id) {
     toast(`重试失败：${error.message}`, "error");
   } finally {
     state.retryingTaskIds.delete(id);
+    renderTaskTable();
+  }
+}
+
+async function bulkRetryTasks({ retryAll = false } = {}) {
+  if (state.bulkRetryRunning || portal !== "admin") return;
+  const taskIds = Array.from(state.selectedTaskIds);
+  if (!retryAll && !taskIds.length) {
+    toast("请先选择失败任务", "error");
+    return;
+  }
+  if (retryAll && state.taskStatusFilter !== "failed") {
+    toast("请先将状态筛选为失败", "error");
+    return;
+  }
+  const amount = retryAll ? state.taskTotal : taskIds.length;
+  const scopeText = retryAll ? `当前筛选结果中的 ${amount} 个失败任务` : `所选 ${amount} 个失败任务`;
+  if (!window.confirm(`确认重试${scopeText}？系统会逐个创建新任务，并重新扣除各用户对应的视频额度或积分。`)) return;
+
+  state.bulkRetryRunning = true;
+  renderTaskTable();
+  try {
+    const body = retryAll
+      ? { retry_all: true, q: els.taskSearch.value.trim(), platform: "" }
+      : { task_ids: taskIds };
+    const data = await apiFetch("/tasks/bulk-retry", { method: "POST", body, timeout: 600000 });
+    const createdItems = Array.isArray(data.results?.created) ? data.results.created : [];
+    createdItems.forEach((item) => state.selectedTaskIds.delete(item.id));
+    state.page = 1;
+    await refreshTasks({ quiet: true });
+    const summary = `批量重试完成：已创建 ${Number(data.created || 0)}，跳过 ${Number(data.skipped || 0)}，失败 ${Number(data.failed || 0)}`;
+    const firstFailure = data.results?.failed?.[0]?.reason;
+    const limitHint = data.truncated ? "；匹配任务超过单次上限，请再次执行剩余任务" : "";
+    toast(`${summary}${firstFailure ? `；首个失败原因：${firstFailure}` : ""}${limitHint}`, Number(data.failed || 0) || data.truncated ? "error" : "info");
+  } catch (error) {
+    toast(`批量重试失败：${error.message}`, "error");
+  } finally {
+    state.bulkRetryRunning = false;
     renderTaskTable();
   }
 }
@@ -7067,9 +7147,25 @@ function bindEvents() {
 
   els.taskSearch.addEventListener("input", () => {
     state.page = 1;
+    state.selectedTaskIds.clear();
     window.clearTimeout(state.taskSearchTimer);
     state.taskSearchTimer = window.setTimeout(() => refreshTasks({ quiet: true, keepPage: true }), 250);
   });
+  els.taskStatusFilter?.addEventListener("change", () => {
+    state.taskStatusFilter = els.taskStatusFilter.value || "all";
+    state.selectedTaskIds.clear();
+    state.page = 1;
+    refreshTasks({ quiet: true, keepPage: true });
+  });
+  els.selectVisibleFailedTasks?.addEventListener("change", () => {
+    failedTaskIdsOnPage().forEach((id) => {
+      if (els.selectVisibleFailedTasks.checked) state.selectedTaskIds.add(id);
+      else state.selectedTaskIds.delete(id);
+    });
+    renderTaskTable();
+  });
+  els.retrySelectedTasks?.addEventListener("click", () => bulkRetryTasks());
+  els.retryAllFilteredTasks?.addEventListener("click", () => bulkRetryTasks({ retryAll: true }));
   els.prevPage.addEventListener("click", () => {
     state.page = Math.max(1, state.page - 1);
     refreshTasks({ quiet: true, keepPage: true });
@@ -7186,6 +7282,14 @@ function bindEvents() {
     }).map((task) => task.id);
     ids.forEach((id) => els.selectAllVideos.checked ? state.selectedVideoIds.add(id) : state.selectedVideoIds.delete(id));
     renderVideoLibrary();
+  });
+  els.taskTableBody.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("input[data-task-select]");
+    if (!checkbox) return;
+    if (checkbox.checked) state.selectedTaskIds.add(checkbox.dataset.taskSelect);
+    else state.selectedTaskIds.delete(checkbox.dataset.taskSelect);
+    state.taskRenderSignature = "";
+    updateTaskBulkControls();
   });
   els.downloadSelectedVideos?.addEventListener("click", downloadSelectedVideos);
   els.deleteSelectedVideos?.addEventListener("click", () => deleteVideoTasks(Array.from(state.selectedVideoIds)));

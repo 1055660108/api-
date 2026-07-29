@@ -266,6 +266,58 @@ class MemoryPostgres:
         self.documents.clear()
 
 
+class PostgresTaskFilterQueryTests(unittest.TestCase):
+    def test_generating_filter_uses_all_active_statuses_for_count_and_page(self) -> None:
+        class Result:
+            def __init__(self, *, one=None, all_rows=None):
+                self.one = one
+                self.all_rows = all_rows or []
+
+            def fetchone(self):
+                return self.one
+
+            def fetchall(self):
+                return self.all_rows
+
+        class Connection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, query, params):
+                self.calls.append((query, params))
+                if "SELECT id, meta" in query:
+                    return Result(all_rows=[])
+                if "FILTER" in query:
+                    return Result(one=(0, 0, 0, 0, 0, 0))
+                return Result(one=(3,))
+
+        class ConnectionContext:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __enter__(self):
+                return self.connection
+
+            def __exit__(self, *_args):
+                return False
+
+        connection = Connection()
+        with patch.object(postgres, "connection", return_value=ConnectionContext(connection)):
+            result = postgres.query_task_page(
+                owner_token_hash=None,
+                audience="admin",
+                page=1,
+                page_size=2,
+                status="generating",
+            )
+
+        expected_statuses = ["pending", "running", "submitted"]
+        self.assertEqual(result["total"], 3)
+        self.assertIn("= ANY(%s)", connection.calls[0][0])
+        self.assertEqual(connection.calls[0][1], (expected_statuses,))
+        self.assertEqual(connection.calls[1][1][0], expected_statuses)
+
+
 class PostgresStorageCompatibilityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()

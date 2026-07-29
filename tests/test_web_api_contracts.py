@@ -988,6 +988,106 @@ class WebAPIContractTests(unittest.TestCase):
         active = store.create_task("active task", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
         self.assertEqual(self.client.post(f"/tasks/{active['id']}/retry", headers=headers).status_code, 409)
 
+    def test_task_status_filter_groups_generating_states_across_pages(self) -> None:
+        pending = store.create_task("筛选 pending", "9:16", model="Seedance 2.0")
+        running = store.create_task("筛选 running", "9:16", model="Seedance 2.0")
+        submitted = store.create_task("筛选 submitted", "9:16", model="Seedance 2.0")
+        success = store.create_task("筛选 success", "9:16", model="Seedance 2.0")
+        failed = store.create_task("筛选 failed", "9:16", model="Seedance 2.0")
+        canceled = store.create_task("筛选 canceled", "9:16", model="Seedance 2.0")
+        self.assertTrue(store.mark_running(running["id"], "worker-running"))
+        self.assertTrue(store.mark_running(submitted["id"], "worker-submitted"))
+        store.mark_submitted(submitted["id"])
+        store.update_meta(success["id"], status=store.STATUS_SUCCESS, finished_at=store.utc_now())
+        store.mark_failed(failed["id"], "测试失败")
+        store.update_meta(canceled["id"], status=store.STATUS_CANCELED, finished_at=store.utc_now())
+
+        first_page = self.client.get(
+            "/tasks?page=1&page_size=2&status=generating",
+            headers={"X-API-Token": self.admin_token},
+        )
+        second_page = self.client.get(
+            "/tasks?page=2&page_size=2&status=generating",
+            headers={"X-API-Token": self.admin_token},
+        )
+        self.assertEqual(first_page.status_code, 200)
+        self.assertEqual((first_page.json()["total"], first_page.json()["total_pages"]), (3, 2))
+        generating_ids = {item["id"] for item in first_page.json()["tasks"] + second_page.json()["tasks"]}
+        self.assertEqual(generating_ids, {pending["id"], running["id"], submitted["id"]})
+
+        failed_page = self.client.get(
+            "/tasks?page=1&page_size=20&status=failed",
+            headers={"X-API-Token": self.admin_token},
+        ).json()
+        self.assertEqual([item["id"] for item in failed_page["tasks"]], [failed["id"]])
+
+    def test_admin_bulk_retry_selected_failures_isolated_per_task(self) -> None:
+        registered = self.register("bulk_retry_owner")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 50)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        failed_tasks = []
+        for index in range(2):
+            source = store.create_task(f"批量重试失败任务 {index}", "16:9", owner_token_hash=owner_hash, model="Seedance 2.0", duration=10)
+            image = store.images_dir(source["id"]) / "01.png"
+            image.write_bytes(f"reference-{index}".encode())
+            store.set_task_images(source["id"], [image], [f"reference-{index}.png"])
+            store.update_meta(source["id"], reference_is_real_person=True)
+            store.mark_failed(source["id"], "测试失败")
+            failed_tasks.append(source)
+        success = store.create_task("不可批量重试的成功任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        store.update_meta(success["id"], status=store.STATUS_SUCCESS, finished_at=store.utc_now())
+        invalid_owner = store.create_task("所属用户已失效", "9:16", owner_token_hash="f" * 64, model="Seedance 2.0")
+        store.mark_failed(invalid_owner["id"], "测试失败")
+
+        client_forbidden = self.client.post(
+            "/tasks/bulk-retry",
+            headers={"X-API-Token": registered["token"]},
+            json={"task_ids": [failed_tasks[0]["id"]]},
+        )
+        self.assertEqual(client_forbidden.status_code, 403)
+
+        response = self.client.post(
+            "/tasks/bulk-retry",
+            headers={"X-API-Token": self.admin_token},
+            json={"task_ids": [failed_tasks[0]["id"], invalid_owner["id"], success["id"], failed_tasks[1]["id"]]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual((payload["created"], payload["skipped"], payload["failed"]), (2, 1, 1))
+        self.assertEqual(payload["results"]["failed"][0]["reason"], "任务所属用户已失效")
+        retry_ids = [item["retry_id"] for item in payload["results"]["created"]]
+        for retry_id, index in zip(retry_ids, range(2), strict=True):
+            retry_meta = store.get_meta(retry_id)
+            self.assertEqual(retry_meta["status"], store.STATUS_PENDING)
+            self.assertTrue(retry_meta["reference_is_real_person"])
+            self.assertEqual(retry_meta["reference_image_names"], [f"reference-{index}.png"])
+            self.assertEqual(store.task_image_paths(retry_id)[0].read_bytes(), f"reference-{index}".encode())
+
+    def test_admin_bulk_retry_all_uses_all_matching_failures_not_current_page(self) -> None:
+        registered = self.register("bulk_retry_all_owner")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 100)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        matched_ids = []
+        for index in range(3):
+            source = store.create_task(f"跨页目标 {index}", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+            store.mark_failed(source["id"], "测试失败")
+            matched_ids.append(source["id"])
+        unrelated = store.create_task("其他失败任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        store.mark_failed(unrelated["id"], "测试失败")
+
+        response = self.client.post(
+            "/tasks/bulk-retry",
+            headers={"X-API-Token": self.admin_token},
+            json={"retry_all": True, "q": "跨页目标"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual((payload["matched_total"], payload["requested"], payload["created"]), (3, 3, 3))
+        self.assertEqual({item["id"] for item in payload["results"]["created"]}, set(matched_ids))
+        self.assertFalse(payload["truncated"])
+
     def test_concurrency_overflow_is_precharged_and_queued_until_capacity_is_free(self) -> None:
         registered = self.register("limited_client")
         owner_hash = temp_access.hash_token(registered["token"])

@@ -23,6 +23,24 @@ STATUS_SUBMITTED = "submitted"
 STATUS_SUCCESS = "success"
 STATUS_FAILED = "failed"
 STATUS_CANCELED = "canceled"
+
+TASK_STATUS_FILTERS = {
+    "generating": {STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED},
+    "running": {STATUS_RUNNING, STATUS_SUBMITTED},
+    "failed": {STATUS_FAILED},
+    "canceled": {STATUS_CANCELED},
+    "success": {STATUS_SUCCESS},
+    "pending": {STATUS_PENDING},
+}
+
+
+def task_status_filter_values(status: str) -> set[str]:
+    selected = str(status or "").strip().lower()
+    if not selected or selected == "all":
+        return set()
+    return set(TASK_STATUS_FILTERS.get(selected, {selected}))
+
+
 TASK_TIMEOUT_HOURS = 3
 TASK_RETRY_TIMEOUT_MINUTES = 30
 MAX_TASK_RETRIES = 10
@@ -1357,12 +1375,12 @@ def list_tasks_page(
     tasks = list_tasks(owner_token_hash=owner_token_hash, owner_remarks=remarks)
     hidden_key = f"task_hidden_for_{audience}"
     tasks = [item for item in tasks if not item.get(hidden_key)]
-    selected_status = str(status or "").strip().lower()
+    selected_statuses = task_status_filter_values(status)
     selected_platform = str(platform or "").strip().lower()
     normalized_keyword = str(keyword or "").strip().lower()
     filtered = [
         item for item in tasks
-        if (not selected_status or selected_status == "all" or str(item.get("status") or "").lower() == selected_status)
+        if (not selected_statuses or str(item.get("status") or "").lower() in selected_statuses)
         and (not selected_platform or selected_platform == "all" or str(item.get("platform") or "").lower() == selected_platform)
         and (
             not normalized_keyword

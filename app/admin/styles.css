@@ -45,6 +45,7 @@ body {
 }
 
 body[data-portal="client"] #repositoryUpdatePanel,
+body[data-portal="client"] .admin-task-bulk,
 body[data-portal="client"] #quotaNavItem,
 body[data-portal="client"] #quotaView,
 body[data-portal="client"] #accountsNavItem,
@@ -4946,6 +4947,27 @@ body.announcement-locked {
   flex-wrap: nowrap;
 }
 
+#tasksView .task-filter-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 132px;
+  align-items: end;
+  gap: 10px;
+  width: min(570px, 100%);
+}
+
+#tasksView .task-filter-row .search-field {
+  width: 100%;
+}
+
+#tasksView #taskStatusFilter {
+  min-height: 42px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+}
+
 #tasksView .task-table-actions {
   grid-column: 1 / -1;
   width: 100%;
@@ -4971,15 +4993,30 @@ body.announcement-locked {
 }
 
 #tasksView .task-table {
-  min-width: 900px;
+  min-width: 980px;
 }
 
-#tasksView .task-table .task-col { width: 21%; }
+#tasksView .task-table .task-select-col { width: 4%; }
+#tasksView .task-table .task-col { width: 19%; }
 #tasksView .task-table .owner-col { width: 9%; }
 #tasksView .task-table .status-col { width: 10%; }
-#tasksView .task-table .result-col { width: 26%; }
+#tasksView .task-table .result-col { width: 24%; }
 #tasksView .task-table .video-col { width: 10%; }
 #tasksView .task-table .action-col { width: 24%; }
+
+#tasksView .task-select-cell {
+  text-align: center;
+}
+
+#tasksView .task-select-cell .table-checkbox {
+  justify-content: center;
+}
+
+#tasksView [data-task-select] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brand-dark);
+}
 
 #tasksView .task-table th {
   height: 42px;
@@ -4995,8 +5032,8 @@ body.announcement-locked {
   background: #fff;
 }
 
-#tasksView .task-table th:nth-child(4),
-#tasksView .task-table td:nth-child(4) {
+#tasksView .task-table th:nth-child(5),
+#tasksView .task-table td:nth-child(5) {
   text-align: left;
 }
 
@@ -5047,6 +5084,10 @@ body.announcement-locked {
 
   #tasksView .task-table-actions {
     grid-column: 1;
+  }
+
+  #tasksView .task-filter-row {
+    grid-template-columns: 1fr;
   }
 }
 

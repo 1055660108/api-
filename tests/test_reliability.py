@@ -942,6 +942,98 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(manager._image_submission_active, 0)
         self.assertEqual(manager._image_submission_reservations, {})
 
+    def test_image_upload_slot_timeout_defers_without_leaking_reservation(self) -> None:
+        manager = WorkerManager()
+        manager._image_submission_reservations = {
+            f"existing-{index}": f"owner-{index}"
+            for index in range(IMAGE_SUBMISSION_CONCURRENCY)
+        }
+
+        async def exercise() -> None:
+            with patch.object(manager, "_image_owner_limit", return_value=IMAGE_SUBMISSION_CONCURRENCY), patch(
+                "app.worker.IMAGE_UPLOAD_SLOT_WAIT_SECONDS",
+                0.01,
+            ), patch("app.worker.set_execution_phase"):
+                with self.assertRaises(automation.ReferenceUploadCapacityError):
+                    async with manager._image_upload_slot("waiting-task", "waiting-owner"):
+                        self.fail("busy upload slot should not be entered")
+
+        asyncio.run(exercise())
+        self.assertNotIn("waiting-task", manager._image_submission_reservations)
+        self.assertEqual(manager._image_submission_active, 0)
+
+    def test_reference_image_upload_has_a_total_timeout_and_releases_slot(self) -> None:
+        automation.clear_reference_attachment_cache()
+        task = self.create_task("owner-upload-timeout")
+        image = store.images_dir(task["id"]) / "01.png"
+        image.write_bytes(b"upload-timeout-reference")
+        store.set_task_images(task["id"], [image])
+        slot_exited = False
+
+        @asynccontextmanager
+        async def upload_slot():
+            nonlocal slot_exited
+            try:
+                yield
+            finally:
+                slot_exited = True
+
+        async def hanging_upload(_page, _path):
+            await asyncio.Event().wait()
+
+        async def exercise() -> None:
+            runner = DolaFetchAutomation(
+                task["id"],
+                "prompt",
+                "9:16",
+                account={"id": "dola-upload-timeout"},
+                image_upload_slot=upload_slot,
+            )
+            runner._upload_one_image_by_fetch = hanging_upload
+            with patch.object(automation, "REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS", 0.01):
+                with self.assertRaisesRegex(RuntimeError, "reference image upload timed out"):
+                    await runner._upload_images_if_needed(object())
+
+        asyncio.run(exercise())
+        self.assertTrue(slot_exited)
+        self.assertEqual(automation._REFERENCE_UPLOADS_IN_FLIGHT, {})
+        automation.clear_reference_attachment_cache()
+
+    def test_prepare_upload_timeout_is_reported_as_reference_upload_failure(self) -> None:
+        async def hanging_evaluate(*_args):
+            await asyncio.Event().wait()
+
+        page = SimpleNamespace(evaluate=AsyncMock(side_effect=hanging_evaluate))
+
+        async def exercise() -> None:
+            runner = DolaFetchAutomation("missing-task", "prompt", "9:16")
+            with patch.object(automation, "PREPARE_UPLOAD_TIMEOUT_SECONDS", 0.01):
+                with self.assertRaisesRegex(RuntimeError, "prepare_upload timed out"):
+                    await runner._prepare_image_upload(page)
+
+        asyncio.run(exercise())
+
+    def test_reference_upload_timeout_uses_infrastructure_retry_budget(self) -> None:
+        task = self.create_task("owner-reference-infrastructure")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner._run_once = AsyncMock(side_effect=RuntimeError("reference image upload timed out"))
+        outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["retryable"])
+        self.assertTrue(outcome["infrastructure_fault"])
+        self.assertEqual(store.load_result(task["id"])["submit_error_category"], "reference_upload")
+
+    def test_navigation_timeout_is_a_proxy_transport_failure(self) -> None:
+        task = self.create_task("owner-navigation-timeout")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner.active_proxy_source = "api"
+        runner._run_once = AsyncMock(side_effect=RuntimeError("Page.goto: net::ERR_TIMED_OUT"))
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+        self.assertTrue(outcome["infrastructure_fault"])
+        self.assertTrue(outcome["defer_only"])
+        self.assertEqual(outcome["defer_category"], "proxy_refresh")
+        mark_proxy.assert_called_once_with()
+
     def test_reference_attachment_cache_coalesces_concurrent_uploads(self) -> None:
         automation.clear_reference_attachment_cache()
         first = self.create_task("owner-a")

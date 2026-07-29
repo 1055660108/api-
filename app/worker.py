@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from .accounts import claim_account_for_worker, clear_account_current_task, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
-from .automation import DolaFetchAutomation, is_final_generation_failure, is_infrastructure_failure
+from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
 from .doubao_automation import DoubaoVideoAutomation
 from .qianwen_automation import QianwenVideoAutomation
@@ -72,6 +72,7 @@ RESULT_POLL_BATCH_SIZE = _bounded_env_int("DOLA_RESULT_POLL_BATCH_SIZE", 256, RE
 RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_SECONDS", 20, 10, 120)
 RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
 IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 8, 1, 16)
+IMAGE_UPLOAD_SLOT_WAIT_SECONDS = _bounded_env_int("DOLA_IMAGE_UPLOAD_SLOT_WAIT_SECONDS", 20, 5, 120)
 API_PROXY_REFRESH_CONCURRENCY = _bounded_env_int("DOLA_API_PROXY_REFRESH_CONCURRENCY", 2, 1, 4)
 
 
@@ -565,6 +566,7 @@ class WorkerManager:
         normalized_owner = str(owner or "")
         reserved = False
         active = False
+        deadline = asyncio.get_running_loop().time() + IMAGE_UPLOAD_SLOT_WAIT_SECONDS
         try:
             while not reserved:
                 async with self._image_submission_condition:
@@ -581,7 +583,13 @@ class WorkerManager:
                         reserved = True
                         break
                     set_execution_phase(task_id, "waiting_image_upload_slot", "等待参考图上传时段")
-                    await self._image_submission_condition.wait()
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        raise ReferenceUploadCapacityError()
+                    try:
+                        await asyncio.wait_for(self._image_submission_condition.wait(), timeout=remaining)
+                    except asyncio.TimeoutError as exc:
+                        raise ReferenceUploadCapacityError() from exc
             async with self._image_submission_semaphore:
                 self._image_submission_active += 1
                 active = True

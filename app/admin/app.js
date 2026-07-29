@@ -1184,6 +1184,7 @@ function clientSafeText(value, task = {}) {
   if (/游客模式|请登录后再试|登录后再试/.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
   if (/710022004|rate limited|slider verification|跳验证|滑块风控/i.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
   if (/生成超过\d+分钟/.test(text)) return terminal ? "生成失败，请重试！" : "正在生成中，请稍等！";
+  if (/reference image upload timed out|prepare_upload timed out/i.test(text)) return terminal ? "参考图上传超时，请重试！" : "参考图上传超时，正在重试！";
   if (/当前地区不可用|所在的国家\/地区不可用|region restricted|country restricted/i.test(text)) return "正在重试中，请稍等！";
   if (/Page\.(?:goto|click|evaluate|waitFor|wait_for)|execution context was destroyed|worker execution heartbeat missing|SSL:|TLSV1_|tls alert|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷/i.test(text)) {
     return terminal ? "服务暂时异常，请重试！" : "服务连接异常，正在重试！";

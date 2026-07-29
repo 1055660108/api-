@@ -87,6 +87,8 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("Dola 跳验证（滑块风控）", "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0"), "正在生成中，请稍等！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0", terminal=True), "生成失败，请重试！")
+        self.assertEqual(main._client_safe_text("reference image upload timed out", "Seedance 2.0"), "参考图上传超时，正在重试！")
+        self.assertEqual(main._client_safe_text("prepare_upload timed out", "Seedance 2.0", terminal=True), "参考图上传超时，请重试！")
         self.assertEqual(main._client_safe_text("请选择勾选真人按钮并重试", "Seedance 2.0", terminal=True), "请选择勾选真人按钮并重试")
 
     def test_failed_region_task_never_displays_retrying_text(self) -> None:

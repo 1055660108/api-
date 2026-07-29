@@ -95,6 +95,7 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "tls handshake",
     "net::err_proxy",
     "net::err_connection",
+    "net::err_timed_out",
     "execution context was destroyed",
     "most likely because of a navigation",
     "cannot find context with specified id",
@@ -127,6 +128,7 @@ PROXY_TRANSPORT_ERROR_MARKERS = (
     "tls handshake",
     "net::err_proxy",
     "net::err_connection",
+    "net::err_timed_out",
 )
 REFERENCE_UPLOAD_ERROR_MARKERS = (
     "prepare_upload",
@@ -139,6 +141,9 @@ REFERENCE_UPLOAD_ERROR_MARKERS = (
 )
 REFERENCE_CACHE_TTL_SECONDS = max(60, min(86400, int(os.environ.get("DOLA_REFERENCE_CACHE_TTL_SECONDS") or 1800)))
 REFERENCE_CACHE_MAX_ENTRIES = max(16, min(4096, int(os.environ.get("DOLA_REFERENCE_CACHE_MAX_ENTRIES") or 512)))
+PREPARE_UPLOAD_TIMEOUT_SECONDS = 30.0
+REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS = 120.0
+REFERENCE_CACHE_WAIT_TIMEOUT_SECONDS = 130.0
 API_PROXY_CANDIDATE_LIMIT = 3
 API_PROXY_FETCH_LIMIT = 6
 API_PROXY_FETCH_ERROR_LIMIT = 3
@@ -160,6 +165,12 @@ class ProxyCoolingDownError(RuntimeError):
         self.queue_reason = str(queue_reason or "服务连接异常，任务已自动排队")[:120]
         self.queue_category = str(queue_category or "infrastructure")[:40]
         super().__init__(str(reason or "proxy modes are temporarily cooling down"))
+
+
+class ReferenceUploadCapacityError(RuntimeError):
+    def __init__(self, retry_after: int = 5):
+        self.retry_after = max(1, int(retry_after))
+        super().__init__("reference image upload capacity is busy")
 
 
 def is_final_generation_failure(text: str) -> bool:
@@ -937,7 +948,13 @@ class DolaFetchAutomation:
 
     async def run(self) -> dict[str, Any]:
         try:
-            timeout = max(self.settings.task_timeout_seconds, 360)
+            image_count = 0
+            if self._task_exists():
+                try:
+                    image_count = max(0, min(9, int(get_meta(self.task_id).get("image_count") or 0)))
+                except (FileNotFoundError, TypeError, ValueError):
+                    image_count = 0
+            timeout = max(self.settings.task_timeout_seconds, 360) + image_count * REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS
             return await asyncio.wait_for(self._run_once(), timeout=timeout)
         except asyncio.TimeoutError:
             if self._task_exists():
@@ -977,6 +994,18 @@ class DolaFetchAutomation:
             self._mark_active_proxy_unavailable()
             self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_timeout"})
             return {"success": False, "retryable": True, "reason": "browser timeout", "infrastructure_fault": True}
+        except ReferenceUploadCapacityError as exc:
+            self._save_result(extra={"submit_error_category": "reference_upload_capacity", "submit_phase": "waiting_image_upload_slot"})
+            return {
+                "success": False,
+                "retryable": True,
+                "reason": str(exc),
+                "infrastructure_fault": True,
+                "defer_only": True,
+                "retry_after": exc.retry_after,
+                "defer_reason": "参考图上传繁忙，任务已自动排队",
+                "defer_category": "image_upload_limit",
+            }
         except ProxyCoolingDownError as exc:
             return {
                 "success": False,
@@ -990,12 +1019,13 @@ class DolaFetchAutomation:
             }
         except Exception as exc:
             reason = str(exc)[:500]
-            infrastructure_fault = is_infrastructure_failure(reason)
+            reference_upload_failure = is_reference_upload_failure(reason)
+            infrastructure_fault = is_infrastructure_failure(reason) or reference_upload_failure
             upper_reason = reason.upper()
             gateway_status = next((status for status in (502, 503, 504) if f"HTTP {status}" in upper_reason), 0)
             if gateway_status:
                 self._record_active_gateway_failure(gateway_status)
-            if is_reference_upload_failure(reason):
+            if reference_upload_failure:
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
                 if is_proxy_transport_failure(reason):
@@ -1502,7 +1532,13 @@ class DolaFetchAutomation:
         return ".jpeg~" in url or ".jpeg?" in url or url.endswith(".jpeg") or ".jpg~" in url or ".jpg?" in url or url.endswith(".jpg")
 
     async def _prepare_image_upload(self, page: Page) -> dict[str, Any]:
-        result = await page.evaluate(PREPARE_UPLOAD_SCRIPT, {"body": PREPARE_UPLOAD_BODY})
+        try:
+            result = await asyncio.wait_for(
+                page.evaluate(PREPARE_UPLOAD_SCRIPT, {"body": PREPARE_UPLOAD_BODY}),
+                timeout=PREPARE_UPLOAD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("prepare_upload timed out") from exc
         if not isinstance(result, dict):
             raise RuntimeError("prepare_upload returned invalid response")
         if not result.get("ok"):
@@ -1621,6 +1657,15 @@ class DolaFetchAutomation:
             "uploadStatus": upload_response.status_code,
         }
 
+    async def _upload_one_image_with_timeout(self, page: Page, image_path: Path) -> dict[str, Any]:
+        try:
+            return await asyncio.wait_for(
+                self._upload_one_image_by_fetch(page, image_path),
+                timeout=REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("reference image upload timed out") from exc
+
     async def _upload_images_if_needed(self, page: Page) -> list[dict[str, Any]]:
         if not self._task_exists():
             return []
@@ -1677,7 +1722,18 @@ class DolaFetchAutomation:
                 if not owns_upload and upload_future is not None:
                     self._set_phase(f"waiting_reference_{index}", f"正在复用参考图（{index}/{len(unique_paths)}）")
                     cache_waits += 1
-                    uploaded = await asyncio.shield(upload_future)
+                    try:
+                        uploaded = await asyncio.wait_for(
+                            asyncio.shield(upload_future),
+                            timeout=REFERENCE_CACHE_WAIT_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        with _REFERENCE_CACHE_LOCK:
+                            current = _REFERENCE_UPLOADS_IN_FLIGHT.get(cache_key)
+                            if current is upload_future and not current.done():
+                                _REFERENCE_UPLOADS_IN_FLIGHT.pop(cache_key, None)
+                                current.set_result(None)
+                        uploaded = None
                     if uploaded:
                         cache_hits += 1
                     continue
@@ -1687,10 +1743,10 @@ class DolaFetchAutomation:
                         self._set_phase("waiting_image_upload_slot", "等待参考图上传时段")
                         async with self.image_upload_slot():
                             self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
-                            uploaded = await self._upload_one_image_by_fetch(page, path)
+                            uploaded = await self._upload_one_image_with_timeout(page, path)
                     else:
                         self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
-                        uploaded = await self._upload_one_image_by_fetch(page, path)
+                        uploaded = await self._upload_one_image_with_timeout(page, path)
                     if cache_key:
                         cache_reference_attachment(cache_key, uploaded)
                 finally:

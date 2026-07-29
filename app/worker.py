@@ -7,7 +7,7 @@ import socket
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import claim_account_for_worker, clear_account_current_task, refund_account_quota, settle_account_quota
+from .accounts import claim_account_for_worker, clear_account_current_task, disable_account_for_login, refund_account_quota, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
@@ -117,6 +117,11 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
     if not account_id:
         return
     clear_account_current_task(account_id, task_id)
+    disable_reason = str(outcome.get("account_disable_reason") or "").strip()
+    if disable_reason:
+        disable_account_for_login(account_id, disable_reason)
+        refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
+        return
     if outcome.get("infrastructure_fault"):
         refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
     elif outcome.get("account_fault"):

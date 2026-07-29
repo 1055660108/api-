@@ -361,6 +361,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="accountStatusFilter"', self.html)
         self.assertIn('invitation_code: state.clientRegisterMode', self.javascript)
         self.assertIn('params.set("status", state.accountStatusFilter)', self.javascript)
+        self.assertIn('sliderVerification ? "跳验证"', self.javascript)
+        self.assertIn('710022004|rate limited|slider verification|跳验证|滑块风控', self.javascript)
         self.assertIn('["注册邀请码", user.invitation_code || "-"]', self.javascript)
         self.assertIn('id="loginHeadingTitle">登录</h1>', self.html)
         self.assertIn('els.loginHeadingTitle.textContent = register ? "注册" : "登录"', self.javascript)

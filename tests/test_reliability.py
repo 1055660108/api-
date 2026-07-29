@@ -499,6 +499,30 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
 
+    def test_slider_verification_disables_account_and_refunds_quota(self) -> None:
+        task = self.create_task("slider-owner")
+        created = accounts.add_account("Slider", "session=slider", quota_limit=2)
+        claimed = accounts.claim_account_for_worker("worker-slider", task["id"])
+        self.assertEqual(claimed["id"], created["id"])
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "dola",
+            {
+                "retryable": True,
+                "account_fault": True,
+                "account_disable_reason": "Dola 跳验证（滑块风控）",
+            },
+        )
+
+        stored = accounts.list_accounts()[0]
+        self.assertFalse(stored["enabled"])
+        self.assertEqual(stored["account_status"], "abnormal")
+        self.assertIn("跳验证", stored["status_reason"])
+        self.assertEqual(stored["quota_used"], 0)
+        self.assertIsNone(accounts.account_for_worker("worker-next"))
+
     def test_queue_deferral_does_not_consume_generation_retry(self) -> None:
         task = self.create_task("owner")
         self.assertTrue(store.mark_running(task["id"], "worker-1"))

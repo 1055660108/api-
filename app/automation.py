@@ -637,6 +637,7 @@ async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId
   });
   let text = "";
   let serviceFrequent = false;
+  let sliderVerification = false;
   let timedOut = false;
   const reader = response.body && response.body.getReader ? response.body.getReader() : null;
   if (reader) {
@@ -655,6 +656,8 @@ async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId
       const chunk = decoder.decode(value, {stream: true});
       text += chunk;
       serviceFrequent = text.includes("服务访问频繁") || text.includes("当前服务访问频繁");
+      sliderVerification = text.includes("710022004") || /rate limited/i.test(text) && /(?:shark_admin|subtype\\?\"?:\\?\"?slide)/i.test(text);
+      if (sliderVerification) break;
     }
     try { await reader.cancel(); } catch (_) {}
     try { text += decoder.decode(); } catch (_) {}
@@ -662,6 +665,7 @@ async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId
     text = await response.text();
   }
   serviceFrequent = serviceFrequent || text.includes("服务访问频繁") || text.includes("当前服务访问频繁") || text.includes("710022002");
+  sliderVerification = sliderVerification || text.includes("710022004") || /rate limited/i.test(text) && /(?:shark_admin|subtype\\?\"?:\\?\"?slide)/i.test(text);
   const countryRestricted = text.includes("所在的国家/地区不可用") || text.includes("country restricted");
   const conversationId = extractConversationId(text);
   const responsePreview = text.length <= 6000
@@ -679,6 +683,7 @@ async ({prompt, ratio, duration, attachments, collectionId: suppliedCollectionId
     unique_key: uniqueKey,
     submitted_with_images: Boolean(attachments && attachments.length),
     sse_timed_out: timedOut,
+    slider_verification: sliderVerification,
     service_frequent: serviceFrequent,
     country_restricted: countryRestricted,
     location_href: location.href
@@ -1121,6 +1126,17 @@ class DolaFetchAutomation:
                     },
                 )
                 self._set_phase("submission_received", "生成请求已接收，正在确认状态")
+                if result.get("slider_verification"):
+                    self._mark_active_proxy_unavailable(reason="slider_verification")
+                    release_task_submission(self.task_id)
+                    self._save_result(extra={"submit_error_category": "slider_verification", "submit_phase": "submission_response"})
+                    return {
+                        "success": False,
+                        "retryable": True,
+                        "reason": "Dola slider verification required",
+                        "account_fault": True,
+                        "account_disable_reason": "Dola 跳验证（滑块风控）",
+                    }
                 if result.get("service_frequent"):
                     self._mark_active_proxy_unavailable(
                         cooldown_seconds=NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,

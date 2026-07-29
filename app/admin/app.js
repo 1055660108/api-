@@ -1151,6 +1151,7 @@ function clientSafeText(value, task = {}) {
   if (portal !== "client") return text;
   const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
   if (/游客模式|请登录后再试|登录后再试/.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
+  if (/710022004|rate limited|slider verification|跳验证|滑块风控/i.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
   if (/生成超过\d+分钟/.test(text)) return terminal ? "生成失败，请重试！" : "正在生成中，请稍等！";
   if (/当前地区不可用|所在的国家\/地区不可用|region restricted|country restricted/i.test(text)) return "正在重试中，请稍等！";
   if (/Page\.(?:goto|click|evaluate|waitFor|wait_for)|execution context was destroyed|worker execution heartbeat missing|SSL:|TLSV1_|tls alert|failed to fetch|net::ERR_|ERR_PROXY|PROXY_CONNECTION|ProxyError|Target page|browser (?:timeout|closed)|playwright|Traceback|\bat\s+\S+[:(]|�|锟斤拷/i.test(text)) {
@@ -4010,7 +4011,8 @@ function renderAccountTable() {
     const platformLabel = PLATFORM_LABELS[String(item.platform || "dola")] || String(item.platform || "Dola");
     const enabled = item.enabled !== false;
     const abnormal = item.account_status === "abnormal";
-    const accountStatus = abnormal ? "登录异常" : (enabled ? "正常" : "停用");
+    const sliderVerification = abnormal && /跳验证|滑块风控/i.test(String(item.status_reason || ""));
+    const accountStatus = sliderVerification ? "跳验证" : (abnormal ? "登录异常" : (enabled ? "正常" : "停用"));
     const quotaLimit = Number(item.quota_limit || 0);
     const quotaUsed = Number(item.quota_used || 0);
     const quotaRemaining = item.quota_remaining === null || item.quota_remaining === undefined ? "不限" : String(item.quota_remaining);

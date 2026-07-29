@@ -83,6 +83,8 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("浏览器超时", "Seedance 2.0"), "服务超时")
         self.assertEqual(main._client_safe_text("游客模式暂不支持生成图片和视频，请登录后再试", "Seedance 2.0"), "正在重试中，请稍等！")
         self.assertEqual(main._client_safe_text("游客模式暂不支持生成图片和视频，请登录后再试", "Seedance 2.0", terminal=True), "生成失败，请重试！")
+        self.assertEqual(main._client_safe_text("Dola slider verification required 710022004", "Seedance 2.0"), "正在重试中，请稍等！")
+        self.assertEqual(main._client_safe_text("Dola 跳验证（滑块风控）", "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0"), "正在生成中，请稍等！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0", terminal=True), "生成失败，请重试！")
 

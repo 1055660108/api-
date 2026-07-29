@@ -4,7 +4,7 @@ import asyncio
 import os
 import secrets
 import socket
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 
 from .accounts import claim_account_for_worker, clear_account_current_task, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
@@ -42,7 +42,6 @@ from .store import (
     set_execution_phase,
     set_active_tasks,
     STATUS_SUBMITTED,
-    task_image_paths,
     task_retry_limit,
     update_meta,
     utc_now,
@@ -139,6 +138,7 @@ class WorkerManager:
         self._dola_submit_locks: dict[str, asyncio.Lock] = {}
         self._last_dola_submit_at: dict[str, float] = {}
         self._image_submission_semaphore = asyncio.Semaphore(IMAGE_SUBMISSION_CONCURRENCY)
+        self._image_submission_condition = asyncio.Condition()
         self._image_submission_active = 0
         self._image_submission_reservations: dict[str, str] = {}
         self._image_owner_limits: dict[str, int] = {}
@@ -182,6 +182,7 @@ class WorkerManager:
         self._platform_guard.record_success("dola")
         self._queue.reconcile()
         self._requeue_stale_dola_guard_tasks()
+        self._requeue_stale_resource_wait_tasks()
         self._stopping = False
         await self._dola_browser_pool.start()
         self._supervisor = asyncio.create_task(self._supervise())
@@ -198,6 +199,27 @@ class WorkerManager:
                 queue_category="",
                 status_reason="等待重新提交",
             )
+            self._queue.requeue(task_id)
+
+    def _requeue_stale_resource_wait_tasks(self) -> None:
+        for task_id, meta in list_task_metas_by_statuses({"pending"}, platform="dola", limit=2000):
+            queue_category = str(meta.get("queue_category") or "")
+            infrastructure_error = str(meta.get("infrastructure_error") or "")
+            browser_allocation_timeout = "execution phase timed out: allocating_browser" in infrastructure_error
+            if queue_category != "image_upload_limit" and not browser_allocation_timeout:
+                continue
+            updates: dict[str, object] = {
+                "next_attempt_at": utc_now(),
+                "queue_reason": "等待重新提交",
+                "queue_category": "",
+                "status_reason": "系统资源已恢复，等待重新提交",
+                "execution_phase": "retry_queued",
+                "phase_updated_at": utc_now(),
+                "retry_queue_verified_at": "",
+            }
+            if browser_allocation_timeout:
+                updates.update(infrastructure_retry_count=0, infrastructure_error="")
+            update_meta(task_id, **updates)
             self._queue.requeue(task_id)
 
     async def stop(self) -> None:
@@ -536,6 +558,40 @@ class WorkerManager:
             self._image_owner_limits_refreshed_at = now
         return max(1, int(self._image_owner_limits.get(normalized_owner) or 1))
 
+    @asynccontextmanager
+    async def _image_upload_slot(self, task_id: str, owner: str):
+        normalized_owner = str(owner or "")
+        reserved = False
+        active = False
+        try:
+            while not reserved:
+                async with self._image_submission_condition:
+                    owner_limit = self._image_owner_limit(normalized_owner)
+                    owner_active = sum(
+                        reserved_owner == normalized_owner
+                        for reserved_owner in self._image_submission_reservations.values()
+                    )
+                    if (
+                        len(self._image_submission_reservations) < IMAGE_SUBMISSION_CONCURRENCY
+                        and owner_active < owner_limit
+                    ):
+                        self._image_submission_reservations[task_id] = normalized_owner
+                        reserved = True
+                        break
+                    set_execution_phase(task_id, "waiting_image_upload_slot", "等待参考图上传时段")
+                    await self._image_submission_condition.wait()
+            async with self._image_submission_semaphore:
+                self._image_submission_active += 1
+                active = True
+                yield
+        finally:
+            if active:
+                self._image_submission_active = max(0, self._image_submission_active - 1)
+            if reserved:
+                async with self._image_submission_condition:
+                    self._image_submission_reservations.pop(task_id, None)
+                    self._image_submission_condition.notify_all()
+
     def _remote_generation_count(self, fail_closed: bool = False) -> int:
         try:
             return len(list_task_metas_by_statuses({STATUS_SUBMITTED}, platform="dola"))
@@ -600,19 +656,10 @@ class WorkerManager:
                     candidate_platform = str(claimed_meta.get("platform") or "dola")
                     is_image_submission = candidate_platform == "dola" and int(claimed_meta.get("image_count") or 0) > 0
                     candidate_owner = str(claimed_meta.get("owner_token_hash") or "")
-                    if is_image_submission:
-                        owner_limit = self._image_owner_limit(candidate_owner)
-                        owner_active = sum(owner == candidate_owner for owner in self._image_submission_reservations.values())
-                        if len(self._image_submission_reservations) >= IMAGE_SUBMISSION_CONCURRENCY or owner_active >= owner_limit:
-                            defer_task(candidate_id, "等待参考图上传资源", "image_upload_limit", 2)
-                            self._queue.release(candidate_id, worker_id)
-                            continue
                     if candidate_platform == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
                         defer_task(candidate_id, "当前用户远端生成任务已达上限，继续排队", "remote_limit", 5)
                         self._queue.release(candidate_id, worker_id)
                         continue
-                    if is_image_submission:
-                        self._image_submission_reservations[candidate_id] = candidate_owner
                     task_id = candidate_id
                     self._claimed.add(task_id)
                     self._worker_task_ids[worker_id] = task_id
@@ -681,17 +728,11 @@ class WorkerManager:
                         browser_pool=self._dola_browser_pool,
                         api_proxy_pool=self._api_proxy_pool,
                         submission_pacer=self._wait_for_dola_submit_slot,
+                        image_upload_slot=(
+                            lambda current_task_id=task_id, current_owner=candidate_owner: self._image_upload_slot(current_task_id, current_owner)
+                        ) if is_image_submission else None,
                     )
-                if platform == "dola" and task_image_paths(task_id):
-                    set_execution_phase(task_id, "waiting_image_upload_slot", "等待参考图上传时段")
-                    async with self._image_submission_semaphore:
-                        self._image_submission_active += 1
-                        try:
-                            outcome = await runner.run()
-                        finally:
-                            self._image_submission_active = max(0, self._image_submission_active - 1)
-                else:
-                    outcome = await runner.run()
+                outcome = await runner.run()
                 if platform != "dola":
                     if outcome.get("success"):
                         self._platform_guard.record_success(platform)
@@ -772,7 +813,6 @@ class WorkerManager:
             finally:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
-                self._image_submission_reservations.pop(task_id, None)
                 reserved_owner = self._remote_generation_reservations.pop(task_id, None)
                 if reserved_owner:
                     self._remote_owner_refreshed_at = 0.0

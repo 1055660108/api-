@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncContextManager, Awaitable, Callable
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import httpx
@@ -841,6 +841,7 @@ class DolaFetchAutomation:
         browser_pool: ReusableBrowserPool | None = None,
         api_proxy_pool: ReusableApiProxyPool | None = None,
         submission_pacer: Callable[[str], Awaitable[None]] | None = None,
+        image_upload_slot: Callable[[], AsyncContextManager[None]] | None = None,
     ):
         self.task_id = task_id
         self.prompt = prompt
@@ -851,6 +852,7 @@ class DolaFetchAutomation:
         self.api_proxy_pool = api_proxy_pool
         self.api_proxy_lease: ApiProxyLease | None = None
         self.submission_pacer = submission_pacer
+        self.image_upload_slot = image_upload_slot
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
@@ -1679,10 +1681,16 @@ class DolaFetchAutomation:
                     if uploaded:
                         cache_hits += 1
                     continue
-                self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
                 try:
                     performed_upload = True
-                    uploaded = await self._upload_one_image_by_fetch(page, path)
+                    if self.image_upload_slot is not None:
+                        self._set_phase("waiting_image_upload_slot", "等待参考图上传时段")
+                        async with self.image_upload_slot():
+                            self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
+                            uploaded = await self._upload_one_image_by_fetch(page, path)
+                    else:
+                        self._set_phase(f"uploading_reference_{index}", f"正在上传参考图（{index}/{len(unique_paths)}）")
+                        uploaded = await self._upload_one_image_by_fetch(page, path)
                     if cache_key:
                         cache_reference_attachment(cache_key, uploaded)
                 finally:

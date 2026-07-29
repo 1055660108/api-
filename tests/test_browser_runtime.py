@@ -121,6 +121,59 @@ class BrowserRuntimeTests(unittest.TestCase):
         self.assertEqual(len(launches), 2)
         self.assertNotEqual(launches[0]["proxy"], launches[1]["proxy"])
 
+    def test_concurrent_proxy_groups_launch_once_and_fill_all_contexts(self) -> None:
+        class FakeContext:
+            def __init__(self):
+                self.close = AsyncMock()
+
+        class FakeBrowser:
+            def __init__(self):
+                self.connected = True
+                self.contexts: list[FakeContext] = []
+                self.close = AsyncMock(side_effect=self._close)
+
+            def is_connected(self) -> bool:
+                return self.connected
+
+            async def _close(self) -> None:
+                self.connected = False
+
+            async def new_context(self, **_options):
+                context = FakeContext()
+                self.contexts.append(context)
+                await asyncio.sleep(0)
+                return context
+
+        browsers: list[FakeBrowser] = []
+
+        async def launch(**_options):
+            await asyncio.sleep(0.01)
+            browser = FakeBrowser()
+            browsers.append(browser)
+            return browser
+
+        async def exercise() -> None:
+            playwright = unittest.mock.Mock()
+            playwright.chromium.launch = AsyncMock(side_effect=launch)
+            playwright.stop = AsyncMock()
+            runtime = unittest.mock.Mock()
+            runtime.start = AsyncMock(return_value=playwright)
+            pool = browser_runtime.ReusableBrowserPool(max_processes=12, contexts_per_process=4)
+            common = {"executable_path": None, "headless": True, "browser_args": [], "context_options": {"locale": "zh-CN"}}
+            with patch.object(browser_runtime, "async_playwright", return_value=runtime):
+                pending = [
+                    asyncio.create_task(pool.acquire_context(**common, proxy={"server": f"http://127.0.0.1:{4100 + index // 4}"}))
+                    for index in range(48)
+                ]
+                leases = await asyncio.wait_for(asyncio.gather(*pending), timeout=3)
+                self.assertEqual(len(browsers), 12)
+                self.assertEqual(pool.snapshot()["active_contexts"], 48)
+                self.assertTrue(all(len(browser.contexts) == 4 for browser in browsers))
+                await asyncio.gather(*(lease.release() for lease in leases))
+                await pool.stop()
+
+        asyncio.run(exercise())
+
     def test_invalid_configured_executable_fails_clearly(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "configured browser executable not found"):
             browser_runtime.resolve_browser_executable("missing-browser.exe")

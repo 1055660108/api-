@@ -118,6 +118,9 @@ class ReusableBrowserPool:
                         selected = slot
                         break
                 if selected is None:
+                    if any(slot.key == key and slot.launching and not slot.retiring for slot in self._slots):
+                        await self._condition.wait()
+                        continue
                     if len(self._slots) >= self.max_processes:
                         idle = next((slot for slot in self._slots if not slot.launching and slot.active == 0), None)
                         if idle is not None:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -295,6 +296,39 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(recovered["queue_reason"], "等待重新提交")
         self.assertLessEqual(datetime.fromisoformat(recovered["next_attempt_at"]), datetime.now(timezone.utc))
         manager._queue.requeue.assert_called_once_with(task["id"])
+
+    def test_startup_requeues_tasks_blocked_by_old_image_and_browser_limits(self) -> None:
+        image_wait = self.create_task("owner-image-wait")
+        browser_wait = self.create_task("owner-browser-wait")
+        unrelated = self.create_task("owner-unrelated")
+        store.defer_task(image_wait["id"], "等待参考图上传资源", "image_upload_limit", 3600)
+        store.update_meta(
+            browser_wait["id"],
+            infrastructure_retry_count=5,
+            infrastructure_error="execution phase timed out: allocating_browser",
+            queue_category="infrastructure",
+            queue_reason="服务连接异常，正在恢复",
+            next_attempt_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        )
+        manager = WorkerManager()
+        manager._queue = unittest.mock.Mock()
+        manager._queue.requeue.return_value = True
+
+        manager._requeue_stale_resource_wait_tasks()
+
+        recovered_image = store.get_meta(image_wait["id"])
+        recovered_browser = store.get_meta(browser_wait["id"])
+        untouched = store.get_meta(unrelated["id"])
+        self.assertEqual(recovered_image["queue_category"], "")
+        self.assertEqual(recovered_image["status_reason"], "系统资源已恢复，等待重新提交")
+        self.assertEqual(recovered_browser["infrastructure_retry_count"], 0)
+        self.assertEqual(recovered_browser["infrastructure_error"], "")
+        self.assertEqual(recovered_browser["queue_category"], "")
+        self.assertNotEqual(untouched.get("status_reason"), "系统资源已恢复，等待重新提交")
+        self.assertEqual(
+            {call.args[0] for call in manager._queue.requeue.call_args_list},
+            {image_wait["id"], browser_wait["id"]},
+        )
 
     def test_task_creation_enqueues_through_selected_backend(self) -> None:
         queue = unittest.mock.Mock()
@@ -840,6 +874,73 @@ class ReliabilityTests(unittest.TestCase):
         asyncio.run(run())
         self.assertEqual(upload.await_count, 2)
         automation.clear_reference_attachment_cache()
+
+    def test_reference_upload_slot_wraps_only_the_real_network_upload(self) -> None:
+        automation.clear_reference_attachment_cache()
+        task = self.create_task("owner-upload-slot")
+        image = store.images_dir(task["id"]) / "01.png"
+        image.write_bytes(b"upload-slot-reference")
+        store.set_task_images(task["id"], [image])
+        events: list[str] = []
+        attachment = {"uri": "tos/upload-slot", "name": "01.png"}
+
+        @asynccontextmanager
+        async def upload_slot():
+            events.append("slot-enter")
+            try:
+                yield
+            finally:
+                events.append("slot-exit")
+
+        async def upload(_page, _path):
+            self.assertEqual(events, ["slot-enter"])
+            events.append("network-upload")
+            return attachment
+
+        async def run() -> None:
+            runner = DolaFetchAutomation(task["id"], "prompt", "9:16", account={"id": "dola-upload-slot"}, image_upload_slot=upload_slot)
+            runner._upload_one_image_by_fetch = upload
+            self.assertEqual(await runner._upload_images_if_needed(object()), [attachment])
+
+        asyncio.run(run())
+        self.assertEqual(events, ["slot-enter", "network-upload", "slot-exit"])
+        automation.clear_reference_attachment_cache()
+
+    def test_worker_image_upload_slot_enforces_eight_active_uploads(self) -> None:
+        manager = WorkerManager()
+        entered = 0
+        maximum = 0
+        eight_entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def exercise() -> None:
+            nonlocal entered, maximum
+
+            async def hold(index: int) -> None:
+                nonlocal entered, maximum
+                async with manager._image_upload_slot(f"{index:032x}", f"owner-{index}"):
+                    entered += 1
+                    maximum = max(maximum, entered)
+                    if entered == IMAGE_SUBMISSION_CONCURRENCY:
+                        eight_entered.set()
+                    await release.wait()
+                    entered -= 1
+
+            with patch.object(manager, "_image_owner_limit", return_value=IMAGE_SUBMISSION_CONCURRENCY), patch(
+                "app.worker.set_execution_phase"
+            ):
+                tasks = [asyncio.create_task(hold(index)) for index in range(IMAGE_SUBMISSION_CONCURRENCY + 1)]
+                await asyncio.wait_for(eight_entered.wait(), timeout=2)
+                await asyncio.sleep(0)
+                self.assertEqual(manager._image_submission_active, IMAGE_SUBMISSION_CONCURRENCY)
+                self.assertEqual(len(manager._image_submission_reservations), IMAGE_SUBMISSION_CONCURRENCY)
+                release.set()
+                await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
+
+        asyncio.run(exercise())
+        self.assertEqual(maximum, IMAGE_SUBMISSION_CONCURRENCY)
+        self.assertEqual(manager._image_submission_active, 0)
+        self.assertEqual(manager._image_submission_reservations, {})
 
     def test_reference_attachment_cache_coalesces_concurrent_uploads(self) -> None:
         automation.clear_reference_attachment_cache()

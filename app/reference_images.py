@@ -171,25 +171,34 @@ def _apply_face_grids(image: np.ndarray, faces: list[tuple[int, int, int, int]],
     return output
 
 
-def _face_grid_retry_enabled(task_id: str) -> bool:
-    try:
-        meta = get_meta(task_id)
-        return bool(meta.get("reference_face_grid_retry") or meta.get("reference_force_grid"))
-    except (FileNotFoundError, OSError):
-        return False
-
-
 def prepare_task_reference_images(task_id: str, retry_face_detection: bool | None = None) -> list[Path]:
     originals = task_image_paths(task_id)
     if not originals:
         return []
+
+    try:
+        meta = get_meta(task_id)
+    except (FileNotFoundError, OSError):
+        meta = {}
+    if not bool(meta.get("reference_is_real_person")):
+        try:
+            update_meta(
+                task_id,
+                reference_face_detection_completed=False,
+                reference_face_count=0,
+                reference_face_processing_errors=[],
+                reference_grid_mode="disabled",
+            )
+        except (FileNotFoundError, OSError):
+            LOGGER.warning("could not persist disabled reference face metadata for task %s", task_id)
+        return originals
 
     internal_dir = task_dir(task_id) / "processed_references"
     internal_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = internal_dir / "manifest.json"
     manifest = _read_manifest(manifest_path)
     entries = manifest.setdefault("images", {})
-    retry_face_detection = _face_grid_retry_enabled(task_id) if retry_face_detection is None else bool(retry_face_detection)
+    retry_face_detection = bool(meta.get("reference_face_grid_retry") or meta.get("reference_force_grid")) if retry_face_detection is None else bool(retry_face_detection)
     prepared: list[Path] = []
     total_faces = 0
     processing_errors: list[str] = []

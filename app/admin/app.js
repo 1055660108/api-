@@ -277,6 +277,7 @@ const els = {
   batchReferenceState: document.getElementById("batchReferenceState"),
   batchReferencePreview: document.getElementById("batchReferencePreview"),
   batchReferenceThumbs: document.getElementById("batchReferenceThumbs"),
+  batchReferenceIsRealPerson: document.getElementById("batchReferenceIsRealPerson"),
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
   batchTaskRatio: document.getElementById("batchTaskRatio"),
   batchSelectionLimit: document.getElementById("batchSelectionLimit"),
@@ -302,6 +303,7 @@ const els = {
   selectBatchDownloadFolder: document.getElementById("selectBatchDownloadFolder"),
   clearBatchDownloadFolder: document.getElementById("clearBatchDownloadFolder"),
   imageInput: document.getElementById("imageInput"),
+  referenceIsRealPerson: document.getElementById("referenceIsRealPerson"),
   clearImages: document.getElementById("clearImages"),
   imageList: document.getElementById("imageList"),
   ratioValue: document.getElementById("ratioValue"),
@@ -599,6 +601,7 @@ const state = {
   batchSpreadsheetName: "",
   batchPrompts: [],
   batchSharedImages: [],
+  batchReferenceIsRealPerson: false,
   batchImageTargetIndex: -1,
   batchPage: 1,
   batchPageSize: 10,
@@ -1024,6 +1027,7 @@ function setSubmitControlsDisabled(disabled) {
   els.taskForm.classList.toggle("is-submitting", disabled);
   els.promptInput.disabled = disabled;
   els.imageInput.disabled = disabled;
+  if (els.referenceIsRealPerson) els.referenceIsRealPerson.disabled = disabled;
   els.submitTask.disabled = disabled || (portal === "client" && state.freeRemaining + state.points <= 0);
   if (els.resetSubmit) els.resetSubmit.disabled = disabled;
   els.ratioTrigger.disabled = disabled;
@@ -4521,6 +4525,7 @@ function resetSubmitForm(options = {}) {
   setSegmentValue(els.ratioGroup, "ratio", state.ratio);
   state.images = [];
   els.imageInput.value = "";
+  if (els.referenceIsRealPerson) els.referenceIsRealPerson.checked = false;
   renderImages();
   els.submitState.textContent = "待提交";
 }
@@ -4531,6 +4536,7 @@ function currentSubmitFingerprint(prompt) {
     ratio: state.ratio,
     platform: state.platform || "dola",
     model: state.model || "",
+    referenceIsRealPerson: Boolean(els.referenceIsRealPerson?.checked),
     images: state.images.map((file) => [file.name, file.size, file.lastModified]),
   });
 }
@@ -4562,6 +4568,7 @@ async function submitTask(event) {
   form.append("ratio", state.ratio);
   form.append("platform", state.platform || "dola");
   form.append("model", state.model || "");
+  form.append("reference_is_real_person", els.referenceIsRealPerson?.checked ? "true" : "false");
   state.images.forEach((file) => form.append("images", file, file.name));
   const fingerprint = currentSubmitFingerprint(prompt);
   const idempotencyKey = submitIdempotencyKey(fingerprint);
@@ -4896,6 +4903,7 @@ function saveBatchDraft() {
       ratio: String(els.batchTaskRatio?.value || "9:16"),
       pageSize: state.batchPageSize,
       autoConcurrency: Math.max(1, Math.min(batchConcurrencyLimit(), Number(els.batchAutoConcurrency?.value || 1))),
+      referenceIsRealPerson: Boolean(state.batchReferenceIsRealPerson),
       batchJobId: String(state.batchJobId || ""),
       prompts,
       savedAt: Date.now(),
@@ -4927,12 +4935,16 @@ async function loadBatchDraft() {
   state.batchJobRevision = 0;
   state.batchJobCursorReady = false;
   state.batchJobSummarySignature = "";
+  state.batchReferenceIsRealPerson = false;
+  if (els.batchReferenceIsRealPerson) els.batchReferenceIsRealPerson.checked = false;
   try {
     const stored = JSON.parse(localStorage.getItem(batchDraftStorageKey(owner)) || "null");
     if (!stored || stored.version !== BATCH_DRAFT_VERSION || !Array.isArray(stored.prompts)) throw new Error("no draft");
     state.batchSpreadsheetName = String(stored.filename || "").slice(0, 240);
     state.batchJobId = String(stored.batchJobId || "").slice(0, 80);
     state.batchSessionId = state.batchJobId;
+    state.batchReferenceIsRealPerson = Boolean(stored.referenceIsRealPerson);
+    if (els.batchReferenceIsRealPerson) els.batchReferenceIsRealPerson.checked = state.batchReferenceIsRealPerson;
     state.batchPrompts = stored.prompts.map((item, index) => {
       const taskId = String(item?.taskId || "").slice(0, 80);
       let status = String(item?.status || "");
@@ -5097,10 +5109,12 @@ function resetBatchTaskPage() {
   state.batchJobSummarySignature = "";
   state.batchSessionId = "";
   state.batchConcurrencyCustomized = false;
+  state.batchReferenceIsRealPerson = false;
   if (els.batchSpreadsheetInput) els.batchSpreadsheetInput.value = "";
   if (els.batchSharedImageInput) els.batchSharedImageInput.value = "";
   if (els.batchMappedImageInput) els.batchMappedImageInput.value = "";
   if (els.batchRowImageInput) els.batchRowImageInput.value = "";
+  if (els.batchReferenceIsRealPerson) els.batchReferenceIsRealPerson.checked = false;
   if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = "未选择文件";
   if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
   if (els.batchSelectionLimit) els.batchSelectionLimit.value = "1";
@@ -5179,6 +5193,10 @@ function renderBatchPrompts() {
   }
   if (els.batchReferenceThumbs) {
     els.batchReferenceThumbs.innerHTML = state.batchSharedImages.map((entry) => `<img src="${escapeHtml(entry.previewUrl)}" alt="共用参考图" />`).join("");
+  }
+  if (els.batchReferenceIsRealPerson) {
+    els.batchReferenceIsRealPerson.checked = Boolean(state.batchReferenceIsRealPerson);
+    els.batchReferenceIsRealPerson.disabled = state.batchSubmitting || state.batchAutoRunning;
   }
   scheduleBatchDraftSave();
 }
@@ -5352,6 +5370,10 @@ function applyPersistentBatchJob(job) {
   state.batchSessionId = state.batchJobId;
   state.batchJobRevision = Math.max(0, Number(job.revision || 0));
   state.batchJobCursorReady = true;
+  if (Object.prototype.hasOwnProperty.call(job, "reference_is_real_person")) {
+    state.batchReferenceIsRealPerson = Boolean(job.reference_is_real_person);
+    if (els.batchReferenceIsRealPerson) els.batchReferenceIsRealPerson.checked = state.batchReferenceIsRealPerson;
+  }
   let rowsChanged = false;
   if (!state.batchPrompts.length && !incremental) {
     state.batchPrompts = job.rows.map((row, index) => ({
@@ -5642,6 +5664,7 @@ async function autoSubmitBatchTasks() {
       reference_id: referenceBundle?.id || "",
       reference_count: Number(referenceBundle?.count || 0),
       reference_batch_id: sessionId,
+      reference_is_real_person: Boolean(state.batchReferenceIsRealPerson),
       asset_upload_id: assetUploadId,
       rows,
     }));
@@ -6472,6 +6495,10 @@ function bindEvents() {
     state.batchSharedImages = createBatchImageEntries(els.batchSharedImageInput.files || []);
     renderBatchPrompts();
     persistBatchReferenceImages();
+  });
+  els.batchReferenceIsRealPerson?.addEventListener("change", () => {
+    state.batchReferenceIsRealPerson = Boolean(els.batchReferenceIsRealPerson.checked);
+    scheduleBatchDraftSave();
   });
   els.batchMappedImageInput?.addEventListener("change", () => {
     mapBatchReferenceImages(Array.from(els.batchMappedImageInput.files || []));

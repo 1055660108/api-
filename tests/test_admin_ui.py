@@ -82,7 +82,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('节点已更新，延迟未完成', self.javascript)
 
     def test_task_retry_and_batch_reference_images_are_available(self) -> None:
-        for element_id in ("batchSharedImageInput", "batchMappedImageInput", "batchRowImageInput", "batchReferenceState"):
+        for element_id in ("batchSharedImageInput", "batchMappedImageInput", "batchRowImageInput", "batchReferenceState", "referenceIsRealPerson", "batchReferenceIsRealPerson"):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn('data-action="retry"', self.javascript)
         self.assertIn('/retry`, { method: "POST"', self.javascript)
@@ -94,6 +94,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('/references/${index + 1}', self.javascript)
         self.assertIn('task.reference_image_names', self.javascript)
         self.assertIn('class="task-reference-names"', self.javascript)
+        self.assertIn('form.append("reference_is_real_person", els.referenceIsRealPerson?.checked ? "true" : "false")', self.javascript)
+        self.assertIn('reference_is_real_person: Boolean(state.batchReferenceIsRealPerson)', self.javascript)
+        self.assertIn('referenceIsRealPerson: Boolean(state.batchReferenceIsRealPerson)', self.javascript)
 
     def test_release_version_is_displayed_in_sidebar_and_admin_update_panel(self) -> None:
         self.assertIn('id="sidebarVersion"', self.html)

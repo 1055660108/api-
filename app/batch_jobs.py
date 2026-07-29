@@ -51,7 +51,7 @@ def _write_local(payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str, concurrency: int, reference_id: str = "", reference_count: int = 0, reference_batch_id: str = "", job_id: str = "") -> dict[str, Any]:
+def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str, concurrency: int, reference_id: str = "", reference_count: int = 0, reference_batch_id: str = "", reference_is_real_person: bool = False, job_id: str = "") -> dict[str, Any]:
     job_id = str(job_id or "").strip().lower() or secrets.token_hex(16)
     if len(job_id) != 32 or any(character not in "0123456789abcdef" for character in job_id):
         raise ValueError("invalid batch job id")
@@ -87,6 +87,7 @@ def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str,
         "reference_id": str(reference_id or ""),
         "reference_count": max(0, int(reference_count or 0)),
         "reference_batch_id": str(reference_batch_id or "")[:100],
+        "reference_is_real_person": bool(reference_is_real_person),
         "rows": normalized_rows,
         "revision": 1,
         "created_at": created_at,
@@ -237,6 +238,7 @@ def public_job(job: dict[str, Any], since_revision: int | None = None) -> dict[s
         "ratio": str(job.get("ratio") or "9:16"),
         "duration": int(job.get("duration") or 15),
         "concurrency": int(job.get("concurrency") or 1),
+        "reference_is_real_person": bool(job.get("reference_is_real_person")),
         "created_at": str(job.get("created_at") or ""),
         "updated_at": str(job.get("updated_at") or ""),
         "revision": revision,

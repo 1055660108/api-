@@ -56,6 +56,7 @@ ACCOUNT_QUOTA_RETRY_TEXT = "当前账号额度不足，正在切换账号重试"
 REFERENCE_IMAGE_REQUIRED_TEXT = "未收到可用参考图，请重新上传参考图后再提交"
 REFERENCE_IMAGE_RETRY_TEXT = "参考图识别异常，正在更换账号重新上传"
 REFERENCE_IMAGE_INVALID_TEXT = "参考图异常，请重试！"
+REFERENCE_REAL_PERSON_REQUIRED_TEXT = "请选择勾选真人按钮并重试"
 PORTRAIT_PROTECTION_RETRY_TEXT = "参考图触发肖像保护，正在更换账号重试"
 
 
@@ -865,6 +866,13 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     account_id = str(result.get("account_id") or "")
     if is_portrait_protection_rejection(text):
         invalidate_reference_attachment_keys([str(item) for item in result.get("reference_image_cache_keys") or []])
+        if not bool(meta.get("reference_is_real_person")):
+            if account_id:
+                clear_account_current_task(account_id, task_id)
+                refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+            mark_failed(task_id, REFERENCE_REAL_PERSON_REQUIRED_TEXT)
+            refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+            return {"code": "0", "text": REFERENCE_REAL_PERSON_REQUIRED_TEXT, "url": ""}
         update_meta(task_id, reference_upload_cache_bypass=True, reference_face_grid_retry=True, reference_force_grid=False)
         if account_id:
             clear_account_current_task(account_id, task_id)

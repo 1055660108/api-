@@ -87,6 +87,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("Dola 跳验证（滑块风控）", "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0"), "正在生成中，请稍等！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0", terminal=True), "生成失败，请重试！")
+        self.assertEqual(main._client_safe_text("请选择勾选真人按钮并重试", "Seedance 2.0", terminal=True), "请选择勾选真人按钮并重试")
 
     def test_failed_region_task_never_displays_retrying_text(self) -> None:
         registered = self.register("failed_region_client")
@@ -723,6 +724,7 @@ class WebAPIContractTests(unittest.TestCase):
             "reference_id": shared.json()["reference_id"],
             "reference_count": 1,
             "reference_batch_id": reference_batch_id,
+            "reference_is_real_person": True,
             "rows": [{"client_index": 0, "sheet_row": 2, "prompt": "带两类参考图的任务", "image_count": 1}],
         }
         with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
@@ -733,10 +735,37 @@ class WebAPIContractTests(unittest.TestCase):
                 files=[("images", ("row.png", row_image, "image/png"))],
             )
             self.assertEqual(created.status_code, 201, created.text)
+            self.assertTrue(created.json()["job"]["reference_is_real_person"])
             claim = batch_jobs.claim_next_row(owner_hash)
             task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
         self.assertEqual([path.read_bytes() for path in store.task_image_paths(task_id)], [shared_image, row_image])
         self.assertEqual(store.get_meta(task_id)["reference_image_names"], ["shared.png", "row.png"])
+        self.assertTrue(store.get_meta(task_id)["reference_is_real_person"])
+
+    def test_manual_reference_real_person_flag_defaults_off_and_persists_when_checked(self) -> None:
+        registered = self.register("real_person_flag")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        headers = {"X-API-Token": registered["token"]}
+
+        unchecked = self.client.post(
+            "/tasks",
+            headers={**headers, "Idempotency-Key": "reference-real-person-off"},
+            data={"prompt": "未勾选真人参考图", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0"},
+            files=[("images", ("scene.png", b"\x89PNG\r\n\x1a\nscene", "image/png"))],
+        )
+        self.assertEqual(unchecked.status_code, 200, unchecked.text)
+        self.assertFalse(store.get_meta(unchecked.json()["id"])["reference_is_real_person"])
+
+        checked = self.client.post(
+            "/tasks",
+            headers={**headers, "Idempotency-Key": "reference-real-person-on"},
+            data={"prompt": "已勾选真人参考图", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "reference_is_real_person": "true"},
+            files=[("images", ("person.png", b"\x89PNG\r\n\x1a\nperson", "image/png"))],
+        )
+        self.assertEqual(checked.status_code, 200, checked.text)
+        self.assertTrue(store.get_meta(checked.json()["id"])["reference_is_real_person"])
 
     def test_batch_coordinator_rotates_eligible_owners(self) -> None:
         batch_jobs._LOCAL_OWNER_CURSOR = 0
@@ -932,6 +961,7 @@ class WebAPIContractTests(unittest.TestCase):
             image = store.images_dir(source["id"]) / "01.png"
             image.write_bytes(b"reference-image")
             store.set_task_images(source["id"], [image], [f"{status}-reference.png"])
+            store.update_meta(source["id"], reference_is_real_person=True)
             if status == "failed":
                 store.mark_failed(source["id"], "test failure")
             else:
@@ -949,6 +979,7 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(retry_meta["retry_of_task_id"], source_id)
             self.assertEqual(retry_meta["duration"], 10)
             self.assertEqual(retry_meta["reference_image_names"], [expected_reference_name])
+            self.assertTrue(retry_meta["reference_is_real_person"])
             self.assertEqual(store.task_image_paths(retry_id)[0].read_bytes(), b"reference-image")
 
         self.assertEqual(len(set(retry_ids)), 2)

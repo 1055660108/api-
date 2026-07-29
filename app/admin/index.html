@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.79" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.80" />
   </head>
   <body>
     <script>
@@ -406,6 +406,7 @@
                   <label class="composer-select"><span>模型</span><select id="modelSelect" aria-label="生成模型"><option value="Seedance 2.0">Seedance 2.0</option></select></label>
                   <input id="imageInput" class="sr-only" type="file" accept="image/*" multiple />
                   <label class="reference-button" for="imageInput"><span class="plus-icon" aria-hidden="true">+</span> 参考图</label>
+                  <label class="reference-person-check" title="勾选后仅对检测到的人脸进行网格处理"><input id="referenceIsRealPerson" type="checkbox" /><span>是否真人</span></label>
 
                   <div class="ratio-picker" id="ratioGroup">
                     <button class="ratio-trigger" type="button" aria-haspopup="true">
@@ -446,7 +447,7 @@
               <div class="batch-import-actions"><button class="primary-button icon-text-button" id="parseBatchSpreadsheet" type="button"><i data-lucide="scan-text" aria-hidden="true"></i>自动解析</button><button class="secondary-button" id="resetBatchTaskPage" type="button">清空</button><button class="secondary-button" id="autoSubmitBatchTasks" type="button" disabled>生成设置</button><button class="primary-button" id="submitBatchTasks" type="button" disabled>生成所选任务</button></div>
             </div>
             <div class="batch-reference-toolbar">
-              <div class="batch-reference-actions"><label class="secondary-button icon-text-button" for="batchSharedImageInput"><i data-lucide="images" aria-hidden="true"></i>共用参考图</label><label class="secondary-button icon-text-button" for="batchMappedImageInput"><i data-lucide="list-tree" aria-hidden="true"></i>按行批量配图</label></div>
+              <div class="batch-reference-actions"><label class="secondary-button icon-text-button" for="batchSharedImageInput"><i data-lucide="images" aria-hidden="true"></i>共用参考图</label><label class="secondary-button icon-text-button" for="batchMappedImageInput"><i data-lucide="list-tree" aria-hidden="true"></i>按行批量配图</label><label class="reference-person-check" title="勾选后本批次参考图仅对检测到的人脸进行网格处理"><input id="batchReferenceIsRealPerson" type="checkbox" /><span>是否真人</span></label></div>
               <div class="batch-reference-preview" id="batchReferencePreview"><div class="batch-reference-thumbs" id="batchReferenceThumbs"></div><span id="batchReferenceState">未添加参考图</span></div>
             </div>
             <div class="batch-task-options" aria-label="批量生成参数">
@@ -1293,6 +1294,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.79"></script>
+    <script src="/admin/assets/app.js?v=1.4.80"></script>
   </body>
 </html>

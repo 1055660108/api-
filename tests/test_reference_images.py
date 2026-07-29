@@ -25,6 +25,8 @@ class ReferenceImageTests(unittest.TestCase):
 
             with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
                 reference_images, "task_dir", return_value=root
+            ), patch.object(
+                reference_images, "get_meta", return_value={"reference_is_real_person": True}
             ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
                 reference_images, "_detect_faces", return_value=[(50, 45, 60, 70)]
             ) as detect:
@@ -49,6 +51,8 @@ class ReferenceImageTests(unittest.TestCase):
 
             with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
                 reference_images, "task_dir", return_value=root
+            ), patch.object(
+                reference_images, "get_meta", return_value={"reference_is_real_person": True}
             ), patch.object(reference_images, "update_meta"), patch.object(reference_images, "_detect_faces", return_value=[]):
                 prepared = reference_images.prepare_task_reference_images("0" * 32)
 
@@ -65,6 +69,8 @@ class ReferenceImageTests(unittest.TestCase):
 
             with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
                 reference_images, "task_dir", return_value=root
+            ), patch.object(
+                reference_images, "get_meta", return_value={"reference_is_real_person": True}
             ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
                 reference_images, "_detect_faces", return_value=[(50, 35, 60, 70)]
             ) as detect:
@@ -86,6 +92,8 @@ class ReferenceImageTests(unittest.TestCase):
 
             with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
                 reference_images, "task_dir", return_value=root
+            ), patch.object(
+                reference_images, "get_meta", return_value={"reference_is_real_person": True}
             ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
                 reference_images, "_detect_faces", return_value=[]
             ):
@@ -93,6 +101,28 @@ class ReferenceImageTests(unittest.TestCase):
 
             self.assertEqual(prepared, [source])
             self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "original-retry")
+
+    def test_unchecked_reference_skips_face_detection_and_processing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "01.png"
+            source.write_bytes(b"original-reference")
+
+            with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
+                reference_images, "task_dir", return_value=root
+            ), patch.object(
+                reference_images, "get_meta", return_value={"reference_is_real_person": False}
+            ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
+                reference_images, "_load_image"
+            ) as load_image, patch.object(reference_images, "_detect_faces") as detect_faces:
+                prepared = reference_images.prepare_task_reference_images("0" * 32)
+
+            self.assertEqual(prepared, [source])
+            self.assertFalse((root / "processed_references").exists())
+            load_image.assert_not_called()
+            detect_faces.assert_not_called()
+            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "disabled")
+            self.assertFalse(update_meta.call_args.kwargs["reference_face_detection_completed"])
 
     def test_face_grid_does_not_modify_pixels_outside_face_region(self) -> None:
         image = np.full((180, 220, 3), 160, dtype=np.uint8)

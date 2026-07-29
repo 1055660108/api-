@@ -845,6 +845,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
     shared_reference_names: list[str] = []
     reference_id = str(job.get("reference_id") or "")
     reference_count = max(0, int(job.get("reference_count") or 0))
+    reference_is_real_person = bool(job.get("reference_is_real_person"))
     if reference_id:
         shared_reference_paths, shared_reference_names = await asyncio.to_thread(
             _batch_reference_bundle,
@@ -875,7 +876,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
     fingerprint = _request_fingerprint(
         "batch-jobs",
         owner_hash,
-        {"job_id": job_id, "row_index": row_index, "prompt": prompt, "ratio": ratio, "duration": 15, "images": [path.name for path in row_reference_paths]},
+        {"job_id": job_id, "row_index": row_index, "prompt": prompt, "ratio": ratio, "duration": 15, "reference_is_real_person": reference_is_real_person, "images": [path.name for path in row_reference_paths]},
     )
     meta: dict[str, object] | None = None
     reserved_access: AccessContext | None = None
@@ -945,6 +946,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
                 saved_paths,
                 [*shared_reference_names, *row_reference_names],
             )
+            await _storage_call(update_meta, str(meta["id"]), reference_is_real_person=reference_is_real_person)
             if not _batch_job_is_active(job_id, owner_hash):
                 raise HTTPException(status_code=409, detail="批量提交已停止")
             await _storage_call(finalize_task_creation, str(meta["id"]))
@@ -3860,6 +3862,7 @@ async def create_persistent_batch_job(
     asset_upload_id = str(payload.get("asset_upload_id") or "").strip().lower()
     reference_count = max(0, min(load_settings().max_image_count, int(payload.get("reference_count") or 0)))
     reference_batch_id = str(payload.get("reference_batch_id") or "").strip()[:100]
+    reference_is_real_person = payload.get("reference_is_real_person") is True
     _ensure_batch_active(access, reference_batch_id)
     if reference_id:
         shared_paths = await asyncio.to_thread(_batch_reference_paths, reference_id, access.token_hash, reference_batch_id)
@@ -3937,6 +3940,7 @@ async def create_persistent_batch_job(
             reference_id=reference_id,
             reference_count=reference_count,
             reference_batch_id=reference_batch_id,
+            reference_is_real_person=reference_is_real_person,
             job_id=job_id,
         )
         if reference_batch_id and _batch_is_canceled(access, reference_batch_id):
@@ -4026,6 +4030,7 @@ async def submit_task(
     batch_reference_task_id: Annotated[str, Form()] = "",
     batch_reference_id: Annotated[str, Form()] = "",
     batch_reference_image_count: Annotated[int, Form()] = 0,
+    reference_is_real_person: Annotated[bool, Form()] = False,
     images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
@@ -4091,7 +4096,7 @@ async def submit_task(
             raise HTTPException(status_code=400, detail="批量共用参考图参数无效")
         await _rate_limit(request, "task-create-batch" if batch else "task-create", 2400 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
-        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_id": batch_reference_id, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "images": [Path(item.filename or "").name for item in uploads]})
+        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_id": batch_reference_id, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "reference_is_real_person": reference_is_real_person, "images": [Path(item.filename or "").name for item in uploads]})
 
         try:
             if key:
@@ -4202,6 +4207,7 @@ async def submit_task(
                 saved_paths.append(target)
                 saved_reference_names.append(_reference_image_name(upload.filename, index, suffix))
             await _storage_call(set_task_images, meta["id"], saved_paths, saved_reference_names)
+            await _storage_call(update_meta, str(meta["id"]), reference_is_real_person=bool(reference_is_real_person))
             _ensure_batch_active(access, batch_id)
             await _storage_call(finalize_task_creation, str(meta["id"]))
         except HTTPException:
@@ -4639,7 +4645,12 @@ async def retry_completed_task(request: Request, access: Annotated[AccessContext
             for index, source in enumerate(source_images)
         ]
         await asyncio.to_thread(set_task_images, str(retry_meta["id"]), copied_images, retry_reference_names)
-        await asyncio.to_thread(update_meta, str(retry_meta["id"]), retry_of_task_id=task_id)
+        await asyncio.to_thread(
+            update_meta,
+            str(retry_meta["id"]),
+            retry_of_task_id=task_id,
+            reference_is_real_person=bool(original.get("reference_is_real_person")),
+        )
         await asyncio.to_thread(finalize_task_creation, str(retry_meta["id"]))
     except QuotaExceeded as exc:
         if retry_meta:

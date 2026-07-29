@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import yaml
+
 from app import __version__
 
 
@@ -45,6 +47,13 @@ class VersionTests(unittest.TestCase):
         lock_lines = [line for line in (root / "requirements.lock").read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")]
         self.assertTrue(lock_lines)
         self.assertTrue(all("==" in line for line in lock_lines))
+
+    def test_compose_file_is_valid_yaml(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(compose["x-app-base"]["image"], "${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.77}")
+        self.assertEqual(compose["services"]["api"]["image"], compose["x-app-base"]["image"])
+        self.assertEqual(compose["services"]["worker"]["image"], compose["x-app-base"]["image"])
 
 
 if __name__ == "__main__":

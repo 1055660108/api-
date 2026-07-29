@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.83" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.84" />
   </head>
   <body>
     <script>
@@ -245,7 +245,7 @@
           </section>
         </section>
 
-        <section class="view" id="usersView" data-title="用户管理"><section class="panel users-panel"><div class="panel-header"><div><h2>注册用户</h2><p>查询账号并管理积分、并发和启用状态。</p></div><div class="task-stat-pill success"><span>当前在线</span><strong id="onlineUserCount">0</strong></div></div><div class="user-search-toolbar"><input id="userSearch" type="search" placeholder="输入用户名、邮箱或用户 ID" /><button class="secondary-button" id="searchUsers" type="button">搜索</button><button class="text-button" id="clearUserSearch" type="button">清除</button></div><div class="table-wrap users-table-wrap"><table class="users-table"><colgroup><col class="user-col"><col class="token-col"><col class="time-col"><col class="time-col"><col class="status-col"><col class="balance-col"><col class="actions-col"></colgroup><thead><tr><th>用户</th><th>实时账号</th><th>注册时间</th><th>最后活跃</th><th>状态</th><th>额度 / 积分 / 并发</th><th>操作</th></tr></thead><tbody id="userTableBody"></tbody></table></div><div class="list-footer"><div class="pager"><button class="page-button" id="prevUserPage" type="button">上一页</button><span id="userPageState">第 1 / 1 页</span><button class="page-button" id="nextUserPage" type="button">下一页</button><select id="userPageSize" aria-label="用户每页数量"><option value="10">每页 10 条</option><option value="20" selected>每页 20 条</option><option value="50">每页 50 条</option></select></div><span id="userTotalState">共 0 位用户</span></div></section></section>
+        <section class="view" id="usersView" data-title="用户管理"><section class="panel users-panel"><div class="panel-header"><div><h2>注册用户</h2><p>查询账号并管理积分、并发和启用状态。</p></div><div class="user-header-actions"><button class="primary-button icon-text-button" id="openCreateUser" type="button"><i data-lucide="user-plus" aria-hidden="true"></i>添加用户</button><div class="task-stat-pill success"><span>当前在线</span><strong id="onlineUserCount">0</strong></div></div></div><div class="user-search-toolbar"><input id="userSearch" type="search" placeholder="输入用户名、邮箱或用户 ID" /><button class="secondary-button" id="searchUsers" type="button">搜索</button><button class="text-button" id="clearUserSearch" type="button">清除</button></div><div class="table-wrap users-table-wrap"><table class="users-table"><colgroup><col class="user-col"><col class="token-col"><col class="time-col"><col class="time-col"><col class="status-col"><col class="balance-col"><col class="actions-col"></colgroup><thead><tr><th>用户</th><th>实时账号</th><th>注册时间</th><th>最后活跃</th><th>状态</th><th>额度 / 积分 / 并发</th><th>操作</th></tr></thead><tbody id="userTableBody"></tbody></table></div><div class="list-footer"><div class="pager"><button class="page-button" id="prevUserPage" type="button">上一页</button><span id="userPageState">第 1 / 1 页</span><button class="page-button" id="nextUserPage" type="button">下一页</button><select id="userPageSize" aria-label="用户每页数量"><option value="10">每页 10 条</option><option value="20" selected>每页 20 条</option><option value="50">每页 50 条</option></select></div><span id="userTotalState">共 0 位用户</span></div></section></section>
 
         <section class="view" id="settingsView" data-title="设置">
           <div class="settings-layout" id="settingsContent">
@@ -290,6 +290,10 @@
               <section class="panel config-panel" id="invitationConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="ticket-check" aria-hidden="true"></i></span><h2>注册邀请码</h2><p>邀请码可长期重复使用，手动删除后失效。</p></div><span class="settings-state" id="invitationConfigState">等待读取</span></div>
                 <button class="primary-button settings-entry-button" id="openInvitationManagementModal" type="button"><i data-lucide="settings-2" aria-hidden="true"></i>邀请码管理</button>
+              </section>
+              <section class="panel config-panel" id="registrationSecurityPanel">
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="shield-alert" aria-hidden="true"></i></span><h2>异常注册检测</h2><p>开启后连续注册异常会临时拦截当前访问来源。</p></div><span class="settings-state" id="registrationSecurityState">已关闭</span></div>
+                <label class="invitation-toggle-control settings-entry-toggle"><input id="registrationSecurityEnabled" type="checkbox" /><span class="switch-track" aria-hidden="true"><span></span></span><span><strong>自动检测异常注册</strong><small>关闭后不记录或拦截连续注册失败</small></span></label>
               </section>
               <section class="panel config-panel" id="modelConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>生成模型</h2><p>控制各平台可选模型及默认模型列表。</p></div><span class="settings-state" id="modelConfigState">自动同步</span></div>
@@ -1143,7 +1147,7 @@
         <div class="admin-management-body">
           <div class="admin-audit-toolbar">
             <label class="field"><span>搜索</span><input id="adminAuditSearch" type="search" maxlength="100" placeholder="搜索操作、详情或管理员" /></label>
-            <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="account_access_rotate">生成访问密钥</option><option value="account_access_setting">访问密钥设置</option><option value="account_access_revoke">撤销访问密钥</option><option value="account_access_create">密钥添加账号</option><option value="account_access_update">密钥修改账号</option><option value="invitation_generate">生成邀请码</option><option value="invitation_update">修改邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_block">异常注册拦截</option></select></label>
+            <label class="field"><span>操作类型</span><select id="adminAuditAction"><option value="all">全部操作</option><option value="account_access_rotate">生成访问密钥</option><option value="account_access_setting">访问密钥设置</option><option value="account_access_revoke">撤销访问密钥</option><option value="account_access_create">密钥添加账号</option><option value="account_access_update">密钥修改账号</option><option value="invitation_generate">生成邀请码</option><option value="invitation_update">修改邀请码</option><option value="invitation_delete">删除邀请码</option><option value="invitation_setting">邀请码设置</option><option value="registration_security_setting">异常注册检测设置</option><option value="registration_block">异常注册拦截</option></select></label>
             <label class="field"><span>每页数量</span><select id="adminAuditPageSize"><option value="10">10</option><option value="30">30</option><option value="50">50</option></select></label>
           </div>
           <div class="admin-audit-list" id="adminAuditList" aria-live="polite"></div>
@@ -1223,6 +1227,15 @@
         <div class="modal-actions"><button class="secondary-button" id="cancelBatchAutoModal" type="button">取消</button><button class="primary-button" id="confirmBatchAutoSubmit" type="button">保存</button></div>
       </section>
     </div>
+    <div class="modal-backdrop hidden" id="createUserModal" aria-hidden="true">
+      <form class="modal-panel create-user-modal" id="createUserForm" role="dialog" aria-modal="true" aria-labelledby="createUserModalTitle">
+        <div class="modal-header"><div><h2 id="createUserModalTitle">添加用户</h2><p>创建后可直接使用用户名和密码登录。</p></div><button class="modal-close" id="closeCreateUserModal" type="button" aria-label="关闭">×</button></div>
+        <label class="field"><span>用户名</span><input id="createUserName" minlength="3" maxlength="24" autocomplete="off" required /></label>
+        <label class="field"><span>登录密码</span><input id="createUserPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required /></label>
+        <label class="field"><span>确认密码</span><input id="createUserConfirmPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" required /></label>
+        <div class="modal-actions"><button class="secondary-button" id="cancelCreateUserModal" type="button">取消</button><button class="primary-button" id="submitCreateUser" type="submit">创建用户</button></div>
+      </form>
+    </div>
     <div class="modal-backdrop hidden" id="userDetailsModal" aria-hidden="true">
       <section class="modal-panel user-details-modal" role="dialog" aria-modal="true" aria-labelledby="userDetailsTitle">
         <div class="modal-header">
@@ -1294,6 +1307,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.83"></script>
+    <script src="/admin/assets/app.js?v=1.4.84"></script>
   </body>
 </html>

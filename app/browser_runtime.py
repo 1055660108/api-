@@ -20,6 +20,8 @@ BROWSER_CONTEXTS_PER_PROCESS = 4
 BROWSER_SUBMISSION_CONCURRENCY = BROWSER_POOL_PROCESSES * BROWSER_CONTEXTS_PER_PROCESS
 BROWSER_RECYCLE_TASKS = 80
 BROWSER_RECYCLE_SECONDS = 30 * 60
+BROWSER_CONTEXT_CLOSE_TIMEOUT_SECONDS = 8.0
+BROWSER_PROCESS_CLOSE_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(eq=False)
@@ -31,6 +33,8 @@ class _BrowserSlot:
     created_at: float = 0.0
     launching: bool = True
     retiring: bool = False
+    retire_requested: bool = False
+    closing: int = 0
 
 
 class BrowserContextLease:
@@ -162,25 +166,61 @@ class ReusableBrowserPool:
                 await self._release_slot(launch_slot, context=None, failed=True)
                 raise
 
+    async def _finish_release(self, slot: _BrowserSlot, *, close_failed: bool) -> Browser | None:
+        retired: Browser | None = None
+        async with self._condition:
+            slot.closing = max(0, slot.closing - 1)
+            if close_failed:
+                slot.retire_requested = True
+            slot.retiring = slot.retire_requested or slot.closing > 0
+            if slot in self._slots and slot.active == 0 and slot.closing == 0 and slot.retire_requested:
+                self._slots.remove(slot)
+                retired = slot.browser
+            self._condition.notify_all()
+        return retired
+
+    @staticmethod
+    async def _close_retired_browser(browser: Browser | None) -> None:
+        if browser is None:
+            return
+        try:
+            await asyncio.wait_for(safe_close(browser), timeout=BROWSER_PROCESS_CLOSE_TIMEOUT_SECONDS)
+        except Exception:
+            pass
+
     async def _release_slot(self, slot: _BrowserSlot, context: BrowserContext | None, failed: bool = False) -> None:
-        if context is not None:
-            await safe_close(context)
         retired: Browser | None = None
         async with self._condition:
             slot.active = max(0, slot.active - 1)
             slot.completed += int(context is not None)
             expired = time.monotonic() - slot.created_at >= BROWSER_RECYCLE_SECONDS
-            recycle = failed or not self._browser_connected(slot) or slot.completed >= BROWSER_RECYCLE_TASKS or expired
-            if recycle:
-                slot.retiring = True
-            if slot in self._slots and slot.active == 0 and recycle:
+            if failed or not self._browser_connected(slot) or slot.completed >= BROWSER_RECYCLE_TASKS or expired:
+                slot.retire_requested = True
+            if context is not None:
+                slot.closing += 1
+            slot.retiring = slot.retire_requested or slot.closing > 0
+            if slot in self._slots and slot.active == 0 and slot.closing == 0 and slot.retire_requested:
                 self._slots.remove(slot)
                 retired = slot.browser
-            if slot in self._slots and slot.launching and slot.browser is None and failed:
-                self._slots.remove(slot)
             self._condition.notify_all()
-        if retired is not None:
-            await safe_close(retired)
+
+        if context is None:
+            await self._close_retired_browser(retired)
+            return
+
+        close_failed = False
+        try:
+            await asyncio.wait_for(safe_close(context), timeout=BROWSER_CONTEXT_CLOSE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            close_failed = True
+            retired = await self._finish_release(slot, close_failed=True)
+            await self._close_retired_browser(retired)
+            raise
+        except Exception:
+            close_failed = True
+
+        retired = await self._finish_release(slot, close_failed=close_failed)
+        await self._close_retired_browser(retired)
 
     async def release(self, slot: _BrowserSlot, context: BrowserContext) -> None:
         await self._release_slot(slot, context=context)
@@ -206,6 +246,8 @@ class ReusableBrowserPool:
             "submission_capacity": self.capacity,
             "processes": sum(1 for slot in self._slots if slot.browser is not None),
             "active_contexts": active,
+            "closing_contexts": sum(slot.closing for slot in self._slots),
+            "retiring_processes": sum(bool(slot.retire_requested) for slot in self._slots),
             "available_contexts": max(0, self.capacity - active),
         }
 

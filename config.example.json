@@ -35,6 +35,7 @@
   "proxy_account_port": 0,
   "proxy_account_username": "",
   "proxy_account_password": "",
+  "registration_abuse_detection_enabled": false,
   "reclaim_memory_after_task": true,
   "drop_os_cache_when_idle": false
 }

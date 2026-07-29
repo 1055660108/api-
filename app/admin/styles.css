@@ -4668,6 +4668,10 @@ body[data-portal="admin"] #transactionsView {
   margin-bottom: 16px;
 }
 
+.user-header-actions { display: flex; align-items: center; gap: 10px; }
+.settings-entry-toggle { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
+.create-user-modal { width: min(100%, 480px); }
+
 .user-search-toolbar input {
   width: min(420px, 55vw);
 }
@@ -4892,6 +4896,7 @@ body.announcement-locked {
   .point-card-filters,
   .point-card-actions,
   .user-search-toolbar,
+  .user-header-actions,
   .announcement-actions {
     align-items: stretch;
     flex-direction: column;

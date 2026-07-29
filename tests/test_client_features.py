@@ -131,6 +131,7 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertIn("invitation_setting", {item["action"] for item in audit["entries"]})
 
     def test_consecutive_abnormal_registrations_are_temporarily_blocked_and_logged(self) -> None:
+        config.update_config({"registration_abuse_detection_enabled": True})
         invitation_codes.set_registration_required(True)
         with patch.object(main, "_rate_limit", new=AsyncMock()):
             for index in range(4):
@@ -167,6 +168,38 @@ class ClientFeatureTests(unittest.TestCase):
         logs = self.client.get("/admin/audit-logs?page=1&page_size=10&action=registration_block").json()
         self.assertEqual(logs["total"], 1)
         self.assertEqual(logs["entries"][0]["actor"], "系统")
+
+    def test_abnormal_registration_detection_can_be_disabled(self) -> None:
+        invitation_codes.set_registration_required(True)
+        config.update_config({"registration_abuse_detection_enabled": False})
+        with patch.object(main, "_rate_limit", new=AsyncMock()):
+            for index in range(7):
+                response = self.client.post(
+                    "/auth/register",
+                    json={"username": f"disabled_{index}", "password": "password123", "confirm_password": "password123", "invitation_code": "invalid-code"},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+
+    def test_admin_can_toggle_registration_detection_and_create_user_without_email(self) -> None:
+        login = self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        self.assertEqual(login.status_code, 200, login.text)
+        initial = self.client.get("/config/registration-security")
+        self.assertEqual(initial.status_code, 200, initial.text)
+        self.assertFalse(initial.json()["enabled"])
+        enabled = self.client.post("/config/registration-security", json={"enabled": True})
+        self.assertEqual(enabled.status_code, 200, enabled.text)
+        self.assertTrue(config.load_settings().registration_abuse_detection_enabled)
+
+        created = self.client.post(
+            "/users",
+            json={"username": "admin_created", "password": "password123", "confirm_password": "password123"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        user = created.json()["user"]
+        self.assertEqual(user["email"], "")
+        self.assertEqual(user["free_remaining"], 1)
+        logged_in = self.client.post("/auth/login", json={"identifier": "admin_created", "password": "password123"})
+        self.assertEqual(logged_in.status_code, 200, logged_in.text)
 
     def test_registration_rejects_case_insensitive_duplicate_username(self) -> None:
         self.register("UniqueUser")

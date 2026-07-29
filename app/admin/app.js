@@ -169,6 +169,15 @@ const els = {
   userPageState: document.getElementById("userPageState"),
   userPageSize: document.getElementById("userPageSize"),
   userTotalState: document.getElementById("userTotalState"),
+  openCreateUser: document.getElementById("openCreateUser"),
+  createUserModal: document.getElementById("createUserModal"),
+  createUserForm: document.getElementById("createUserForm"),
+  createUserName: document.getElementById("createUserName"),
+  createUserPassword: document.getElementById("createUserPassword"),
+  createUserConfirmPassword: document.getElementById("createUserConfirmPassword"),
+  submitCreateUser: document.getElementById("submitCreateUser"),
+  closeCreateUserModal: document.getElementById("closeCreateUserModal"),
+  cancelCreateUserModal: document.getElementById("cancelCreateUserModal"),
   userDetailsModal: document.getElementById("userDetailsModal"),
   userDetailsTitle: document.getElementById("userDetailsTitle"),
   userDetailsSubtitle: document.getElementById("userDetailsSubtitle"),
@@ -389,6 +398,8 @@ const els = {
   registrationEmailSenderName: document.getElementById("registrationEmailSenderName"),
   registrationEmailCodeTtl: document.getElementById("registrationEmailCodeTtl"),
   saveEmailConfig: document.getElementById("saveEmailConfig"),
+  registrationSecurityEnabled: document.getElementById("registrationSecurityEnabled"),
+  registrationSecurityState: document.getElementById("registrationSecurityState"),
   runtimeConfigPanel: document.getElementById("runtimeConfigPanel"),
   runtimeConfigForm: document.getElementById("runtimeConfigForm"),
   runtimeConfigState: document.getElementById("runtimeConfigState"),
@@ -673,6 +684,7 @@ const state = {
   editingPromptId: "",
   clientRegisterMode: false,
   registrationEmailVerificationEnabled: true,
+  registrationAbuseDetectionEnabled: false,
   registrationInvitationRequired: true,
   freeRemaining: 0,
   points: 0,
@@ -1775,7 +1787,7 @@ function switchView(name) {
   if (name === "membership") Promise.allSettled([loadMemberships(), loadClientProfile()]);
   if (name === "transactions") loadTransactions();
   if (name === "point-cards") loadPointCards();
-  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadRuntimeConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships(), loadAccountAccessConfig(), loadInvitationConfig(), loadAdminAuditLogs()]);
+  if (name === "settings" && portal === "admin") Promise.allSettled([loadRepositoryStatus(), loadProxyConfig(), loadEmailConfig(), loadRegistrationSecurityConfig(), loadRuntimeConfig(), loadPlatforms(), loadAdminPointPackages(), loadAdminMemberships(), loadAccountAccessConfig(), loadInvitationConfig(), loadAdminAuditLogs()]);
   if (name === "proxy-nodes" && portal === "admin") loadProxyNodes();
   if (name === "settings" && portal === "client") loadClientProfile().catch((error) => toast(`邮箱读取失败：${error.message}`, "error"));
 }
@@ -2316,6 +2328,32 @@ async function loadUsers() {
   els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}<br>远端 ${item.remote_generation_limit || item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-details="${escapeHtml(item.id)}">详情</button><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="secondary-button" data-user-remote-limit="${escapeHtml(item.id)}" data-current-remote-limit="${Number(item.remote_generation_limit || item.concurrency || 1)}">远端上限</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
 }
 
+function closeCreateUser() {
+  closeSettingsModal(els.createUserModal);
+}
+
+async function createAdminUser(event) {
+  event.preventDefault();
+  const username = els.createUserName.value.trim();
+  const password = els.createUserPassword.value;
+  const confirmPassword = els.createUserConfirmPassword.value;
+  if (password !== confirmPassword) return toast("两次输入的密码不一致", "error");
+  setBusy(els.submitCreateUser, true, "创建中");
+  try {
+    await apiFetch("/users", { method: "POST", body: { username, password, confirm_password: confirmPassword } });
+    state.userPage = 1;
+    state.userSearch = "";
+    if (els.userSearch) els.userSearch.value = "";
+    await loadUsers();
+    closeCreateUser();
+    toast("用户已创建，可直接使用用户名和密码登录");
+  } catch (error) {
+    toast(`创建失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.submitCreateUser, false);
+  }
+}
+
 const userTransactionLabels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "积分充值", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
 
 function closeUserDetails() {
@@ -2570,7 +2608,7 @@ function closeAdminAuditManagement() {
 function openAdminAuditDetails(entryId) {
   const entry = state.adminAuditEntries.find((item) => String(item.id || "") === String(entryId || ""));
   if (!entry || !els.adminAuditDetails) return;
-  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截", account_access_rotate: "生成访问密钥", account_access_setting: "访问密钥设置", account_access_revoke: "撤销访问密钥", account_access_create: "密钥添加账号", account_access_update: "密钥修改账号" };
+  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_security_setting: "异常注册检测设置", registration_block: "异常注册拦截", account_access_rotate: "生成访问密钥", account_access_setting: "访问密钥设置", account_access_revoke: "撤销访问密钥", account_access_create: "密钥添加账号", account_access_update: "密钥修改账号" };
   if (els.adminAuditDetailsSubtitle) els.adminAuditDetailsSubtitle.textContent = `${actionLabels[entry.action] || "管理操作"} · ${formatTime(entry.created_at)}`;
   const details = [
     ["操作名称", entry.title || "管理操作"],
@@ -2636,7 +2674,7 @@ async function loadAdminAuditLogs() {
   state.adminAuditTotalPages = Number(data.total_pages || 1);
   const rows = Array.isArray(data.entries) ? data.entries : [];
   state.adminAuditEntries = rows;
-  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_block: "异常注册拦截", account_access_rotate: "生成访问密钥", account_access_setting: "访问密钥设置", account_access_revoke: "撤销访问密钥", account_access_create: "密钥添加账号", account_access_update: "密钥修改账号" };
+  const actionLabels = { invitation_generate: "生成邀请码", invitation_update: "修改邀请码", invitation_delete: "删除邀请码", invitation_setting: "邀请码设置", registration_security_setting: "异常注册检测设置", registration_block: "异常注册拦截", account_access_rotate: "生成访问密钥", account_access_setting: "访问密钥设置", account_access_revoke: "撤销访问密钥", account_access_create: "密钥添加账号", account_access_update: "密钥修改账号" };
   els.adminAuditList.innerHTML = rows.length ? rows.map((item) => `
     <div class="admin-audit-row">
       <div><strong>${escapeHtml(item.title || "管理操作")}</strong><p>${escapeHtml(actionLabels[item.action] || "管理操作")}</p></div>
@@ -3385,6 +3423,35 @@ async function refreshAccounts(options = {}) {
       state.accountRefreshPending = false;
       refreshAccounts({ quiet: true }).catch(() => {});
     }
+  }
+}
+
+async function loadRegistrationSecurityConfig() {
+  if (portal !== "admin" || !els.registrationSecurityEnabled) return null;
+  const data = await apiFetch("/config/registration-security");
+  state.registrationAbuseDetectionEnabled = data.enabled === true;
+  els.registrationSecurityEnabled.checked = state.registrationAbuseDetectionEnabled;
+  if (els.registrationSecurityState) els.registrationSecurityState.textContent = state.registrationAbuseDetectionEnabled ? "已开启" : "已关闭";
+  return data;
+}
+
+async function saveRegistrationSecurityConfig() {
+  if (!els.registrationSecurityEnabled) return;
+  const previous = state.registrationAbuseDetectionEnabled;
+  const enabled = Boolean(els.registrationSecurityEnabled.checked);
+  els.registrationSecurityEnabled.disabled = true;
+  try {
+    const data = await apiFetch("/config/registration-security", { method: "POST", body: { enabled } });
+    state.registrationAbuseDetectionEnabled = data.enabled === true;
+    els.registrationSecurityEnabled.checked = state.registrationAbuseDetectionEnabled;
+    if (els.registrationSecurityState) els.registrationSecurityState.textContent = state.registrationAbuseDetectionEnabled ? "已开启" : "已关闭";
+    toast(state.registrationAbuseDetectionEnabled ? "异常注册检测已开启" : "异常注册检测已关闭");
+  } catch (error) {
+    state.registrationAbuseDetectionEnabled = previous;
+    els.registrationSecurityEnabled.checked = previous;
+    toast(`保存失败：${error.message}`, "error");
+  } finally {
+    els.registrationSecurityEnabled.disabled = false;
   }
 }
 
@@ -6059,6 +6126,7 @@ function bindEvents() {
   els.cancelInvitationManagementModal?.addEventListener("click", closeInvitationManagement);
   els.invitationManagementModal?.addEventListener("click", (event) => { if (event.target === els.invitationManagementModal) closeInvitationManagement(); });
   els.registrationInvitationRequired?.addEventListener("change", saveInvitationRequirement);
+  els.registrationSecurityEnabled?.addEventListener("change", saveRegistrationSecurityConfig);
   els.generateInvitationCodes?.addEventListener("click", generateRegistrationInvitationCodes);
   els.copyGeneratedInvitationCodes?.addEventListener("click", () => copyText(els.generatedInvitationCodeList?.textContent || "", "邀请码"));
   els.invitationCodeList?.addEventListener("click", (event) => {
@@ -6226,6 +6294,14 @@ function bindEvents() {
       setBusy(els.refreshClientToken, false);
     }
   });
+  els.openCreateUser?.addEventListener("click", () => {
+    els.createUserForm?.reset();
+    openSettingsModal(els.createUserModal, els.createUserName);
+  });
+  els.createUserForm?.addEventListener("submit", createAdminUser);
+  els.closeCreateUserModal?.addEventListener("click", closeCreateUser);
+  els.cancelCreateUserModal?.addEventListener("click", closeCreateUser);
+  els.createUserModal?.addEventListener("click", (event) => { if (event.target === els.createUserModal) closeCreateUser(); });
   els.userTableBody?.addEventListener("click", async (event) => {
     try {
       const detailsButton = event.target.closest("[data-user-details]");

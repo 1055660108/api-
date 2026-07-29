@@ -120,6 +120,7 @@ def default_config() -> dict[str, Any]:
         "proxy_auto_countries": [],
         "proxy_latency_threshold_ms": 800,
         "proxy_health_refresh_seconds": 600,
+        "registration_abuse_detection_enabled": False,
         "registration_email_verification_enabled": True,
         "registration_email_domains": ["qq.com", "163.com"],
         "registration_smtp_host": "smtp.qq.com",
@@ -335,6 +336,7 @@ class Settings:
     proxy_auto_countries: list[str]
     proxy_latency_threshold_ms: int
     proxy_health_refresh_seconds: int
+    registration_abuse_detection_enabled: bool
     registration_email_verification_enabled: bool
     registration_email_domains: list[str]
     registration_smtp_host: str
@@ -452,6 +454,7 @@ def load_settings() -> Settings:
         )),
         proxy_latency_threshold_ms=max(100, min(5000, int(data.get("proxy_latency_threshold_ms") or 800))),
         proxy_health_refresh_seconds=max(60, min(86400, int(data.get("proxy_health_refresh_seconds") or 600))),
+        registration_abuse_detection_enabled=_as_bool(data.get("registration_abuse_detection_enabled"), False),
         registration_email_verification_enabled=_as_bool(data.get("registration_email_verification_enabled"), True),
         registration_email_domains=[str(item).strip().lower().lstrip("@") for item in data.get("registration_email_domains", []) if str(item or "").strip()],
         registration_smtp_host=str(data.get("registration_smtp_host") or "smtp.qq.com").strip(),

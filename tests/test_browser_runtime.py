@@ -70,6 +70,110 @@ class BrowserRuntimeTests(unittest.TestCase):
         with patch.object(browser_runtime, "async_playwright", return_value=runtime):
             asyncio.run(exercise())
 
+    def test_context_close_timeout_releases_capacity_and_retires_browser(self) -> None:
+        close_started = asyncio.Event()
+
+        class HangingContext:
+            async def close(self):
+                close_started.set()
+                await asyncio.Event().wait()
+
+        class FakeBrowser:
+            def __init__(self):
+                self.connected = True
+                self.close = AsyncMock(side_effect=self._close)
+
+            def is_connected(self) -> bool:
+                return self.connected
+
+            async def _close(self) -> None:
+                self.connected = False
+
+            async def new_context(self, **_options):
+                return HangingContext()
+
+        browser = FakeBrowser()
+        playwright = unittest.mock.Mock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+        playwright.stop = AsyncMock()
+        runtime = unittest.mock.Mock()
+        runtime.start = AsyncMock(return_value=playwright)
+
+        async def exercise() -> None:
+            pool = browser_runtime.ReusableBrowserPool(max_processes=1, contexts_per_process=4)
+            options = {
+                "executable_path": None,
+                "headless": True,
+                "proxy": {"server": "http://proxy.example:8080"},
+                "browser_args": [],
+                "context_options": {},
+            }
+            lease = await pool.acquire_context(**options)
+            self.assertEqual(pool.snapshot()["active_contexts"], 1)
+            await lease.release()
+            self.assertTrue(close_started.is_set())
+            self.assertEqual(pool.snapshot()["active_contexts"], 0)
+            self.assertEqual(pool.snapshot()["closing_contexts"], 0)
+            self.assertEqual(pool.snapshot()["processes"], 0)
+            browser.close.assert_awaited_once()
+            await pool.stop()
+
+        with patch.object(browser_runtime, "async_playwright", return_value=runtime), patch.object(
+            browser_runtime,
+            "BROWSER_CONTEXT_CLOSE_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            asyncio.run(exercise())
+
+    def test_canceled_context_release_still_releases_capacity(self) -> None:
+        close_started = asyncio.Event()
+
+        class HangingContext:
+            async def close(self):
+                close_started.set()
+                await asyncio.Event().wait()
+
+        class FakeBrowser:
+            def __init__(self):
+                self.connected = True
+
+            def is_connected(self) -> bool:
+                return self.connected
+
+            async def close(self) -> None:
+                self.connected = False
+
+            async def new_context(self, **_options):
+                return HangingContext()
+
+        browser = FakeBrowser()
+        playwright = unittest.mock.Mock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+        playwright.stop = AsyncMock()
+        runtime = unittest.mock.Mock()
+        runtime.start = AsyncMock(return_value=playwright)
+
+        async def exercise() -> None:
+            pool = browser_runtime.ReusableBrowserPool(max_processes=1, contexts_per_process=4)
+            lease = await pool.acquire_context(
+                executable_path=None,
+                headless=True,
+                proxy=None,
+                browser_args=[],
+                context_options={},
+            )
+            release_task = asyncio.create_task(lease.release())
+            await close_started.wait()
+            release_task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await release_task
+            self.assertEqual(pool.snapshot()["active_contexts"], 0)
+            self.assertEqual(pool.snapshot()["processes"], 0)
+            await pool.stop()
+
+        with patch.object(browser_runtime, "async_playwright", return_value=runtime):
+            asyncio.run(exercise())
+
     def test_configured_executable_has_priority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "browser.exe"

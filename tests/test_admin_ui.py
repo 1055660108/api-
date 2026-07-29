@@ -149,6 +149,22 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('/auth/email', self.javascript)
         self.assertIn('/config/registration-email', self.javascript)
 
+    def test_registration_security_toggle_and_admin_user_creation_are_present(self) -> None:
+        for element_id in (
+            "registrationSecurityPanel",
+            "registrationSecurityEnabled",
+            "openCreateUser",
+            "createUserModal",
+            "createUserForm",
+            "createUserName",
+            "createUserPassword",
+            "createUserConfirmPassword",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('/config/registration-security', self.javascript)
+        self.assertIn('await apiFetch("/users", { method: "POST"', self.javascript)
+        self.assertIn('els.registrationSecurityEnabled?.addEventListener("change", saveRegistrationSecurityConfig)', self.javascript)
+
     def test_email_domains_are_independently_editable_and_free_copy_is_renamed(self) -> None:
         self.assertIn('id="addRegistrationEmailDomain"', self.html)
         self.assertIn('data-email-domain', self.javascript)

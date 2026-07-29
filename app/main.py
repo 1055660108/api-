@@ -1820,20 +1820,22 @@ async def admin_disable_membership(package_id: str):
 @app.post("/auth/register")
 async def client_register(request: Request):
     client_key = _request_client_key(request)
-    blocked_for = await asyncio.to_thread(registration_block_retry_after, client_key)
-    if blocked_for > 0:
-        raise HTTPException(
-            status_code=429,
-            detail="连续异常注册次数过多，已暂时拦截，请稍后重试",
-            headers={"Retry-After": str(blocked_for)},
-        )
+    settings = load_settings()
+    registration_security_enabled = settings.registration_abuse_detection_enabled
+    if registration_security_enabled:
+        blocked_for = await asyncio.to_thread(registration_block_retry_after, client_key)
+        if blocked_for > 0:
+            raise HTTPException(
+                status_code=429,
+                detail="连续异常注册次数过多，已暂时拦截，请稍后重试",
+                headers={"Retry-After": str(blocked_for)},
+            )
     payload = await _request_payload(request)
     await _rate_limit(request, "register", 5, 60)
     invitation_reservation = None
     try:
         if payload.get("password") != payload.get("confirm_password"):
             raise ValueError("两次输入的密码不一致")
-        settings = load_settings()
         invitation_code = str(payload.get("invitation_code") or "").strip()
         if invitation_registration_required() and not invitation_code:
             raise ValueError("请输入邀请码")
@@ -1866,13 +1868,16 @@ async def client_register(request: Request):
             video_quota_balance=1,
         )
         await _record_activity_safe(str(identity.get("id") or ""), "register", "注册账号")
-        await asyncio.to_thread(reset_registration_failures, client_key)
+        if registration_security_enabled:
+            await asyncio.to_thread(reset_registration_failures, client_key)
         response = JSONResponse({"ok": True, **registered})
         _set_client_session_cookie(response, request, hash_token(str(registered.get("token") or "")))
         return response
     except ValueError as exc:
         if invitation_reservation:
             release_invitation_reservation(str(invitation_reservation.get("reservation_id") or ""))
+        if not registration_security_enabled:
+            raise HTTPException(status_code=400, detail=str(exc))
         failure = await asyncio.to_thread(record_registration_failure, client_key)
         retry_after = int(failure.get("retry_after") or 0)
         if failure.get("blocked_now"):
@@ -2270,6 +2275,40 @@ async def users_list(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1
     current_page = min(page, total_pages)
     start = (current_page - 1) * page_size
     return {"users": rows[start:start + page_size], "online": sum(bool(item.get("online")) for item in rows), "total": total, "page": current_page, "page_size": page_size, "total_pages": total_pages}
+
+
+@app.post("/users", dependencies=[Depends(require_admin)], status_code=201)
+async def users_create(request: Request):
+    payload = await _request_payload(request)
+    password = str(payload.get("password") or "")
+    if password != str(payload.get("confirm_password") or ""):
+        raise HTTPException(status_code=400, detail="两次输入的密码不一致")
+    try:
+        registered = await asyncio.to_thread(register_user, payload.get("username", ""), password)
+        identity = await asyncio.to_thread(user_identity_by_token_hash, hash_token(str(registered.get("token") or "")))
+        record_transaction(
+            str(identity.get("id") or ""),
+            "video_quota_credit",
+            0,
+            "管理员创建用户赠送视频额度",
+            balance_units=0,
+            video_quota_change=1,
+            video_quota_balance=1,
+        )
+        await _record_activity_safe(
+            str(identity.get("id") or ""),
+            "admin_create_user",
+            "管理员创建用户",
+            detail="未绑定邮箱",
+            actor="admin",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    created = next(
+        (item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == str(identity.get("id") or "")),
+        None,
+    )
+    return {"ok": True, "user": created or identity}
 
 
 @app.get("/users/{user_id}/details", dependencies=[Depends(require_admin)])
@@ -2799,6 +2838,11 @@ async def runtime_config():
         "task_retry_limit": settings.task_retry_limit,
         "batch_history_retention_days": settings.batch_history_retention_days,
     }
+
+
+@app.get("/config/registration-security", dependencies=[Depends(require_admin)])
+async def registration_security_config():
+    return {"enabled": load_settings().registration_abuse_detection_enabled}
 
 
 @app.post("/config/runtime", dependencies=[Depends(require_admin)])
@@ -3708,6 +3752,21 @@ async def update_registration_email_config(request: Request):
     except (TypeError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return await registration_email_config()
+
+
+@app.post("/config/registration-security", dependencies=[Depends(require_admin)])
+async def update_registration_security_config(request: Request):
+    payload = await _request_payload(request)
+    enabled = str(payload.get("enabled", False)).strip().lower() in {"1", "true", "yes", "on"}
+    update_config({"registration_abuse_detection_enabled": enabled})
+    await _record_admin_action_safe(
+        "registration_security_setting",
+        "异常注册检测设置",
+        detail="已开启" if enabled else "已关闭",
+        actor=load_settings().admin_username,
+        ip_address=_request_client_key(request),
+    )
+    return {"ok": True, "enabled": enabled}
 
 
 @app.get("/temp-tokens", dependencies=[Depends(require_admin)])

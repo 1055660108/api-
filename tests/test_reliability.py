@@ -1118,11 +1118,11 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_worker_has_independent_image_submission_limit(self) -> None:
         manager = WorkerManager()
-        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 10)
-        self.assertEqual(manager._image_submission_semaphore._value, 10)
+        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 12)
+        self.assertEqual(manager._image_submission_semaphore._value, 12)
         self.assertEqual(manager._image_submission_reservations, {})
         snapshot = manager.health_snapshot()
-        self.assertEqual(snapshot["image_upload_concurrency"], 10)
+        self.assertEqual(snapshot["image_upload_concurrency"], 12)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
         self.assertEqual(snapshot["image_submission_claimed"], 0)
         self.assertEqual(snapshot["image_submission_claim_limit"], IMAGE_PREPARATION_CONCURRENCY)

@@ -142,6 +142,10 @@ Worker 每五秒读取 cgroup v1/v2 或主机内存使用率，并动态计算�
 | `DOLA_MEMORY_HIGH_RATIO` | `0.80` | 开始动态收缩的内存比例 |
 | `DOLA_MEMORY_CRITICAL_RATIO` | `0.92` | 收缩至最低并发的内存比例 |
 | `DOLA_MINIMUM_WORKERS` | `1` | 降载期间保留的最低 Worker 数 |
+| `DOLA_SLIDER_ENABLED` | `true` | 自动处理 Dola 页面中可见的滑块验证 |
+| `DOLA_SLIDER_MAX_ATTEMPTS` | `3` | 单次滑块验证最多尝试次数，范围 1 - 8 |
+| `DOLA_SLIDER_VERIFY_TIMEOUT_SECONDS` | `5` | 每次拖动后等待验证结果的秒数 |
+| `DOLA_SLIDER_MINIMUM_CONFIDENCE` | `0.45` | 图像缺口匹配的最低置信度，范围 0 - 1 |
 
 限流和熔断只延迟已入队任务，不改变任务 ID、状态字段或轮询端点。队列过载拒绝发生在扣除额度和创建任务之前，因此不会产生孤儿任务或额度退款竞态。
 

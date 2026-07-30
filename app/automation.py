@@ -59,6 +59,7 @@ from .store import (
     update_meta,
 )
 from .reference_images import prepare_task_reference_images
+from .slider_solver import SliderChallengeSolver, SliderSolveResult, SliderSolverSettings, find_slider_page
 
 
 REGION_RESTRICTED_URL = "https://www.dola.com/security/region-restricted?source=1"
@@ -80,6 +81,7 @@ SUBMISSION_SECRET_RE = re.compile(
 )
 FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
 SERVICE_FREQUENT_RECHECK_DELAY_MS = 3000
+SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
 SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
 () => {
   const visible = element => {
@@ -165,6 +167,31 @@ INFRASTRUCTURE_ERROR_MARKERS = (
 def _submission_response_preview(value: Any) -> str:
     text = str(value or "").replace("\x00", "")[:6000]
     return SUBMISSION_SECRET_RE.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
+
+
+def _environment_bool(name: str, default: bool) -> bool:
+    value = str(os.environ.get(name) or "").strip().lower()
+    if not value:
+        return default
+    return value not in {"0", "false", "no", "off"}
+
+
+def _environment_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        value = int(str(os.environ.get(name) or default).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _environment_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        value = float(str(os.environ.get(name) or default).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 PROXY_TRANSPORT_ERROR_MARKERS = (
     "mihomo ",
     "proxy connection",
@@ -932,6 +959,18 @@ class DolaFetchAutomation:
         self.subscription_proxy: dict[str, str] | None = None
         self.account_proxy_bridge: dict[str, str] | None = None
         self.proxy_exit_id = "direct"
+        self.slider_enabled = _environment_bool("DOLA_SLIDER_ENABLED", True)
+        self.slider_solver = SliderChallengeSolver(
+            SliderSolverSettings(
+                max_attempts=_environment_int("DOLA_SLIDER_MAX_ATTEMPTS", 3, minimum=1, maximum=8),
+                verify_timeout_seconds=_environment_float(
+                    "DOLA_SLIDER_VERIFY_TIMEOUT_SECONDS", 5.0, minimum=1.0, maximum=30.0
+                ),
+                minimum_confidence=_environment_float(
+                    "DOLA_SLIDER_MINIMUM_CONFIDENCE", 0.45, minimum=0.0, maximum=1.0
+                ),
+            )
+        )
 
     def _task_exists(self) -> bool:
         return task_exists(self.task_id)
@@ -947,6 +986,96 @@ class DolaFetchAutomation:
     def _set_phase(self, phase: str, status_reason: str) -> None:
         if self._task_exists():
             set_execution_phase(self.task_id, phase, status_reason)
+
+    async def _resolve_slider_if_present(
+        self,
+        page: Page,
+        context: BrowserContext,
+        *,
+        phase: str,
+        wait_seconds: float = 0.0,
+    ) -> SliderSolveResult:
+        if not self.slider_enabled:
+            return SliderSolveResult(status="not_present", attempts=0)
+
+        deadline = asyncio.get_running_loop().time() + max(0.0, wait_seconds)
+        target_page: Page | None = None
+        while True:
+            target_page = await find_slider_page([context], self.slider_solver.settings.iframe_selector)
+            if target_page is not None or asyncio.get_running_loop().time() >= deadline:
+                break
+            await page.wait_for_timeout(100)
+        if target_page is None:
+            return SliderSolveResult(status="not_present", attempts=0)
+
+        self._set_phase("resolving_slider_verification", "正在完成滑块验证")
+        result = await self.slider_solver.solve(target_page)
+        self._save_result(
+            extra={
+                "slider_last_phase": phase,
+                "slider_last_status": result.status,
+                "slider_last_attempts": result.attempts,
+                "slider_last_confidence": (
+                    round(result.confidence, 4) if result.confidence is not None else None
+                ),
+                "slider_last_error": str(result.error or "")[:300],
+                "slider_last_checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        return result
+
+    def _slider_failure_outcome(self, result: SliderSolveResult, *, phase: str) -> dict[str, Any]:
+        self._mark_active_proxy_unavailable(reason="slider_verification_failed")
+        self._save_result(
+            extra={
+                "submit_error_category": "slider_verification",
+                "submit_phase": phase,
+            }
+        )
+        return {
+            "success": False,
+            "retryable": True,
+            "reason": result.error or "Dola slider verification failed",
+            "account_fault": True,
+            "account_slider_verification": True,
+            "switch_account": True,
+        }
+
+    async def _submit_with_slider_recovery(
+        self,
+        page: Page,
+        context: BrowserContext,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        last_result: dict[str, Any] = {}
+        for attempt in range(1, SLIDER_RECOVERY_SUBMIT_ATTEMPTS + 1):
+            value = await page.evaluate(SUBMIT_SCRIPT, payload)
+            if not isinstance(value, dict):
+                raise RuntimeError("Dola submission returned an invalid response")
+            last_result = value
+
+            account_state: dict[str, Any] | None = None
+            slider_reported = bool(value.get("slider_verification"))
+            if not slider_reported and value.get("service_frequent"):
+                account_state = await self._inspect_service_frequent_account_state(page, context)
+                value["_account_state"] = account_state
+                slider_reported = account_state.get("state") == "slider_verification"
+            if not slider_reported:
+                return value
+
+            slider_result = await self._resolve_slider_if_present(
+                page,
+                context,
+                phase="submission_response",
+                wait_seconds=5.0,
+            )
+            value["_slider_result"] = slider_result
+            if slider_result.status != "success" or attempt >= SLIDER_RECOVERY_SUBMIT_ATTEMPTS:
+                return value
+            self._set_phase("retrying_after_slider", "滑块验证已完成，正在重新提交")
+            await page.wait_for_timeout(300)
+
+        return last_result
 
     async def _inspect_service_frequent_account_state(self, page: Page, context: BrowserContext) -> dict[str, Any]:
         self._set_phase("checking_account_risk", "正在确认账号登录和滑块状态")
@@ -1261,6 +1390,13 @@ class DolaFetchAutomation:
                 except Exception:
                     pass
                 await page.wait_for_timeout(5000)
+                slider_result = await self._resolve_slider_if_present(
+                    page,
+                    context,
+                    phase="page_navigation",
+                )
+                if slider_result.status == "failed":
+                    return self._slider_failure_outcome(slider_result, phase="page_navigation")
                 if self._is_region_restricted(page.url):
                     self._mark_active_proxy_unavailable(reason="region_restricted")
                     self._save_result(extra={"submit_error_category": "region_restricted", "submit_phase": "page_navigation"})
@@ -1276,6 +1412,13 @@ class DolaFetchAutomation:
                 if self.submission_pacer is not None:
                     self._set_phase("waiting_submit_slot", "等待当前生成出口提交时段")
                     await self.submission_pacer(self.proxy_exit_id or self.proxy_node_id or self.active_proxy_source or "direct")
+                slider_result = await self._resolve_slider_if_present(
+                    page,
+                    context,
+                    phase="before_submission",
+                )
+                if slider_result.status == "failed":
+                    return self._slider_failure_outcome(slider_result, phase="before_submission")
                 self._set_phase("submitting_request", "正在提交生成请求")
                 collection_id = str(uuid.uuid4())
                 unique_key = str(uuid.uuid4())
@@ -1298,8 +1441,9 @@ class DolaFetchAutomation:
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 try:
-                    result = await page.evaluate(
-                        SUBMIT_SCRIPT,
+                    result = await self._submit_with_slider_recovery(
+                        page,
+                        context,
                         {
                             "prompt": self.prompt,
                             "ratio": self.ratio,
@@ -1323,6 +1467,8 @@ class DolaFetchAutomation:
                         return {"success": False, "retryable": True, "submitted": True, "reason": reason, "infrastructure_fault": True}
                     release_task_submission(self.task_id)
                     raise
+                cookies = await context.cookies()
+                cookie_string = "; ".join(f"{item['name']}={item['value']}" for item in cookies if item.get("name"))
                 self._save_result(
                     conversation_id=str(result.get("conversation_id") or ""),
                     cookie_string=cookie_string,
@@ -1368,7 +1514,9 @@ class DolaFetchAutomation:
                         "switch_account": True,
                     }
                 if result.get("service_frequent"):
-                    account_state = await self._inspect_service_frequent_account_state(page, context)
+                    account_state = result.get("_account_state")
+                    if not isinstance(account_state, dict):
+                        account_state = await self._inspect_service_frequent_account_state(page, context)
                     self._save_result(extra={
                         "service_frequent_account_state": account_state["state"],
                         "service_frequent_check_url": account_state["url"],

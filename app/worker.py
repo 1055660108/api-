@@ -29,6 +29,7 @@ from .store import (
     load_result,
     mark_account_refund_once,
     mark_failed,
+    mark_late_result_success,
     mark_pending,
     mark_retry_queue_verified,
     mark_submitted,
@@ -56,6 +57,10 @@ from .temp_access import temp_token_concurrency_limits, temp_token_remote_genera
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
 RESULT_WATCH_DEADLINE_MINUTES = 20
+RESULT_LONG_WAIT_SECONDS = 8 * 60
+RESULT_LOW_RATE_SECONDS = 15 * 60
+RESULT_LATE_WATCH_UNTIL_SECONDS = 30 * 60
+RESULT_LATE_POLL_INTERVAL_SECONDS = 60
 RETRY_ACCOUNT_WAIT_MINUTES = 5
 
 
@@ -369,7 +374,15 @@ class WorkerManager:
             due_before=due_before,
             limit=RESULT_POLL_BATCH_SIZE,
         )
-        await self._watch_unfinished_success_tasks([task_id for task_id, _ in submitted_rows])
+        late_rows = list_task_metas_by_statuses(
+            {"failed"},
+            platform="dola",
+            due_before=due_before,
+            limit=RESULT_POLL_BATCH_SIZE,
+            execution_phase="late_result_watch",
+        )
+        late_ids = [task_id for task_id, meta in late_rows if self._late_result_watch_active(meta)]
+        await self._watch_unfinished_success_tasks([task_id for task_id, _ in submitted_rows] + late_ids)
         loop_now = asyncio.get_running_loop().time()
         if loop_now - self._last_pending_retry_reconcile_at >= 15:
             self._last_pending_retry_reconcile_at = loop_now
@@ -456,29 +469,57 @@ class WorkerManager:
             try:
                 result = load_result(task_id)
                 if result.get("decoded_main_url"):
+                    if self._late_result_watch_active(get_meta(task_id)):
+                        mark_late_result_success(task_id)
                     return
                 meta = get_meta(task_id)
-                if str(meta.get("status") or "") != STATUS_SUBMITTED or str(meta.get("platform") or "dola") != "dola":
+                if str(meta.get("platform") or "dola") != "dola":
+                    return
+                late_watch = self._late_result_watch_active(meta)
+                if str(meta.get("status") or "") != STATUS_SUBMITTED and not late_watch:
                     return
                 submitted_at = self._parse_utc(str(meta.get("submitted_at") or meta.get("updated_at") or ""))
-                if submitted_at and datetime.now(timezone.utc) - submitted_at >= timedelta(minutes=RESULT_WATCH_DEADLINE_MINUTES):
+                now = datetime.now(timezone.utc)
+                if late_watch:
+                    late_until = self._parse_utc(str(meta.get("late_result_watch_until") or ""))
+                    if not late_until or now >= late_until:
+                        update_meta(task_id, late_result_watch_until="", execution_phase="failed", status_reason=str(meta.get("error") or "generation timeout"))
+                        return
+                elif submitted_at and now - submitted_at >= timedelta(minutes=RESULT_WATCH_DEADLINE_MINUTES):
                     account_id = str(result.get("account_id") or "")
                     if account_id:
                         settle_account_quota(account_id, str(result.get("account_quota_charge_id") or ""))
                         clear_account_current_task(account_id, task_id)
                     mark_failed(task_id, "生成超过20分钟，仍未返回结果")
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+                    late_until = (submitted_at + timedelta(seconds=RESULT_LATE_WATCH_UNTIL_SECONDS)) if submitted_at else now + timedelta(seconds=RESULT_LATE_WATCH_UNTIL_SECONDS)
+                    update_meta(
+                        task_id,
+                        late_result_watch_until=late_until.isoformat(),
+                        late_result_refunded_at=utc_now(),
+                        execution_phase="late_result_watch",
+                        status_reason="已退款，后台继续观察Dola结果",
+                        next_result_poll_at=(now + timedelta(seconds=RESULT_LATE_POLL_INTERVAL_SECONDS)).isoformat(),
+                    )
                     return
+                age_seconds = max(0.0, (now - submitted_at).total_seconds()) if submitted_at else 0.0
+                if age_seconds >= RESULT_LONG_WAIT_SECONDS and not meta.get("long_result_wait_marked_at"):
+                    update_meta(task_id, long_result_wait_marked_at=utc_now(), execution_phase="waiting_result_long", status_reason="Dola生成时间较长，继续查询结果")
+                if age_seconds >= RESULT_LOW_RATE_SECONDS and not meta.get("late_account_released_at"):
+                    account_id = str(result.get("account_id") or "")
+                    if account_id:
+                        clear_account_current_task(account_id, task_id)
+                    update_meta(task_id, late_account_released_at=utc_now(), execution_phase="waiting_result_low_rate", status_reason="Dola生成较慢，已释放账号并继续低频观察")
                 await self._pace_result_poll()
-                outcome = await query_task(task_id)
+                outcome = await query_task(task_id, late_watch=True) if late_watch else await query_task(task_id)
                 if str(outcome.get("code") or "") == "2":
                     return
                 current = get_meta(task_id)
-                if str(current.get("status") or "") != STATUS_SUBMITTED:
+                if str(current.get("status") or "") != STATUS_SUBMITTED and not late_watch:
                     return
                 miss_count = record_result_watch_miss(task_id)
                 jitter = secrets.randbelow(5001) / 1000
-                interval = min(45, RESULT_POLL_BASE_INTERVAL_SECONDS + max(0, miss_count - 1) * 5)
+                interval = RESULT_LATE_POLL_INTERVAL_SECONDS if late_watch or age_seconds >= RESULT_LOW_RATE_SECONDS else min(45, RESULT_POLL_BASE_INTERVAL_SECONDS + max(0, miss_count - 1) * 5)
                 update_meta(
                     task_id,
                     next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=interval + jitter)).isoformat(),
@@ -489,7 +530,7 @@ class WorkerManager:
                 self._last_error = str(exc)[:500]
                 with suppress(Exception):
                     current = get_meta(task_id)
-                    if str(current.get("status") or "") == STATUS_SUBMITTED:
+                    if str(current.get("status") or "") == STATUS_SUBMITTED or self._late_result_watch_active(current):
                         update_meta(
                             task_id,
                             next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
@@ -497,6 +538,12 @@ class WorkerManager:
                 return
             finally:
                 self._result_poll_active = max(0, self._result_poll_active - 1)
+
+    def _late_result_watch_active(self, meta: dict) -> bool:
+        if str(meta.get("status") or "") != "failed":
+            return False
+        until = self._parse_utc(str(meta.get("late_result_watch_until") or ""))
+        return bool(until and datetime.now(timezone.utc) < until)
 
     def _parse_utc(self, value: str) -> datetime | None:
         try:

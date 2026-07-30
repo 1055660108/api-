@@ -1020,6 +1020,13 @@ def mark_success(task_id: str) -> None:
     update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED, STATUS_SUCCESS}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now())
 
 
+def mark_late_result_success(task_id: str) -> None:
+    result = load_result(task_id)
+    if not result.get("decoded_main_url"):
+        return
+    update_meta_if(task_id, {STATUS_FAILED}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now(), late_result_watch_until="")
+
+
 def mark_submitted(task_id: str, result_poll_delay_seconds: int = 45) -> None:
     submitted_at = utc_now()
     poll_delay = max(5, min(120, int(result_poll_delay_seconds or 45)))
@@ -1418,15 +1425,17 @@ def list_tasks_page(
     }
 
 
-def list_task_metas_by_statuses(statuses: set[str], *, platform: str | None = None, due_before: str | None = None, limit: int | None = None) -> list[tuple[str, dict[str, Any]]]:
+def list_task_metas_by_statuses(statuses: set[str], *, platform: str | None = None, due_before: str | None = None, limit: int | None = None, execution_phase: str | None = None) -> list[tuple[str, dict[str, Any]]]:
     ensure_storage()
     if postgres.enabled() and hasattr(postgres, "list_task_metas_by_statuses"):
-        return postgres.list_task_metas_by_statuses(statuses, platform=platform, due_before=due_before, limit=limit)
+        return postgres.list_task_metas_by_statuses(statuses, platform=platform, due_before=due_before, limit=limit, execution_phase=execution_phase)
     rows: list[tuple[str, dict[str, Any]]] = []
     for item in list_tasks():
         if str(item.get("status") or "") not in statuses:
             continue
         if platform and str(item.get("platform") or DEFAULT_PLATFORM) != platform:
+            continue
+        if execution_phase and str(item.get("execution_phase") or "") != execution_phase:
             continue
         task_id = str(item.get("id") or "")
         try:

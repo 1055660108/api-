@@ -1039,6 +1039,7 @@ def list_task_metas_by_statuses(
     platform: str | None = None,
     due_before: str | None = None,
     limit: int | None = None,
+    execution_phase: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     normalized = sorted({str(item) for item in statuses if str(item)})
     if not normalized:
@@ -1051,6 +1052,9 @@ def list_task_metas_by_statuses(
     if due_before:
         conditions.append("COALESCE(meta->>'next_result_poll_at', meta->>'submitted_at', meta->>'updated_at', '') <= %s")
         params.append(due_before)
+    if execution_phase:
+        conditions.append("meta->>'execution_phase' = %s")
+        params.append(execution_phase)
     query = f"SELECT id, meta FROM dola_tasks WHERE {' AND '.join(conditions)} ORDER BY COALESCE(meta->>'next_result_poll_at', meta->>'submitted_at', meta->>'updated_at', ''), id"
     if limit is not None:
         query += " LIMIT %s"

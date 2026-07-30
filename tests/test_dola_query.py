@@ -713,6 +713,26 @@ class DolaQueryTests(unittest.TestCase):
         refresh.assert_awaited_once()
         self.assertEqual(save_result.call_args.kwargs["extra"]["query_proxy_refresh_count"], 1)
 
+    def test_confirmed_session_refreshes_api_proxy_after_twelve_minutes(self) -> None:
+        task_id = "0" * 32
+        result_data = {
+            "proxy_source": "api",
+            "proxy_server": "http://old.example:18080",
+            "conversation_id": "12345678901234567",
+        }
+        settings = SimpleNamespace(
+            proxy_api_url="https://proxy-api.example/get",
+            proxy_api_timeout_seconds=20,
+            proxy_api_scheme="http",
+        )
+        with patch.object(query, "load_settings", return_value=settings), patch.object(
+            query, "fetch_proxy_from_api", new=AsyncMock(return_value={"server": "http://new.example:18081"})
+        ) as refresh, patch.object(query, "save_result") as save_result:
+            asyncio.run(query._refresh_confirmed_query_proxy_if_due(task_id, result_data, datetime.now(timezone.utc) - timedelta(minutes=13)))
+        refresh.assert_awaited_once()
+        self.assertEqual(result_data["proxy_server"], "http://new.example:18081")
+        self.assertEqual(save_result.call_args.kwargs["extra"]["query_proxy_refresh_reason"], "confirmed_session_stalled")
+
     def test_pending_policy_retry_remains_in_progress(self) -> None:
         task_id = "0" * 32
         meta = {"status": "pending", "owner_token_hash": "owner-hash", "error": query.POLICY_RETRYING_TEXT}

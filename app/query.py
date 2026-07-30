@@ -6,7 +6,7 @@ import json
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -16,7 +16,7 @@ from .accounts import clear_account_current_task, disable_account_for_login, exh
 from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
 from .config import load_settings
 from .proxy_manager import fetch_proxy_from_api
-from .store import AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_proxy_task, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, update_meta
+from .store import AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_late_result_success, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_proxy_task, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, update_meta
 from .temp_access import refund_temp_quota_hash
 
 
@@ -48,6 +48,7 @@ from .textfix import repair_text
 
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS = 120
+CONFIRMED_QUERY_PROXY_REFRESH_SECONDS = 12 * 60
 RETRY_GENERATING_TEXT = "视频生成中请稍后..."
 SUCCESS_TEXT = "已成功"
 POLICY_RETRY_TEXT = "你的输入可能包含违规内容请重试！"
@@ -652,11 +653,52 @@ async def _run_task_query(
         return await operation(refreshed_server)
 
 
-async def _query_task_once(task_id: str) -> dict[str, str]:
+async def _refresh_confirmed_query_proxy_if_due(task_id: str, result: dict[str, Any], submitted_at: datetime | None) -> None:
+    source = str(result.get("proxy_source") or "").strip().lower()
+    if source != "api" or not submitted_at or not str(result.get("conversation_id") or "").strip():
+        return
+    if datetime.now(timezone.utc) - submitted_at < timedelta(seconds=CONFIRMED_QUERY_PROXY_REFRESH_SECONDS):
+        return
+    if str(result.get("confirmed_query_proxy_refresh_attempted_at") or "").strip():
+        return
+    settings = load_settings()
+    attempted_at = datetime.now(timezone.utc).isoformat()
+    extra: dict[str, Any] = {"confirmed_query_proxy_refresh_attempted_at": attempted_at}
+    if not settings.proxy_api_url:
+        extra["confirmed_query_proxy_refresh_error"] = "proxy API is not configured"
+        save_result(task_id, extra=extra)
+        return
+    try:
+        refreshed = await fetch_proxy_from_api(
+            settings.proxy_api_url,
+            timeout_seconds=settings.proxy_api_timeout_seconds,
+            scheme=settings.proxy_api_scheme,
+        )
+        refreshed_server = str(refreshed.get("server") or "").strip()
+        if not refreshed_server:
+            raise RuntimeError("proxy API returned an empty server")
+        extra.update(
+            proxy_server=refreshed_server,
+            query_proxy_refresh_count=max(0, int(result.get("query_proxy_refresh_count") or 0)) + 1,
+            query_proxy_refreshed_at=attempted_at,
+            query_proxy_refresh_reason="confirmed_session_stalled",
+            confirmed_query_proxy_refresh_error="",
+        )
+        result.update(extra)
+    except Exception as exc:
+        extra["confirmed_query_proxy_refresh_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    save_result(task_id, extra=extra)
+
+
+async def _query_task_once(task_id: str, *, late_watch: bool = False) -> dict[str, str]:
     expire_task_if_timeout(task_id)
     meta = get_meta(task_id)
     retry_limit = task_retry_limit()
-    if meta.get("status") not in {STATUS_SUBMITTED, STATUS_SUCCESS}:
+    late_watch_active = late_watch and meta.get("status") == STATUS_FAILED and bool(
+        (late_until := parse_time(str(meta.get("late_result_watch_until") or "")))
+        and datetime.now(timezone.utc) < late_until
+    )
+    if meta.get("status") not in {STATUS_SUBMITTED, STATUS_SUCCESS} and not late_watch_active:
         if meta.get("status") == "running":
             return {"code": "1", "text": str(meta.get("status_reason") or "正在准备生成任务"), "url": ""}
         if meta.get("status") == STATUS_FAILED and str(meta.get("error") or "") in {"超时生成失败", "重试超过30分钟，生成失败"}:
@@ -699,6 +741,10 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
         return {"code": "2", "text": SUCCESS_TEXT, "url": cached_url}
 
     cookie = str(result.get("cookie_string") or "")
+    submitted_at = parse_time(str(meta.get("submitted_at") or meta.get("updated_at") or ""))
+    await _refresh_confirmed_query_proxy_if_due(task_id, result, submitted_at)
+    if result.get("confirmed_query_proxy_refresh_attempted_at"):
+        result = load_result(task_id)
     if not cookie:
         return {"code": "1", "text": "没有文本", "url": ""}
 
@@ -840,7 +886,7 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
                 extra={"decoded_main_url": decoded},
                 remove={"main_url", "cookie_string", "cookies", "conversation_id", "last_query_error", "last_query_error_category"},
             )
-            mark_success(task_id)
+            mark_late_result_success(task_id) if late_watch_active else mark_success(task_id)
             return {"code": "2", "text": SUCCESS_TEXT, "url": decoded}
 
     text = tts_content or "没有文本"
@@ -863,6 +909,8 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
             "conversation_source": conversation_source,
         },
     )
+    if late_watch_active:
+        return {"code": "1", "text": "late result observation", "url": ""}
     account_id = str(result.get("account_id") or "")
     if is_portrait_protection_rejection(text):
         invalidate_reference_attachment_keys([str(item) for item in result.get("reference_image_cache_keys") or []])
@@ -965,6 +1013,6 @@ async def _query_task_once(task_id: str) -> dict[str, str]:
     return {"code": "1", "text": GENERATING_TEXT, "url": ""}
 
 
-async def query_task(task_id: str) -> dict[str, str]:
+async def query_task(task_id: str, *, late_watch: bool = False) -> dict[str, str]:
     async with _query_lock(task_id):
-        return await _query_task_once(task_id)
+        return await _query_task_once(task_id, late_watch=True) if late_watch else await _query_task_once(task_id)

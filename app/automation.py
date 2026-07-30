@@ -80,7 +80,7 @@ SUBMISSION_SECRET_RE = re.compile(
     r'(?i)("?(?:authorization|cookie|msToken|oauth_token(?:_v2)?|sessionid|sid_tt|sid_guard|odin_tt|passport_csrf_token(?:_default)?)"?\s*[:=]\s*"?)([^"\s,;}]+)'
 )
 FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
-SERVICE_FREQUENT_RECHECK_DELAY_MS = 3000
+SERVICE_FREQUENT_OBSERVE_DELAY_MS = 15000
 SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
 SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
 () => {
@@ -1079,7 +1079,6 @@ class DolaFetchAutomation:
 
     async def _inspect_service_frequent_account_state(self, page: Page, context: BrowserContext) -> dict[str, Any]:
         self._set_phase("checking_account_risk", "正在确认账号登录和滑块状态")
-        await page.wait_for_timeout(SERVICE_FREQUENT_RECHECK_DELAY_MS)
 
         async def inspect_pages(stage: str) -> dict[str, Any]:
             pages = [page]
@@ -1111,8 +1110,31 @@ class DolaFetchAutomation:
                 selected["inspectionError"] = "; ".join(errors)[:300]
             return selected
 
-        snapshot = await inspect_pages("before_reload")
-        if not bool(snapshot.get("sliderVerification")) and not bool(snapshot.get("loginInvalid")):
+        initial = await inspect_pages("initial")
+        snapshot = initial
+        if not bool(initial.get("sliderVerification")) and not bool(initial.get("loginInvalid")):
+            await page.wait_for_timeout(SERVICE_FREQUENT_OBSERVE_DELAY_MS)
+            snapshot = await inspect_pages("before_reload")
+            initial_signature = (
+                str(initial.get("href") or ""),
+                str(initial.get("bodyText") or ""),
+            )
+            current_signature = (
+                str(snapshot.get("href") or ""),
+                str(snapshot.get("bodyText") or ""),
+            )
+            page_changed = (
+                not bool(initial.get("inspectionFailed"))
+                and not bool(snapshot.get("inspectionFailed"))
+                and current_signature != initial_signature
+            )
+            snapshot["pageChanged"] = page_changed
+
+        if (
+            not bool(snapshot.get("sliderVerification"))
+            and not bool(snapshot.get("loginInvalid"))
+            and not bool(snapshot.get("pageChanged"))
+        ):
             try:
                 await page.reload(wait_until="domcontentloaded", timeout=30000)
             except Exception as exc:
@@ -1158,6 +1180,7 @@ class DolaFetchAutomation:
             "inspection_stage": str(snapshot.get("inspectionStage") or "")[:40],
             "pages_checked": max(0, int(snapshot.get("pagesChecked") or 0)),
             "evidence": str(snapshot.get("riskEvidence") or "none")[:300],
+            "page_changed": bool(snapshot.get("pageChanged")),
         }
 
     def _finish_image_preparation(self) -> None:
@@ -1525,6 +1548,7 @@ class DolaFetchAutomation:
                         "service_frequent_check_stage": account_state["inspection_stage"],
                         "service_frequent_pages_checked": account_state["pages_checked"],
                         "service_frequent_check_evidence": account_state["evidence"],
+                        "service_frequent_page_changed": account_state["page_changed"],
                     })
                     if account_state["state"] == "slider_verification":
                         release_task_submission(self.task_id)

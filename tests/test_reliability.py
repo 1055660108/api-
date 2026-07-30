@@ -696,7 +696,9 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(normal["state"], "service_frequent")
         self.assertEqual(normal["inspection_stage"], "after_reload")
         self.assertEqual(normal["pages_checked"], 1)
+        self.assertFalse(normal["page_changed"])
         self.assertEqual(cookie_error["state"], "inspection_failed")
+        self.assertEqual(automation.SERVICE_FREQUENT_OBSERVE_DELAY_MS, 15000)
 
     def test_service_frequent_risk_check_scans_secondary_slider_page_before_reload(self) -> None:
         task = self.create_task("secondary-risk-page")
@@ -734,9 +736,89 @@ class ReliabilityTests(unittest.TestCase):
         outcome = asyncio.run(runner._inspect_service_frequent_account_state(main_page, context))
 
         self.assertEqual(outcome["state"], "slider_verification")
-        self.assertEqual(outcome["inspection_stage"], "before_reload")
+        self.assertEqual(outcome["inspection_stage"], "initial")
         self.assertEqual(outcome["pages_checked"], 2)
+        main_page.wait_for_timeout.assert_not_awaited()
         main_page.reload.assert_not_awaited()
+
+    def test_service_frequent_waits_fifteen_seconds_for_slider_before_reload(self) -> None:
+        task = self.create_task("delayed-slider-page")
+        runner = DolaFetchAutomation(
+            task["id"],
+            "prompt",
+            "9:16",
+            account={"cookies": [{"name": "sessionid", "value": "session"}]},
+        )
+        page = SimpleNamespace(
+            url="https://www.dola.com/chat/local_test",
+            wait_for_timeout=AsyncMock(),
+            reload=AsyncMock(),
+            evaluate=AsyncMock(side_effect=[
+                {
+                    "sliderVerification": False,
+                    "loginInvalid": False,
+                    "href": "https://www.dola.com/chat/local_test",
+                    "bodyText": "normal page",
+                },
+                {
+                    "sliderVerification": True,
+                    "loginInvalid": False,
+                    "href": "https://www.dola.com/chat/local_test",
+                    "bodyText": "请完成验证",
+                },
+            ]),
+        )
+        context = SimpleNamespace(
+            pages=[page],
+            cookies=AsyncMock(return_value=[{"name": "sessionid"}]),
+        )
+
+        outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
+
+        self.assertEqual(outcome["state"], "slider_verification")
+        self.assertEqual(outcome["inspection_stage"], "before_reload")
+        page.wait_for_timeout.assert_awaited_once_with(15000)
+        page.reload.assert_not_awaited()
+
+    def test_service_frequent_preserves_a_page_that_changes_while_waiting(self) -> None:
+        task = self.create_task("changed-risk-page")
+        runner = DolaFetchAutomation(
+            task["id"],
+            "prompt",
+            "9:16",
+            account={"cookies": [{"name": "sessionid", "value": "session"}]},
+        )
+        page = SimpleNamespace(
+            url="https://www.dola.com/chat/local_test",
+            wait_for_timeout=AsyncMock(),
+            reload=AsyncMock(),
+            evaluate=AsyncMock(side_effect=[
+                {
+                    "sliderVerification": False,
+                    "loginInvalid": False,
+                    "href": "https://www.dola.com/chat/local_test",
+                    "bodyText": "before",
+                },
+                {
+                    "sliderVerification": False,
+                    "loginInvalid": False,
+                    "href": "https://www.dola.com/chat/local_test",
+                    "bodyText": "after",
+                },
+            ]),
+        )
+        context = SimpleNamespace(
+            pages=[page],
+            cookies=AsyncMock(return_value=[{"name": "sessionid"}]),
+        )
+
+        outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
+
+        self.assertEqual(outcome["state"], "service_frequent")
+        self.assertEqual(outcome["inspection_stage"], "before_reload")
+        self.assertTrue(outcome["page_changed"])
+        page.wait_for_timeout.assert_awaited_once_with(15000)
+        page.reload.assert_not_awaited()
 
     def test_login_invalid_retry_disables_and_switches_account(self) -> None:
         task = self.create_task("login-invalid-owner")

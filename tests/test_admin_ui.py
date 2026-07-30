@@ -151,6 +151,13 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('function updateProxyRefreshCountdown()', self.javascript)
         self.assertNotIn('每 10 分钟自动测速；未勾选国家时使用全部节点', self.html)
 
+    def test_admin_submission_can_select_an_available_account(self) -> None:
+        self.assertIn('id="preferredAccountSelect"', self.html)
+        self.assertIn('class="composer-select admin-credential-field"', self.html)
+        self.assertIn('apiFetch("/accounts/available?platform=dola")', self.javascript)
+        self.assertIn('form.append("preferred_account_id", els.preferredAccountSelect.value)', self.javascript)
+        self.assertIn('preferredAccountId: portal === "admin"', self.javascript)
+
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):
             self.assertIn(f'id="{element_id}"', self.html)

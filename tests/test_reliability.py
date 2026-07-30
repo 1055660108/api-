@@ -1218,7 +1218,7 @@ class ReliabilityTests(unittest.TestCase):
                 self.assertEqual(manager._owner_concurrency_limits(), {"owner-a": 12, "owner-b": 12, "owner-c": 12})
                 self.assertEqual(
                     {owner: manager._image_owner_limit(owner) for owner in ("owner-a", "owner-b", "owner-c")},
-                    {"owner-a": 4, "owner-b": 4, "owner-c": 4},
+                    {"owner-a": 3, "owner-b": 3, "owner-c": 2},
                 )
 
         asyncio.run(calculate())

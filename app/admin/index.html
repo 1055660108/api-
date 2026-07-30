@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.5.0" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.5.1" />
   </head>
   <body>
     <script>
@@ -413,6 +413,7 @@
                     <option value="qianwen" disabled>千问（待接入）</option>
                   </select>
                   <label class="composer-select"><span>模型</span><select id="modelSelect" aria-label="生成模型"><option value="Seedance 2.0">Seedance 2.0</option></select></label>
+                  <label class="composer-select admin-credential-field"><span>生成账号</span><select id="preferredAccountSelect" aria-label="指定生成账号"><option value="">自动分配</option></select></label>
                   <input id="imageInput" class="sr-only" type="file" accept="image/*" multiple />
                   <label class="reference-button" for="imageInput"><span class="plus-icon" aria-hidden="true">+</span> 参考图</label>
                   <label class="reference-person-check" title="勾选后仅对检测到的人脸进行网格处理"><input id="referenceIsRealPerson" type="checkbox" /><span>是否真人</span></label>
@@ -1349,6 +1350,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.5.0"></script>
+    <script src="/admin/assets/app.js?v=1.5.1"></script>
   </body>
 </html>

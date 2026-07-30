@@ -273,6 +273,7 @@ const els = {
   ratioTrigger: document.querySelector("#ratioGroup .ratio-trigger"),
   platformSelect: document.getElementById("platformSelect"),
   modelSelect: document.getElementById("modelSelect"),
+  preferredAccountSelect: document.getElementById("preferredAccountSelect"),
   resetSubmit: document.getElementById("resetSubmit"),
   submitTask: document.getElementById("submitTask"),
   submitState: document.getElementById("submitState"),
@@ -668,6 +669,7 @@ const state = {
   isTempToken: false,
   tempTokens: [],
   accounts: [],
+  submitAccounts: [],
   accountTotal: 0,
   accountTotalPages: 1,
   accountStats: null,
@@ -1124,6 +1126,7 @@ function setSubmitControlsDisabled(disabled) {
   els.promptInput.disabled = disabled;
   els.imageInput.disabled = disabled;
   if (els.referenceIsRealPerson) els.referenceIsRealPerson.disabled = disabled;
+  if (els.preferredAccountSelect) els.preferredAccountSelect.disabled = disabled;
   els.submitTask.disabled = disabled || (portal === "client" && state.freeRemaining + state.points <= 0);
   if (els.resetSubmit) els.resetSubmit.disabled = disabled;
   els.ratioTrigger.disabled = disabled;
@@ -1863,6 +1866,7 @@ function switchView(name) {
   if (name === "tasks" && !state.tasks.length) refreshTasks();
   if (name === "quota" && !state.tempTokens.length) refreshTempTokens();
   if (name === "accounts" && !state.accounts.length) refreshAccounts();
+  if (name === "submit" && portal === "admin") loadPreferredAccounts();
   if (name === "videos") renderVideoLibrary();
   if (name === "prompts") renderPrompts();
   if (name === "batch-submit") renderBatchPrompts();
@@ -3546,6 +3550,22 @@ async function refreshAccounts(options = {}) {
   }
 }
 
+async function loadPreferredAccounts() {
+  if (portal !== "admin" || !els.preferredAccountSelect) return null;
+  const previous = els.preferredAccountSelect.value;
+  const data = await apiFetch("/accounts/available?platform=dola");
+  state.submitAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+  const options = [new Option("自动分配", "")];
+  state.submitAccounts.forEach((account) => {
+    const remaining = account.quota_remaining == null ? "额度不限" : `剩余 ${Number(account.quota_remaining || 0)}`;
+    const suffix = String(account.id || "").slice(-4);
+    options.push(new Option(`${account.name || "未命名账号"} · ${remaining} · ${suffix}`, account.id || ""));
+  });
+  els.preferredAccountSelect.replaceChildren(...options);
+  if (state.submitAccounts.some((account) => account.id === previous)) els.preferredAccountSelect.value = previous;
+  return data;
+}
+
 async function testProxyApi() {
   if (portal === "client") return;
   const apiUrl = els.proxyApiUrl?.value.trim() || "";
@@ -3963,7 +3983,7 @@ async function refreshDashboard() {
   try {
     await refreshHealth();
     const jobs = [refreshTasks({ quiet: true }), loadPlatforms()];
-    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }), loadInvitationConfig());
+    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }), loadPreferredAccounts(), loadInvitationConfig());
     if (portal === "client") jobs.push(loadClientNotifications(), loadMemberships(), loadClientProfile());
     const results = await Promise.allSettled(jobs);
     const rejected = results.find((item) => item.status === "rejected");
@@ -4865,6 +4885,7 @@ function resetSubmitForm(options = {}) {
   state.images = [];
   els.imageInput.value = "";
   if (els.referenceIsRealPerson) els.referenceIsRealPerson.checked = false;
+  if (els.preferredAccountSelect) els.preferredAccountSelect.value = "";
   renderImages();
   els.submitState.textContent = "待提交";
 }
@@ -4875,6 +4896,7 @@ function currentSubmitFingerprint(prompt) {
     ratio: state.ratio,
     platform: state.platform || "dola",
     model: state.model || "",
+    preferredAccountId: portal === "admin" ? (els.preferredAccountSelect?.value || "") : "",
     referenceIsRealPerson: Boolean(els.referenceIsRealPerson?.checked),
     images: state.images.map((file) => [file.name, file.size, file.lastModified]),
   });
@@ -4908,6 +4930,7 @@ async function submitTask(event) {
   form.append("platform", state.platform || "dola");
   form.append("model", state.model || "");
   form.append("reference_is_real_person", els.referenceIsRealPerson?.checked ? "true" : "false");
+  if (portal === "admin" && els.preferredAccountSelect?.value) form.append("preferred_account_id", els.preferredAccountSelect.value);
   state.images.forEach((file) => form.append("images", file, file.name));
   const fingerprint = currentSubmitFingerprint(prompt);
   const idempotencyKey = submitIdempotencyKey(fingerprint);
@@ -4934,6 +4957,7 @@ async function submitTask(event) {
       : `任务已提交${billingText}：${data.id}`);
     await refreshTasks({ quiet: true });
     resetSubmitForm({ force: true });
+    if (portal === "admin") loadPreferredAccounts().catch(() => {});
   } catch (error) {
     if (error.code !== "REQUEST_TIMEOUT") {
       state.submitIdempotencyKey = "";

@@ -3663,6 +3663,49 @@ def _accounts_list_payload(
     return response
 
 
+def _available_generation_accounts(platform: str = DEFAULT_PLATFORM) -> list[dict[str, object]]:
+    target_platform = normalize_platform(platform)
+    available: list[dict[str, object]] = []
+    for account in _account_list_snapshot()["accounts"]:
+        quota_remaining = account.get("quota_remaining")
+        if (
+            str(account.get("platform") or DEFAULT_PLATFORM) != target_platform
+            or account.get("enabled") is False
+            or str(account.get("account_status") or "normal") != "normal"
+            or int(account.get("cookie_count") or 0) <= 0
+            or str(account.get("current_task_id") or "")
+            or int(account.get("active_task_count") or 0) > 0
+            or (quota_remaining is not None and int(quota_remaining) <= 0)
+        ):
+            continue
+        available.append({
+            "id": str(account.get("id") or ""),
+            "name": str(account.get("name") or ""),
+            "platform": target_platform,
+            "quota_limit": max(0, int(account.get("quota_limit") or 0)),
+            "quota_used": max(0, int(account.get("quota_used") or 0)),
+            "quota_remaining": int(quota_remaining) if quota_remaining is not None else None,
+        })
+    available.sort(
+        key=lambda item: (
+            item["quota_remaining"] is not None,
+            -int(item["quota_remaining"] or 0),
+            str(item["name"]),
+            str(item["id"]),
+        )
+    )
+    return available
+
+
+@app.get("/accounts/available", dependencies=[Depends(require_admin)])
+async def available_generation_accounts(platform: str = Query(DEFAULT_PLATFORM)):
+    try:
+        accounts = await asyncio.to_thread(_available_generation_accounts, platform)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"accounts": accounts, "total": len(accounts)}
+
+
 @app.post("/accounts", dependencies=[Depends(require_admin)])
 async def accounts_create(request: Request):
     import asyncio
@@ -4352,6 +4395,7 @@ async def submit_task(
     batch_reference_id: Annotated[str, Form()] = "",
     batch_reference_image_count: Annotated[int, Form()] = 0,
     reference_is_real_person: Annotated[bool, Form()] = False,
+    preferred_account_id: Annotated[str, Form()] = "",
     images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
@@ -4374,6 +4418,15 @@ async def submit_task(
         batch_reference_image_count = max(0, min(load_settings().max_image_count, int(batch_reference_image_count or 0))) if batch else 0
         _ensure_batch_active(access, batch_id)
         platform, model = validate_task_platform_model(platform, model)
+        preferred_account_id = str(preferred_account_id or "").strip().lower()[:64]
+        if preferred_account_id:
+            if not access.is_admin:
+                raise HTTPException(status_code=403, detail="only administrators can select a generation account")
+            if platform != "dola":
+                raise HTTPException(status_code=400, detail="a preferred account can only be selected for Dola tasks")
+            selectable_accounts = await asyncio.to_thread(_available_generation_accounts, platform)
+            if not any(str(item.get("id") or "") == preferred_account_id for item in selectable_accounts):
+                raise HTTPException(status_code=409, detail="selected account is no longer available")
         if platform == "qianwen" and task_type != "video":
             raise HTTPException(status_code=400, detail="千问当前仅支持视频任务")
         uploads = [item for item in (images or []) if item and item.filename]
@@ -4417,7 +4470,7 @@ async def submit_task(
             raise HTTPException(status_code=400, detail="批量共用参考图参数无效")
         await _rate_limit(request, "task-create-batch" if batch else "task-create", 2400 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
-        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_id": batch_reference_id, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "reference_is_real_person": reference_is_real_person, "images": [Path(item.filename or "").name for item in uploads]})
+        fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_id": batch_reference_id, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "reference_is_real_person": reference_is_real_person, "preferred_account_id": preferred_account_id, "images": [Path(item.filename or "").name for item in uploads]})
 
         try:
             if key:
@@ -4528,7 +4581,12 @@ async def submit_task(
                 saved_paths.append(target)
                 saved_reference_names.append(_reference_image_name(upload.filename, index, suffix))
             await _storage_call(set_task_images, meta["id"], saved_paths, saved_reference_names)
-            await _storage_call(update_meta, str(meta["id"]), reference_is_real_person=bool(reference_is_real_person))
+            await _storage_call(
+                update_meta,
+                str(meta["id"]),
+                reference_is_real_person=bool(reference_is_real_person),
+                preferred_account_id=preferred_account_id,
+            )
             _ensure_batch_active(access, batch_id)
             await _storage_call(finalize_task_creation, str(meta["id"]))
         except HTTPException:
@@ -4557,7 +4615,7 @@ async def submit_task(
                 reference_id=str(meta["id"]),
                 detail=f"{model} / {ratio}{' / 多任务第 ' + str(batch_index) + ' 条' if batch else ''}",
             )
-        response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency, "image_count": len(saved_paths)}
+        response = {"id": meta["id"], "queued_for_concurrency": queued_for_concurrency, "image_count": len(saved_paths), "preferred_account_id": preferred_account_id}
         if resumed_initializing:
             response["replayed"] = True
         if reserved_access and reserved_access.is_temp:

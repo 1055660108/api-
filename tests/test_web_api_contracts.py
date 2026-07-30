@@ -1810,6 +1810,66 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("cannot connect to Dola", response.text)
 
+    def test_admin_can_submit_with_an_available_preferred_account(self) -> None:
+        self.login_admin()
+        selected = accounts.add_account("Selected Dola", "session=selected", quota_limit=3)
+        exhausted = accounts.add_account("Exhausted Dola", "session=exhausted", quota_limit=1)
+        disabled = accounts.add_account("Disabled Dola", "session=disabled", enabled=False, quota_limit=3)
+        accounts.exhaust_account_quota(exhausted["id"])
+
+        available = self.client.get("/accounts/available?platform=dola")
+
+        self.assertEqual(available.status_code, 200, available.text)
+        self.assertEqual([item["id"] for item in available.json()["accounts"]], [selected["id"]])
+        self.assertNotIn(exhausted["id"], available.text)
+        self.assertNotIn(disabled["id"], available.text)
+
+        submitted = self.client.post(
+            "/tasks",
+            data={
+                "prompt": "admin selected account task",
+                "ratio": "9:16",
+                "platform": "dola",
+                "model": "Seedance 2.0",
+                "preferred_account_id": selected["id"],
+            },
+        )
+
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        self.assertEqual(submitted.json()["preferred_account_id"], selected["id"])
+        self.assertEqual(store.get_meta(submitted.json()["id"])["preferred_account_id"], selected["id"])
+
+        unavailable = self.client.post(
+            "/tasks",
+            data={
+                "prompt": "unavailable account task",
+                "ratio": "9:16",
+                "platform": "dola",
+                "model": "Seedance 2.0",
+                "preferred_account_id": exhausted["id"],
+            },
+        )
+        self.assertEqual(unavailable.status_code, 409)
+
+    def test_client_cannot_select_a_generation_account(self) -> None:
+        selected = accounts.add_account("Admin-only Dola", "session=admin-only", quota_limit=3)
+        registered = self.register("preferred_account_client")
+
+        response = self.client.post(
+            "/tasks",
+            headers={"X-API-Token": registered["token"]},
+            data={
+                "prompt": "client account selection attempt",
+                "ratio": "9:16",
+                "platform": "dola",
+                "model": "Seedance 2.0",
+                "preferred_account_id": selected["id"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(store.list_tasks(owner_token_hash=temp_access.hash_token(registered["token"])), [])
+
     def test_batch_failed_rows_can_retry_with_original_real_person_setting(self) -> None:
         registered = self.register("batch_failed_retry_owner")
         token = registered["token"]

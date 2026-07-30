@@ -111,6 +111,10 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
     const text = String(element.innerText || element.textContent || "").replace(/\s+/g, "").trim();
     return visible(element) && ["登录", "登录/注册", "注册/登录"].includes(text);
   });
+  const visibleLoginText = Array.from(document.querySelectorAll('body *')).some(element => {
+    const text = String(element.innerText || element.textContent || "").replace(/\s+/g, "").trim();
+    return visible(element) && text === "登录";
+  });
   const href = String(location.href || "");
   const loginText = /游客模式|请登录后再试|登录后再试|登录状态失效|账号已退出|请重新登录/.test(bodyText);
   const loginUrl = /(?:passport|\/login(?:[/?#]|$)|login\.dola)/i.test(href);
@@ -118,7 +122,7 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
     href,
     bodyText: bodyText.slice(0, 2000),
     sliderVerification: sliderSelector || sliderText,
-    loginInvalid: loginText || loginUrl || loginControl,
+    loginInvalid: loginText || loginUrl || loginControl || visibleLoginText,
     riskEvidence: sliderSelector
       ? `slider-selector:${visibleSliderSelectors.join(",")}`
       : sliderText
@@ -129,7 +133,9 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
             ? "login-text"
             : loginControl
               ? "login-control"
-              : "none"
+              : visibleLoginText
+                ? "visible-login-text"
+                : "none"
   };
 }
 """

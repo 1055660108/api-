@@ -306,6 +306,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('label: "待执行"', self.javascript)
         self.assertNotIn("重试 ${retryCount}", self.javascript)
         self.assertIn("生成异常请重试！", self.javascript)
+        self.assertIn('return "生成接口繁忙请稍后重试！";', self.javascript)
         self.assertNotIn('const rawStatus = String(task.status || "未知")', self.javascript)
 
     def test_generation_wait_copy_uses_current_range(self) -> None:

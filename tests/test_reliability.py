@@ -701,6 +701,14 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(automation.SERVICE_FREQUENT_OBSERVE_SECONDS, 15.0)
         self.assertEqual(automation.SERVICE_FREQUENT_POLL_INTERVAL_MS, 500)
 
+    def test_service_frequent_account_state_detects_visible_login_text(self) -> None:
+        script = automation.SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT
+
+        self.assertIn('document.querySelectorAll(\'body *\')', script)
+        self.assertIn('text === "登录"', script)
+        self.assertIn('loginControl || visibleLoginText', script)
+        self.assertIn('"visible-login-text"', script)
+
     def test_service_frequent_risk_check_scans_secondary_slider_page_before_reload(self) -> None:
         task = self.create_task("secondary-risk-page")
         runner = DolaFetchAutomation(

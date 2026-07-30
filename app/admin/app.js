@@ -1268,6 +1268,7 @@ function clientSafeText(value, task = {}) {
   let text = String(value || "");
   if (portal !== "client") return text;
   const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
+  if (/generating videos longer than\s*10 seconds.*not supported|视频.{0,20}超过\s*10\s*秒.{0,20}不支持/i.test(text)) return "生成接口繁忙请稍后重试！";
   if (/游客模式|请登录后再试|登录后再试/.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
   if (/710022004|rate limited|slider verification|跳验证|滑块风控/i.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
   if (/生成超过\d+分钟/.test(text)) return terminal ? "生成失败，请重试！" : "正在生成中，请稍等！";

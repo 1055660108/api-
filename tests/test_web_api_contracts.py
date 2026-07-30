@@ -88,6 +88,9 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("游客模式暂不支持生成图片和视频，请登录后再试", "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("Dola slider verification required 710022004", "Seedance 2.0"), "正在重试中，请稍等！")
         self.assertEqual(main._client_safe_text("Dola 跳验证（滑块风控）", "Seedance 2.0", terminal=True), "生成失败，请重试！")
+        ten_second_reason = "Currently generating videos longer than 10 seconds is not supported, do you want to continue generating for you?"
+        self.assertEqual(main._client_safe_text(ten_second_reason, "Seedance 2.0"), "生成接口繁忙请稍后重试！")
+        self.assertEqual(main._client_safe_text(ten_second_reason, "Seedance 2.0", terminal=True), "生成接口繁忙请稍后重试！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0"), "正在生成中，请稍等！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("reference image upload timed out", "Seedance 2.0"), "参考图上传超时，正在重试！")
@@ -1437,6 +1440,22 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(client_task["error"], "服务暂时异常，请重试！")
         client_result = self.client.get(f"/tasks/{task['id']}", headers={"X-API-Token": token}).json()
         self.assertEqual(client_result["text"], "服务暂时异常，请重试！")
+
+        admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
+        self.assertEqual(admin_task["error"], raw_error)
+
+    def test_client_hides_ten_second_limit_but_admin_keeps_reason(self) -> None:
+        registered = self.register("ten_second_reason_client")
+        token = registered["token"]
+        owner_hash = temp_access.hash_token(token)
+        task = store.create_task("测试十秒限制文案", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        raw_error = "Currently generating videos longer than 10 seconds is not supported, do you want to continue generating for you?"
+        store.mark_failed(task["id"], raw_error)
+
+        client_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": token}).json()["tasks"][0]
+        self.assertEqual(client_task["error"], "生成接口繁忙请稍后重试！")
+        client_result = self.client.get(f"/tasks/{task['id']}", headers={"X-API-Token": token}).json()
+        self.assertEqual(client_result["text"], "生成接口繁忙请稍后重试！")
 
         admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
         self.assertEqual(admin_task["error"], raw_error)

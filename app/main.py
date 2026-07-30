@@ -1506,6 +1506,8 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
 
     replacement = str(model or "当前模型")
     text = str(value or "")
+    if re.search(r"generating videos longer than\s*10 seconds.*not supported|视频.{0,20}超过\s*10\s*秒.{0,20}不支持", text, flags=re.IGNORECASE):
+        return "生成接口繁忙请稍后重试！"
     if re.search(r"游客模式|请登录后再试|登录后再试", text):
         return "生成失败，请重试！" if terminal else "正在重试中，请稍等！"
     if re.search(r"710022004|rate limited|slider verification|跳验证|滑块风控", text, flags=re.IGNORECASE):

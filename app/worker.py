@@ -792,7 +792,7 @@ class WorkerManager:
                     continue
                 failed_account_ids = set(str(item) for item in meta.get("failed_account_ids") or [] if item)
                 platform = str(meta.get("platform") or "dola")
-                preferred_account_id = str(meta.get("preferred_account_id") or "").strip().lower() if platform == "dola" else ""
+                preferred_account_id = str(meta.get("preferred_account_id") or "").strip().lower()
                 if platform not in {"dola", "doubao", "qianwen"}:
                     mark_failed(task_id, "该平台网页自动化暂未接入")
                     continue

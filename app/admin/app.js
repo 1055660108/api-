@@ -3552,14 +3552,17 @@ async function refreshAccounts(options = {}) {
 
 async function loadPreferredAccounts() {
   if (portal !== "admin" || !els.preferredAccountSelect) return null;
+  const platform = state.platform || "dola";
   const previous = els.preferredAccountSelect.value;
-  const data = await apiFetch("/accounts/available?platform=dola");
+  const data = await apiFetch(`/accounts/available?platform=${encodeURIComponent(platform)}`);
+  if ((state.platform || "dola") !== platform) return null;
   state.submitAccounts = Array.isArray(data.accounts) ? data.accounts : [];
   const options = [new Option("自动分配", "")];
   state.submitAccounts.forEach((account) => {
     const remaining = account.quota_remaining == null ? "额度不限" : `剩余 ${Number(account.quota_remaining || 0)}`;
     const suffix = String(account.id || "").slice(-4);
-    options.push(new Option(`${account.name || "未命名账号"} · ${remaining} · ${suffix}`, account.id || ""));
+    const platformLabel = PLATFORM_LABELS[platform] || platform;
+    options.push(new Option(`${platformLabel} / ${account.name || "未命名账号"} / ${remaining} / ${suffix}`, account.id || ""));
   });
   els.preferredAccountSelect.replaceChildren(...options);
   if (state.submitAccounts.some((account) => account.id === previous)) els.preferredAccountSelect.value = previous;
@@ -3889,6 +3892,7 @@ async function loadPlatforms() {
   state.platform = String(data.default_platform || "dola");
   renderPlatformControls();
   renderModelConfig();
+  if (portal === "admin") await loadPreferredAccounts();
 }
 
 function renderModelConfig() {
@@ -3983,7 +3987,7 @@ async function refreshDashboard() {
   try {
     await refreshHealth();
     const jobs = [refreshTasks({ quiet: true }), loadPlatforms()];
-    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }), loadPreferredAccounts(), loadInvitationConfig());
+    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }), loadInvitationConfig());
     if (portal === "client") jobs.push(loadClientNotifications(), loadMemberships(), loadClientProfile());
     const results = await Promise.allSettled(jobs);
     const rejected = results.find((item) => item.status === "rejected");
@@ -7250,6 +7254,7 @@ function bindEvents() {
   els.platformSelect?.addEventListener("change", () => {
     state.platform = els.platformSelect.value || "dola";
     renderPlatformControls();
+    loadPreferredAccounts().catch((error) => toast(`可用账号读取失败：${error.message}`, "error"));
   });
   els.modelSelect?.addEventListener("change", () => {
     const [platform, ...parts] = String(els.modelSelect.value || "").split("::");
@@ -7257,6 +7262,7 @@ function bindEvents() {
     state.model = parts.join("::");
     applyAccessScope();
     els.platformSelect.value = state.platform;
+    loadPreferredAccounts().catch((error) => toast(`可用账号读取失败：${error.message}`, "error"));
   });
   els.accountForm?.addEventListener("submit", importAccount);
   els.accountTaskSearch?.addEventListener("input", () => {

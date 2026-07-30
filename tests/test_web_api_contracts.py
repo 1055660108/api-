@@ -1821,6 +1821,8 @@ class WebAPIContractTests(unittest.TestCase):
     def test_admin_can_submit_with_an_available_preferred_account(self) -> None:
         self.login_admin()
         selected = accounts.add_account("Selected Dola", "session=selected", quota_limit=3)
+        selected_doubao = accounts.add_account("Selected Doubao", "session=selected-doubao", quota_limit=3, platform="doubao")
+        selected_qianwen = accounts.add_account("Selected Qianwen", "session=selected-qianwen", quota_limit=5, platform="qianwen")
         exhausted = accounts.add_account("Exhausted Dola", "session=exhausted", quota_limit=1)
         disabled = accounts.add_account("Disabled Dola", "session=disabled", enabled=False, quota_limit=3)
         accounts.exhaust_account_quota(exhausted["id"])
@@ -1846,6 +1848,39 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(submitted.status_code, 200, submitted.text)
         self.assertEqual(submitted.json()["preferred_account_id"], selected["id"])
         self.assertEqual(store.get_meta(submitted.json()["id"])["preferred_account_id"], selected["id"])
+
+        for platform, model, account in (
+            ("doubao", "Seedance 2.0 Mini", selected_doubao),
+            ("qianwen", "万相 2.7", selected_qianwen),
+        ):
+            available_platform = self.client.get(f"/accounts/available?platform={platform}")
+            self.assertEqual(available_platform.status_code, 200, available_platform.text)
+            self.assertEqual([item["id"] for item in available_platform.json()["accounts"]], [account["id"]])
+            submitted_platform = self.client.post(
+                "/tasks",
+                data={
+                    "prompt": f"admin selected {platform} account task",
+                    "ratio": "9:16",
+                    "platform": platform,
+                    "model": model,
+                    "preferred_account_id": account["id"],
+                },
+            )
+            self.assertEqual(submitted_platform.status_code, 200, submitted_platform.text)
+            self.assertEqual(submitted_platform.json()["preferred_account_id"], account["id"])
+            self.assertEqual(store.get_meta(submitted_platform.json()["id"])["preferred_account_id"], account["id"])
+
+        cross_platform = self.client.post(
+            "/tasks",
+            data={
+                "prompt": "cross platform selected account",
+                "ratio": "9:16",
+                "platform": "qianwen",
+                "model": "万相 2.7",
+                "preferred_account_id": selected["id"],
+            },
+        )
+        self.assertEqual(cross_platform.status_code, 409)
 
         unavailable = self.client.post(
             "/tasks",

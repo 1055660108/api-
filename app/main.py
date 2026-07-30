@@ -4425,8 +4425,6 @@ async def submit_task(
         if preferred_account_id:
             if not access.is_admin:
                 raise HTTPException(status_code=403, detail="only administrators can select a generation account")
-            if platform != "dola":
-                raise HTTPException(status_code=400, detail="a preferred account can only be selected for Dola tasks")
             selectable_accounts = await asyncio.to_thread(_available_generation_accounts, platform)
             if not any(str(item.get("id") or "") == preferred_account_id for item in selectable_accounts):
                 raise HTTPException(status_code=409, detail="selected account is no longer available")

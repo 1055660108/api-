@@ -71,6 +71,12 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('els.openVideoDownloadSettings?.addEventListener("click"', self.javascript)
         self.assertIn('els.selectVideoDownloadFolder?.addEventListener("click", selectDownloadDirectory)', self.javascript)
 
+    def test_disk_cleanup_control_is_bound(self) -> None:
+        for element_id in ("runDiskCleanup", "diskCleanupState"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('apiFetch("/admin/disk-cleanup"', self.javascript)
+        self.assertIn('els.runDiskCleanup?.addEventListener("click", runDiskCleanup)', self.javascript)
+
     def test_update_is_admin_only_and_proxy_has_single_entry(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('body[data-portal="client"] #repositoryUpdatePanel', styles)

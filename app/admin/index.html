@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.94" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.95" />
   </head>
   <body>
     <script>
@@ -318,6 +318,7 @@
               <section class="panel config-panel" id="resourceMonitorPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="activity" aria-hidden="true"></i></span><h2>运行资源告警</h2><p>监控 Redis、PostgreSQL、磁盘和容器内存。</p></div><span class="settings-state" id="resourceMonitorState">等待检测</span></div>
                 <div class="resource-monitor-grid"><span><small>磁盘</small><strong id="resourceDiskState">--</strong></span><span><small>容器内存</small><strong id="resourceMemoryState">--</strong></span><span><small>Redis</small><strong id="resourceRedisState">--</strong></span><span><small>PostgreSQL</small><strong id="resourcePostgresState">--</strong></span></div>
+                <div class="settings-card-value"><div><span>历史任务清理</span><strong id="diskCleanupState">保留昨天零点至今的任务</strong></div><button class="danger-button icon-text-button" id="runDiskCleanup" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>一键清理磁盘</button></div>
               </section>
               </div>
             </div>
@@ -1347,6 +1348,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.94"></script>
+    <script src="/admin/assets/app.js?v=1.4.95"></script>
   </body>
 </html>

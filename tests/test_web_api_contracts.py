@@ -1533,6 +1533,37 @@ class WebAPIContractTests(unittest.TestCase):
         admin_tasks = self.client.get("/tasks", headers={"X-API-Token": self.admin_token}).json()["tasks"]
         self.assertEqual([item["id"] for item in admin_tasks], [task["id"]])
 
+    def test_admin_disk_cleanup_removes_only_old_terminal_tasks(self) -> None:
+        old_success = store.create_task("old completed task", "9:16", model="Seedance 2.0")
+        self.assertTrue(store.mark_running(old_success["id"], "worker-old-success"))
+        store.save_result(old_success["id"], extra={"decoded_main_url": "https://example.com/old.mp4"})
+        store.mark_success(old_success["id"])
+        old_meta = store.get_meta(old_success["id"])
+        old_meta["created_at"] = (datetime.now(store.LOCAL_TZ) - timedelta(days=2)).isoformat()
+        store.meta_path(old_success["id"]).write_text(json.dumps(old_meta), encoding="utf-8")
+
+        recent_success = store.create_task("recent completed task", "9:16", model="Seedance 2.0")
+        self.assertTrue(store.mark_running(recent_success["id"], "worker-recent-success"))
+        store.save_result(recent_success["id"], extra={"decoded_main_url": "https://example.com/recent.mp4"})
+        store.mark_success(recent_success["id"])
+
+        old_running = store.create_task("old running task", "9:16", model="Seedance 2.0")
+        self.assertTrue(store.mark_running(old_running["id"], "worker-old-running"))
+        running_meta = store.get_meta(old_running["id"])
+        running_meta["created_at"] = (datetime.now(store.LOCAL_TZ) - timedelta(days=2)).isoformat()
+        store.meta_path(old_running["id"]).write_text(json.dumps(running_meta), encoding="utf-8")
+
+        with patch.object(main, "DATA_DIR", self.root):
+            response = self.client.post("/admin/disk-cleanup", headers={"X-API-Token": self.admin_token})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["deleted"], 1)
+        self.assertFalse(store.task_exists(old_success["id"]))
+        self.assertTrue(store.task_exists(recent_success["id"]))
+        self.assertTrue(store.task_exists(old_running["id"]))
+
     def test_account_pagination_search_filter_statistics_and_legacy_contract(self) -> None:
         self.login_admin()
         dola = self.client.post("/accounts", json={"name": "搜索账号", "cookie_data": "session=dola", "platform": "dola"}).json()["account"]

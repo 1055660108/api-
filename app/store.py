@@ -1522,6 +1522,91 @@ def cleanup_expired_task_cache(retention_days: int = 7, active_ids: set[str] | N
     return {"deleted": deleted, "skipped": skipped}
 
 
+def cleanup_terminal_tasks_before_local_day(
+    keep_local_days: int = 1,
+    active_ids: set[str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Remove completed tasks created before the retained local calendar days."""
+    ensure_storage()
+    current = now or datetime.now(LOCAL_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=LOCAL_TZ)
+    local_now = current.astimezone(LOCAL_TZ)
+    cutoff_local = (local_now - timedelta(days=max(1, int(keep_local_days)))).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    cutoff = cutoff_local.astimezone(timezone.utc)
+    active = active_ids or set()
+    terminal = {STATUS_SUCCESS, STATUS_FAILED, STATUS_CANCELED}
+    deleted = 0
+    freed_bytes = 0
+    skipped = {"active": 0, "recent": 0, "incomplete": 0}
+
+    if postgres.enabled() and hasattr(postgres, "list_task_metas"):
+        candidates = postgres.list_task_metas()
+    else:
+        candidates = []
+        for root in TASKS_DIR.iterdir():
+            if not root.is_dir() or not TASK_ID_RE.fullmatch(root.name):
+                continue
+            try:
+                candidates.append((root.name, get_meta(root.name)))
+            except (FileNotFoundError, CorruptJSONError):
+                continue
+
+    # Do not use list_tasks here: it performs timeout recovery as a side effect.
+    # Disk cleanup must never change an active task's state before deciding to skip it.
+    for task_id, item in candidates:
+        task_id = str(task_id or "")
+        if not task_id:
+            continue
+        if task_id in active:
+            skipped["active"] += 1
+            continue
+        if str(item.get("status") or "") not in terminal:
+            skipped["active"] += 1
+            continue
+        created_at = parse_time(str(item.get("created_at") or ""))
+        if not created_at or created_at >= cutoff:
+            skipped["recent"] += 1
+            continue
+
+        # Re-read under the task lock so a concurrent manual retry cannot be removed.
+        with task_lock(task_id):
+            try:
+                meta = get_meta(task_id)
+            except (FileNotFoundError, CorruptJSONError):
+                continue
+            if task_id in active or str(meta.get("status") or "") not in terminal:
+                skipped["active"] += 1
+                continue
+            latest_created_at = parse_time(str(meta.get("created_at") or ""))
+            if not latest_created_at or latest_created_at >= cutoff:
+                skipped["recent"] += 1
+                continue
+            if str(meta.get("status") or "") == STATUS_SUCCESS and not task_has_video(task_id):
+                skipped["incomplete"] += 1
+                continue
+            root = task_dir(task_id)
+            try:
+                freed_bytes += sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+            except OSError:
+                pass
+            delete_task(task_id)
+            deleted += 1
+
+    return {
+        "deleted": deleted,
+        "freed_bytes": freed_bytes,
+        "cutoff_local": cutoff_local.isoformat(),
+        "skipped": skipped,
+    }
+
+
 def reset_running_tasks() -> None:
     ensure_storage()
     for item in list_tasks():

@@ -416,6 +416,8 @@ const els = {
   resourceMemoryState: document.getElementById("resourceMemoryState"),
   resourceRedisState: document.getElementById("resourceRedisState"),
   resourcePostgresState: document.getElementById("resourcePostgresState"),
+  runDiskCleanup: document.getElementById("runDiskCleanup"),
+  diskCleanupState: document.getElementById("diskCleanupState"),
   modelConfigPanel: document.getElementById("modelConfigPanel"),
   modelConfigDisplay: document.getElementById("modelConfigDisplay"),
   openModelModal: document.getElementById("openModelModal"),
@@ -3498,6 +3500,33 @@ async function refreshAccounts(options = {}) {
       state.accountRefreshPending = false;
       refreshAccounts({ quiet: true }).catch(() => {});
     }
+  }
+}
+
+function bytesLabel(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
+async function runDiskCleanup() {
+  if (portal !== "admin" || !els.runDiskCleanup) return;
+  const confirmed = window.confirm("将删除昨天零点之前已结束的历史任务和视频。正在排队、生成中、等待结果及昨天零点之后的任务不会受影响。是否继续？");
+  if (!confirmed) return;
+  setBusy(els.runDiskCleanup, true, "清理中");
+  try {
+    const data = await apiFetch("/admin/disk-cleanup", { method: "POST", timeout: 120000 });
+    const released = bytesLabel(data.released_bytes || data.freed_bytes);
+    if (els.diskCleanupState) {
+      els.diskCleanupState.textContent = `已清理 ${Number(data.deleted || 0)} 个历史任务，释放 ${released}`;
+    }
+    toast(`已清理 ${Number(data.deleted || 0)} 个历史任务，释放 ${released}`);
+    await Promise.allSettled([refreshHealth(), refreshTasks({ quiet: true })]);
+  } catch (error) {
+    toast(`清理失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.runDiskCleanup, false);
   }
 }
 
@@ -6647,6 +6676,7 @@ function bindEvents() {
   });
   els.saveEmailConfig?.addEventListener("click", saveEmailConfig);
   els.runtimeConfigForm?.addEventListener("submit", saveRuntimeConfig);
+  els.runDiskCleanup?.addEventListener("click", runDiskCleanup);
   els.openModelModal?.addEventListener("click", async () => {
     try {
       await loadPlatforms();

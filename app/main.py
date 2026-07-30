@@ -87,7 +87,7 @@ from .store import (
     active_task_ids,
     active_task_count_for_owner,
     account_active_tasks,
-    cleanup_expired_task_cache,
+    cleanup_terminal_tasks_before_local_day,
     create_task,
     fail_initializing_tasks,
     finalize_task_creation,
@@ -124,7 +124,6 @@ from .temp_access import (
     refund_temp_quota_hash,
     reserve_temp_quota,
     set_temp_billing_priority,
-    temp_token_retention_days,
     temp_token_remarks,
     update_temp_token,
 )
@@ -737,7 +736,7 @@ async def task_cache_cleanup_loop() -> None:
     while True:
         try:
             settings = load_settings()
-            await asyncio.to_thread(cleanup_expired_task_cache, settings.task_cache_retention_days, active_task_ids(), temp_token_retention_days())
+            await asyncio.to_thread(cleanup_terminal_tasks_before_local_day, 1, active_task_ids())
             expired_batches = await asyncio.to_thread(cleanup_batch_history, settings.batch_history_retention_days, 5000)
             for job in expired_batches:
                 job_id = str(job.get("id") or "")
@@ -3675,6 +3674,27 @@ async def admin_data_restore(
         raise HTTPException(status_code=400, detail=f"恢复失败：{exc}") from exc
     record_admin_action("data_restore", "恢复用户与账号数据", detail=json.dumps(result, ensure_ascii=False))
     return {"ok": True, "restored": result}
+
+
+@app.post("/admin/disk-cleanup", dependencies=[Depends(require_admin)])
+async def admin_disk_cleanup():
+    before = shutil.disk_usage(DATA_DIR)
+    active = await asyncio.to_thread(active_task_ids)
+    result = await asyncio.to_thread(cleanup_terminal_tasks_before_local_day, 1, active)
+    after = shutil.disk_usage(DATA_DIR)
+    released = max(0, int(after.free) - int(before.free))
+    payload = {
+        **result,
+        "released_bytes": released,
+        "disk_before": {"total_bytes": int(before.total), "used_bytes": int(before.used), "free_bytes": int(before.free)},
+        "disk_after": {"total_bytes": int(after.total), "used_bytes": int(after.used), "free_bytes": int(after.free)},
+    }
+    record_admin_action(
+        "disk_cleanup",
+        "清理历史任务文件",
+        detail=json.dumps({"deleted": result["deleted"], "cutoff_local": result["cutoff_local"], "released_bytes": released}, ensure_ascii=False),
+    )
+    return {"ok": True, **payload}
 
 
 @app.post("/accounts/{account_id}/delete", dependencies=[Depends(require_admin)])

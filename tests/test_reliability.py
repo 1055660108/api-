@@ -150,6 +150,40 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(store.task_exists(active["id"]))
         self.assertIn(active["id"], result["skipped"])
 
+    def test_calendar_disk_cleanup_keeps_yesterday_and_active_tasks(self) -> None:
+        old_finished = self.create_task()
+        self.assertTrue(store.mark_running(old_finished["id"], "worker-old"))
+        store.save_result(old_finished["id"], extra={"decoded_main_url": "https://example.com/old.mp4"})
+        store.mark_success(old_finished["id"])
+
+        yesterday = self.create_task()
+        self.assertTrue(store.mark_running(yesterday["id"], "worker-yesterday"))
+        store.save_result(yesterday["id"], extra={"decoded_main_url": "https://example.com/yesterday.mp4"})
+        store.mark_success(yesterday["id"])
+
+        old_active = self.create_task()
+        self.assertTrue(store.mark_running(old_active["id"], "worker-active"))
+
+        def set_created_at(task_id: str, created_at: str) -> None:
+            meta = store.get_meta(task_id)
+            meta["created_at"] = created_at
+            store.meta_path(task_id).write_text(json.dumps(meta), encoding="utf-8")
+
+        set_created_at(old_finished["id"], "2026-07-28T23:59:59+08:00")
+        set_created_at(yesterday["id"], "2026-07-29T00:00:00+08:00")
+        set_created_at(old_active["id"], "2026-07-28T12:00:00+08:00")
+
+        result = store.cleanup_terminal_tasks_before_local_day(
+            now=datetime(2026, 7, 30, 12, tzinfo=store.LOCAL_TZ),
+        )
+
+        self.assertEqual(result["deleted"], 1)
+        self.assertEqual(result["cutoff_local"], "2026-07-29T00:00:00+08:00")
+        self.assertEqual(result["skipped"]["active"], 1)
+        self.assertFalse(store.task_exists(old_finished["id"]))
+        self.assertTrue(store.task_exists(yesterday["id"]))
+        self.assertTrue(store.task_exists(old_active["id"]))
+
     def test_claim_requires_pending_status_owner_capacity_and_no_cancel(self) -> None:
         canceled = self.create_task("owner")
         store.mark_cancel_requested(canceled["id"])

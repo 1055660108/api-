@@ -296,13 +296,18 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
             options = {"auto_select": True, "selected_countries": ["未知"], "latency_threshold_ms": 800}
             first = await proxy_manager.acquire_dola_subscription_proxy("https://subscription.example/token", **options)
             second = await proxy_manager.acquire_dola_subscription_proxy("https://subscription.example/token", **options)
-            third = await proxy_manager.acquire_dola_subscription_proxy("https://subscription.example/token", **options)
+            third_pending = asyncio.create_task(
+                proxy_manager.acquire_dola_subscription_proxy("https://subscription.example/token", **options)
+            )
+            await asyncio.sleep(0)
+            self.assertFalse(third_pending.done())
+            await proxy_manager.release_dola_subscription_proxy(first)
+            third = await asyncio.wait_for(third_pending, timeout=1)
 
         self.assertNotEqual(first["node_id"], second["node_id"])
         self.assertIn(third["node_id"], {first["node_id"], second["node_id"]})
         self.assertEqual(launch.await_count, 2)
         self.assertEqual(proxy_manager.task_mihomo_pool_snapshot()["distinct_nodes"], 2)
-        await proxy_manager.release_dola_subscription_proxy(first)
         await proxy_manager.release_dola_subscription_proxy(second)
         await proxy_manager.release_dola_subscription_proxy(third)
 
@@ -390,14 +395,19 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
             first = await proxy_manager.acquire_dola_subscription_proxy(
                 "https://subscription.example/token", auto_select=False, selected_node=nodes[0].id
             )
-            second = await proxy_manager.acquire_dola_subscription_proxy(
-                "https://subscription.example/token", auto_select=False, selected_node=nodes[0].id
+            second_pending = asyncio.create_task(
+                proxy_manager.acquire_dola_subscription_proxy(
+                    "https://subscription.example/token", auto_select=False, selected_node=nodes[0].id
+                )
             )
+            await asyncio.sleep(0)
+            self.assertFalse(second_pending.done())
+            await proxy_manager.release_dola_subscription_proxy(first)
+            second = await asyncio.wait_for(second_pending, timeout=1)
 
         self.assertEqual(first["node_id"], nodes[0].id)
         self.assertEqual(second["node_id"], nodes[0].id)
         self.assertEqual(launch.await_count, 1)
-        await proxy_manager.release_dola_subscription_proxy(first)
         await proxy_manager.release_dola_subscription_proxy(second)
 
     def test_gateway_failures_require_two_hits_before_node_cooldown(self) -> None:

@@ -80,7 +80,8 @@ SUBMISSION_SECRET_RE = re.compile(
     r'(?i)("?(?:authorization|cookie|msToken|oauth_token(?:_v2)?|sessionid|sid_tt|sid_guard|odin_tt|passport_csrf_token(?:_default)?)"?\s*[:=]\s*"?)([^"\s,;}]+)'
 )
 FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
-SERVICE_FREQUENT_OBSERVE_DELAY_MS = 15000
+SERVICE_FREQUENT_OBSERVE_SECONDS = 15.0
+SERVICE_FREQUENT_POLL_INTERVAL_MS = 500
 SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
 SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
 () => {
@@ -1113,21 +1114,29 @@ class DolaFetchAutomation:
         initial = await inspect_pages("initial")
         snapshot = initial
         if not bool(initial.get("sliderVerification")) and not bool(initial.get("loginInvalid")):
-            await page.wait_for_timeout(SERVICE_FREQUENT_OBSERVE_DELAY_MS)
-            snapshot = await inspect_pages("before_reload")
             initial_signature = (
                 str(initial.get("href") or ""),
                 str(initial.get("bodyText") or ""),
             )
-            current_signature = (
-                str(snapshot.get("href") or ""),
-                str(snapshot.get("bodyText") or ""),
+            page_changed = False
+            checks = max(
+                1,
+                round(SERVICE_FREQUENT_OBSERVE_SECONDS * 1000 / SERVICE_FREQUENT_POLL_INTERVAL_MS),
             )
-            page_changed = (
-                not bool(initial.get("inspectionFailed"))
-                and not bool(snapshot.get("inspectionFailed"))
-                and current_signature != initial_signature
-            )
+            for _ in range(checks):
+                await page.wait_for_timeout(SERVICE_FREQUENT_POLL_INTERVAL_MS)
+                snapshot = await inspect_pages("observing")
+                current_signature = (
+                    str(snapshot.get("href") or ""),
+                    str(snapshot.get("bodyText") or ""),
+                )
+                page_changed = page_changed or (
+                    not bool(initial.get("inspectionFailed"))
+                    and not bool(snapshot.get("inspectionFailed"))
+                    and current_signature != initial_signature
+                )
+                if bool(snapshot.get("sliderVerification")) or bool(snapshot.get("loginInvalid")):
+                    break
             snapshot["pageChanged"] = page_changed
 
         if (

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from app import __version__, accounts, admin_audit, admin_auth, batch_jobs, client_auth, config, invitation_codes, main, package_catalog, point_transactions, proxy_manager, registration_security, store, temp_access, users
+from app import __version__, accounts, admin_audit, admin_auth, batch_jobs, client_auth, config, data_backup, invitation_codes, main, package_catalog, point_transactions, proxy_manager, registration_security, store, temp_access, users
 
 
 class WebAPIContractTests(unittest.TestCase):
@@ -32,6 +32,9 @@ class WebAPIContractTests(unittest.TestCase):
             patch.object(accounts, "ACCOUNTS_PATH", self.root / "accounts.json"),
             patch.object(temp_access, "TEMP_TOKENS_PATH", self.root / "temp_tokens.json"),
             patch.object(users, "USERS_PATH", self.root / "users.json"),
+            patch.object(data_backup, "DATA_DIR", self.root),
+            patch.object(data_backup, "USERS_PATH", self.root / "users.json"),
+            patch.object(data_backup, "ACCOUNTS_PATH", self.root / "accounts.json"),
             patch.object(invitation_codes, "INVITATION_CODES_PATH", self.root / "invitation_codes.json"),
             patch.object(admin_audit, "ADMIN_AUDIT_PATH", self.root / "admin_audit.json"),
             patch.object(package_catalog, "PACKAGE_CATALOG_PATH", self.root / "point_packages.json"),
@@ -1286,6 +1289,32 @@ class WebAPIContractTests(unittest.TestCase):
             self.client.get(f"/tasks/{task['id']}/references/2", headers={"X-API-Token": owner["token"]}).status_code,
             404,
         )
+
+    def test_admin_can_download_and_restore_user_account_backup(self) -> None:
+        self.register("backup_client")
+        self.login_admin()
+        downloaded = self.client.get("/admin/data-backup")
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(downloaded.headers["content-type"], "application/zip")
+        self.assertIn("dola-user-account-backup-", downloaded.headers["content-disposition"])
+
+        active = store.create_task("backup guard", "9:16", model="Seedance 2.0")
+        blocked = self.client.post(
+            "/admin/data-restore",
+            data={"confirm": "true"},
+            files={"upload": ("backup.zip", downloaded.content, "application/zip")},
+        )
+        self.assertEqual(blocked.status_code, 409)
+        store.mark_failed(active["id"], "test cleanup")
+
+        restored = self.client.post(
+            "/admin/data-restore",
+            data={"confirm": "true"},
+            files={"upload": ("backup.zip", downloaded.content, "application/zip")},
+        )
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.json()["restored"]["users"], 1)
+        self.assertTrue((self.root / "backups" / restored.json()["restored"]["pre_restore_snapshot"]).is_file())
 
     def test_restricted_account_access_key_lifecycle_and_scope(self) -> None:
         admin_headers = {"X-API-Token": self.admin_token}

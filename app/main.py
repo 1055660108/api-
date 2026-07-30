@@ -21,7 +21,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 import httpx
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,6 +33,7 @@ from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS,
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
+from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
 from .batch_jobs import (
     cancel_job as cancel_persistent_batch_job,
     claim_next_row as claim_next_batch_row,
@@ -3595,6 +3596,47 @@ async def accounts_delete(account_id: str):
         raise HTTPException(status_code=404, detail="account not found")
     _clear_account_list_cache()
     return {"ok": True}
+
+
+@app.get("/admin/data-backup", dependencies=[Depends(require_admin)])
+async def admin_data_backup():
+    try:
+        archive = await asyncio.to_thread(create_backup)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=f"备份创建失败：{exc}") from exc
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="dola-user-account-backup-{stamp}.zip"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.post("/admin/data-restore", dependencies=[Depends(require_admin)])
+async def admin_data_restore(
+    upload: UploadFile = File(...),
+    confirm: bool = Form(False),
+):
+    if not confirm:
+        raise HTTPException(status_code=400, detail="恢复前必须确认将覆盖用户、额度和账号数据")
+    active = await asyncio.to_thread(
+        list_task_metas_by_statuses,
+        {"pending", "running", "submitted"},
+        limit=2000,
+    )
+    if active:
+        raise HTTPException(status_code=409, detail=f"当前有 {len(active)} 个生成中任务，请等待任务完成后再恢复数据")
+    raw = await upload.read(MAX_BACKUP_BYTES + 1)
+    try:
+        result = await asyncio.to_thread(restore_backup, raw)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"恢复失败：{exc}") from exc
+    record_admin_action("data_restore", "恢复用户与账号数据", detail=json.dumps(result, ensure_ascii=False))
+    return {"ok": True, "restored": result}
 
 
 @app.post("/accounts/{account_id}/delete", dependencies=[Depends(require_admin)])

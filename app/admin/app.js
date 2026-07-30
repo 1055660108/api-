@@ -485,8 +485,21 @@ const els = {
   accountAbnormalCount: document.getElementById("accountAbnormalCount"),
   videoLibrary: document.getElementById("videoLibrary"),
   selectAllVideos: document.getElementById("selectAllVideos"),
+  openVideoDownloadSettings: document.getElementById("openVideoDownloadSettings"),
   downloadSelectedVideos: document.getElementById("downloadSelectedVideos"),
   deleteSelectedVideos: document.getElementById("deleteSelectedVideos"),
+  videoDownloadSettingsModal: document.getElementById("videoDownloadSettingsModal"),
+  closeVideoDownloadSettings: document.getElementById("closeVideoDownloadSettings"),
+  cancelVideoDownloadSettings: document.getElementById("cancelVideoDownloadSettings"),
+  saveVideoDownloadSettings: document.getElementById("saveVideoDownloadSettings"),
+  videoAutoDownload: document.getElementById("videoAutoDownload"),
+  videoDownloadFolderName: document.getElementById("videoDownloadFolderName"),
+  selectVideoDownloadFolder: document.getElementById("selectVideoDownloadFolder"),
+  clearVideoDownloadFolder: document.getElementById("clearVideoDownloadFolder"),
+  videoDownloadFolderState: document.getElementById("videoDownloadFolderState"),
+  downloadDataBackup: document.getElementById("downloadDataBackup"),
+  dataRestoreFile: document.getElementById("dataRestoreFile"),
+  dataBackupState: document.getElementById("dataBackupState"),
   accountPlatformFilter: document.getElementById("accountPlatformFilter"),
   accountStatusFilter: document.getElementById("accountStatusFilter"),
   openAccountAccessModal: document.getElementById("openAccountAccessModal"),
@@ -936,6 +949,54 @@ async function requestJson(path, token, options = {}) {
 
 async function apiFetch(path, options = {}) {
   return requestJson(path, "", options);
+}
+
+async function downloadDataBackup() {
+  if (portal !== "admin" || !els.downloadDataBackup) return;
+  setBusy(els.downloadDataBackup, true, "正在准备");
+  if (els.dataBackupState) els.dataBackupState.textContent = "正在生成备份";
+  try {
+    const response = await fetch("/admin/data-backup", { credentials: "same-origin", headers: { "X-Dola-Portal": portal } });
+    if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = response.headers.get("Content-Disposition")?.match(/filename="?([^";]+)"?/i)?.[1] || `dola-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    if (els.dataBackupState) els.dataBackupState.textContent = "备份已下载";
+  } catch (error) {
+    if (els.dataBackupState) els.dataBackupState.textContent = "备份失败";
+    toast(`备份下载失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.downloadDataBackup, false);
+  }
+}
+
+async function restoreDataBackup(file) {
+  if (portal !== "admin" || !file) return;
+  if (!window.confirm("恢复会覆盖当前用户、额度和账号数据，系统会先保存当前快照。确定继续吗？")) {
+    if (els.dataRestoreFile) els.dataRestoreFile.value = "";
+    return;
+  }
+  const form = new FormData();
+  form.append("upload", file, file.name);
+  form.append("confirm", "true");
+  if (els.dataBackupState) els.dataBackupState.textContent = "正在校验并恢复";
+  try {
+    const data = await apiFetch("/admin/data-restore", { method: "POST", body: form, timeout: 120000 });
+    const restored = data.restored || {};
+    if (els.dataBackupState) els.dataBackupState.textContent = `已恢复用户 ${restored.users || 0}、账号 ${restored.accounts || 0}`;
+    toast("数据恢复完成，请重新登录确认用户和账号状态", "success");
+  } catch (error) {
+    if (els.dataBackupState) els.dataBackupState.textContent = "恢复失败";
+    toast(`数据恢复失败：${error.message}`, "error");
+  } finally {
+    if (els.dataRestoreFile) els.dataRestoreFile.value = "";
+  }
 }
 
 async function loadRepositoryStatus() {
@@ -4930,14 +4991,27 @@ function renderDownloadSettings(permissionGranted = null) {
   const supported = typeof window.showDirectoryPicker === "function";
   const handle = state.downloadDirectoryHandle;
   if (els.batchAutoDownload) els.batchAutoDownload.checked = Boolean(state.autoDownloadEnabled);
+  if (els.videoAutoDownload) els.videoAutoDownload.checked = Boolean(state.autoDownloadEnabled);
   if (els.batchDownloadFolderName) els.batchDownloadFolderName.textContent = handle?.name || "未选择文件夹";
+  if (els.videoDownloadFolderName) els.videoDownloadFolderName.textContent = handle?.name || "未选择文件夹";
   if (els.selectBatchDownloadFolder) els.selectBatchDownloadFolder.disabled = !supported;
+  if (els.selectVideoDownloadFolder) els.selectVideoDownloadFolder.disabled = !supported;
   if (els.clearBatchDownloadFolder) els.clearBatchDownloadFolder.disabled = !handle;
+  if (els.clearVideoDownloadFolder) els.clearVideoDownloadFolder.disabled = !handle;
   if (!els.batchDownloadFolderState) return;
   if (!supported) els.batchDownloadFolderState.textContent = "当前浏览器不支持自定义下载文件夹，请使用最新版 Chrome 或 Edge。";
   else if (!handle) els.batchDownloadFolderState.textContent = "选择文件夹后，已完成视频会按顺序自动保存。";
   else if (permissionGranted === false) els.batchDownloadFolderState.textContent = "已记住文件夹，请重新点击“选择文件夹”授权。";
   else els.batchDownloadFolderState.textContent = `已选择“${handle.name}”，自动下载采用串行写入。`;
+  if (els.videoDownloadFolderState) {
+    els.videoDownloadFolderState.textContent = !supported
+      ? "当前浏览器不支持自定义下载文件夹，请使用新版 Chrome 或 Edge。"
+      : !handle
+        ? "选择文件夹后，可以直接将视频保存到指定位置。"
+        : permissionGranted === false
+          ? "已记住文件夹，请重新选择并授权。"
+          : `已选择“${handle.name}”。`;
+  }
 }
 
 function baselineAutoDownloadedTasks() {
@@ -6563,7 +6637,7 @@ function bindEvents() {
       toast(`会员套餐读取失败：${error.message}`, "error");
     }
   });
-  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.notificationHistoryModal, els.closeNotificationHistory, els.cancelNotificationHistory], [els.announcementHistoryModal, els.closeAnnouncementHistory, els.cancelAnnouncementHistory], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.accountProxyImportModal, els.closeAccountProxyImport, els.cancelAccountProxyImport], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal], [els.batchAutoModal, els.closeBatchAutoModal, els.cancelBatchAutoModal]].forEach(([modal, closeButton, cancelButton]) => {
+  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.notificationHistoryModal, els.closeNotificationHistory, els.cancelNotificationHistory], [els.announcementHistoryModal, els.closeAnnouncementHistory, els.cancelAnnouncementHistory], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.accountProxyImportModal, els.closeAccountProxyImport, els.cancelAccountProxyImport], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal], [els.batchAutoModal, els.closeBatchAutoModal, els.cancelBatchAutoModal], [els.videoDownloadSettingsModal, els.closeVideoDownloadSettings, els.cancelVideoDownloadSettings]].forEach(([modal, closeButton, cancelButton]) => {
     if (closeButton) closeButton.onclick = (event) => {
       event.preventDefault();
       closeSettingsModal(modal);
@@ -7021,6 +7095,32 @@ function bindEvents() {
   });
   els.selectBatchDownloadFolder?.addEventListener("click", selectDownloadDirectory);
   els.clearBatchDownloadFolder?.addEventListener("click", clearDownloadDirectory);
+  els.openVideoDownloadSettings?.addEventListener("click", () => {
+    renderDownloadSettings(state.downloadDirectoryHandle ? true : null);
+    openSettingsModal(els.videoDownloadSettingsModal, els.videoAutoDownload);
+  });
+  els.videoAutoDownload?.addEventListener("change", async () => {
+    if (els.videoAutoDownload.checked && !state.downloadDirectoryHandle) {
+      els.videoAutoDownload.checked = await selectDownloadDirectory();
+    }
+    if (els.videoAutoDownload.checked && !await directoryPermission(state.downloadDirectoryHandle, true)) {
+      els.videoAutoDownload.checked = false;
+      toast("请先授权下载文件夹", "error");
+    }
+  });
+  els.selectVideoDownloadFolder?.addEventListener("click", selectDownloadDirectory);
+  els.clearVideoDownloadFolder?.addEventListener("click", clearDownloadDirectory);
+  els.saveVideoDownloadSettings?.addEventListener("click", () => {
+    state.autoDownloadEnabled = Boolean(els.videoAutoDownload?.checked && state.downloadDirectoryHandle);
+    state.autoDownloadBaselineReady = false;
+    if (state.autoDownloadEnabled) baselineAutoDownloadedTasks();
+    saveDownloadPreferences();
+    renderDownloadSettings(state.autoDownloadEnabled ? true : null);
+    closeSettingsModal(els.videoDownloadSettingsModal);
+    toast("下载设置已保存");
+  });
+  els.downloadDataBackup?.addEventListener("click", downloadDataBackup);
+  els.dataRestoreFile?.addEventListener("change", (event) => restoreDataBackup(event.target.files?.[0]));
   els.closeReferenceModal.addEventListener("click", closeReferenceModal);
   els.confirmReferenceModal.addEventListener("click", closeReferenceModal);
   els.referenceModal.addEventListener("click", (event) => {

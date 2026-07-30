@@ -6,11 +6,11 @@
     <title>HS</title>
     <style id="criticalPortalStyles">
       .hidden,.view:not(.active){display:none!important}
-      body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] .admin-task-bulk,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel{display:none!important}
+      body[data-portal="client"] .admin-credential-field,body[data-portal="client"] .admin-token-field,body[data-portal="client"] .login-token-hint,body[data-portal="client"] .admin-task-bulk,body[data-portal="client"] #proxyNodesNavItem,body[data-portal="client"] #quotaNavItem,body[data-portal="client"] #accountsNavItem,body[data-portal="client"] #usersNavItem,body[data-portal="client"] #pointCardsNavItem,body[data-portal="client"] .nav-item[data-view="docs"],body[data-portal="client"] #proxy-nodesView,body[data-portal="client"] #quotaView,body[data-portal="client"] #accountsView,body[data-portal="client"] #usersView,body[data-portal="client"] #point-cardsView,body[data-portal="client"] #docsView,body[data-portal="client"] .admin-message-center,body[data-portal="client"] .admin-password-panel,body[data-portal="client"] #proxyConfigPanel,body[data-portal="client"] #modelConfigPanel,body[data-portal="client"] #packageConfigPanel,body[data-portal="client"] #emailConfigPanel,body[data-portal="client"] #runtimeConfigPanel,body[data-portal="client"] #dataBackupPanel{display:none!important}
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.88" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.89" />
   </head>
   <body>
     <script>
@@ -311,6 +311,10 @@
                 <div class="settings-card-header"><div><span class="settings-icon">◇</span><h2>会员管理</h2><p>配置客户端显示的会员套餐。</p></div><span class="settings-state" id="membershipConfigState">等待读取</span></div>
                 <div class="settings-card-value"><div><span>套餐目录</span><strong id="membershipConfigDisplay">等待读取</strong></div><button class="primary-button" id="openMembershipModal" type="button">管理会员</button></div>
               </section>
+              <section class="panel config-panel" id="dataBackupPanel">
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="archive" aria-hidden="true"></i></span><h2>用户与账号备份</h2><p>下载用户、额度和账号数据；恢复前会自动保存当前数据快照。</p></div><span class="settings-state" id="dataBackupState">仅管理员可用</span></div>
+                <div class="settings-card-value data-backup-actions"><div><span>恢复数据</span><strong>仅支持本系统导出的 ZIP 备份</strong></div><div class="toolbar-actions"><button class="secondary-button icon-text-button" id="downloadDataBackup" type="button"><i data-lucide="download" aria-hidden="true"></i>下载备份</button><label class="secondary-button icon-text-button" for="dataRestoreFile"><i data-lucide="upload" aria-hidden="true"></i>选择备份<input id="dataRestoreFile" type="file" accept=".zip,application/zip" hidden /></label></div></div>
+              </section>
               <section class="panel config-panel" id="resourceMonitorPanel">
                 <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="activity" aria-hidden="true"></i></span><h2>运行资源告警</h2><p>监控 Redis、PostgreSQL、磁盘和容器内存。</p></div><span class="settings-state" id="resourceMonitorState">等待检测</span></div>
                 <div class="resource-monitor-grid"><span><small>磁盘</small><strong id="resourceDiskState">--</strong></span><span><small>容器内存</small><strong id="resourceMemoryState">--</strong></span><span><small>Redis</small><strong id="resourceRedisState">--</strong></span><span><small>PostgreSQL</small><strong id="resourcePostgresState">--</strong></span></div>
@@ -560,7 +564,7 @@
 
         <section class="view" id="videosView" data-title="我的视频">
           <section class="panel">
-            <div class="panel-header panel-action-header"><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="secondary-button icon-text-button" id="downloadSelectedVideos" type="button" disabled><i data-lucide="download" aria-hidden="true"></i>下载所选</button><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
+            <div class="panel-header panel-action-header"><div class="toolbar-actions"><label class="video-select-all"><input id="selectAllVideos" type="checkbox" /> 全选</label><button class="secondary-button icon-text-button" id="openVideoDownloadSettings" type="button"><i data-lucide="folder-cog" aria-hidden="true"></i>下载设置</button><button class="secondary-button icon-text-button" id="downloadSelectedVideos" type="button" disabled><i data-lucide="download" aria-hidden="true"></i>下载所选</button><button class="danger-button" id="deleteSelectedVideos" type="button" disabled>删除所选</button></div></div>
             <div class="video-library" id="videoLibrary"></div>
           </section>
         </section>
@@ -1250,6 +1254,17 @@
         <div class="modal-actions"><button class="secondary-button" id="cancelCreateUserModal" type="button">取消</button><button class="primary-button" id="submitCreateUser" type="submit">创建用户</button></div>
       </form>
     </div>
+    <div class="modal-backdrop hidden" id="videoDownloadSettingsModal" aria-hidden="true">
+      <section class="modal-panel batch-auto-modal-panel" role="dialog" aria-modal="true" aria-labelledby="videoDownloadSettingsTitle">
+        <div class="modal-header"><h2 id="videoDownloadSettingsTitle">下载设置</h2><button class="modal-close" id="closeVideoDownloadSettings" type="button" aria-label="关闭">×</button></div>
+        <div class="batch-download-settings">
+          <label class="invitation-toggle-control batch-auto-download-control"><input id="videoAutoDownload" type="checkbox" /><span class="switch-track" aria-hidden="true"><span></span></span><span><strong>任务完成后自动下载</strong><small>新完成的视频会写入所选文件夹</small></span></label>
+          <div class="batch-download-folder-row"><div class="batch-download-folder-copy"><span>下载文件夹</span><strong id="videoDownloadFolderName">未选择文件夹</strong></div><button class="secondary-button icon-text-button" id="selectVideoDownloadFolder" type="button"><i data-lucide="folder-open" aria-hidden="true"></i>选择文件夹</button><button class="icon-button" id="clearVideoDownloadFolder" type="button" aria-label="清除下载文件夹" title="清除下载文件夹" disabled><i data-lucide="x" aria-hidden="true"></i></button></div>
+          <p class="batch-download-note" id="videoDownloadFolderState">使用 Chrome 或 Edge 授权文件夹后，可直接保存视频。</p>
+        </div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelVideoDownloadSettings" type="button">取消</button><button class="primary-button" id="saveVideoDownloadSettings" type="button">保存设置</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="userDetailsModal" aria-hidden="true">
       <section class="modal-panel user-details-modal" role="dialog" aria-modal="true" aria-labelledby="userDetailsTitle">
         <div class="modal-header">
@@ -1321,6 +1336,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.88"></script>
+    <script src="/admin/assets/app.js?v=1.4.89"></script>
   </body>
 </html>

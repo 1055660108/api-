@@ -63,6 +63,14 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("系统更新成功，前后端服务已恢复", self.javascript)
         self.assertIn("showRepositoryUpdateError(data.error)", self.javascript)
 
+    def test_backup_restore_and_video_download_settings_are_bound(self) -> None:
+        for element_id in ("dataBackupPanel", "downloadDataBackup", "dataRestoreFile", "openVideoDownloadSettings", "videoDownloadSettingsModal", "selectVideoDownloadFolder"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('fetch("/admin/data-backup"', self.javascript)
+        self.assertIn('apiFetch("/admin/data-restore"', self.javascript)
+        self.assertIn('els.openVideoDownloadSettings?.addEventListener("click"', self.javascript)
+        self.assertIn('els.selectVideoDownloadFolder?.addEventListener("click", selectDownloadDirectory)', self.javascript)
+
     def test_update_is_admin_only_and_proxy_has_single_entry(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('body[data-portal="client"] #repositoryUpdatePanel', styles)

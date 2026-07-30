@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.97" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.98" />
   </head>
   <body>
     <script>
@@ -300,8 +300,8 @@
                 <div class="settings-card-value"><div><span>已启用模型</span><strong id="modelConfigDisplay">等待读取</strong></div><button class="primary-button" id="openModelModal" type="button">编辑模型</button></div>
               </section>
               <section class="panel config-panel" id="runtimeConfigPanel">
-                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="timer" aria-hidden="true"></i></span><h2>单出口提交间隔</h2><p>分别控制每个代理公网出口的 Dola 任务提交速度。</p></div><span class="settings-state" id="runtimeConfigState">等待读取</span></div>
-                <form class="runtime-config-form" id="runtimeConfigForm"><label class="field"><span>单出口间隔秒数</span><input id="dolaSubmitInterval" type="number" min="3" max="30" step="0.5" value="8" /></label><label class="field"><span>任务重试次数</span><input id="taskRetryLimit" type="number" min="0" max="10" step="1" value="2" /></label><label class="field"><span>批量历史保留天数</span><input id="batchHistoryRetentionDays" type="number" min="7" max="30" step="1" value="30" /></label><button class="primary-button" id="saveRuntimeConfig" type="submit">保存设置</button></form>
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="timer" aria-hidden="true"></i></span><h2>全局提交间隔</h2><p>所有 Dola 生成请求共用一个节流器；代理 IP 不同也会按此间隔依次提交。</p></div><span class="settings-state" id="runtimeConfigState">等待读取</span></div>
+                <form class="runtime-config-form" id="runtimeConfigForm"><label class="field"><span>全局间隔秒数</span><input id="dolaSubmitInterval" type="number" min="3" max="30" step="0.5" value="8" /></label><label class="field"><span>任务重试次数</span><input id="taskRetryLimit" type="number" min="0" max="10" step="1" value="2" /></label><label class="field"><span>批量历史保留天数</span><input id="batchHistoryRetentionDays" type="number" min="7" max="30" step="1" value="30" /></label><button class="primary-button" id="saveRuntimeConfig" type="submit">保存设置</button></form>
               </section>
               <section class="panel config-panel" id="packageConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◫</span><h2>积分套餐</h2><p>新增、调整、上架或停用客户端展示的积分套餐。</p></div><span class="settings-state" id="packageConfigState">等待读取</span></div>
@@ -1349,6 +1349,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.97"></script>
+    <script src="/admin/assets/app.js?v=1.4.98"></script>
   </body>
 </html>

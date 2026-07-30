@@ -52,17 +52,17 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(store.active_task_count_for_owner("owner-fast-count"), 37)
         count.assert_called_once_with("owner-fast-count")
 
-    def test_dola_submission_pacing_is_independent_per_public_exit(self) -> None:
+    def test_dola_submission_pacing_is_global_across_public_exits(self) -> None:
         manager = WorkerManager()
 
         async def exercise() -> list[float]:
-            manager._last_dola_submit_at["ip:203.0.113.10"] = asyncio.get_running_loop().time()
+            manager._last_dola_submit_at = asyncio.get_running_loop().time()
             waits: list[float] = []
 
             async def record_sleep(delay: float) -> None:
                 waits.append(delay)
 
-            with patch("app.worker.load_settings", return_value=SimpleNamespace(dola_exit_submit_interval_seconds=5.0)), patch(
+            with patch("app.worker.load_settings", return_value=SimpleNamespace(dola_global_submit_interval_seconds=5.0)), patch(
                 "app.worker.asyncio.sleep", new=AsyncMock(side_effect=record_sleep)
             ):
                 await asyncio.gather(
@@ -72,8 +72,20 @@ class ReliabilityTests(unittest.TestCase):
             return waits
 
         waits = asyncio.run(exercise())
-        self.assertEqual(len(waits), 1)
-        self.assertGreater(waits[0], 4.9)
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(all(wait > 4.9 for wait in waits))
+
+    def test_global_submit_interval_migrates_existing_exit_interval(self) -> None:
+        config.CONFIG_PATH.write_text(
+            json.dumps({"dola_exit_submit_interval_seconds": 19.0}),
+            encoding="utf-8",
+        )
+
+        settings = config.load_settings()
+
+        self.assertEqual(settings.dola_global_submit_interval_seconds, 19.0)
+        persisted = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["dola_global_submit_interval_seconds"], 19.0)
 
     def write_account(self, account_id: str = "account1") -> None:
         self.accounts_path.write_text(

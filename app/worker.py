@@ -143,8 +143,8 @@ class WorkerManager:
         self._workers: dict[str, asyncio.Task] = {}
         self._worker_task_ids: dict[str, str] = {}
         self._claim_lock = asyncio.Lock()
-        self._dola_submit_locks: dict[str, asyncio.Lock] = {}
-        self._last_dola_submit_at: dict[str, float] = {}
+        self._dola_submit_lock = asyncio.Lock()
+        self._last_dola_submit_at = 0.0
         self._image_submission_semaphore = asyncio.Semaphore(IMAGE_SUBMISSION_CONCURRENCY)
         self._image_submission_condition = asyncio.Condition()
         self._image_submission_active = 0
@@ -721,16 +721,15 @@ class WorkerManager:
         self._remote_generation_reservations[task_id] = owner
         return True
 
-    async def _wait_for_dola_submit_slot(self, exit_id: str = "direct") -> None:
-        normalized_exit = str(exit_id or "direct").strip()[:160] or "direct"
-        lock = self._dola_submit_locks.setdefault(normalized_exit, asyncio.Lock())
-        async with lock:
-            submit_interval = load_settings().dola_exit_submit_interval_seconds
-            last_submit_at = self._last_dola_submit_at.get(normalized_exit, 0.0)
-            delay = submit_interval - (asyncio.get_running_loop().time() - last_submit_at)
+    async def _wait_for_dola_submit_slot(self, _exit_id: str = "direct") -> None:
+        # Dola rate limiting is global: changing the proxy IP must not allow
+        # several generation submissions to bypass the configured interval.
+        async with self._dola_submit_lock:
+            submit_interval = load_settings().dola_global_submit_interval_seconds
+            delay = submit_interval - (asyncio.get_running_loop().time() - self._last_dola_submit_at)
             if delay > 0:
                 await asyncio.sleep(delay)
-            self._last_dola_submit_at[normalized_exit] = asyncio.get_running_loop().time()
+            self._last_dola_submit_at = asyncio.get_running_loop().time()
 
     async def _worker_loop(self, worker_id: str) -> None:
         while not self._stopping:

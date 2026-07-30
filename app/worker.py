@@ -180,7 +180,7 @@ class WorkerManager:
         )
         self._api_proxy_pool = ReusableApiProxyPool(
             max_endpoints=BROWSER_POOL_PROCESSES,
-            contexts_per_endpoint=BROWSER_CONTEXTS_PER_PROCESS,
+            contexts_per_endpoint=1,
             max_concurrent_refreshes=API_PROXY_REFRESH_CONCURRENCY,
         )
         self._remote_generation_reservations: dict[str, str] = {}

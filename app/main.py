@@ -40,6 +40,7 @@ from .batch_jobs import (
     cleanup_history as cleanup_batch_history,
     coordinator as batch_coordinator,
     create_job as create_batch_job,
+    create_retry_job as create_batch_retry_job,
     fail_or_requeue_row as fail_or_requeue_batch_row,
     finish_row_creation as finish_batch_row_creation,
     get_job as get_batch_job,
@@ -1397,6 +1398,12 @@ class BulkTaskRetryRequest(BaseModel):
     platform: str = ""
 
 
+class BatchRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    row_indices: list[int] = Field(default_factory=list)
+    retry_all: bool = False
+
+
 async def require_temp(access: Annotated[AccessContext, Depends(require_token)]) -> AccessContext:
     if not access.is_temp:
         raise HTTPException(status_code=403, detail="forbidden")
@@ -2530,6 +2537,37 @@ async def proxy_api_config():
     return _proxy_config_payload(load_settings())
 
 
+def _api_proxy_pool_snapshot() -> dict[str, object]:
+    path = app_config.DATA_DIR / ".worker-health.json"
+    try:
+        health = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {"endpoints": 0, "active": 0, "capacity": 0, "slots": [], "last_error": ""}
+    snapshot = health.get("api_proxy_pool") if isinstance(health, dict) else None
+    if not isinstance(snapshot, dict):
+        return {"endpoints": 0, "active": 0, "capacity": 0, "slots": [], "last_error": ""}
+    slots = snapshot.get("slots") if isinstance(snapshot.get("slots"), list) else []
+    return {
+        "endpoints": max(0, int(snapshot.get("endpoints") or 0)),
+        "active": max(0, int(snapshot.get("active") or 0)),
+        "capacity": max(0, int(snapshot.get("capacity") or 0)),
+        "contexts_per_endpoint": max(1, int(snapshot.get("contexts_per_endpoint") or 1)),
+        "last_error": str(snapshot.get("last_error") or "")[:500],
+        "slots": [
+            {
+                "id": str(item.get("id") or ""),
+                "host_port": str(item.get("host_port") or ""),
+                "active": max(0, int(item.get("active") or 0)),
+                "total_leases": max(0, int(item.get("total_leases") or 0)),
+                "last_leased_at": max(0.0, float(item.get("last_leased_at") or 0.0)),
+                "state": str(item.get("state") or "idle"),
+            }
+            for item in slots
+            if isinstance(item, dict) and str(item.get("host_port") or "")
+        ],
+    }
+
+
 @app.get("/config/proxy-nodes", dependencies=[Depends(require_admin)])
 async def proxy_nodes(refresh: bool = False):
     settings = load_settings()
@@ -2542,6 +2580,20 @@ async def proxy_nodes(refresh: bool = False):
             "auto_select": pool["rotation_enabled"],
             "selected_node": pool["selected_ids"][0] if len(pool["selected_ids"]) == 1 else "",
             "selected_ids": pool["selected_ids"],
+            "auto_countries": [],
+            "latency_threshold_ms": settings.proxy_latency_threshold_ms,
+            "health_refresh_seconds": settings.proxy_health_refresh_seconds,
+        }
+    if settings.proxy_source == "api":
+        pool = _api_proxy_pool_snapshot()
+        return {
+            "source": "api",
+            "nodes": pool["slots"],
+            "pool": pool,
+            "enabled": settings.proxy_enabled,
+            "auto_select": False,
+            "selected_node": "",
+            "selected_ids": [],
             "auto_countries": [],
             "latency_threshold_ms": settings.proxy_latency_threshold_ms,
             "health_refresh_seconds": settings.proxy_health_refresh_seconds,
@@ -4161,6 +4213,70 @@ async def persistent_batch_job_status(
         }
         job = await asyncio.to_thread(reconcile_batch_job, job_id, payloads)
     return {"job": public_batch_job(job, since_revision=since_revision)}
+
+
+@app.post("/batch-prompts/jobs/{job_id}/retry", dependencies=[Depends(require_temp)])
+async def retry_failed_persistent_batch_rows(
+    job_id: str,
+    payload: BatchRetryRequest,
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_temp)],
+):
+    await _rate_limit(request, "batch-failed-retry", 5, 60, access.token_hash)
+    job = await asyncio.to_thread(get_batch_job, job_id, access.token_hash)
+    if not job:
+        raise HTTPException(status_code=404, detail="batch job not found")
+    rows = [dict(row) for row in job.get("rows", []) if isinstance(row, dict)]
+    selected_indices = {int(index) for index in payload.row_indices if int(index) > 0}
+    if not payload.retry_all and not selected_indices:
+        raise HTTPException(status_code=400, detail="select failed batch tasks to retry")
+    candidates = [
+        row for row in rows
+        if str(row.get("status") or "") == "failed"
+        and (payload.retry_all or int(row.get("index") or 0) in selected_indices)
+    ]
+    if not candidates:
+        raise HTTPException(status_code=409, detail="no failed batch tasks are available for retry")
+    if len(candidates) > 1000:
+        raise HTTPException(status_code=400, detail="retry at most 1000 tasks at once")
+
+    release_started_at = datetime.now(timezone.utc)
+    release_interval_seconds = max(1.0, min(5.0, float(load_settings().dola_submit_interval_seconds)))
+    created: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+    failed: list[dict[str, object]] = []
+    for release_index, row in enumerate(candidates):
+        task_id = str(row.get("task_id") or "")
+        try:
+            validate_task_id(task_id)
+            original = await asyncio.to_thread(get_meta, task_id)
+            if str(original.get("owner_token_hash") or "") != access.token_hash:
+                raise HTTPException(status_code=404, detail="task not found")
+            if str(original.get("status") or "") != "failed":
+                skipped.append({"row_index": int(row.get("index") or 0), "reason": "only failed tasks can be retried"})
+                continue
+            available_at = release_started_at + timedelta(seconds=release_index * release_interval_seconds)
+            retry_result = await _create_manual_retry_task(task_id, original, access, available_at=available_at)
+            created.append({"source": row, "retry_id": retry_result["id"], "available_at": available_at.isoformat()})
+        except (ValueError, FileNotFoundError):
+            failed.append({"row_index": int(row.get("index") or 0), "reason": "task not found"})
+        except HTTPException as exc:
+            failed.append({"row_index": int(row.get("index") or 0), "reason": str(exc.detail)})
+        except Exception as exc:
+            logger.exception("batch retry failed for job %s row %s", job_id, row.get("index"))
+            failed.append({"row_index": int(row.get("index") or 0), "reason": f"{type(exc).__name__}: {exc}"})
+    if not created:
+        raise HTTPException(status_code=409, detail="no selected batch tasks could be retried")
+    retry_job = await asyncio.to_thread(create_batch_retry_job, access.token_hash, job, created)
+    return {
+        "ok": not failed,
+        "job": public_batch_job(retry_job),
+        "requested": len(candidates),
+        "created": len(created),
+        "skipped": skipped,
+        "failed": failed,
+        "release_interval_seconds": release_interval_seconds,
+    }
 
 
 @app.post("/batch-prompts/{batch_id}/cancel", dependencies=[Depends(require_token)])

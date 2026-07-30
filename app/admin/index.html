@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.95" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.96" />
   </head>
   <body>
     <script>
@@ -461,11 +461,12 @@
             </div>
             <div class="batch-task-options" aria-label="批量生成参数">
               <label class="field"><span>视频比例</span><select id="batchTaskRatio"><option value="9:16">9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option><option value="3:4">3:4</option><option value="4:3">4:3</option><option value="21:9">21:9</option></select></label>
-              <label class="batch-select-all"><input id="selectAllBatchPrompts" type="checkbox" checked /><span>全选提示词</span></label>
+              <label class="field batch-status-filter"><span>任务状态</span><select id="batchStatusFilter"><option value="all">全部</option><option value="generating">生成中</option><option value="success">成功</option><option value="failed">失败</option></select></label>
+              <label class="batch-select-all"><input id="selectAllBatchPrompts" type="checkbox" checked /><span>全选当前筛选</span></label>
               <strong class="batch-selection-state" id="batchSelectionState">已选择 0 / 0 条</strong>
             </div>
             <div class="batch-prompt-list" id="batchPromptList"><div class="empty-state">导入表格后点击自动解析</div></div>
-            <div class="batch-task-actions"><span class="muted" id="batchTaskProgress">等待导入</span><button class="secondary-button icon-text-button" id="refreshBatchTasks" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新状态</button><div class="batch-pager"><label><span>每页</span><select id="batchPageSize"><option value="10" selected>10 条</option><option value="30">30 条</option><option value="50">50 条</option></select></label><button class="icon-button" id="batchPrevPage" type="button" aria-label="上一页" title="上一页"><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="batchPageState">第 1 / 1 页</span><button class="icon-button" id="batchNextPage" type="button" aria-label="下一页" title="下一页"><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></div>
+            <div class="batch-task-actions"><span class="muted" id="batchTaskProgress">等待导入</span><button class="secondary-button" id="retrySelectedBatchTasks" type="button" disabled>重试所选失败任务</button><button class="secondary-button" id="retryAllFailedBatchTasks" type="button" disabled>重试全部失败任务</button><button class="secondary-button icon-text-button" id="refreshBatchTasks" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新状态</button><div class="batch-pager"><label><span>每页</span><select id="batchPageSize"><option value="10" selected>10 条</option><option value="30">30 条</option><option value="50">50 条</option></select></label><button class="icon-button" id="batchPrevPage" type="button" aria-label="上一页" title="上一页"><i data-lucide="chevron-left" aria-hidden="true"></i></button><span id="batchPageState">第 1 / 1 页</span><button class="icon-button" id="batchNextPage" type="button" aria-label="下一页" title="下一页"><i data-lucide="chevron-right" aria-hidden="true"></i></button></div></div>
           </section>
         </section>
 
@@ -779,7 +780,7 @@
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"browser_pool_processes":12,"browser_contexts_per_process":4,"submission_concurrency":48,"remote_generation_limit":0}</code>
+                    <code>{"browser_pool_processes":12,"browser_contexts_per_process":3,"submission_concurrency":36,"remote_generation_limit":0}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -790,11 +791,11 @@
                   <p>全局远端生成不限制；单用户远端上限由管理员在用户管理中设置。</p>
                   <div class="api-example">
                     <span>请求示例</span>
-                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":48}' http://SERVER_IP:8088/config/workers</code>
+                    <code>curl -X POST -H "X-API-Token: $API_TOKEN" -H "Content-Type: application/json" -d '{"browser_workers":36}' http://SERVER_IP:8088/config/workers</code>
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"ok":true,"browser_pool_processes":12,"browser_contexts_per_process":4,"submission_concurrency":48,"remote_generation_limit":0}</code>
+                    <code>{"ok":true,"browser_pool_processes":12,"browser_contexts_per_process":3,"submission_concurrency":36,"remote_generation_limit":0}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -1348,6 +1349,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.95"></script>
+    <script src="/admin/assets/app.js?v=1.4.96"></script>
   </body>
 </html>

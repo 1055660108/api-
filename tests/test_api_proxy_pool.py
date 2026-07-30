@@ -89,6 +89,8 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["endpoints"], 3)
         self.assertEqual(snapshot["active"], 12)
         self.assertEqual(len({lease.node_id for lease in leases}), 3)
+        self.assertEqual(sum(item["total_leases"] for item in snapshot["slots"]), 12)
+        self.assertEqual(sum(item["active"] for item in snapshot["slots"]), 12)
         await asyncio.gather(*(lease.release() for lease in leases))
         self.assertEqual(pool.snapshot()["active"], 0)
 

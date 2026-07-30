@@ -110,6 +110,67 @@ def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str,
     return deepcopy(job)
 
 
+def create_retry_job(owner_token_hash: str, source_job: dict[str, Any], retries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create a trackable batch containing already-created manual retry tasks."""
+    job_id = secrets.token_hex(16)
+    created_at = _now()
+    rows = []
+    for index, item in enumerate(retries, start=1):
+        source = dict(item.get("source") or {})
+        retry_id = str(item.get("retry_id") or "")
+        if not retry_id:
+            continue
+        rows.append({
+            "index": index,
+            "client_index": max(0, int(source.get("client_index") or index - 1)),
+            "sheet_row": max(1, int(source.get("sheet_row") or index)),
+            "prompt": str(source.get("prompt") or "").strip()[:4000],
+            "image_files": [],
+            "image_names": [str(name).strip()[:180] for name in source.get("image_names", []) if str(name).strip()],
+            "image_count": max(0, int(source.get("image_count") or 0)),
+            "status": "running",
+            "task_id": retry_id,
+            "source_task_id": str(source.get("task_id") or ""),
+            "error": "",
+            "video_url": "",
+            "created_at": created_at,
+            "finished_at": "",
+            "revision": 1,
+            "updated_at": created_at,
+        })
+    if not rows:
+        raise ValueError("retry batch has no tasks")
+    job = {
+        "id": job_id,
+        "owner_token_hash": str(owner_token_hash),
+        "status": "running",
+        "ratio": str(source_job.get("ratio") or "9:16"),
+        "duration": int(source_job.get("duration") or 15),
+        "platform": str(source_job.get("platform") or "dola"),
+        "model": str(source_job.get("model") or "Seedance 2.0"),
+        "concurrency": max(1, int(source_job.get("concurrency") or 1)),
+        "reference_id": "",
+        "reference_count": 0,
+        "reference_batch_id": "",
+        "reference_is_real_person": bool(source_job.get("reference_is_real_person")),
+        "retry_of_batch_id": str(source_job.get("id") or ""),
+        "rows": rows,
+        "revision": 1,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "canceled_at": "",
+    }
+    if postgres.enabled():
+        if not postgres.create_batch_job(job_id, str(owner_token_hash), job):
+            raise RuntimeError("could not allocate retry batch job id")
+    else:
+        with _LOCK:
+            payload = _read_local()
+            payload["jobs"][job_id] = job
+            _write_local(payload)
+    return deepcopy(job)
+
+
 def get_job(job_id: str, owner_token_hash: str = "") -> dict[str, Any] | None:
     if postgres.enabled():
         job = postgres.read_batch_job(str(job_id))

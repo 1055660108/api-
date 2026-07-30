@@ -22,6 +22,8 @@ class _ApiProxySlot:
     node_id: str
     active: int = 0
     invalid: bool = False
+    total_leases: int = 0
+    last_leased_at: float = 0.0
 
 
 class ApiProxyLease:
@@ -71,6 +73,13 @@ class ReusableApiProxyPool:
         self._condition = asyncio.Condition()
         self._stopping = False
 
+    @staticmethod
+    def _lease_slot(slot: _ApiProxySlot) -> _ApiProxySlot:
+        slot.active += 1
+        slot.total_leases += 1
+        slot.last_leased_at = time.time()
+        return slot
+
     async def acquire(
         self,
         api_url: str,
@@ -94,8 +103,7 @@ class ReusableApiProxyPool:
                     if not slot.invalid and slot.node_id not in excluded and slot.active < self.contexts_per_endpoint
                 ]
                 if candidates:
-                    selected = min(candidates, key=lambda slot: (slot.active, slot.node_id))
-                    selected.active += 1
+                    selected = self._lease_slot(min(candidates, key=lambda slot: (slot.active, slot.node_id)))
                     return ApiProxyLease(self, selected)
                 known_node_ids = {slot.node_id for slot in self._slots}
                 refresh_wait_seconds = max(0.0, self._refresh_not_before - time.monotonic())
@@ -122,7 +130,7 @@ class ReusableApiProxyPool:
                     scheme=scheme,
                     excluded_node_ids=excluded | known_node_ids,
                 )
-                slot = _ApiProxySlot(**endpoint, active=1)
+                slot = _ApiProxySlot(**endpoint)
                 duplicate_saturated = False
                 async with self._condition:
                     self._launching = max(0, self._launching - 1)
@@ -132,7 +140,7 @@ class ReusableApiProxyPool:
                     duplicate = next((item for item in self._slots if item.node_id == slot.node_id and not item.invalid), None)
                     if duplicate is not None:
                         if duplicate.node_id not in excluded and duplicate.active < self.contexts_per_endpoint:
-                            duplicate.active += 1
+                            duplicate = self._lease_slot(duplicate)
                             self._last_error = ""
                             self._consecutive_refresh_failures = 0
                             self._refresh_not_before = 0.0
@@ -141,7 +149,7 @@ class ReusableApiProxyPool:
                         duplicate_saturated = True
                         self._condition.notify_all()
                     else:
-                        self._slots.append(slot)
+                        self._slots.append(self._lease_slot(slot))
                         self._last_error = ""
                         self._consecutive_refresh_failures = 0
                         self._refresh_not_before = 0.0
@@ -247,4 +255,15 @@ class ReusableApiProxyPool:
             "available": available,
             "potential_available": max(0, self.capacity - active),
             "last_error": self._last_error,
+            "slots": [
+                {
+                    "id": slot.node_id,
+                    "host_port": slot.host_port,
+                    "active": slot.active,
+                    "total_leases": slot.total_leases,
+                    "last_leased_at": slot.last_leased_at,
+                    "state": "retiring" if slot.invalid else "active" if slot.active else "idle",
+                }
+                for slot in sorted(self._slots, key=lambda item: (item.host_port, item.node_id))
+            ],
         }

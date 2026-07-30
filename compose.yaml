@@ -41,7 +41,7 @@ x-app-environment: &app-environment
   DOLA_UPDATE_CONTROLLER_SOCKET: /run/dola-update/controller.sock
 
 x-app-base: &app-base
-  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.95}
+  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.4.96}
   init: true
   restart: unless-stopped
   ulimits:

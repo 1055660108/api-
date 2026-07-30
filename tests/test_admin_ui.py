@@ -249,6 +249,16 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('els.retryAllFilteredTasks?.addEventListener("click"', self.javascript)
         self.assertIn('input[data-task-select]', self.javascript)
 
+    def test_api_proxy_pool_and_batch_failed_retry_controls_are_bound(self) -> None:
+        for element_id in ("batchStatusFilter", "retrySelectedBatchTasks", "retryAllFailedBatchTasks"):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('state.proxySource === "api"', self.javascript)
+        self.assertIn('function renderApiProxyNodes()', self.javascript)
+        self.assertIn('total_leases', self.javascript)
+        self.assertIn('/batch-prompts/jobs/${encodeURIComponent(jobId)}/retry', self.javascript)
+        self.assertIn('els.retrySelectedBatchTasks?.addEventListener', self.javascript)
+        self.assertIn('els.retryAllFailedBatchTasks?.addEventListener', self.javascript)
+
     def test_expired_sessions_stop_polling_and_account_refreshes_are_coalesced(self) -> None:
         self.assertIn('function stopAutoRefresh()', self.javascript)
         self.assertIn('function showLogin(message = "等待输入") {\n  stopAutoRefresh();', self.javascript)

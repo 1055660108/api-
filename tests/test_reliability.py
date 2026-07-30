@@ -1163,9 +1163,9 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["image_preparation_claimed"], 0)
         self.assertEqual(snapshot["image_preparation_claim_limit"], 12)
         self.assertEqual(snapshot["browser_pool"]["process_limit"], 12)
-        self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 4)
-        self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 48)
-        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 48)
+        self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 3)
+        self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 36)
+        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 12)
         self.assertEqual(snapshot["api_proxy_pool"]["refresh_concurrency_limit"], 2)
 
     def test_reference_preparation_releases_before_submission_and_only_once(self) -> None:
@@ -1203,10 +1203,10 @@ class ReliabilityTests(unittest.TestCase):
             with patch("app.worker.temp_token_concurrency_limits", return_value={"owner-a": 20, "owner-b": 20, "owner-c": 20}), patch(
                 "app.worker.list_task_metas_by_statuses", return_value=rows
             ):
-                self.assertEqual(manager._owner_concurrency_limits(), {"owner-a": 16, "owner-b": 16, "owner-c": 16})
+                self.assertEqual(manager._owner_concurrency_limits(), {"owner-a": 12, "owner-b": 12, "owner-c": 12})
                 self.assertEqual(
                     {owner: manager._image_owner_limit(owner) for owner in ("owner-a", "owner-b", "owner-c")},
-                    {"owner-a": 4, "owner-b": 3, "owner-c": 3},
+                    {"owner-a": 4, "owner-b": 4, "owner-c": 4},
                 )
 
         asyncio.run(calculate())

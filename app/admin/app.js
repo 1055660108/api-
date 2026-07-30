@@ -382,6 +382,8 @@ const els = {
   proxyAccountHint: document.getElementById("proxyAccountHint"),
   proxyApiField: document.getElementById("proxyApiField"),
   proxyApiUrl: document.getElementById("proxyApiUrl"),
+  proxyApiScheme: document.getElementById("proxyApiScheme"),
+  testProxyApi: document.getElementById("testProxyApi"),
   saveProxyConfig: document.getElementById("saveProxyConfig"),
   configState: document.getElementById("configState"),
   repositoryUpdatePanel: document.getElementById("repositoryUpdatePanel"),
@@ -3048,6 +3050,7 @@ async function loadProxyConfig() {
   if (portal === "client" || !els.proxyApiUrl) return null;
   const data = await apiFetch("/config/proxy-api");
   els.proxyApiUrl.value = data.proxy_api_url || "";
+  if (els.proxyApiScheme) els.proxyApiScheme.value = data.proxy_api_scheme || "http";
   if (els.proxySubscriptionUrl) els.proxySubscriptionUrl.value = "";
   if (els.proxySource) els.proxySource.value = data.proxy_source || "direct";
   state.proxySource = data.proxy_source || "direct";
@@ -3382,6 +3385,7 @@ function updateProxySourceFields() {
   els.proxySubscriptionField?.classList.toggle("hidden", source !== "subscription");
   els.proxyAccountField?.classList.toggle("hidden", source !== "account");
   els.proxyApiField?.classList.toggle("hidden", source !== "api");
+  els.testProxyApi?.classList.toggle("hidden", source !== "api");
 }
 
 function proxySourceLabel(source) {
@@ -3409,7 +3413,7 @@ async function saveProxyConfig() {
   try {
     const body = { proxy_source: source };
     if (source === "subscription") Object.assign(body, { proxy_subscription_scheme: "http", proxy_subscription_refresh_seconds: 900 });
-    if (source === "api") Object.assign(body, { proxy_api_url: apiUrl, proxy_api_scheme: "http" });
+    if (source === "api") Object.assign(body, { proxy_api_url: apiUrl, proxy_api_scheme: els.proxyApiScheme?.value || "http" });
     if (source === "account" && accountHost && accountPort && accountUsername && accountPassword) Object.assign(body, { proxy_account_scheme: els.proxyAccountScheme?.value || "socks5", proxy_account_host: accountHost, proxy_account_port: accountPort, proxy_account_username: accountUsername, proxy_account_password: accountPassword });
     if (source === "subscription" && subscriptionUrl) body.proxy_subscription_url = subscriptionUrl;
     await apiFetch("/config/proxy-api", {
@@ -3539,6 +3543,25 @@ async function refreshAccounts(options = {}) {
       state.accountRefreshPending = false;
       refreshAccounts({ quiet: true }).catch(() => {});
     }
+  }
+}
+
+async function testProxyApi() {
+  if (portal === "client") return;
+  const apiUrl = els.proxyApiUrl?.value.trim() || "";
+  if (!apiUrl) return toast("请输入代理提取 API", "error");
+  setBusy(els.testProxyApi, true, "测试中");
+  try {
+    const data = await apiFetch("/config/proxy-api/test", {
+      method: "POST",
+      body: { proxy_api_url: apiUrl, proxy_api_scheme: els.proxyApiScheme?.value || "http" },
+    });
+    const latency = Number.isFinite(Number(data.latency_ms)) ? `，${data.latency_ms} ms` : "";
+    toast(`连接成功：${data.proxy_host_port}${latency}`);
+  } catch (error) {
+    toast(`连接失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.testProxyApi, false);
   }
 }
 
@@ -7141,6 +7164,7 @@ function bindEvents() {
     }
   });
   els.saveProxyConfig?.addEventListener("click", saveProxyConfig);
+  els.testProxyApi?.addEventListener("click", testProxyApi);
   els.proxySource?.addEventListener("change", updateProxySourceFields);
   els.refreshProxyNodes?.addEventListener("click", () => loadProxyNodes(true));
   els.proxyEnabledSelect?.addEventListener("change", saveProxyMode);

@@ -110,14 +110,16 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         ) as probe, patch.object(
             automation, "acquire_dola_subscription_proxy", new=AsyncMock()
         ) as subscription, patch.object(
-            automation, "proxy_exit_identity", new=AsyncMock(return_value="ip:203.0.113.20")
-        ) as exit_identity:
+            automation,
+            "acquire_authenticated_socks_proxy",
+            new=AsyncMock(return_value={"server": "http://127.0.0.1:19090", "exit_id": "ip:203.0.113.20"}),
+        ) as bridge:
             result = await instance._browser_proxy_config()
 
         self.assertEqual(probe.await_count, 2)
         subscription.assert_not_awaited()
-        exit_identity.assert_awaited_once()
-        self.assertEqual(result["server"], "socks5://us.example.com:3020")
+        bridge.assert_awaited_once()
+        self.assertEqual(result["server"], "http://127.0.0.1:19090")
         self.assertEqual(instance.proxy_node_id, imported["selected_ids"][1])
         self.assertEqual(instance.proxy_exit_id, "ip:203.0.113.20")
 
@@ -283,6 +285,10 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
             "username": "fake user",
             "password": "p@ss:word",
         })
+        self.assertEqual(
+            config.browser_proxy_config_for("socks5h://proxy.example.com:3010"),
+            {"server": "socks5://proxy.example.com:3010"},
+        )
 
     def test_failed_proxy_source_enters_temporary_cooldown(self) -> None:
         proxy_manager.mark_proxy_source_unavailable("account")

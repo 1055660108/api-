@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.99" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.5.0" />
   </head>
   <body>
     <script>
@@ -1068,8 +1068,8 @@
           <label class="field"><span>密码</span><input id="proxyAccountPassword" type="password" maxlength="500" placeholder="请输入密码" autocomplete="new-password" /></label>
           <small class="field-wide" id="proxyAccountHint">密码仅保存在服务器本地，后台页面不会回显</small>
         </div>
-        <label class="field" id="proxyApiField"><span>代理提取 API</span><input id="proxyApiUrl" type="url" placeholder="https://example.com/get-proxy" /><small>接口必须返回可用的 ip:port</small></label>
-        <div class="modal-actions"><button class="secondary-button" id="loadProxyConfig" type="button">重新读取</button><button class="secondary-button" id="cancelProxyModal" type="button">取消</button><button class="primary-button" id="saveProxyConfig" type="button">保存</button></div>
+        <div class="compact-form-grid" id="proxyApiField"><label class="field field-wide"><span>代理提取 API</span><input id="proxyApiUrl" type="url" placeholder="https://example.com/get-proxy" /><small>接口必须返回可用的 ip:port</small></label><label class="field"><span>代理协议</span><select id="proxyApiScheme"><option value="http">HTTP</option><option value="https">HTTPS</option><option value="socks5">SOCKS5</option><option value="socks5h">SOCKS5H</option></select></label></div>
+        <div class="modal-actions"><button class="secondary-button" id="loadProxyConfig" type="button">重新读取</button><button class="secondary-button" id="testProxyApi" type="button">测试连接</button><button class="secondary-button" id="cancelProxyModal" type="button">取消</button><button class="primary-button" id="saveProxyConfig" type="button">保存</button></div>
       </section>
     </div>
     <div class="modal-backdrop hidden" id="accountProxyImportModal" aria-hidden="true">
@@ -1349,6 +1349,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.99"></script>
+    <script src="/admin/assets/app.js?v=1.5.0"></script>
   </body>
 </html>

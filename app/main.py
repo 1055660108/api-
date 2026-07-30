@@ -70,7 +70,7 @@ from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, norma
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
-from .proxy_manager import activate_mihomo_node, fetch_subscription_node_list, measure_node_delays, node_payload, probe_dola_proxy, rebuild_mihomo_from_snapshot
+from .proxy_manager import activate_mihomo_node, fetch_proxy_from_api, fetch_subscription_node_list, measure_node_delays, node_payload, probe_dola_proxy, rebuild_mihomo_from_snapshot
 from .resilience import PlatformGuard, adaptive_worker_limit, fair_owner_capacity_limits, queue_admission
 from .registration_security import block_retry_after as registration_block_retry_after, clear_local_state as clear_registration_security_state, record_failure as record_registration_failure, reset_failures as reset_registration_failures
 from .repository_update import repository_status, update_repository
@@ -2535,6 +2535,39 @@ def _proxy_config_payload(settings) -> dict:
 @app.get("/config/proxy-api", dependencies=[Depends(require_admin)])
 async def proxy_api_config():
     return _proxy_config_payload(load_settings())
+
+
+@app.post("/config/proxy-api/test", dependencies=[Depends(require_admin)])
+async def test_proxy_api_config(request: Request):
+    payload = await _request_payload(request)
+    settings = load_settings()
+    try:
+        api_url = validate_proxy_api_url(payload.get("proxy_api_url", settings.proxy_api_url))
+        proxy_scheme = validate_proxy_api_scheme(payload.get("proxy_api_scheme", settings.proxy_api_scheme))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not api_url:
+        raise HTTPException(status_code=400, detail="proxy_api_url is required")
+    try:
+        proxy = await fetch_proxy_from_api(
+            api_url,
+            timeout_seconds=settings.proxy_api_timeout_seconds,
+            scheme=proxy_scheme,
+        )
+        available, latency_ms = await probe_dola_proxy(
+            str(proxy.get("server") or ""),
+            min(12.0, float(settings.proxy_api_timeout_seconds)),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"proxy test failed: {str(exc)[:300]}") from exc
+    if not available:
+        raise HTTPException(status_code=422, detail="proxy extracted successfully but cannot connect to Dola")
+    return {
+        "ok": True,
+        "proxy_host_port": str(proxy.get("host_port") or ""),
+        "proxy_scheme": proxy_scheme,
+        "latency_ms": latency_ms,
+    }
 
 
 def _api_proxy_pool_snapshot() -> dict[str, object]:

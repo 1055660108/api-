@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
+import yaml
+
 from app import proxy_manager
 
 
@@ -173,6 +175,76 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["host_port"], "203.0.113.8:18080")
         sync_get.assert_called_once()
+
+    async def test_authenticated_socks_proxy_is_bridged_for_chromium(self) -> None:
+        captured: dict = {}
+
+        async def launch(slot, node, provider):
+            captured["node"] = node
+            captured["provider"] = yaml.safe_load(provider.decode("utf-8"))
+            return {
+                "server": "http://127.0.0.1:19090",
+                "node_id": node.id,
+                "node_name": node.name,
+                "proxy_mode": "mihomo",
+                "mihomo_lease": "1",
+                "mihomo_slot_id": slot.slot_id,
+                "exit_id": "ip:203.0.113.90",
+            }
+
+        with patch.object(proxy_manager, "_launch_task_mihomo_slot", new=AsyncMock(side_effect=launch)):
+            result = await proxy_manager.acquire_authenticated_socks_proxy(
+                "socks5h://fake%20user:p%40ss@proxy.example.com:1080",
+                "account-proxy-1",
+                "JP authenticated SOCKS",
+            )
+
+        self.assertEqual(result["server"], "http://127.0.0.1:19090")
+        proxy = captured["provider"]["proxies"][0]
+        self.assertEqual(proxy["type"], "socks5")
+        self.assertEqual(proxy["username"], "fake user")
+        self.assertEqual(proxy["password"], "p@ss")
+
+    async def test_authenticated_socks_bridge_replaces_an_idle_slot_when_full(self) -> None:
+        old_process = Mock()
+        old_process.poll.return_value = None
+        proxy_manager._TASK_MIHOMO_SLOTS.append(
+            proxy_manager._TaskMihomoSlot(
+                slot_id="old-slot",
+                node_id="old-node",
+                node_name="old",
+                subscription_url="authenticated-socks:old-node",
+                snapshot_digest="old-digest",
+                process=old_process,
+                server="http://127.0.0.1:18080",
+                active=0,
+                launching=False,
+            )
+        )
+
+        async def launch(slot, node, provider):
+            return {
+                "server": "http://127.0.0.1:19091",
+                "node_id": node.id,
+                "node_name": node.name,
+                "proxy_mode": "mihomo",
+                "mihomo_lease": "1",
+                "mihomo_slot_id": slot.slot_id,
+                "exit_id": "ip:203.0.113.91",
+            }
+
+        with patch.object(proxy_manager, "TASK_MIHOMO_MAX_SLOTS", 1), patch.object(
+            proxy_manager, "_launch_task_mihomo_slot", new=AsyncMock(side_effect=launch)
+        ), patch.object(proxy_manager, "_terminate_mihomo_process") as terminate:
+            result = await proxy_manager.acquire_authenticated_socks_proxy(
+                "socks5://user:password@new.example.com:1080",
+                "new-node",
+                "new",
+            )
+
+        self.assertEqual(result["server"], "http://127.0.0.1:19091")
+        terminate.assert_called_once_with(old_process)
+        self.assertEqual([slot.node_id for slot in proxy_manager._TASK_MIHOMO_SLOTS], ["new-node"])
 
     async def test_different_nodes_with_the_same_public_ip_share_an_exit_identity(self) -> None:
         response = proxy_manager.httpx.Response(

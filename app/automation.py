@@ -28,6 +28,7 @@ from .config import TARGET_URL, browser_proxy_config_for, load_settings
 from .proxy_manager import (
     NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,
     acquire_dola_subscription_proxy,
+    acquire_authenticated_socks_proxy,
     dola_proxy_available,
     fetch_proxy_from_api,
     mark_node_unavailable,
@@ -40,6 +41,7 @@ from .proxy_manager import (
     record_node_gateway_failure,
     record_node_success,
     release_dola_subscription_proxy,
+    release_task_mihomo_proxy,
 )
 from .store import (
     begin_task_submission,
@@ -877,6 +879,7 @@ class DolaFetchAutomation:
         self.proxy_node_id = ""
         self.active_proxy_source = ""
         self.subscription_proxy: dict[str, str] | None = None
+        self.account_proxy_bridge: dict[str, str] | None = None
         self.proxy_exit_id = "direct"
 
     def _task_exists(self) -> bool:
@@ -1289,6 +1292,8 @@ class DolaFetchAutomation:
                     await _bounded_cleanup(safe_close(browser))
                 await _bounded_cleanup(release_dola_subscription_proxy(self.subscription_proxy))
                 self.subscription_proxy = None
+                await _bounded_cleanup(release_task_mihomo_proxy(self.account_proxy_bridge))
+                self.account_proxy_bridge = None
                 if getattr(self, "api_proxy_lease", None) is not None:
                     await _bounded_cleanup(self.api_proxy_lease.release())
                     self.api_proxy_lease = None
@@ -1489,10 +1494,20 @@ class DolaFetchAutomation:
                         if not probe_url or not await dola_proxy_available(probe_url, min(12.0, float(self.settings.proxy_api_timeout_seconds))):
                             account_errors += 1
                             continue
-                        config = account_browser_config(entry)
+                        entry_scheme = str(entry.get("scheme") or "socks5").strip().lower()
+                        if entry_scheme in {"socks5", "socks5h"}:
+                            bridge = await acquire_authenticated_socks_proxy(
+                                probe_url,
+                                entry_id,
+                                f"{entry.get('host')}:{entry.get('port')}",
+                            )
+                            self.account_proxy_bridge = bridge
+                            config = browser_proxy_config_for(str(bridge.get("server") or ""))
+                        else:
+                            config = account_browser_config(entry)
                         self.proxy_node_id = str(entry.get("id") or "")
                         self.active_proxy_source = source
-                        self.proxy_exit_id = await proxy_exit_identity(probe_url, self.proxy_node_id)
+                        self.proxy_exit_id = str((getattr(self, "account_proxy_bridge", None) or {}).get("exit_id") or "") or await proxy_exit_identity(probe_url, self.proxy_node_id)
                         mark_proxy_source_available(source)
                         if avoid_node_id and self.proxy_node_id != avoid_node_id:
                             update_meta(self.task_id, proxy_retry_avoid_node_id="")

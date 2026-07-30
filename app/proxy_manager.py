@@ -998,6 +998,137 @@ async def release_task_mihomo_proxy(proxy: dict[str, str] | None) -> None:
         await asyncio.to_thread(_terminate_mihomo_process, retired.process)
 
 
+async def acquire_authenticated_socks_proxy(
+    server: str,
+    node_id: str,
+    node_name: str,
+) -> dict[str, str]:
+    """Expose an authenticated SOCKS proxy as a local HTTP proxy for Chromium."""
+    global _TASK_MIHOMO_CONDITION
+    parsed = urlsplit(str(server or ""))
+    scheme = parsed.scheme.lower()
+    if scheme not in {"socks5", "socks5h"} or not parsed.hostname or not parsed.port:
+        raise RuntimeError("authenticated SOCKS proxy configuration is invalid")
+    username = unquote(parsed.username or "")
+    password = unquote(parsed.password or "")
+    if not username or not password:
+        raise RuntimeError("authenticated SOCKS proxy credentials are required")
+    normalized_node_id = str(node_id or _node_id(server))
+    normalized_name = str(node_name or f"{parsed.hostname}:{parsed.port}")[:200]
+    provider = yaml.safe_dump(
+        {
+            "proxies": [
+                {
+                    "name": normalized_name,
+                    "type": "socks5",
+                    "server": parsed.hostname,
+                    "port": int(parsed.port),
+                    "username": username,
+                    "password": password,
+                    "udp": False,
+                }
+            ]
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    ).encode("utf-8")
+    digest = hashlib.sha256(provider).hexdigest()
+    pool_key = f"authenticated-socks:{normalized_node_id}"
+    node = ProxyNode(
+        normalized_node_id,
+        normalized_name,
+        identify_country(normalized_name, str(parsed.hostname)),
+        scheme,
+        str(parsed.hostname),
+        int(parsed.port),
+        server,
+    )
+    if _TASK_MIHOMO_CONDITION is None:
+        _TASK_MIHOMO_CONDITION = asyncio.Condition()
+    while True:
+        retired: list[_TaskMihomoSlot] = []
+        launch_slot: _TaskMihomoSlot | None = None
+        async with _TASK_MIHOMO_CONDITION:
+            for slot in list(_TASK_MIHOMO_SLOTS):
+                disconnected = bool(slot.process and slot.process.poll() is not None)
+                if disconnected or _node_is_cooling_down(slot.node_id):
+                    slot.retiring = True
+                if slot.retiring and slot.active == 0 and not slot.launching:
+                    _TASK_MIHOMO_SLOTS.remove(slot)
+                    retired.append(slot)
+            ready = [
+                slot
+                for slot in _TASK_MIHOMO_SLOTS
+                if slot.subscription_url == pool_key
+                and slot.snapshot_digest == digest
+                and not slot.launching
+                and not slot.retiring
+                and slot.process is not None
+                and slot.process.poll() is None
+                and slot.active < TASK_MIHOMO_CONTEXTS_PER_EXIT
+            ]
+            if ready:
+                slot = min(ready, key=lambda item: (item.active, item.slot_id))
+                slot.active += 1
+                _TASK_MIHOMO_CONDITION.notify_all()
+                result = {
+                    "server": slot.server,
+                    "node_count": "managed",
+                    "node_id": slot.node_id,
+                    "node_name": slot.node_name,
+                    "proxy_mode": "mihomo",
+                    "mihomo_lease": "1",
+                    "mihomo_slot_id": slot.slot_id,
+                    "exit_id": slot.exit_id or f"node:{slot.node_id}",
+                }
+            else:
+                if len(_TASK_MIHOMO_SLOTS) >= TASK_MIHOMO_MAX_SLOTS:
+                    idle = next(
+                        (
+                            slot
+                            for slot in _TASK_MIHOMO_SLOTS
+                            if not slot.launching and slot.active == 0
+                        ),
+                        None,
+                    )
+                    if idle is not None:
+                        _TASK_MIHOMO_SLOTS.remove(idle)
+                        retired.append(idle)
+                if len(_TASK_MIHOMO_SLOTS) >= TASK_MIHOMO_MAX_SLOTS:
+                    await _TASK_MIHOMO_CONDITION.wait()
+                    result = None
+                else:
+                    launch_slot = _TaskMihomoSlot(
+                        slot_id=secrets.token_hex(6),
+                        node_id=normalized_node_id,
+                        node_name=normalized_name,
+                        subscription_url=pool_key,
+                        snapshot_digest=digest,
+                    )
+                    _TASK_MIHOMO_SLOTS.append(launch_slot)
+                    result = None
+        if retired:
+            await asyncio.gather(
+                *(asyncio.to_thread(_terminate_mihomo_process, slot.process) for slot in retired),
+                return_exceptions=True,
+            )
+        if result is not None:
+            return result
+        if launch_slot is None:
+            continue
+        try:
+            proxy = await _launch_task_mihomo_slot(launch_slot, node, provider)
+        except Exception:
+            async with _TASK_MIHOMO_CONDITION:
+                if launch_slot in _TASK_MIHOMO_SLOTS:
+                    _TASK_MIHOMO_SLOTS.remove(launch_slot)
+                _TASK_MIHOMO_CONDITION.notify_all()
+            raise
+        async with _TASK_MIHOMO_CONDITION:
+            _TASK_MIHOMO_CONDITION.notify_all()
+        return proxy
+
+
 async def shutdown_task_mihomo_pool() -> None:
     global _TASK_MIHOMO_CONDITION
     if _TASK_MIHOMO_CONDITION is None:

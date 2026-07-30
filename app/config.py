@@ -492,6 +492,8 @@ def browser_proxy_config_for(server: str, default_scheme: str = "http") -> dict[
     proxy_server = normalize_proxy_server(server, default_scheme)
     if not proxy_server:
         return None
+    if proxy_server.lower().startswith("socks5h://"):
+        proxy_server = f"socks5://{proxy_server[len('socks5h://') :]}"
     return {"server": proxy_server}
 
 

@@ -1757,6 +1757,59 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["nodes"][0]["host_port"], "198.51.100.10:10001")
         self.assertEqual(payload["nodes"][0]["total_leases"], 7)
 
+    def test_api_proxy_draft_can_be_tested_without_saving(self) -> None:
+        self.assertEqual(
+            self.client.post(
+                "/config/proxy-api/test",
+                json={"proxy_api_url": "https://proxy.example/api", "proxy_api_scheme": "socks5h"},
+            ).status_code,
+            403,
+        )
+        self.login_admin()
+        original = config.load_settings()
+        extracted = {
+            "server": "socks5h://198.51.100.20:14044",
+            "host_port": "198.51.100.20:14044",
+        }
+        with patch("app.main.fetch_proxy_from_api", new=AsyncMock(return_value=extracted)) as fetch, patch(
+            "app.main.probe_dola_proxy", new=AsyncMock(return_value=(True, 86))
+        ) as probe:
+            response = self.client.post(
+                "/config/proxy-api/test",
+                json={"proxy_api_url": "https://proxy.example/api", "proxy_api_scheme": "socks5h"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {
+            "ok": True,
+            "proxy_host_port": "198.51.100.20:14044",
+            "proxy_scheme": "socks5h",
+            "latency_ms": 86,
+        })
+        fetch.assert_awaited_once_with(
+            "https://proxy.example/api",
+            timeout_seconds=original.proxy_api_timeout_seconds,
+            scheme="socks5h",
+        )
+        probe.assert_awaited_once()
+        refreshed = config.load_settings()
+        self.assertEqual(refreshed.proxy_api_url, original.proxy_api_url)
+        self.assertEqual(refreshed.proxy_api_scheme, original.proxy_api_scheme)
+
+    def test_api_proxy_test_reports_unreachable_dola(self) -> None:
+        self.login_admin()
+        with patch(
+            "app.main.fetch_proxy_from_api",
+            new=AsyncMock(return_value={"server": "http://198.51.100.21:14045", "host_port": "198.51.100.21:14045"}),
+        ), patch("app.main.probe_dola_proxy", new=AsyncMock(return_value=(False, None))):
+            response = self.client.post(
+                "/config/proxy-api/test",
+                json={"proxy_api_url": "https://proxy.example/api", "proxy_api_scheme": "http"},
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("cannot connect to Dola", response.text)
+
     def test_batch_failed_rows_can_retry_with_original_real_person_setting(self) -> None:
         registered = self.register("batch_failed_retry_owner")
         token = registered["token"]

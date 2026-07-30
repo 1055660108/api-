@@ -127,13 +127,16 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("overflow-y: auto", styles)
 
     def test_proxy_settings_support_node_subscriptions(self) -> None:
-        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyAccountField", "proxyAccountScheme", "proxyAccountHost", "proxyAccountPort", "proxyAccountUsername", "proxyAccountPassword", "proxyApiUrl", "openAccountProxyImport", "accountProxyImportModal", "accountProxyImportText", "accountProxyBulkbar", "proxyHealthRefreshMinutes", "proxyRefreshCountdown"):
+        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyAccountField", "proxyAccountScheme", "proxyAccountHost", "proxyAccountPort", "proxyAccountUsername", "proxyAccountPassword", "proxyApiUrl", "proxyApiScheme", "testProxyApi", "openAccountProxyImport", "accountProxyImportModal", "accountProxyImportText", "accountProxyBulkbar", "proxyHealthRefreshMinutes", "proxyRefreshCountdown"):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn('<option value="account">账密连接</option>', self.html)
         self.assertIn('id="proxyAccountPassword" type="password"', self.html)
         self.assertIn('autocomplete="new-password"', self.html)
         self.assertIn('proxy_subscription_url', self.javascript)
         self.assertIn('proxy_account_password', self.javascript)
+        self.assertIn('apiFetch("/config/proxy-api/test"', self.javascript)
+        self.assertIn('toast(`连接成功：${data.proxy_host_port}${latency}`)', self.javascript)
+        self.assertIn('proxy_api_scheme: els.proxyApiScheme?.value || "http"', self.javascript)
         self.assertIn('proxy_source: source', self.javascript)
         self.assertIn('proxy_subscription_refresh_seconds: 900', self.javascript)
         self.assertIn('toast("请输入节点订阅链接", "error")', self.javascript)

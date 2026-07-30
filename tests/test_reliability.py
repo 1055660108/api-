@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 from app import accounts, automation, config, store, task_queue, temp_access
 from app.automation import DolaFetchAutomation, is_infrastructure_failure
 from app.resilience import fair_owner_capacity_limits
-from app.worker import IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
+from app.worker import IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -554,13 +554,15 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
 
-    def test_slider_verification_pauses_account_until_next_day_and_escalates_after_three_days(self) -> None:
+    def test_slider_and_abnormal_accounts_are_deleted_at_23_with_daily_statistics(self) -> None:
         task = self.create_task("slider-owner")
         created = accounts.add_account("Slider", "session=slider", quota_limit=2)
         claimed = accounts.claim_account_for_worker("worker-slider", task["id"])
         self.assertEqual(claimed["id"], created["id"])
 
-        with patch.object(accounts, "local_today", return_value="2030-01-01"):
+        with patch.object(accounts, "local_today", return_value="2030-01-01"), patch.object(
+            accounts, "utc_now", return_value="2030-01-01T12:00:00+08:00"
+        ):
             release_account_after_retryable_failure(
                 task["id"],
                 claimed,
@@ -580,26 +582,27 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(stored["quota_used"], 0)
         self.assertIsNone(accounts.account_for_worker("worker-next"))
 
-        with patch.object(accounts, "local_today", return_value="2030-01-02"):
-            accounts.reset_daily_account_quotas_if_needed()
-            restored = accounts.list_accounts()[0]
-            self.assertEqual(restored["account_status"], "normal")
-            second = accounts.mark_account_slider_verification(created["id"])
-        self.assertEqual(second["account_status"], "slider_verification")
-        self.assertEqual(second["slider_verification_streak"], 2)
+        abnormal = accounts.add_account("Abnormal", "session=abnormal", quota_limit=2)
+        with patch.object(accounts, "utc_now", return_value="2030-01-01T13:00:00+08:00"):
+            accounts.disable_account_for_login(abnormal["id"], "登录失效")
+        manually_disabled = accounts.add_account("Manual", "session=manual", enabled=False, quota_limit=2)
 
-        with patch.object(accounts, "local_today", return_value="2030-01-03"):
-            accounts.reset_daily_account_quotas_if_needed()
-            third = accounts.mark_account_slider_verification(created["id"])
-        self.assertFalse(third["enabled"])
-        self.assertEqual(third["account_status"], "abnormal")
-        self.assertEqual(third["slider_verification_streak"], 3)
-        self.assertIn("连续 3 天", third["status_reason"])
+        before = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 22, 59, tzinfo=accounts.LOCAL_TZ))
+        self.assertEqual(before["removed"], 0)
+        self.assertEqual(len(accounts.list_accounts()), 3)
 
-        recovered = accounts.update_account_cookies(created["id"], accounts.parse_cookie_payload("session=slider-fresh"))
-        self.assertTrue(recovered["enabled"])
-        self.assertEqual(recovered["account_status"], "normal")
-        self.assertEqual(recovered["slider_verification_streak"], 0)
+        cleaned = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 23, 0, tzinfo=accounts.LOCAL_TZ))
+        self.assertEqual(cleaned["removed"], 2)
+        self.assertEqual(cleaned["by_status"], {"abnormal": 1, "slider_verification": 1})
+        self.assertEqual([item["id"] for item in accounts.list_accounts()], [manually_disabled["id"]])
+        history = accounts.list_account_deletion_history()
+        self.assertEqual(history[0]["date"], "2030-01-01")
+        self.assertEqual(history[0]["total"], 2)
+        self.assertEqual(history[0]["by_status"], {"abnormal": 1, "slider_verification": 1})
+
+        repeated = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 23, 1, tzinfo=accounts.LOCAL_TZ))
+        self.assertEqual(repeated["removed"], 0)
+        self.assertEqual(accounts.list_account_deletion_history()[0]["total"], 2)
 
     def test_slider_verification_streak_restarts_after_a_missed_day(self) -> None:
         created = accounts.add_account("Slider gap", "session=slider-gap", quota_limit=2)
@@ -1122,12 +1125,28 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["image_upload_concurrency"], 8)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
         self.assertEqual(snapshot["image_submission_claimed"], 0)
-        self.assertEqual(snapshot["image_submission_claim_limit"], 8)
+        self.assertEqual(snapshot["image_submission_claim_limit"], IMAGE_PREPARATION_CONCURRENCY)
+        self.assertEqual(snapshot["image_preparation_claimed"], 0)
+        self.assertEqual(snapshot["image_preparation_claim_limit"], 12)
         self.assertEqual(snapshot["browser_pool"]["process_limit"], 12)
         self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 4)
         self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 48)
         self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 48)
         self.assertEqual(snapshot["api_proxy_pool"]["refresh_concurrency_limit"], 2)
+
+    def test_reference_preparation_releases_before_submission_and_only_once(self) -> None:
+        manager = WorkerManager()
+        task_id = "a" * 32
+        manager._claimed_image_preparations[task_id] = "owner-a"
+        runner = DolaFetchAutomation(
+            task_id,
+            "prompt",
+            "9:16",
+            image_preparation_done=lambda: manager._release_image_preparation(task_id),
+        )
+        runner._finish_image_preparation()
+        runner._finish_image_preparation()
+        self.assertNotIn(task_id, manager._claimed_image_preparations)
 
     def test_fair_owner_limits_split_capacity_across_concurrent_members(self) -> None:
         self.assertEqual(

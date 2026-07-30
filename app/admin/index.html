@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.90" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.4.91" />
   </head>
   <body>
     <script>
@@ -663,6 +663,7 @@
                 </div>
                 <input class="account-task-search" id="accountTaskSearch" type="search" placeholder="搜索正在执行任务 ID" />
                 <span class="quota-reset-countdown" id="accountResetCountdown">清零倒计时 --:--:--</span>
+                <button class="secondary-button icon-text-button" id="openAccountDeletionHistory" type="button"><i data-lucide="history" aria-hidden="true"></i>删除详情</button>
                 <button class="secondary-button" id="refreshAccounts" type="button">刷新</button>
               </div>
             </div>
@@ -1245,6 +1246,16 @@
         <div class="modal-actions"><button class="secondary-button" id="cancelBatchAutoModal" type="button">取消</button><button class="primary-button" id="confirmBatchAutoSubmit" type="button">保存</button></div>
       </section>
     </div>
+    <div class="modal-backdrop hidden" id="accountDeletionHistoryModal" aria-hidden="true">
+      <section class="modal-panel account-deletion-history-modal" role="dialog" aria-modal="true" aria-labelledby="accountDeletionHistoryTitle">
+        <div class="modal-header"><div><h2 id="accountDeletionHistoryTitle">账号自动删除详情</h2><p>每天北京时间 23:00 删除跳验证和登录异常账号。</p></div><button class="modal-close" id="closeAccountDeletionHistory" type="button" aria-label="关闭">×</button></div>
+        <div class="account-deletion-summary" id="accountDeletionSummary"><span>正在读取删除记录</span></div>
+        <div class="table-wrap account-deletion-table-wrap">
+          <table class="account-deletion-table"><thead><tr><th>日期</th><th>删除总数</th><th>跳验证</th><th>异常</th><th>Dola / 豆包 / 千问</th><th>最后执行</th></tr></thead><tbody id="accountDeletionHistoryBody"></tbody></table>
+        </div>
+        <div class="modal-actions"><button class="primary-button" id="confirmAccountDeletionHistory" type="button">关闭</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="createUserModal" aria-hidden="true">
       <form class="modal-panel create-user-modal" id="createUserForm" role="dialog" aria-modal="true" aria-labelledby="createUserModalTitle">
         <div class="modal-header"><div><h2 id="createUserModalTitle">添加用户</h2><p>创建后可直接使用用户名和密码登录。</p></div><button class="modal-close" id="closeCreateUserModal" type="button" aria-label="关闭">×</button></div>
@@ -1336,6 +1347,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.4.90"></script>
+    <script src="/admin/assets/app.js?v=1.4.91"></script>
   </body>
 </html>

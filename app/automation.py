@@ -853,6 +853,7 @@ class DolaFetchAutomation:
         api_proxy_pool: ReusableApiProxyPool | None = None,
         submission_pacer: Callable[[str], Awaitable[None]] | None = None,
         image_upload_slot: Callable[[], AsyncContextManager[None]] | None = None,
+        image_preparation_done: Callable[[], None] | None = None,
     ):
         self.task_id = task_id
         self.prompt = prompt
@@ -864,6 +865,7 @@ class DolaFetchAutomation:
         self.api_proxy_lease: ApiProxyLease | None = None
         self.submission_pacer = submission_pacer
         self.image_upload_slot = image_upload_slot
+        self.image_preparation_done = image_preparation_done
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
@@ -885,6 +887,12 @@ class DolaFetchAutomation:
     def _set_phase(self, phase: str, status_reason: str) -> None:
         if self._task_exists():
             set_execution_phase(self.task_id, phase, status_reason)
+
+    def _finish_image_preparation(self) -> None:
+        callback = self.image_preparation_done
+        self.image_preparation_done = None
+        if callback is not None:
+            callback()
 
     def _remember_failed_proxy_node(self) -> None:
         node_id = str(self.proxy_node_id or "").strip()
@@ -1119,6 +1127,7 @@ class DolaFetchAutomation:
                     return cooldown
                 self._set_phase("preparing_references", "正在准备参考图" if task_image_paths(self.task_id) else "正在准备生成请求")
                 attachments = await self._upload_images_if_needed(page)
+                self._finish_image_preparation()
                 if cooldown := self._active_proxy_cooldown_outcome():
                     return cooldown
                 if self.submission_pacer is not None:
@@ -1265,6 +1274,7 @@ class DolaFetchAutomation:
                     "confirmation_pending": confirmation_pending,
                 }
             finally:
+                self._finish_image_preparation()
                 await _bounded_cleanup(safe_unroute_all(page))
                 if lease is not None:
                     await _bounded_cleanup(lease.release())

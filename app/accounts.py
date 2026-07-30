@@ -5,7 +5,7 @@ import hashlib
 import re
 import secrets
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from typing import Any
 
@@ -17,6 +17,7 @@ from . import postgres
 ACCOUNT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 LOCAL_TZ = timezone(timedelta(hours=8))
 _ACCOUNTS_LOCK = threading.RLock()
+AUTO_DELETE_ACCOUNT_STATUSES = {"slider_verification", "abnormal"}
 
 
 def utc_now() -> str:
@@ -25,31 +26,6 @@ def utc_now() -> str:
 
 def local_today() -> str:
     return datetime.now(LOCAL_TZ).date().isoformat()
-
-
-def _restore_expired_slider_verification(account: dict[str, Any], today: str) -> bool:
-    if str(account.get("account_status") or "normal") != "slider_verification":
-        return False
-    event_date = str(account.get("slider_verification_date") or "")
-    if event_date and event_date >= today:
-        return False
-    account["account_status"] = "normal"
-    account["status_reason"] = ""
-    account.pop("disabled_reason", None)
-    account["updated_at"] = utc_now()
-    return True
-
-
-def _slider_verification_streak(account: dict[str, Any], today: str) -> int:
-    previous_date = str(account.get("slider_verification_date") or "")
-    previous_streak = max(0, int(account.get("slider_verification_streak") or 0))
-    if previous_date == today:
-        return max(1, previous_streak)
-    try:
-        consecutive = (date.fromisoformat(today) - date.fromisoformat(previous_date)).days == 1
-    except ValueError:
-        consecutive = False
-    return previous_streak + 1 if consecutive else 1
 
 
 def _quota_charges(account: dict[str, Any]) -> list[dict[str, Any]]:
@@ -156,8 +132,6 @@ def reset_daily_account_quotas_if_needed() -> bool:
                 today = local_today()
                 changed = False
                 for account in data.get("accounts") or []:
-                    if _restore_expired_slider_verification(account, today):
-                        changed = True
                     if str(account.get("quota_reset_date") or "") == today:
                         if _reconcile_account(account):
                             account["updated_at"] = utc_now()
@@ -178,8 +152,6 @@ def reset_daily_account_quotas_if_needed() -> bool:
         today = local_today()
         changed = False
         for account in data["accounts"]:
-            if _restore_expired_slider_verification(account, today):
-                changed = True
             if str(account.get("quota_reset_date") or "") == today:
                 if _reconcile_account(account):
                     account["updated_at"] = utc_now()
@@ -196,6 +168,162 @@ def reset_daily_account_quotas_if_needed() -> bool:
         if changed:
             _write_data(data)
         return changed
+
+
+def _read_account_deletion_history() -> dict[str, Any]:
+    if postgres.enabled():
+        payload = postgres.read_document("account_deletion_history", {"days": []})
+        return payload if isinstance(payload, dict) else {"days": []}
+    history_path = ACCOUNTS_PATH.with_name("account_deletion_history.json")
+    if not history_path.exists():
+        return {"days": []}
+    try:
+        payload = json.loads(history_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"days": []}
+    return payload if isinstance(payload, dict) else {"days": []}
+
+
+def _write_account_deletion_history(payload: dict[str, Any]) -> None:
+    normalized = {"days": payload.get("days") if isinstance(payload.get("days"), list) else []}
+    if postgres.enabled():
+        postgres.write_document("account_deletion_history", normalized)
+        return
+    _atomic_write(ACCOUNTS_PATH.with_name("account_deletion_history.json"), json.dumps(normalized, ensure_ascii=False, indent=2))
+
+
+def _account_status_marked_date(account: dict[str, Any]) -> str:
+    slider_date = str(account.get("slider_verification_date") or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", slider_date):
+        return slider_date
+    raw = str(account.get("account_status_marked_at") or "").strip()
+    if not raw:
+        return ""
+    try:
+        marked = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if marked.tzinfo is None:
+            marked = marked.replace(tzinfo=timezone.utc)
+        return marked.astimezone(LOCAL_TZ).date().isoformat()
+    except ValueError:
+        return ""
+
+
+def _record_account_deletion_history(
+    cleanup_date: str,
+    removed: list[dict[str, Any]],
+    skipped_active: int,
+    run_at: str,
+) -> dict[str, Any]:
+    by_status = {status: 0 for status in sorted(AUTO_DELETE_ACCOUNT_STATUSES)}
+    by_platform = {platform: 0 for platform in ("dola", "doubao", "qianwen")}
+    for account in removed:
+        status = str(account.get("account_status") or "abnormal")
+        platform = str(account.get("platform") or DEFAULT_PLATFORM)
+        by_status[status] = by_status.get(status, 0) + 1
+        by_platform[platform] = by_platform.get(platform, 0) + 1
+
+    def mutate(payload: dict[str, Any]) -> dict[str, Any]:
+        days = [item for item in payload.get("days") or [] if isinstance(item, dict)]
+        entry = next((item for item in days if str(item.get("date") or "") == cleanup_date), None)
+        if entry is None:
+            entry = {
+                "date": cleanup_date,
+                "total": 0,
+                "by_status": {status: 0 for status in sorted(AUTO_DELETE_ACCOUNT_STATUSES)},
+                "by_platform": {platform: 0 for platform in ("dola", "doubao", "qianwen")},
+                "runs": 0,
+                "skipped_active": 0,
+            }
+            days.append(entry)
+        entry["total"] = max(0, int(entry.get("total") or 0)) + len(removed)
+        current_statuses = entry.get("by_status") if isinstance(entry.get("by_status"), dict) else {}
+        entry["by_status"] = {
+            status: max(0, int(current_statuses.get(status) or 0)) + amount
+            for status, amount in by_status.items()
+        }
+        current_platforms = entry.get("by_platform") if isinstance(entry.get("by_platform"), dict) else {}
+        entry["by_platform"] = {
+            platform: max(0, int(current_platforms.get(platform) or 0)) + amount
+            for platform, amount in by_platform.items()
+        }
+        entry["runs"] = max(0, int(entry.get("runs") or 0)) + 1
+        entry["skipped_active"] = max(0, int(skipped_active or 0))
+        entry["last_run_at"] = run_at
+        payload["days"] = sorted(days, key=lambda item: str(item.get("date") or ""), reverse=True)[:180]
+        return dict(entry)
+
+    if postgres.enabled():
+        return postgres.mutate_document("account_deletion_history", {"days": []}, mutate)
+    payload = _read_account_deletion_history()
+    result = mutate(payload)
+    _write_account_deletion_history(payload)
+    return result
+
+
+def cleanup_flagged_accounts(now: datetime | None = None) -> dict[str, Any]:
+    current = now or datetime.now(LOCAL_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=LOCAL_TZ)
+    current = current.astimezone(LOCAL_TZ)
+    today = current.date().isoformat()
+    cutoff_date = today if current.hour >= 23 else (current.date() - timedelta(days=1)).isoformat()
+    run_at = current.isoformat()
+
+    def mutate(data: dict[str, Any]) -> dict[str, Any]:
+        kept: list[dict[str, Any]] = []
+        removed: list[dict[str, Any]] = []
+        skipped_active = 0
+        for account in data.get("accounts") or []:
+            status = str(account.get("account_status") or "normal")
+            if status not in AUTO_DELETE_ACCOUNT_STATUSES:
+                kept.append(account)
+                continue
+            marked_date = _account_status_marked_date(account)
+            eligible = bool(marked_date and marked_date <= cutoff_date) or (not marked_date and current.hour >= 23)
+            if not eligible:
+                kept.append(account)
+                continue
+            if str(account.get("current_task_id") or ""):
+                skipped_active += 1
+                kept.append(account)
+                continue
+            removed.append(dict(account))
+        data["accounts"] = kept
+        return {"removed": removed, "skipped_active": skipped_active}
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            result = postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        else:
+            data = _read_data()
+            result = mutate(data)
+            if result["removed"]:
+                _write_data(data)
+        should_record = current.hour >= 23 or bool(result["removed"])
+        history = (
+            _record_account_deletion_history(today, result["removed"], result["skipped_active"], run_at)
+            if should_record
+            else None
+        )
+    return {
+        "date": today,
+        "removed": len(result["removed"]),
+        "removed_ids": [str(item.get("id") or "") for item in result["removed"]],
+        "by_status": {
+            status: sum(str(item.get("account_status") or "") == status for item in result["removed"])
+            for status in sorted(AUTO_DELETE_ACCOUNT_STATUSES)
+        },
+        "skipped_active": result["skipped_active"],
+        "history": history,
+    }
+
+
+def list_account_deletion_history(limit: int = 90) -> list[dict[str, Any]]:
+    with _ACCOUNTS_LOCK:
+        payload = _read_account_deletion_history()
+    days = [dict(item) for item in payload.get("days") or [] if isinstance(item, dict)]
+    days.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
+    return days[: max(1, min(180, int(limit or 90)))]
 
 
 def repair_account_cookie_domains() -> int:
@@ -626,6 +754,7 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
                         raise ValueError("cookie data is invalid")
                     now = utc_now()
                     account.update(cookies=normalized, cookie_header=_cookie_header_from_items(normalized), last_cookie_refresh_at=now, enabled=True, account_status="normal", status_reason="", updated_at=now)
+                    account.pop("account_status_marked_at", None)
                     account.pop("disabled_reason", None)
                     account.pop("slider_verification_date", None)
                     account.pop("slider_verification_streak", None)
@@ -651,6 +780,7 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
             account.pop("disabled_reason", None)
             account.pop("slider_verification_date", None)
             account.pop("slider_verification_streak", None)
+            account.pop("account_status_marked_at", None)
             account["updated_at"] = account["last_cookie_refresh_at"]
             _write_data(data)
             return _public_account(account)
@@ -659,6 +789,7 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
 
 def disable_account_for_login(account_id: str, reason: str) -> dict[str, Any]:
     account_id = str(account_id or "").strip().lower()
+    marked_at = utc_now()
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(data: dict[str, Any]) -> dict[str, Any]:
@@ -666,7 +797,7 @@ def disable_account_for_login(account_id: str, reason: str) -> dict[str, Any]:
                     if str(account.get("id") or "") != account_id:
                         continue
                     normalized_reason = str(reason or "login invalid")[:200]
-                    account.update(enabled=False, account_status="abnormal", status_reason=normalized_reason, disabled_reason=normalized_reason, current_task_id="", current_worker_id="", current_started_at="", updated_at=utc_now())
+                    account.update(enabled=False, account_status="abnormal", status_reason=normalized_reason, disabled_reason=normalized_reason, account_status_marked_at=marked_at, current_task_id="", current_worker_id="", current_started_at="", updated_at=marked_at)
                     return _public_account(account)
                 raise KeyError("account not found")
 
@@ -679,10 +810,11 @@ def disable_account_for_login(account_id: str, reason: str) -> dict[str, Any]:
             account["account_status"] = "abnormal"
             account["status_reason"] = str(reason or "login invalid")[:200]
             account["disabled_reason"] = str(reason or "login invalid")[:200]
+            account["account_status_marked_at"] = marked_at
             account["current_task_id"] = ""
             account["current_worker_id"] = ""
             account["current_started_at"] = ""
-            account["updated_at"] = utc_now()
+            account["updated_at"] = marked_at
             _write_data(data)
             return _public_account(account)
     raise KeyError("account not found")
@@ -1265,26 +1397,22 @@ def update_account_quota(account_id: str, quota_limit: int) -> dict[str, Any]:
 def mark_account_slider_verification(account_id: str) -> dict[str, Any]:
     account_id = str(account_id or "").strip().lower()
     today = local_today()
+    marked_at = utc_now()
 
     def apply(account: dict[str, Any]) -> dict[str, Any]:
-        streak = _slider_verification_streak(account, today)
-        permanent = streak >= 3
-        reason = "连续 3 天跳验证" if permanent else f"跳验证（当日暂停，连续 {streak}/3 天）"
+        reason = "跳验证（当日 23:00 自动删除）"
         account.update(
-            account_status="abnormal" if permanent else "slider_verification",
+            account_status="slider_verification",
             status_reason=reason,
             slider_verification_date=today,
-            slider_verification_streak=streak,
+            slider_verification_streak=1,
+            account_status_marked_at=marked_at,
             current_task_id="",
             current_worker_id="",
             current_started_at="",
-            updated_at=utc_now(),
+            updated_at=marked_at,
         )
-        if permanent:
-            account["enabled"] = False
-            account["disabled_reason"] = reason
-        else:
-            account.pop("disabled_reason", None)
+        account.pop("disabled_reason", None)
         return _public_account(account)
 
     with _ACCOUNTS_LOCK:

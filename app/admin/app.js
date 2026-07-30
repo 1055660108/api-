@@ -483,6 +483,12 @@ const els = {
   accountNormalCount: document.getElementById("accountNormalCount"),
   accountSliderVerificationCount: document.getElementById("accountSliderVerificationCount"),
   accountAbnormalCount: document.getElementById("accountAbnormalCount"),
+  openAccountDeletionHistory: document.getElementById("openAccountDeletionHistory"),
+  accountDeletionHistoryModal: document.getElementById("accountDeletionHistoryModal"),
+  closeAccountDeletionHistory: document.getElementById("closeAccountDeletionHistory"),
+  confirmAccountDeletionHistory: document.getElementById("confirmAccountDeletionHistory"),
+  accountDeletionSummary: document.getElementById("accountDeletionSummary"),
+  accountDeletionHistoryBody: document.getElementById("accountDeletionHistoryBody"),
   videoLibrary: document.getElementById("videoLibrary"),
   selectAllVideos: document.getElementById("selectAllVideos"),
   openVideoDownloadSettings: document.getElementById("openVideoDownloadSettings"),
@@ -3492,6 +3498,39 @@ async function refreshAccounts(options = {}) {
       state.accountRefreshPending = false;
       refreshAccounts({ quiet: true }).catch(() => {});
     }
+  }
+}
+
+function closeAccountDeletionHistory() {
+  els.accountDeletionHistoryModal?.classList.add("hidden");
+  els.accountDeletionHistoryModal?.setAttribute("aria-hidden", "true");
+}
+
+async function openAccountDeletionHistory() {
+  if (!els.accountDeletionHistoryModal) return;
+  els.accountDeletionHistoryModal.classList.remove("hidden");
+  els.accountDeletionHistoryModal.setAttribute("aria-hidden", "false");
+  if (els.accountDeletionSummary) els.accountDeletionSummary.innerHTML = "<span>正在读取删除记录</span>";
+  if (els.accountDeletionHistoryBody) els.accountDeletionHistoryBody.innerHTML = '<tr><td colspan="6"><div class="empty-state">加载中</div></td></tr>';
+  try {
+    const data = await apiFetch("/accounts/deletion-history?limit=90");
+    const days = Array.isArray(data.days) ? data.days : [];
+    const total = days.reduce((sum, item) => sum + Number(item.total || 0), 0);
+    const slider = days.reduce((sum, item) => sum + Number(item.by_status?.slider_verification || 0), 0);
+    const abnormal = days.reduce((sum, item) => sum + Number(item.by_status?.abnormal || 0), 0);
+    if (els.accountDeletionSummary) {
+      els.accountDeletionSummary.innerHTML = `<span>保留最近 ${escapeHtml(data.retention_days || 180)} 天</span><strong>共删除 ${escapeHtml(total)} 个</strong><span>跳验证 ${escapeHtml(slider)} 个</span><span>异常 ${escapeHtml(abnormal)} 个</span>`;
+    }
+    if (els.accountDeletionHistoryBody) {
+      els.accountDeletionHistoryBody.innerHTML = days.length ? days.map((item) => {
+        const statuses = item.by_status || {};
+        const platforms = item.by_platform || {};
+        return `<tr><td><strong>${escapeHtml(item.date || "-")}</strong></td><td>${escapeHtml(item.total || 0)}</td><td>${escapeHtml(statuses.slider_verification || 0)}</td><td>${escapeHtml(statuses.abnormal || 0)}</td><td>${escapeHtml(platforms.dola || 0)} / ${escapeHtml(platforms.doubao || 0)} / ${escapeHtml(platforms.qianwen || 0)}</td><td>${escapeHtml(formatTime(item.last_run_at))}</td></tr>`;
+      }).join("") : '<tr><td colspan="6"><div class="empty-state">暂无自动删除记录</div></td></tr>';
+    }
+  } catch (error) {
+    if (els.accountDeletionSummary) els.accountDeletionSummary.innerHTML = `<span>读取失败：${escapeHtml(error.message)}</span>`;
+    if (els.accountDeletionHistoryBody) els.accountDeletionHistoryBody.innerHTML = '<tr><td colspan="6"><div class="empty-state">无法读取删除记录</div></td></tr>';
   }
 }
 
@@ -7003,6 +7042,12 @@ function bindEvents() {
   els.refreshTempTokens?.addEventListener("click", () => refreshTempTokens());
   els.openCreateTokenModal?.addEventListener("click", openCreateTokenModal);
   els.refreshAccounts?.addEventListener("click", () => refreshAccounts());
+  els.openAccountDeletionHistory?.addEventListener("click", openAccountDeletionHistory);
+  els.closeAccountDeletionHistory?.addEventListener("click", closeAccountDeletionHistory);
+  els.confirmAccountDeletionHistory?.addEventListener("click", closeAccountDeletionHistory);
+  els.accountDeletionHistoryModal?.addEventListener("click", (event) => {
+    if (event.target === els.accountDeletionHistoryModal) closeAccountDeletionHistory();
+  });
   els.platformSelect?.addEventListener("change", () => {
     state.platform = els.platformSelect.value || "dola";
     renderPlatformControls();

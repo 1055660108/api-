@@ -77,6 +77,7 @@ RESULT_POLL_BATCH_SIZE = _bounded_env_int("DOLA_RESULT_POLL_BATCH_SIZE", 256, RE
 RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_SECONDS", 20, 10, 120)
 RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
 IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 8, 1, 16)
+IMAGE_PREPARATION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_PREPARE_CONCURRENCY", 12, 1, 24)
 IMAGE_UPLOAD_SLOT_WAIT_SECONDS = _bounded_env_int("DOLA_IMAGE_UPLOAD_SLOT_WAIT_SECONDS", 20, 5, 120)
 API_PROXY_REFRESH_CONCURRENCY = _bounded_env_int("DOLA_API_PROXY_REFRESH_CONCURRENCY", 2, 1, 4)
 
@@ -148,7 +149,9 @@ class WorkerManager:
         self._image_submission_condition = asyncio.Condition()
         self._image_submission_active = 0
         self._image_submission_reservations: dict[str, str] = {}
-        self._claimed_image_submissions: set[str] = set()
+        self._claimed_image_preparations: dict[str, str] = {}
+        self._image_prepare_owner_limits: dict[str, int] = {}
+        self._image_prepare_owner_limits_refreshed_at = 0.0
         self._image_owner_limits: dict[str, int] = {}
         self._image_owner_limits_refreshed_at = 0.0
         self._result_poll_semaphore = asyncio.Semaphore(RESULT_POLL_CONCURRENCY)
@@ -215,7 +218,7 @@ class WorkerManager:
             queue_category = str(meta.get("queue_category") or "")
             infrastructure_error = str(meta.get("infrastructure_error") or "")
             browser_allocation_timeout = "execution phase timed out: allocating_browser" in infrastructure_error
-            if queue_category != "image_upload_limit" and not browser_allocation_timeout:
+            if queue_category not in {"image_upload_limit", "image_prepare_limit"} and not browser_allocation_timeout:
                 continue
             updates: dict[str, object] = {
                 "next_attempt_at": utc_now(),
@@ -248,6 +251,7 @@ class WorkerManager:
         self._claimed.clear()
         self._remote_generation_reservations.clear()
         self._image_submission_reservations.clear()
+        self._claimed_image_preparations.clear()
         self._worker_task_ids.clear()
         set_active_tasks([])
         await self._dola_browser_pool.stop()
@@ -277,8 +281,11 @@ class WorkerManager:
             "image_upload_active": self._image_submission_active,
             "image_upload_concurrency": IMAGE_SUBMISSION_CONCURRENCY,
             "image_upload_reserved": len(self._image_submission_reservations),
-            "image_submission_claimed": len(self._claimed_image_submissions),
-            "image_submission_claim_limit": IMAGE_SUBMISSION_CONCURRENCY,
+            "image_preparation_claimed": len(self._claimed_image_preparations),
+            "image_preparation_claim_limit": IMAGE_PREPARATION_CONCURRENCY,
+            # Retain the old fields for deployment dashboards during the rename.
+            "image_submission_claimed": len(self._claimed_image_preparations),
+            "image_submission_claim_limit": IMAGE_PREPARATION_CONCURRENCY,
             "browser_pool": self._dola_browser_pool.snapshot(),
             "api_proxy_pool": self._api_proxy_pool.snapshot(),
             "proxy_exit_pool": task_mihomo_pool_snapshot(),
@@ -611,6 +618,33 @@ class WorkerManager:
             self._image_owner_limits_refreshed_at = now
         return max(1, int(self._image_owner_limits.get(normalized_owner) or 1))
 
+    def _image_prepare_owner_limit(self, owner: str) -> int:
+        normalized_owner = str(owner or "")
+        if not normalized_owner:
+            return IMAGE_PREPARATION_CONCURRENCY
+        now = asyncio.get_running_loop().time()
+        if now - self._image_prepare_owner_limits_refreshed_at >= 1.0 or normalized_owner not in self._image_prepare_owner_limits:
+            contenders = {
+                str(meta.get("owner_token_hash") or "")
+                for _, meta in list_task_metas_by_statuses({"pending", "running"}, platform="dola")
+                if int(meta.get("image_count") or 0) > 0 and str(meta.get("owner_token_hash") or "")
+            }
+            contenders.add(normalized_owner)
+            configured = self._owner_concurrency_limits()
+            requested = {
+                contender: min(
+                    IMAGE_PREPARATION_CONCURRENCY,
+                    max(1, int(configured.get(contender) or IMAGE_PREPARATION_CONCURRENCY)),
+                )
+                for contender in contenders
+            }
+            self._image_prepare_owner_limits = fair_owner_capacity_limits(requested, IMAGE_PREPARATION_CONCURRENCY)
+            self._image_prepare_owner_limits_refreshed_at = now
+        return max(1, int(self._image_prepare_owner_limits.get(normalized_owner) or 1))
+
+    def _release_image_preparation(self, task_id: str) -> None:
+        self._claimed_image_preparations.pop(str(task_id or ""), None)
+
     @asynccontextmanager
     async def _image_upload_slot(self, task_id: str, owner: str):
         normalized_owner = str(owner or "")
@@ -716,10 +750,19 @@ class WorkerManager:
                     candidate_platform = str(claimed_meta.get("platform") or "dola")
                     is_image_submission = candidate_platform == "dola" and int(claimed_meta.get("image_count") or 0) > 0
                     candidate_owner = str(claimed_meta.get("owner_token_hash") or "")
-                    if is_image_submission and len(self._claimed_image_submissions) >= IMAGE_SUBMISSION_CONCURRENCY:
-                        defer_task(candidate_id, "参考图任务等待上传通道", "image_prepare_limit", 15)
-                        self._queue.release(candidate_id, worker_id)
-                        continue
+                    if is_image_submission:
+                        prepare_owner_limit = self._image_prepare_owner_limit(candidate_owner)
+                        prepare_owner_active = sum(
+                            claimed_owner == candidate_owner
+                            for claimed_owner in self._claimed_image_preparations.values()
+                        )
+                        if (
+                            len(self._claimed_image_preparations) >= IMAGE_PREPARATION_CONCURRENCY
+                            or prepare_owner_active >= prepare_owner_limit
+                        ):
+                            defer_task(candidate_id, "参考图任务等待页面准备通道", "image_prepare_limit", 10)
+                            self._queue.release(candidate_id, worker_id)
+                            continue
                     if candidate_platform == "dola" and not self._reserve_remote_generation_slot(candidate_id, claimed_meta):
                         defer_task(candidate_id, "当前用户远端生成任务已达上限，继续排队", "remote_limit", 5)
                         self._queue.release(candidate_id, worker_id)
@@ -727,7 +770,7 @@ class WorkerManager:
                     task_id = candidate_id
                     self._claimed.add(task_id)
                     if is_image_submission:
-                        self._claimed_image_submissions.add(task_id)
+                        self._claimed_image_preparations[task_id] = candidate_owner
                     self._worker_task_ids[worker_id] = task_id
                     break
             if not task_id:
@@ -796,6 +839,9 @@ class WorkerManager:
                         submission_pacer=self._wait_for_dola_submit_slot,
                         image_upload_slot=(
                             lambda current_task_id=task_id, current_owner=candidate_owner: self._image_upload_slot(current_task_id, current_owner)
+                        ) if is_image_submission else None,
+                        image_preparation_done=(
+                            lambda current_task_id=task_id: self._release_image_preparation(current_task_id)
                         ) if is_image_submission else None,
                     )
                 outcome = await runner.run()
@@ -879,7 +925,7 @@ class WorkerManager:
             finally:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
-                self._claimed_image_submissions.discard(task_id)
+                self._release_image_preparation(task_id)
                 reserved_owner = self._remote_generation_reservations.pop(task_id, None)
                 if reserved_owner:
                     self._remote_owner_refreshed_at = 0.0

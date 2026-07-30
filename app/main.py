@@ -30,7 +30,7 @@ from .account_access import generate_key as generate_account_access_key, revoke_
 from .admin_audit import list_admin_actions, prune_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
-from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, clear_account_current_task, delete_account, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_details, update_account_quota
+from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
 from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
@@ -588,6 +588,7 @@ redis.call('PEXPIRE', key, window)
 return {1, 0}
 """
 quota_reset_task = None
+account_cleanup_task = None
 task_cache_cleanup_task = None
 proxy_health_task = None
 resource_alert_task = None
@@ -708,6 +709,26 @@ async def account_quota_reset_loop() -> None:
         tomorrow = now.date() + timedelta(days=1)
         next_reset = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=LOCAL_TZ)
         await asyncio.sleep(max(1, (next_reset - now).total_seconds()))
+
+
+async def account_flagged_cleanup_loop() -> None:
+    while True:
+        now = datetime.now(LOCAL_TZ)
+        if now.hour == 23:
+            try:
+                result = await asyncio.to_thread(cleanup_flagged_accounts, now)
+                if result.get("removed"):
+                    _clear_account_list_cache()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("scheduled flagged account cleanup failed")
+            await asyncio.sleep(60)
+            continue
+        next_run = datetime(now.year, now.month, now.day, 23, tzinfo=LOCAL_TZ)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        await asyncio.sleep(max(1, (next_run - now).total_seconds()))
 
 
 async def task_cache_cleanup_loop() -> None:
@@ -1086,7 +1107,7 @@ async def batch_scheduler_loop() -> None:
 async def lifespan(app: FastAPI):
     import asyncio
 
-    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, task_cache_cleanup_task, proxy_health_task, resource_alert_task, batch_scheduler_task, _ACCOUNT_LIST_MAINTENANCE_AT
+    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, account_cleanup_task, task_cache_cleanup_task, proxy_health_task, resource_alert_task, batch_scheduler_task, _ACCOUNT_LIST_MAINTENANCE_AT
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
     clear_registration_security_state()
@@ -1101,6 +1122,7 @@ async def lifespan(app: FastAPI):
     repair_registered_user_tokens()
     for stale_task in fail_initializing_tasks():
         refund_temp_quota_once(str(stale_task.get("id") or ""), str(stale_task.get("owner_token_hash") or ""))
+    cleanup_flagged_accounts()
     reset_daily_account_quotas_if_needed()
     reconcile_account_quotas()
     _clear_account_list_cache()
@@ -1110,6 +1132,7 @@ async def lifespan(app: FastAPI):
     list_sem = asyncio.Semaphore(8)
     delete_sem = asyncio.Semaphore(1)
     quota_reset_task = asyncio.create_task(account_quota_reset_loop())
+    account_cleanup_task = asyncio.create_task(account_flagged_cleanup_loop())
     task_cache_cleanup_task = asyncio.create_task(task_cache_cleanup_loop())
     proxy_health_task = asyncio.create_task(proxy_health_loop())
     resource_alert_task = asyncio.create_task(resource_alert_loop())
@@ -1122,6 +1145,10 @@ async def lifespan(app: FastAPI):
             quota_reset_task.cancel()
             with suppress(asyncio.CancelledError):
                 await quota_reset_task
+        if account_cleanup_task:
+            account_cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await account_cleanup_task
         if task_cache_cleanup_task:
             task_cache_cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -3369,6 +3396,17 @@ async def accounts_list(
     status: str | None = Query(None),
 ):
     return await asyncio.to_thread(_accounts_list_payload, page, page_size, q, platform, status)
+
+
+@app.get("/accounts/deletion-history", dependencies=[Depends(require_admin)])
+async def accounts_deletion_history(limit: int = Query(90, ge=1, le=180)):
+    days = await asyncio.to_thread(list_account_deletion_history, limit)
+    return {
+        "days": days,
+        "retention_days": 180,
+        "cleanup_time": "23:00",
+        "timezone": "Asia/Shanghai",
+    }
 
 
 def _run_account_list_maintenance() -> None:

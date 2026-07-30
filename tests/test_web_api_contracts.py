@@ -1563,6 +1563,30 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(self.client.get("/accounts?page=1&status=unknown").status_code, 422)
         self.assertEqual(self.client.get("/accounts?page=1&platform=unknown").status_code, 422)
 
+    def test_account_deletion_history_endpoint_reports_daily_status_counts(self) -> None:
+        self.login_admin()
+        slider = self.client.post(
+            "/accounts",
+            json={"name": "待删除跳验证", "cookie_data": "session=slider-delete", "platform": "dola"},
+        ).json()["account"]
+        abnormal = self.client.post(
+            "/accounts",
+            json={"name": "待删除异常", "cookie_data": "session=abnormal-delete", "platform": "dola"},
+        ).json()["account"]
+        accounts.mark_account_slider_verification(slider["id"])
+        accounts.disable_account_for_login(abnormal["id"], "登录失效")
+        now = datetime.now(accounts.LOCAL_TZ).replace(hour=23, minute=0, second=0, microsecond=0)
+        result = accounts.cleanup_flagged_accounts(now)
+        self.assertEqual(result["removed"], 2)
+
+        response = self.client.get("/accounts/deletion-history?limit=30")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["cleanup_time"], "23:00")
+        self.assertEqual(payload["timezone"], "Asia/Shanghai")
+        self.assertEqual(payload["days"][0]["total"], 2)
+        self.assertEqual(payload["days"][0]["by_status"], {"abnormal": 1, "slider_verification": 1})
+
     def test_account_list_snapshot_coalesces_repeated_expensive_builds(self) -> None:
         snapshot = {
             "accounts": [],

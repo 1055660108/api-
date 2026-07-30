@@ -2251,6 +2251,58 @@ textarea:focus {
   background: var(--danger-soft);
 }
 
+.account-deletion-history-modal {
+  width: min(calc(100vw - 48px), 920px);
+  max-height: calc(100vh - 48px);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.account-deletion-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f9f8;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.account-deletion-summary strong {
+  color: var(--ink);
+}
+
+.account-deletion-table-wrap {
+  min-height: 180px;
+  overflow: auto;
+}
+
+.account-deletion-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.account-deletion-table th,
+.account-deletion-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.account-deletion-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-strong);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .quota-reset-countdown {
   display: inline-flex;
   align-items: center;

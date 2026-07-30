@@ -600,6 +600,19 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
 
+    def test_ten_second_account_label_keeps_account_normal_and_available(self) -> None:
+        created = accounts.add_account("Ten seconds", "session=ten-seconds", quota_limit=2)
+
+        marked = accounts.mark_account_ten_second_limit(created["id"])
+
+        self.assertTrue(marked["ten_second_only"])
+        self.assertTrue(marked["ten_second_marked_at"])
+        self.assertTrue(marked["enabled"])
+        self.assertEqual(marked["account_status"], "normal")
+        self.assertEqual(accounts.account_for_worker("worker-ten-seconds")["id"], created["id"])
+        cleaned = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 23, 0, tzinfo=accounts.LOCAL_TZ))
+        self.assertEqual(cleaned["removed"], 0)
+
     def test_slider_and_abnormal_accounts_are_deleted_at_23_with_daily_statistics(self) -> None:
         task = self.create_task("slider-owner")
         created = accounts.add_account("Slider", "session=slider", quota_limit=2)
@@ -649,6 +662,59 @@ class ReliabilityTests(unittest.TestCase):
         repeated = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 23, 1, tzinfo=accounts.LOCAL_TZ))
         self.assertEqual(repeated["removed"], 0)
         self.assertEqual(accounts.list_account_deletion_history()[0]["total"], 2)
+
+    def test_service_frequent_account_state_detects_slider_and_login_loss(self) -> None:
+        task = self.create_task("risk-check-owner")
+        runner = DolaFetchAutomation(
+            task["id"],
+            "prompt",
+            "9:16",
+            account={"cookies": [{"name": "sessionid", "value": "session"}]},
+        )
+
+        async def inspect(snapshot: dict, cookies: list[dict] | Exception) -> dict[str, str]:
+            page = SimpleNamespace(
+                url="https://www.dola.com/chat/local_test",
+                wait_for_timeout=AsyncMock(),
+                reload=AsyncMock(),
+                evaluate=AsyncMock(return_value=snapshot),
+            )
+            cookie_reader = AsyncMock(side_effect=cookies) if isinstance(cookies, Exception) else AsyncMock(return_value=cookies)
+            context = SimpleNamespace(cookies=cookie_reader)
+            return await runner._inspect_service_frequent_account_state(page, context)
+
+        slider = asyncio.run(inspect({"sliderVerification": True, "loginInvalid": False, "href": "https://www.dola.com/chat", "bodyText": "请完成验证"}, [{"name": "sessionid"}]))
+        login = asyncio.run(inspect({"sliderVerification": False, "loginInvalid": False, "href": "https://www.dola.com/chat", "bodyText": ""}, []))
+        normal = asyncio.run(inspect({"sliderVerification": False, "loginInvalid": False, "href": "https://www.dola.com/chat", "bodyText": ""}, [{"name": "sessionid"}]))
+        cookie_error = asyncio.run(inspect({"sliderVerification": False, "loginInvalid": False, "href": "https://www.dola.com/chat", "bodyText": ""}, RuntimeError("cookie read failed")))
+
+        self.assertEqual(slider["state"], "slider_verification")
+        self.assertEqual(login["state"], "login_invalid")
+        self.assertEqual(normal["state"], "service_frequent")
+        self.assertEqual(cookie_error["state"], "service_frequent")
+
+    def test_login_invalid_retry_disables_and_switches_account(self) -> None:
+        task = self.create_task("login-invalid-owner")
+        created = accounts.add_account("Login invalid", "session=login-invalid", quota_limit=2)
+        claimed = accounts.claim_account_for_worker("worker-login-invalid", task["id"])
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "dola",
+            {
+                "retryable": True,
+                "account_fault": True,
+                "account_login_invalid": True,
+                "switch_account": True,
+            },
+        )
+
+        stored = accounts.list_accounts()[0]
+        self.assertFalse(stored["enabled"])
+        self.assertEqual(stored["account_status"], "abnormal")
+        self.assertEqual(stored["quota_used"], 0)
+        self.assertIn(created["id"], store.get_meta(task["id"])["failed_account_ids"])
 
     def test_slider_verification_streak_restarts_after_a_missed_day(self) -> None:
         created = accounts.add_account("Slider gap", "session=slider-gap", quota_limit=2)

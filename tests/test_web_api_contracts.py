@@ -1578,6 +1578,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual((payload["total"], payload["page"], payload["page_size"], payload["total_pages"]), (1, 1, 1, 1))
         self.assertEqual(payload["stats"]["total"], 1)
         self.assertEqual(payload["stats"]["normal"], 1)
+        self.assertEqual(payload["stats"]["ten_second"], 0)
         self.assertEqual(payload["stats"]["by_platform"], {"dola": 1, "doubao": 1, "qianwen": 0})
         accounts.disable_account_for_login(dola["id"], "登录失效")
         abnormal = self.client.get("/accounts?page=1&page_size=20&status=abnormal").json()
@@ -1587,6 +1588,13 @@ class WebAPIContractTests(unittest.TestCase):
         slider = self.client.get("/accounts?page=1&page_size=20&status=slider_verification").json()
         self.assertEqual([item["id"] for item in slider["accounts"]], [slider_account["id"]])
         self.assertEqual(slider["stats"]["slider_verification"], 1)
+        ten_second_account = self.client.post("/accounts", json={"name": "10秒账号", "cookie_data": "session=ten-second", "platform": "dola"}).json()["account"]
+        accounts.mark_account_ten_second_limit(ten_second_account["id"])
+        ten_second = self.client.get("/accounts?page=1&page_size=20&status=ten_second").json()
+        self.assertEqual([item["id"] for item in ten_second["accounts"]], [ten_second_account["id"]])
+        self.assertTrue(ten_second["accounts"][0]["ten_second_only"])
+        normal = self.client.get("/accounts?page=1&page_size=20&status=normal").json()
+        self.assertIn(ten_second_account["id"], [item["id"] for item in normal["accounts"]])
         disabled_account = self.client.post("/accounts", json={"name": "停用账号", "cookie_data": "session=disabled", "platform": "dola", "enabled": False}).json()["account"]
         self.assertFalse(disabled_account["enabled"])
         disabled = self.client.get("/accounts?page=1&page_size=20&status=disabled").json()

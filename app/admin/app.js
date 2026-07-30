@@ -4362,7 +4362,9 @@ function renderAccountTable() {
     const enabled = item.enabled !== false;
     const abnormal = item.account_status === "abnormal";
     const sliderVerification = item.account_status === "slider_verification" || /跳验证|滑块风控/i.test(String(item.status_reason || "")) && !abnormal;
+    const tenSecondOnly = Boolean(item.ten_second_only);
     const accountStatus = sliderVerification ? "跳验证" : (abnormal ? "登录异常" : (enabled ? "正常" : "停用"));
+    const tenSecondChip = tenSecondOnly ? '<span class="chip unknown" title="该账号返回过长于 10 秒的视频限制">10秒</span>' : "";
     const quotaLimit = Number(item.quota_limit || 0);
     const quotaUsed = Number(item.quota_used || 0);
     const quotaRemaining = item.quota_remaining === null || item.quota_remaining === undefined ? "不限" : String(item.quota_remaining);
@@ -4385,7 +4387,7 @@ function renderAccountTable() {
             <code>${escapeHtml(id)}</code>
           </div>
         </td>
-        <td><span class="account-card-label">状态</span><span class="chip ${abnormal ? "failed" : (sliderVerification ? "unknown" : (enabled ? "success" : "unknown"))}" title="${escapeHtml(item.status_reason || "")}">${accountStatus}</span></td>
+        <td><span class="account-card-label">状态</span><span class="chip ${abnormal ? "failed" : (sliderVerification ? "unknown" : (enabled ? "success" : "unknown"))}" title="${escapeHtml(item.status_reason || "")}">${accountStatus}</span>${tenSecondChip}</td>
         <td>
           <div class="account-quota-cell">
             <span class="account-card-label">额度</span>

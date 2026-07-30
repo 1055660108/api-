@@ -79,6 +79,40 @@ SUBMISSION_SECRET_RE = re.compile(
     r'(?i)("?(?:authorization|cookie|msToken|oauth_token(?:_v2)?|sessionid|sid_tt|sid_guard|odin_tt|passport_csrf_token(?:_default)?)"?\s*[:=]\s*"?)([^"\s,;}]+)'
 )
 FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
+SERVICE_FREQUENT_RECHECK_DELAY_MS = 3000
+SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
+() => {
+  const visible = element => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+  };
+  const bodyText = String(document.body && document.body.innerText || "").replace(/\s+/g, " ").trim();
+  const sliderSelector = [
+    'iframe[src*="captcha"]',
+    'iframe[src*="verify"]',
+    '[class*="captcha"]',
+    '[id*="captcha"]',
+    '[class*="slide-verify"]',
+    '[class*="slider-verify"]'
+  ].some(selector => Array.from(document.querySelectorAll(selector)).some(visible));
+  const sliderText = /拖动滑块|请完成验证|安全验证|验证后继续|滑块验证/.test(bodyText);
+  const loginControl = Array.from(document.querySelectorAll("button,a")).some(element => {
+    const text = String(element.innerText || element.textContent || "").replace(/\s+/g, "").trim();
+    return visible(element) && ["登录", "登录/注册", "注册/登录"].includes(text);
+  });
+  const href = String(location.href || "");
+  const loginText = /游客模式|请登录后再试|登录后再试/.test(bodyText);
+  const loginUrl = /(?:passport|\/login(?:[/?#]|$)|login\.dola)/i.test(href);
+  return {
+    href,
+    bodyText: bodyText.slice(0, 2000),
+    sliderVerification: sliderSelector || sliderText,
+    loginInvalid: loginText || loginUrl || loginControl
+  };
+}
+"""
 INFRASTRUCTURE_ERROR_MARKERS = (
     "mihomo ",
     "all connection attempts failed",
@@ -897,6 +931,50 @@ class DolaFetchAutomation:
         if self._task_exists():
             set_execution_phase(self.task_id, phase, status_reason)
 
+    async def _inspect_service_frequent_account_state(self, page: Page, context: BrowserContext) -> dict[str, str]:
+        self._set_phase("checking_account_risk", "正在确认账号登录和滑块状态")
+        await page.wait_for_timeout(SERVICE_FREQUENT_RECHECK_DELAY_MS)
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(2000)
+        try:
+            snapshot = await page.evaluate(SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT)
+        except Exception as exc:
+            snapshot = {"href": str(page.url or ""), "bodyText": "", "inspectionError": str(exc)[:300]}
+        if not isinstance(snapshot, dict):
+            snapshot = {"href": str(page.url or ""), "bodyText": "", "inspectionError": "invalid inspection result"}
+        cookies_checked = True
+        try:
+            current_cookies = await context.cookies()
+        except Exception as exc:
+            cookies_checked = False
+            current_cookies = []
+            snapshot["inspectionError"] = str(snapshot.get("inspectionError") or str(exc))[:300]
+        auth_names = {"sessionid", "sessionid_ss", "sid_tt", "sid_guard"}
+        injected_names = {
+            str(item.get("name") or "")
+            for item in self.account.get("cookies") or []
+            if isinstance(item, dict)
+        }
+        current_names = {
+            str(item.get("name") or "")
+            for item in current_cookies
+            if isinstance(item, dict)
+        }
+        state = "service_frequent"
+        if bool(snapshot.get("sliderVerification")):
+            state = "slider_verification"
+        elif bool(snapshot.get("loginInvalid")) or cookies_checked and bool(injected_names & auth_names) and not bool(current_names & auth_names):
+            state = "login_invalid"
+        return {
+            "state": state,
+            "url": str(snapshot.get("href") or page.url or "")[:500],
+            "page_text": _submission_response_preview(snapshot.get("bodyText"))[:1000],
+            "inspection_error": str(snapshot.get("inspectionError") or "")[:300],
+        }
+
     def _finish_image_preparation(self) -> None:
         callback = self.image_preparation_done
         self.image_preparation_done = None
@@ -1231,8 +1309,38 @@ class DolaFetchAutomation:
                         "reason": "Dola slider verification required",
                         "account_fault": True,
                         "account_slider_verification": True,
+                        "switch_account": True,
                     }
                 if result.get("service_frequent"):
+                    account_state = await self._inspect_service_frequent_account_state(page, context)
+                    self._save_result(extra={
+                        "service_frequent_account_state": account_state["state"],
+                        "service_frequent_check_url": account_state["url"],
+                        "service_frequent_check_text": account_state["page_text"],
+                        "service_frequent_check_error": account_state["inspection_error"],
+                    })
+                    if account_state["state"] == "slider_verification":
+                        release_task_submission(self.task_id)
+                        self._save_result(extra={"submit_error_category": "slider_verification", "submit_phase": "service_frequent_account_check"})
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": "Dola slider verification required",
+                            "account_fault": True,
+                            "account_slider_verification": True,
+                            "switch_account": True,
+                        }
+                    if account_state["state"] == "login_invalid":
+                        release_task_submission(self.task_id)
+                        self._save_result(extra={"submit_error_category": "login_invalid", "submit_phase": "service_frequent_account_check"})
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": "Dola login session invalid after service frequent",
+                            "account_fault": True,
+                            "account_login_invalid": True,
+                            "switch_account": True,
+                        }
                     self._mark_active_proxy_unavailable(
                         cooldown_seconds=NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,
                         reason="service_frequent",

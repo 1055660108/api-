@@ -459,6 +459,8 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
         "status_reason": str(account.get("disabled_reason") or account.get("status_reason") or ""),
         "slider_verification_date": str(account.get("slider_verification_date") or ""),
         "slider_verification_streak": max(0, int(account.get("slider_verification_streak") or 0)),
+        "ten_second_only": bool(account.get("ten_second_only")),
+        "ten_second_marked_at": str(account.get("ten_second_marked_at") or ""),
         "quota_limit": quota_limit,
         "quota_used": quota_used,
         "quota_remaining": max(0, quota_limit - quota_used) if quota_limit else None,
@@ -758,6 +760,8 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
                     account.pop("disabled_reason", None)
                     account.pop("slider_verification_date", None)
                     account.pop("slider_verification_streak", None)
+                    account.pop("ten_second_only", None)
+                    account.pop("ten_second_marked_at", None)
                     return _public_account(account)
                 raise KeyError("account not found")
 
@@ -780,6 +784,8 @@ def update_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> di
             account.pop("disabled_reason", None)
             account.pop("slider_verification_date", None)
             account.pop("slider_verification_streak", None)
+            account.pop("ten_second_only", None)
+            account.pop("ten_second_marked_at", None)
             account.pop("account_status_marked_at", None)
             account["updated_at"] = account["last_cookie_refresh_at"]
             _write_data(data)
@@ -1413,6 +1419,36 @@ def mark_account_slider_verification(account_id: str) -> dict[str, Any]:
             updated_at=marked_at,
         )
         account.pop("disabled_reason", None)
+        return _public_account(account)
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> dict[str, Any]:
+                for account in data.get("accounts") or []:
+                    if str(account.get("id") or "") == account_id:
+                        return apply(account)
+                raise KeyError("account not found")
+
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") == account_id:
+                result = apply(account)
+                _write_data(data)
+                return result
+    raise KeyError("account not found")
+
+
+def mark_account_ten_second_limit(account_id: str) -> dict[str, Any]:
+    account_id = str(account_id or "").strip().lower()
+    marked_at = utc_now()
+
+    def apply(account: dict[str, Any]) -> dict[str, Any]:
+        account.update(
+            ten_second_only=True,
+            ten_second_marked_at=marked_at,
+            updated_at=marked_at,
+        )
         return _public_account(account)
 
     with _ACCOUNTS_LOCK:

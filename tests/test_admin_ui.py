@@ -209,6 +209,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="accountAbnormalCount"', self.html)
         self.assertIn('id="accountSliderVerificationCount"', self.html)
         self.assertIn('<option value="slider_verification">跳验证</option>', self.html)
+        self.assertIn('<option value="ten_second">10秒</option>', self.html)
+        self.assertIn('Boolean(item.ten_second_only)', self.javascript)
         self.assertIn('全部平台 0 个', self.html)
         self.assertIn('`${platformLabel} ${Number(stats.total ?? state.accountTotal)} 个`', self.javascript)
 

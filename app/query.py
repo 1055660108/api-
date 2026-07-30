@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from .account_proxies import account_proxy_entries, account_proxy_url
-from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, refund_account_quota, settle_account_quota
+from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, mark_account_ten_second_limit, refund_account_quota, settle_account_quota
 from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
 from .config import load_settings
 from .proxy_manager import fetch_proxy_from_api
@@ -59,6 +59,7 @@ REFERENCE_IMAGE_RETRY_TEXT = "参考图识别异常，正在更换账号重新�
 REFERENCE_IMAGE_INVALID_TEXT = "参考图异常，请重试！"
 REFERENCE_REAL_PERSON_REQUIRED_TEXT = "请选择勾选真人按钮并重试"
 PORTRAIT_PROTECTION_RETRY_TEXT = "参考图触发肖像保护，正在更换账号重试"
+TEN_SECOND_LIMIT_TEXT = "Currently generating videos longer than 10 seconds is not supported, do you want to continue generating for you?"
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -125,6 +126,11 @@ def is_generation_failure_text(text: str) -> bool:
 def is_account_login_invalid(text: str) -> bool:
     value = repair_text(str(text or ""))
     return "游客模式" in value or "请登录后再试" in value or "登录后再试" in value
+
+
+def is_ten_second_generation_limit(text: str) -> bool:
+    value = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    return TEN_SECOND_LIMIT_TEXT.lower() in value
 
 
 def is_suspected_policy_false_positive(text: str) -> bool:
@@ -893,6 +899,8 @@ async def _query_task_once(task_id: str, *, late_watch: bool = False) -> dict[st
     query_classification = "generating"
     if is_portrait_protection_rejection(text):
         query_classification = "portrait_protection"
+    elif is_ten_second_generation_limit(text):
+        query_classification = "ten_second_limit"
     elif is_missing_reference_image_request(text):
         query_classification = "missing_reference_image"
     elif is_account_quota_insufficient(text):
@@ -912,6 +920,20 @@ async def _query_task_once(task_id: str, *, late_watch: bool = False) -> dict[st
     if late_watch_active:
         return {"code": "1", "text": "late result observation", "url": ""}
     account_id = str(result.get("account_id") or "")
+    if is_ten_second_generation_limit(text):
+        if account_id:
+            mark_account_ten_second_limit(account_id)
+            clear_account_current_task(account_id, task_id)
+            refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+            record_failed_account(task_id, account_id)
+        retry_count = retry_submitted_task(task_id, TEN_SECOND_LIMIT_TEXT, max_retries=retry_limit, delay_seconds=10)
+        if retry_count <= retry_limit:
+            clear_transient_result(task_id)
+            return {"code": "1", "text": TEN_SECOND_LIMIT_TEXT, "url": ""}
+        meta = get_meta(task_id)
+        mark_failed(task_id, TEN_SECOND_LIMIT_TEXT)
+        refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+        return {"code": "0", "text": TEN_SECOND_LIMIT_TEXT, "url": ""}
     if is_portrait_protection_rejection(text):
         invalidate_reference_attachment_keys([str(item) for item in result.get("reference_image_cache_keys") or []])
         if not bool(meta.get("reference_is_real_person")):

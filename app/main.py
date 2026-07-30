@@ -3614,12 +3614,14 @@ def _accounts_list_payload(
         selected_platform = ""
     platform_accounts = [item for item in accounts if not selected_platform or str(item.get("platform") or DEFAULT_PLATFORM) == selected_platform]
     selected_status = str(status or "").strip().lower()
-    if selected_status not in {"", "all", "normal", "slider_verification", "abnormal", "disabled"}:
+    if selected_status not in {"", "all", "normal", "ten_second", "slider_verification", "abnormal", "disabled"}:
         raise HTTPException(status_code=422, detail="账号状态筛选无效")
     if selected_status in {"", "all"}:
         status_accounts = platform_accounts
     elif selected_status == "normal":
         status_accounts = [item for item in platform_accounts if item.get("enabled") is not False and str(item.get("account_status") or "normal") == "normal"]
+    elif selected_status == "ten_second":
+        status_accounts = [item for item in platform_accounts if item.get("ten_second_only")]
     elif selected_status == "slider_verification":
         status_accounts = [item for item in platform_accounts if item.get("account_status") == "slider_verification"]
     elif selected_status == "abnormal":
@@ -3651,6 +3653,7 @@ def _accounts_list_payload(
         stats={
             "total": len(platform_accounts),
             "normal": sum(item.get("enabled") is not False and str(item.get("account_status") or "normal") == "normal" for item in platform_accounts),
+            "ten_second": sum(bool(item.get("ten_second_only")) for item in platform_accounts),
             "slider_verification": sum(item.get("account_status") == "slider_verification" for item in platform_accounts),
             "abnormal": sum(item.get("account_status") == "abnormal" for item in platform_accounts),
             "disabled": sum(item.get("enabled") is False for item in platform_accounts),

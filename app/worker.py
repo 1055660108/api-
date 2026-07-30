@@ -7,7 +7,7 @@ import socket
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import claim_account_for_worker, clear_account_current_task, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
+from .accounts import claim_account_for_worker, clear_account_current_task, disable_account_for_login, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
@@ -124,6 +124,13 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
     if not account_id:
         return
     clear_account_current_task(account_id, task_id)
+    if outcome.get("switch_account"):
+        record_failed_account(task_id, account_id)
+        update_meta(task_id, preferred_account_id="")
+    if outcome.get("account_login_invalid"):
+        disable_account_for_login(account_id, "Dola 登录状态失效")
+        refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
+        return
     if outcome.get("account_slider_verification"):
         mark_account_slider_verification(account_id)
         refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))

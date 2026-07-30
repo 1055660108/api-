@@ -716,6 +716,27 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(stored["quota_used"], 0)
         self.assertIn(created["id"], store.get_meta(task["id"])["failed_account_ids"])
 
+    def test_doubao_login_invalid_uses_the_correct_platform_label(self) -> None:
+        task = store.create_task("豆包测试", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        created = accounts.add_account("Doubao login invalid", "session=doubao-invalid", quota_limit=2, platform="doubao")
+        claimed = accounts.claim_account_for_worker("worker-doubao-invalid", task["id"], platform="doubao")
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "doubao",
+            {
+                "retryable": True,
+                "account_fault": True,
+                "account_login_invalid": True,
+                "switch_account": True,
+            },
+        )
+
+        stored = accounts.list_accounts()[0]
+        self.assertEqual(stored["account_status"], "abnormal")
+        self.assertIn("豆包 登录状态失效", stored["status_reason"])
+
     def test_slider_verification_streak_restarts_after_a_missed_day(self) -> None:
         created = accounts.add_account("Slider gap", "session=slider-gap", quota_limit=2)
         with patch.object(accounts, "local_today", return_value="2030-02-01"):

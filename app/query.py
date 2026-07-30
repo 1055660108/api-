@@ -699,6 +699,13 @@ async def _refresh_confirmed_query_proxy_if_due(task_id: str, result: dict[str, 
 async def _query_task_once(task_id: str, *, late_watch: bool = False) -> dict[str, str]:
     expire_task_if_timeout(task_id)
     meta = get_meta(task_id)
+    if str(meta.get("platform") or "dola") == "doubao" and meta.get("status") == STATUS_SUBMITTED:
+        result = load_result(task_id)
+        video_url = str(result.get("decoded_main_url") or "").strip()
+        if video_url:
+            mark_success(task_id)
+            return {"code": "2", "text": SUCCESS_TEXT, "url": video_url}
+        return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": ""}
     retry_limit = task_retry_limit()
     late_watch_active = late_watch and meta.get("status") == STATUS_FAILED and bool(
         (late_until := parse_time(str(meta.get("late_result_watch_until") or "")))

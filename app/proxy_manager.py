@@ -78,7 +78,9 @@ def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int
 
 
 TASK_MIHOMO_MAX_SLOTS = _bounded_env_int("DOLA_MIHOMO_EXIT_SLOTS", 12, 1, 12)
-TASK_MIHOMO_CONTEXTS_PER_EXIT = _bounded_env_int("DOLA_MIHOMO_CONTEXTS_PER_EXIT", 4, 1, 4)
+# Account isolation is a runtime invariant: stale deployment env files must not
+# restore the old four-context sharing behavior after an update.
+TASK_MIHOMO_CONTEXTS_PER_EXIT = _bounded_env_int("DOLA_MIHOMO_CONTEXTS_PER_EXIT", 1, 1, 1)
 PROXY_EXIT_CACHE_SECONDS = 30 * 60
 PROXY_EXIT_CHECK_URL = "https://api.ipify.org"
 COUNTRY_MARKERS = {

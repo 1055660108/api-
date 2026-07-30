@@ -128,7 +128,8 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
         record_failed_account(task_id, account_id)
         update_meta(task_id, preferred_account_id="")
     if outcome.get("account_login_invalid"):
-        disable_account_for_login(account_id, "Dola 登录状态失效")
+        platform_label = {"dola": "Dola", "doubao": "豆包", "qianwen": "千问"}.get(platform, platform)
+        disable_account_for_login(account_id, f"{platform_label} 登录状态失效")
         refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
         return
     if outcome.get("account_slider_verification"):
@@ -830,7 +831,21 @@ class WorkerManager:
                 if platform != "dola":
                     set_execution_phase(task_id, "submitting_request", "正在提交生成请求")
                 if platform == "doubao":
-                    runner = DoubaoVideoAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), str(meta.get("model") or "Seedance 2.0 Mini"), account=account)
+                    proxy_session = DolaFetchAutomation(
+                        task_id,
+                        "",
+                        "",
+                        account=account,
+                        api_proxy_pool=self._api_proxy_pool,
+                    )
+                    runner = DoubaoVideoAutomation(
+                        task_id,
+                        str(meta.get("prompt") or ""),
+                        str(meta.get("ratio") or "9:16"),
+                        str(meta.get("model") or "Seedance 2.0 Mini"),
+                        account=account,
+                        proxy_session=proxy_session,
+                    )
                 elif platform == "qianwen":
                     runner = QianwenVideoAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), str(meta.get("model") or "万相 2.7"), str(meta.get("task_type") or "video"), account=account)
                 else:

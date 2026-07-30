@@ -1398,13 +1398,7 @@ class DolaFetchAutomation:
                 else:
                     await _bounded_cleanup(safe_close(context))
                     await _bounded_cleanup(safe_close(browser))
-                await _bounded_cleanup(release_dola_subscription_proxy(self.subscription_proxy))
-                self.subscription_proxy = None
-                await _bounded_cleanup(release_task_mihomo_proxy(self.account_proxy_bridge))
-                self.account_proxy_bridge = None
-                if getattr(self, "api_proxy_lease", None) is not None:
-                    await _bounded_cleanup(self.api_proxy_lease.release())
-                    self.api_proxy_lease = None
+                await self.release_browser_proxy()
 
     async def _api_browser_proxy_config(self, excluded_node_ids: set[str]) -> dict[str, str]:
         api_proxy_pool = getattr(self, "api_proxy_pool", None)
@@ -1645,6 +1639,24 @@ class DolaFetchAutomation:
         if attempted_sources == 0 and cooling_delays:
             raise ProxyCoolingDownError(min(cooling_delays))
         raise RuntimeError(f"all configured proxy modes are unavailable ({'; '.join(errors)})")
+
+    async def acquire_browser_proxy(self) -> dict[str, str] | None:
+        """Acquire the configured shared proxy lease for a browser task."""
+        return await self._browser_proxy_config()
+
+    async def release_browser_proxy(self) -> None:
+        """Release any proxy resources acquired by this automation instance."""
+        await _bounded_cleanup(release_dola_subscription_proxy(self.subscription_proxy))
+        self.subscription_proxy = None
+        await _bounded_cleanup(release_task_mihomo_proxy(self.account_proxy_bridge))
+        self.account_proxy_bridge = None
+        if getattr(self, "api_proxy_lease", None) is not None:
+            await _bounded_cleanup(self.api_proxy_lease.release())
+            self.api_proxy_lease = None
+
+    def mark_browser_proxy_unavailable(self, *, reason: str = "runtime_failure") -> None:
+        """Retire the active proxy after a browser-level network or region failure."""
+        self._mark_active_proxy_unavailable(reason=reason)
 
     async def _inject_account(self, context: BrowserContext) -> None:
         cookies = self.account.get("cookies")

@@ -1118,11 +1118,11 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_worker_has_independent_image_submission_limit(self) -> None:
         manager = WorkerManager()
-        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 8)
-        self.assertEqual(manager._image_submission_semaphore._value, 8)
+        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 10)
+        self.assertEqual(manager._image_submission_semaphore._value, 10)
         self.assertEqual(manager._image_submission_reservations, {})
         snapshot = manager.health_snapshot()
-        self.assertEqual(snapshot["image_upload_concurrency"], 8)
+        self.assertEqual(snapshot["image_upload_concurrency"], 10)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
         self.assertEqual(snapshot["image_submission_claimed"], 0)
         self.assertEqual(snapshot["image_submission_claim_limit"], IMAGE_PREPARATION_CONCURRENCY)
@@ -1172,7 +1172,7 @@ class ReliabilityTests(unittest.TestCase):
                 self.assertEqual(manager._owner_concurrency_limits(), {"owner-a": 16, "owner-b": 16, "owner-c": 16})
                 self.assertEqual(
                     {owner: manager._image_owner_limit(owner) for owner in ("owner-a", "owner-b", "owner-c")},
-                    {"owner-a": 3, "owner-b": 3, "owner-c": 2},
+                    {"owner-a": 4, "owner-b": 3, "owner-c": 3},
                 )
 
         asyncio.run(calculate())

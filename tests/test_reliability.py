@@ -600,7 +600,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
 
-    def test_ten_second_account_label_keeps_account_normal_and_available(self) -> None:
+    def test_ten_second_dola_account_stays_normal_but_is_not_scheduled(self) -> None:
         created = accounts.add_account("Ten seconds", "session=ten-seconds", quota_limit=2)
 
         marked = accounts.mark_account_ten_second_limit(created["id"])
@@ -609,9 +609,12 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(marked["ten_second_marked_at"])
         self.assertTrue(marked["enabled"])
         self.assertEqual(marked["account_status"], "normal")
-        self.assertEqual(accounts.account_for_worker("worker-ten-seconds")["id"], created["id"])
+        self.assertIsNone(accounts.account_for_worker("worker-ten-seconds"))
         cleaned = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 23, 0, tzinfo=accounts.LOCAL_TZ))
         self.assertEqual(cleaned["removed"], 0)
+        restored = accounts.update_account_cookies(created["id"], accounts.parse_cookie_payload("session=ten-seconds-restored"))
+        self.assertFalse(restored["ten_second_only"])
+        self.assertEqual(accounts.account_for_worker("worker-ten-seconds-restored")["id"], created["id"])
 
     def test_slider_and_abnormal_accounts_are_deleted_at_23_with_daily_statistics(self) -> None:
         task = self.create_task("slider-owner")
@@ -691,7 +694,49 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(slider["state"], "slider_verification")
         self.assertEqual(login["state"], "login_invalid")
         self.assertEqual(normal["state"], "service_frequent")
-        self.assertEqual(cookie_error["state"], "service_frequent")
+        self.assertEqual(normal["inspection_stage"], "after_reload")
+        self.assertEqual(normal["pages_checked"], 1)
+        self.assertEqual(cookie_error["state"], "inspection_failed")
+
+    def test_service_frequent_risk_check_scans_secondary_slider_page_before_reload(self) -> None:
+        task = self.create_task("secondary-risk-page")
+        runner = DolaFetchAutomation(
+            task["id"],
+            "prompt",
+            "9:16",
+            account={"cookies": [{"name": "sessionid", "value": "session"}]},
+        )
+        main_page = SimpleNamespace(
+            url="https://www.dola.com/chat/local_test",
+            wait_for_timeout=AsyncMock(),
+            reload=AsyncMock(),
+            evaluate=AsyncMock(return_value={
+                "sliderVerification": False,
+                "loginInvalid": False,
+                "href": "https://www.dola.com/chat/local_test",
+                "bodyText": "",
+            }),
+        )
+        slider_page = SimpleNamespace(
+            url="https://verify.dola.com/captcha",
+            evaluate=AsyncMock(return_value={
+                "sliderVerification": True,
+                "loginInvalid": False,
+                "href": "https://verify.dola.com/captcha",
+                "bodyText": "请完成验证",
+            }),
+        )
+        context = SimpleNamespace(
+            pages=[main_page, slider_page],
+            cookies=AsyncMock(return_value=[{"name": "sessionid"}]),
+        )
+
+        outcome = asyncio.run(runner._inspect_service_frequent_account_state(main_page, context))
+
+        self.assertEqual(outcome["state"], "slider_verification")
+        self.assertEqual(outcome["inspection_stage"], "before_reload")
+        self.assertEqual(outcome["pages_checked"], 2)
+        main_page.reload.assert_not_awaited()
 
     def test_login_invalid_retry_disables_and_switches_account(self) -> None:
         task = self.create_task("login-invalid-owner")

@@ -89,27 +89,44 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
     return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
   };
   const bodyText = String(document.body && document.body.innerText || "").replace(/\s+/g, " ").trim();
-  const sliderSelector = [
+  const sliderSelectors = [
     'iframe[src*="captcha"]',
+    'iframe[src*="bdcaptcha"]',
     'iframe[src*="verify"]',
     '[class*="captcha"]',
     '[id*="captcha"]',
     '[class*="slide-verify"]',
-    '[class*="slider-verify"]'
-  ].some(selector => Array.from(document.querySelectorAll(selector)).some(visible));
-  const sliderText = /拖动滑块|请完成验证|安全验证|验证后继续|滑块验证/.test(bodyText);
-  const loginControl = Array.from(document.querySelectorAll("button,a")).some(element => {
+    '[class*="slider-verify"]',
+    '[class*="captcha-slider"]',
+    '.captcha-slider-btn',
+    '[class*="secsdk-captcha"]'
+  ];
+  const visibleSliderSelectors = sliderSelectors.filter(selector => Array.from(document.querySelectorAll(selector)).some(visible));
+  const sliderSelector = visibleSliderSelectors.length > 0;
+  const sliderText = /拖动滑块|向右拖动|按住滑块|完成拼图|请完成验证|安全验证|验证后继续|滑块验证/.test(bodyText);
+  const loginControl = Array.from(document.querySelectorAll('button,a,[role="button"]')).some(element => {
     const text = String(element.innerText || element.textContent || "").replace(/\s+/g, "").trim();
     return visible(element) && ["登录", "登录/注册", "注册/登录"].includes(text);
   });
   const href = String(location.href || "");
-  const loginText = /游客模式|请登录后再试|登录后再试/.test(bodyText);
+  const loginText = /游客模式|请登录后再试|登录后再试|登录状态失效|账号已退出|请重新登录/.test(bodyText);
   const loginUrl = /(?:passport|\/login(?:[/?#]|$)|login\.dola)/i.test(href);
   return {
     href,
     bodyText: bodyText.slice(0, 2000),
     sliderVerification: sliderSelector || sliderText,
-    loginInvalid: loginText || loginUrl || loginControl
+    loginInvalid: loginText || loginUrl || loginControl,
+    riskEvidence: sliderSelector
+      ? `slider-selector:${visibleSliderSelectors.join(",")}`
+      : sliderText
+        ? "slider-text"
+        : loginUrl
+          ? "login-url"
+          : loginText
+            ? "login-text"
+            : loginControl
+              ? "login-control"
+              : "none"
   };
 }
 """
@@ -931,20 +948,54 @@ class DolaFetchAutomation:
         if self._task_exists():
             set_execution_phase(self.task_id, phase, status_reason)
 
-    async def _inspect_service_frequent_account_state(self, page: Page, context: BrowserContext) -> dict[str, str]:
+    async def _inspect_service_frequent_account_state(self, page: Page, context: BrowserContext) -> dict[str, Any]:
         self._set_phase("checking_account_risk", "正在确认账号登录和滑块状态")
         await page.wait_for_timeout(SERVICE_FREQUENT_RECHECK_DELAY_MS)
-        try:
-            await page.reload(wait_until="domcontentloaded", timeout=30000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(2000)
-        try:
-            snapshot = await page.evaluate(SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT)
-        except Exception as exc:
-            snapshot = {"href": str(page.url or ""), "bodyText": "", "inspectionError": str(exc)[:300]}
-        if not isinstance(snapshot, dict):
-            snapshot = {"href": str(page.url or ""), "bodyText": "", "inspectionError": "invalid inspection result"}
+
+        async def inspect_pages(stage: str) -> dict[str, Any]:
+            pages = [page]
+            for candidate in list(getattr(context, "pages", []) or []):
+                if candidate not in pages:
+                    pages.append(candidate)
+            snapshots: list[dict[str, Any]] = []
+            errors: list[str] = []
+            for candidate in pages:
+                try:
+                    value = await candidate.evaluate(SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT)
+                    if not isinstance(value, dict):
+                        raise RuntimeError("invalid inspection result")
+                    value = dict(value)
+                    value["inspectionStage"] = stage
+                    snapshots.append(value)
+                except Exception as exc:
+                    errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+            selected = next((item for item in snapshots if bool(item.get("sliderVerification"))), None)
+            selected = selected or next((item for item in snapshots if bool(item.get("loginInvalid"))), None)
+            selected = selected or (snapshots[0] if snapshots else {
+                "href": str(page.url or ""),
+                "bodyText": "",
+                "inspectionStage": stage,
+            })
+            selected["pagesChecked"] = len(pages)
+            selected["inspectionFailed"] = not bool(snapshots)
+            if errors:
+                selected["inspectionError"] = "; ".join(errors)[:300]
+            return selected
+
+        snapshot = await inspect_pages("before_reload")
+        if not bool(snapshot.get("sliderVerification")) and not bool(snapshot.get("loginInvalid")):
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=30000)
+            except Exception as exc:
+                snapshot["inspectionError"] = f"reload: {type(exc).__name__}: {str(exc)[:220]}"
+            await page.wait_for_timeout(2000)
+            refreshed = await inspect_pages("after_reload")
+            if (
+                bool(refreshed.get("sliderVerification"))
+                or bool(refreshed.get("loginInvalid"))
+                or not bool(refreshed.get("inspectionFailed"))
+            ):
+                snapshot = refreshed
         cookies_checked = True
         try:
             current_cookies = await context.cookies()
@@ -968,11 +1019,16 @@ class DolaFetchAutomation:
             state = "slider_verification"
         elif bool(snapshot.get("loginInvalid")) or cookies_checked and bool(injected_names & auth_names) and not bool(current_names & auth_names):
             state = "login_invalid"
+        elif not cookies_checked or bool(snapshot.get("inspectionFailed")):
+            state = "inspection_failed"
         return {
             "state": state,
             "url": str(snapshot.get("href") or page.url or "")[:500],
             "page_text": _submission_response_preview(snapshot.get("bodyText"))[:1000],
             "inspection_error": str(snapshot.get("inspectionError") or "")[:300],
+            "inspection_stage": str(snapshot.get("inspectionStage") or "")[:40],
+            "pages_checked": max(0, int(snapshot.get("pagesChecked") or 0)),
+            "evidence": str(snapshot.get("riskEvidence") or "none")[:300],
         }
 
     def _finish_image_preparation(self) -> None:
@@ -1318,6 +1374,9 @@ class DolaFetchAutomation:
                         "service_frequent_check_url": account_state["url"],
                         "service_frequent_check_text": account_state["page_text"],
                         "service_frequent_check_error": account_state["inspection_error"],
+                        "service_frequent_check_stage": account_state["inspection_stage"],
+                        "service_frequent_pages_checked": account_state["pages_checked"],
+                        "service_frequent_check_evidence": account_state["evidence"],
                     })
                     if account_state["state"] == "slider_verification":
                         release_task_submission(self.task_id)
@@ -1347,7 +1406,12 @@ class DolaFetchAutomation:
                     )
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "service_frequent", "submit_phase": "submission_response"})
-                    return {"success": False, "retryable": True, "reason": "service frequent", "infrastructure_fault": True}
+                    return {
+                        "success": False,
+                        "retryable": True,
+                        "reason": f"service frequent (risk check: {account_state['state']})",
+                        "infrastructure_fault": True,
+                    }
                 if result.get("country_restricted"):
                     self._mark_active_proxy_unavailable(reason="country_restricted")
                     release_task_submission(self.task_id)

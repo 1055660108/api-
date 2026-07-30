@@ -208,6 +208,8 @@ class DolaQueryTests(unittest.TestCase):
         self.assertEqual(query.AMBIGUOUS_SUBMISSION_RECOVERY_SECONDS, 120)
         self.assertIn('text.includes("710022004")', automation.SUBMIT_SCRIPT)
         self.assertIn("slider_verification: sliderVerification", automation.SUBMIT_SCRIPT)
+        self.assertIn("bdcaptcha", automation.SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT)
+        self.assertIn("captcha-slider-btn", automation.SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT)
         self.assertIn("suppliedCollectionId", automation.SUBMIT_SCRIPT)
         self.assertIn("suppliedUniqueKey", automation.SUBMIT_SCRIPT)
         self.assertIn("suppliedLocalConversationId", automation.SUBMIT_SCRIPT)

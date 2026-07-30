@@ -879,6 +879,7 @@ def _select_account(
         if item.get("enabled", True)
         and str(item.get("account_status") or "normal") == "normal"
         and str(item.get("platform") or DEFAULT_PLATFORM) == target_platform
+        and not (target_platform == "dola" and bool(item.get("ten_second_only")))
         and str(item.get("id") or "") not in excluded
         and (not preferred_id or str(item.get("id") or "") == preferred_id)
         and not str(item.get("current_task_id") or "")

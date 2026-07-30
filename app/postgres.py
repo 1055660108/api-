@@ -641,6 +641,8 @@ def claim_available_account(
         f"({quota_limit} = 0 OR {quota_used} < {quota_limit})",
         "(COALESCE(payload->>'cooldown_until', '') = '' OR payload->>'cooldown_until' <= %s)",
     ]
+    if platform == "dola":
+        conditions.append("COALESCE(payload->>'ten_second_only', 'false') <> 'true'")
     params: list[Any] = [platform, today, now]
     if excluded:
         conditions.append("NOT (id = ANY(%s))")

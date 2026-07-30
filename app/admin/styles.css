@@ -450,8 +450,10 @@ button:disabled {
 .proxy-node-country { grid-column: 1; color: var(--muted); font-size: 12px; }
 .proxy-node-latency { grid-column: 2; grid-row: 1 / 3; align-self: center; color: var(--muted); font-size: 14px; }
 .proxy-node-latency.good { color: #16825f; }
-.api-proxy-node-card { cursor: default; }
-.api-proxy-state { grid-column: 2; grid-row: 1 / 3; align-self: center; color: var(--muted); font-size: 13px; text-align: right; }
+.api-proxy-node-card { grid-template-columns: minmax(0, 1fr); cursor: default; }
+.api-proxy-node-card .proxy-node-name { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.api-proxy-node-card .proxy-node-country { grid-column: 1; }
+.api-proxy-state { grid-column: 1; grid-row: auto; align-self: start; color: var(--muted); font-size: 13px; text-align: left; }
 .api-proxy-state.good { color: #16825f; }
 .users-panel { padding: 22px; }
 .users-table-wrap { margin-top: 14px; border-radius: 16px; }

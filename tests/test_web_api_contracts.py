@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import inspect
 import threading
@@ -1408,12 +1409,14 @@ class WebAPIContractTests(unittest.TestCase):
         account = created.json()["account"]
         self.assertEqual(account["name"], "外部导入账号")
         self.assertEqual(account["quota_limit"], 12)
+        self.assertEqual(account["account_source"], "api")
         for secret_field in ("cookies", "cookie_header", "cookie_names", "cookie_count", "current_task_id", "current_worker_id"):
             self.assertNotIn(secret_field, account)
 
         listed = self.client.get("/account-access/accounts?group=dola", headers={"X-Account-Access-Key": first_key})
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(listed.json()["accounts"][0]["id"], account["id"])
+        self.assertEqual(listed.json()["accounts"][0]["account_source"], "api")
         self.assertNotIn("cookies", listed.text)
 
         updated = self.client.patch(
@@ -1790,6 +1793,42 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertIn("await asyncio.to_thread(_accounts_list_payload", source)
         self.assertNotIn("list_tasks()", inspect.getsource(main._build_account_list_snapshot))
         self.assertNotIn("list_tasks()", inspect.getsource(store.account_active_tasks))
+
+    def test_account_quota_policy_is_configurable_and_syncs_existing_accounts(self) -> None:
+        self.assertEqual(self.client.get("/config/account-quotas").status_code, 403)
+        self.login_admin()
+        dola = accounts.add_account("Dola", "session=quota-dola", quota_limit=9)
+        accounts.add_account("豆包", "session=quota-doubao", quota_limit=9, platform="doubao")
+        api_account = accounts.add_account("API Dola", "session=quota-api", quota_limit=9, account_source="api")
+
+        current = self.client.get("/config/account-quotas").json()
+        self.assertEqual(current["default_quotas"], {"dola": 2, "doubao": 2, "qianwen": 5})
+        self.assertEqual(current["quota_costs"]["dola"]["Seedance 2.0"], {"5": 1, "10": 1, "15": 2})
+        current["default_quotas"]["dola"] = 3
+        current["quota_costs"]["dola"]["Seedance 2.0"]["15"] = 3
+        updated = self.client.post(
+            "/config/account-quotas",
+            json={"default_quotas": current["default_quotas"], "quota_costs": current["quota_costs"]},
+        )
+
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["default_quotas"]["dola"], 3)
+        self.assertEqual(updated.json()["quota_costs"]["dola"]["Seedance 2.0"]["15"], 3)
+        by_id = {item["id"]: item for item in accounts.list_accounts()}
+        self.assertEqual(by_id[dola["id"]]["quota_limit"], 3)
+        self.assertEqual(by_id[api_account["id"]]["quota_limit"], 3)
+        main._clear_account_list_cache()
+        api_filtered = self.client.get("/accounts?status=api&page=1&page_size=20").json()
+        self.assertEqual([item["id"] for item in api_filtered["accounts"]], [api_account["id"]])
+        self.assertEqual(api_filtered["stats"]["api"], 1)
+
+        invalid_costs = copy.deepcopy(current["quota_costs"])
+        invalid_costs["dola"]["Seedance 2.0"]["10"] = 0
+        invalid = self.client.post(
+            "/config/account-quotas",
+            json={"default_quotas": current["default_quotas"], "quota_costs": invalid_costs},
+        )
+        self.assertEqual(invalid.status_code, 400)
 
     def test_account_user_and_configuration_responses_keep_web_contracts(self) -> None:
         registered = self.register()

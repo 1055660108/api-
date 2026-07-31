@@ -37,7 +37,11 @@ def _quota_charges(account: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _reconciled_quota_used(account: dict[str, Any]) -> int:
     base = max(0, int(account.get("quota_ledger_base") or 0))
-    active = sum(1 for item in _quota_charges(account) if str(item.get("status") or "charged") in {"charged", "settled"})
+    active = sum(
+        max(1, int(item.get("units") or 1))
+        for item in _quota_charges(account)
+        if str(item.get("status") or "charged") in {"charged", "settled"}
+    )
     return base + active
 
 
@@ -453,6 +457,7 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(account.get("id") or ""),
         "platform": str(account.get("platform") or DEFAULT_PLATFORM),
+        "account_source": "api" if str(account.get("account_source") or "").lower() == "api" else "admin",
         "name": str(account.get("name") or ""),
         "enabled": bool(account.get("enabled", True)),
         "account_status": str(account.get("account_status") or "normal"),
@@ -510,10 +515,18 @@ def _account_fingerprint(platform: str, cookies: list[dict[str, Any]]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _new_account(accounts: list[dict[str, Any]], name: str, cookies: list[dict[str, Any]], enabled: bool, quota_limit: int, platform: str) -> dict[str, Any]:
+def _new_account(
+    accounts: list[dict[str, Any]],
+    name: str,
+    cookies: list[dict[str, Any]],
+    enabled: bool,
+    quota_limit: int,
+    platform: str,
+    account_source: str = "admin",
+) -> dict[str, Any]:
     now = utc_now()
     return {
-        "id": secrets.token_hex(8), "platform": platform, "name": str(name or "").strip() or f"账号 {len(accounts) + 1}",
+        "id": secrets.token_hex(8), "platform": platform, "account_source": "api" if str(account_source).lower() == "api" else "admin", "name": str(name or "").strip() or f"账号 {len(accounts) + 1}",
         "enabled": bool(enabled), "quota_limit": max(0, int(quota_limit or 0)), "quota_used": 0,
         "quota_reset_date": local_today(), "cookies": cookies, "cookie_header": _cookie_header_from_items(cookies),
         "cookie_fingerprint": _account_fingerprint(platform, cookies),
@@ -521,7 +534,14 @@ def _new_account(accounts: list[dict[str, Any]], name: str, cookies: list[dict[s
     }
 
 
-def add_account(name: str, cookie_data: str, enabled: bool = True, quota_limit: int = 1, platform: str = DEFAULT_PLATFORM) -> dict[str, Any]:
+def add_account(
+    name: str,
+    cookie_data: str,
+    enabled: bool = True,
+    quota_limit: int = 2,
+    platform: str = DEFAULT_PLATFORM,
+    account_source: str = "admin",
+) -> dict[str, Any]:
     platform = normalize_platform(platform)
     cookies = parse_cookie_payload(cookie_data, platform)
     if not cookies:
@@ -533,7 +553,7 @@ def add_account(name: str, cookie_data: str, enabled: bool = True, quota_limit: 
                 fingerprint = _account_fingerprint(platform, cookies)
                 if any(_account_fingerprint(str(item.get("platform") or DEFAULT_PLATFORM), item.get("cookies") or []) == fingerprint for item in accounts):
                     raise ValueError("账号已存在，请勿重复导入")
-                account = _new_account(accounts, name, cookies, enabled, quota_limit, platform)
+                account = _new_account(accounts, name, cookies, enabled, quota_limit, platform, account_source)
                 accounts.append(account)
                 return _public_account(account)
 
@@ -542,7 +562,7 @@ def add_account(name: str, cookie_data: str, enabled: bool = True, quota_limit: 
         fingerprint = _account_fingerprint(platform, cookies)
         if any(_account_fingerprint(str(item.get("platform") or DEFAULT_PLATFORM), item.get("cookies") or []) == fingerprint for item in data["accounts"]):
             raise ValueError("账号已存在，请勿重复导入")
-        account = _new_account(data["accounts"], name, cookies, enabled, quota_limit, platform)
+        account = _new_account(data["accounts"], name, cookies, enabled, quota_limit, platform, account_source)
         data["accounts"].append(account)
         _write_data(data)
         return _public_account(account)
@@ -562,7 +582,7 @@ def _split_bulk_line(line: str) -> tuple[str, str, int]:
     return "", text, 0
 
 
-def parse_bulk_accounts(raw: str, default_quota_limit: int = 1) -> list[dict[str, Any]]:
+def parse_bulk_accounts(raw: str, default_quota_limit: int = 2) -> list[dict[str, Any]]:
     text = str(raw or "").strip()
     if not text:
         raise ValueError("cookie data is required")
@@ -595,7 +615,7 @@ def parse_bulk_accounts(raw: str, default_quota_limit: int = 1) -> list[dict[str
     return rows
 
 
-def add_accounts_bulk_result(raw: str, default_quota_limit: int = 1, enabled: bool = True, platform: str = DEFAULT_PLATFORM) -> dict[str, Any]:
+def add_accounts_bulk_result(raw: str, default_quota_limit: int = 2, enabled: bool = True, platform: str = DEFAULT_PLATFORM, account_source: str = "admin") -> dict[str, Any]:
     rows = parse_bulk_accounts(raw, default_quota_limit)
     platform = normalize_platform(platform)
     prepared = []
@@ -617,7 +637,7 @@ def add_accounts_bulk_result(raw: str, default_quota_limit: int = 1, enabled: bo
                 if fingerprint in existing:
                     skipped += 1
                     continue
-                account = _new_account(accounts, row.get("name") or "", cookies, enabled, int(row.get("quota_limit") or 0), platform)
+                account = _new_account(accounts, row.get("name") or "", cookies, enabled, int(row.get("quota_limit") or 0), platform, account_source)
                 accounts.append(account)
                 existing.add(fingerprint)
                 created.append(_public_account(account))
@@ -632,8 +652,8 @@ def add_accounts_bulk_result(raw: str, default_quota_limit: int = 1, enabled: bo
         return result
 
 
-def add_accounts_bulk(raw: str, default_quota_limit: int = 1, enabled: bool = True, platform: str = DEFAULT_PLATFORM) -> list[dict[str, Any]]:
-    return add_accounts_bulk_result(raw, default_quota_limit, enabled, platform)["accounts"]
+def add_accounts_bulk(raw: str, default_quota_limit: int = 2, enabled: bool = True, platform: str = DEFAULT_PLATFORM, account_source: str = "admin") -> list[dict[str, Any]]:
+    return add_accounts_bulk_result(raw, default_quota_limit, enabled, platform, account_source)["accounts"]
 
 
 def merge_duplicate_accounts(account_task_counts: dict[str, int] | None = None) -> dict[str, Any]:
@@ -859,10 +879,12 @@ def _select_account(
     exclude_ids: set[str] | None = None,
     platform: str = DEFAULT_PLATFORM,
     preferred_id: str = "",
+    quota_cost: int = 1,
 ) -> dict[str, Any] | None:
     excluded = exclude_ids or set()
     target_platform = normalize_platform(platform)
     preferred_id = str(preferred_id or "").strip().lower()
+    quota_cost = max(1, int(quota_cost or 1))
     now = datetime.now(timezone.utc)
 
     def available(item: dict[str, Any]) -> bool:
@@ -887,7 +909,7 @@ def _select_account(
         and item.get("cookies")
         and available(item)
         and str(item.get("quota_exhausted_date") or "") != local_today()
-        and (not int(item.get("quota_limit") or 0) or int(item.get("quota_used") or 0) < int(item.get("quota_limit") or 0))
+        and (not int(item.get("quota_limit") or 0) or int(item.get("quota_used") or 0) + quota_cost <= int(item.get("quota_limit") or 0))
     ]
     if not enabled_accounts:
         return None
@@ -896,14 +918,15 @@ def _select_account(
         quota_limit = max(0, int(item.get("quota_limit") or 0))
         quota_used = max(0, int(item.get("quota_used") or 0))
         quota_remaining = max(0, quota_limit - quota_used) if quota_limit else 1000000
-        unused_full_quota = quota_limit == 2 and quota_used == 0 and quota_remaining == 2
-        return (0 if unused_full_quota else 1, -quota_remaining, quota_used, str(item.get("last_used_at") or ""))
+        api_priority = 0 if target_platform == "dola" and str(item.get("account_source") or "").lower() == "api" else 1
+        return (api_priority, -quota_remaining, quota_used, str(item.get("last_used_at") or ""))
 
     enabled_accounts.sort(key=priority)
     account = enabled_accounts[0]
     return {
         "id": str(account.get("id") or ""),
         "platform": str(account.get("platform") or DEFAULT_PLATFORM),
+        "account_source": "api" if str(account.get("account_source") or "").lower() == "api" else "admin",
         "name": str(account.get("name") or ""),
         "cookies": [dict(item) for item in account.get("cookies") or [] if isinstance(item, dict)],
         "cookie_header": str(account.get("cookie_header") or ""),
@@ -916,27 +939,30 @@ def claim_account_for_worker(
     exclude_ids: set[str] | None = None,
     platform: str = DEFAULT_PLATFORM,
     preferred_id: str = "",
+    quota_cost: int = 1,
 ) -> dict[str, Any] | None:
     preferred_id = str(preferred_id or "").strip().lower()
+    quota_cost = max(1, int(quota_cost or 1))
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(account: dict[str, Any]) -> dict[str, Any]:
-                selected = _select_account([account], platform=platform, preferred_id=preferred_id)
+                selected = _select_account([account], platform=platform, preferred_id=preferred_id, quota_cost=quota_cost)
                 if selected is None:
                     raise RuntimeError("selected account became unavailable")
                 now = utc_now()
                 charge_id = f"{task_id}:{secrets.token_hex(8)}"
                 charges = _initialize_quota_ledger(account)
-                charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "status": "charged", "charged_at": now})
+                charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "units": quota_cost, "status": "charged", "charged_at": now})
                 account.update(last_used_worker_id=str(worker_id or ""), last_used_at=now, current_task_id=str(task_id or ""), current_worker_id=str(worker_id or ""), current_started_at=now, current_quota_charge_id=charge_id, quota_charges=charges, quota_used=_reconciled_quota_used(account), updated_at=now)
                 selected["quota_charge_id"] = charge_id
+                selected["quota_cost"] = quota_cost
                 return selected
 
             return postgres.claim_available_account(
-                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id
+                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id, quota_cost
             )
         data = _read_data()
-        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id)
+        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id, quota_cost)
         if not selected:
             return None
         now = utc_now()
@@ -944,7 +970,7 @@ def claim_account_for_worker(
         for account in data["accounts"]:
             if str(account.get("id") or "") == selected["id"]:
                 charges = _initialize_quota_ledger(account)
-                charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "status": "charged", "charged_at": now})
+                charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "units": quota_cost, "status": "charged", "charged_at": now})
                 account["last_used_worker_id"] = str(worker_id or "")
                 account["last_used_at"] = now
                 account["current_task_id"] = str(task_id or "")
@@ -956,6 +982,7 @@ def claim_account_for_worker(
                 account["updated_at"] = now
                 _write_data(data)
                 selected["quota_charge_id"] = charge_id
+                selected["quota_cost"] = quota_cost
                 return selected
         return None
 
@@ -1399,6 +1426,33 @@ def update_account_quota(account_id: str, quota_limit: int) -> dict[str, Any]:
                 _write_data(data)
                 return _public_account(account)
     raise KeyError("account not found")
+
+
+def sync_account_default_quotas(defaults: dict[str, int]) -> dict[str, int]:
+    normalized = {
+        normalize_platform(platform): max(0, min(1_000_000, int(limit)))
+        for platform, limit in defaults.items()
+    }
+    with _ACCOUNTS_LOCK:
+        def mutate(data: dict[str, Any]) -> dict[str, int]:
+            updated = {platform: 0 for platform in normalized}
+            now = utc_now()
+            for account in data.get("accounts") or []:
+                platform = str(account.get("platform") or DEFAULT_PLATFORM)
+                if platform not in normalized or int(account.get("quota_limit") or 0) == normalized[platform]:
+                    continue
+                account["quota_limit"] = normalized[platform]
+                account["updated_at"] = now
+                updated[platform] += 1
+            return updated
+
+        if postgres.enabled():
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        result = mutate(data)
+        if any(result.values()):
+            _write_data(data)
+        return result
 
 
 def mark_account_slider_verification(account_id: str) -> dict[str, Any]:

@@ -30,7 +30,7 @@ from .account_access import generate_key as generate_account_access_key, revoke_
 from .admin_audit import list_admin_actions, prune_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
-from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, update_account_details, update_account_quota
+from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
 from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
@@ -1119,9 +1119,13 @@ async def lifespan(app: FastAPI):
         _RATE_BUCKETS.clear()
     clear_registration_security_state()
     _OWNER_CREATE_SEMAPHORES.clear()
-    validate_startup_credentials(ensure_config())
+    startup_config = ensure_config()
+    validate_startup_credentials(startup_config)
     if postgres_enabled():
         ensure_postgres_schema()
+    if int(startup_config.get("account_quota_policy_version") or 0) < 1:
+        sync_account_default_quotas(load_settings().account_default_quotas)
+        update_config({"account_quota_policy_version": 1})
     purge_legacy_cards()
     running_marker = DATA_DIR / ".service-running"
     running_marker.parent.mkdir(parents=True, exist_ok=True)
@@ -3518,7 +3522,7 @@ def _account_access_public_account(account: dict) -> dict:
     return {
         key: account.get(key)
         for key in (
-            "id", "platform", "name", "enabled", "account_status", "status_reason",
+            "id", "platform", "account_source", "name", "enabled", "account_status", "status_reason",
             "quota_limit", "quota_used", "quota_remaining", "quota_reset_date",
             "created_at", "updated_at",
         )
@@ -3585,7 +3589,7 @@ async def account_access_create_account(
         platform = normalize_platform(payload.get("group") or payload.get("platform") or DEFAULT_PLATFORM)
         raw_cookie_data = payload.get("cookie_data") or payload.get("cookies") or payload.get("cookie") or ""
         cookie_data = json.dumps(raw_cookie_data, ensure_ascii=False) if isinstance(raw_cookie_data, (dict, list)) else str(raw_cookie_data)
-        default_quota_limit = 1 if platform == "dola" else 5 if platform == "qianwen" else 2
+        default_quota_limit = load_settings().account_default_quotas[platform]
         quota_limit = int(payload.get("quota_limit") if payload.get("quota_limit") not in {None, ""} else default_quota_limit)
         if quota_limit < 0 or quota_limit > 1_000_000:
             raise ValueError("账号额度上限需为 0-1000000")
@@ -3597,6 +3601,7 @@ async def account_access_create_account(
             enabled,
             quota_limit,
             platform,
+            "api",
         )
         _clear_account_list_cache()
     except ValueError as exc:
@@ -3610,6 +3615,79 @@ async def account_access_create_account(
         reference_id=str(account.get("id") or ""),
     )
     return {"ok": True, "account": _account_access_public_account(account)}
+
+
+@app.get("/config/account-quotas", dependencies=[Depends(require_admin)])
+async def account_quota_config():
+    settings = load_settings()
+    return {
+        "default_quotas": settings.account_default_quotas,
+        "quota_costs": {
+            platform: {
+                model: {str(duration): cost for duration, cost in costs.items()}
+                for model, costs in platform_costs.items()
+            }
+            for platform, platform_costs in settings.account_quota_costs.items()
+        },
+        "platforms": [
+            {
+                "id": platform,
+                "name": PLATFORM_LABELS[platform],
+                "models": [
+                    {"name": model, "durations": list(PLATFORM_VIDEO_DURATIONS[platform])}
+                    for model in settings.platform_models.get(platform, [])
+                ],
+            }
+            for platform in PLATFORM_LABELS
+        ],
+    }
+
+
+@app.post("/config/account-quotas", dependencies=[Depends(require_admin)])
+async def update_account_quota_config(request: Request):
+    payload = await _request_payload(request)
+    settings = load_settings()
+    raw_defaults = payload.get("default_quotas")
+    raw_costs = payload.get("quota_costs")
+    if not isinstance(raw_defaults, dict) or not isinstance(raw_costs, dict):
+        raise HTTPException(status_code=400, detail="default_quotas and quota_costs are required")
+
+    defaults: dict[str, int] = {}
+    costs: dict[str, dict[str, dict[str, int]]] = {}
+    try:
+        for platform in PLATFORM_LABELS:
+            value = int(raw_defaults.get(platform, settings.account_default_quotas[platform]))
+            if value < 0 or value > 1_000_000:
+                raise ValueError(f"{platform} 默认额度需为 0-1000000")
+            defaults[platform] = value
+            platform_payload = raw_costs.get(platform, {})
+            if not isinstance(platform_payload, dict):
+                raise ValueError(f"{platform} 额度消耗配置无效")
+            costs[platform] = {}
+            for model in settings.platform_models.get(platform, []):
+                model_payload = platform_payload.get(model, {})
+                if not isinstance(model_payload, dict):
+                    raise ValueError(f"{platform} {model} 额度消耗配置无效")
+                costs[platform][model] = {}
+                for duration in PLATFORM_VIDEO_DURATIONS[platform]:
+                    fallback = settings.account_quota_costs.get(platform, {}).get(model, {}).get(duration, 1)
+                    cost = int(model_payload.get(str(duration), model_payload.get(duration, fallback)))
+                    if cost < 1 or cost > 1000:
+                        raise ValueError(f"{platform} {model} {duration}秒消耗额度需为 1-1000")
+                    costs[platform][model][str(duration)] = cost
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    update_config({"account_default_quotas": defaults, "account_quota_costs": costs, "account_quota_policy_version": 1})
+    synced = await asyncio.to_thread(sync_account_default_quotas, defaults)
+    _clear_account_list_cache()
+    await _record_admin_action_safe(
+        "account_quota_setting",
+        "修改账号额度规则",
+        detail="；".join(f"{PLATFORM_LABELS[platform]} 默认 {defaults[platform]}，同步 {synced.get(platform, 0)} 个账号" for platform in PLATFORM_LABELS),
+        ip_address=_request_client_key(request),
+    )
+    return {**(await account_quota_config()), "ok": True, "synced_accounts": synced}
 
 
 @app.patch("/account-access/accounts/{account_id}")
@@ -3793,12 +3871,14 @@ def _accounts_list_payload(
         selected_platform = ""
     platform_accounts = [item for item in accounts if not selected_platform or str(item.get("platform") or DEFAULT_PLATFORM) == selected_platform]
     selected_status = str(status or "").strip().lower()
-    if selected_status not in {"", "all", "normal", "ten_second", "slider_verification", "abnormal", "disabled"}:
+    if selected_status not in {"", "all", "normal", "api", "ten_second", "slider_verification", "abnormal", "disabled"}:
         raise HTTPException(status_code=422, detail="账号状态筛选无效")
     if selected_status in {"", "all"}:
         status_accounts = platform_accounts
     elif selected_status == "normal":
         status_accounts = [item for item in platform_accounts if item.get("enabled") is not False and str(item.get("account_status") or "normal") == "normal"]
+    elif selected_status == "api":
+        status_accounts = [item for item in platform_accounts if str(item.get("account_source") or "admin") == "api"]
     elif selected_status == "ten_second":
         status_accounts = [item for item in platform_accounts if item.get("ten_second_only")]
     elif selected_status == "slider_verification":
@@ -3813,7 +3893,7 @@ def _accounts_list_payload(
         if not keyword or any(
             keyword in str(value or "").lower()
             for value in (
-                item.get("id"), item.get("name"), item.get("account_status"), item.get("status_reason"),
+                item.get("id"), item.get("name"), item.get("account_source"), item.get("account_status"), item.get("status_reason"),
                 item.get("current_task_id"), item.get("current_worker_id"), item.get("last_used_worker_id"),
             )
         )
@@ -3832,6 +3912,7 @@ def _accounts_list_payload(
         stats={
             "total": len(platform_accounts),
             "normal": sum(item.get("enabled") is not False and str(item.get("account_status") or "normal") == "normal" for item in platform_accounts),
+            "api": sum(str(item.get("account_source") or "admin") == "api" for item in platform_accounts),
             "ten_second": sum(bool(item.get("ten_second_only")) for item in platform_accounts),
             "slider_verification": sum(item.get("account_status") == "slider_verification" for item in platform_accounts),
             "abnormal": sum(item.get("account_status") == "abnormal" for item in platform_accounts),
@@ -3897,11 +3978,11 @@ async def accounts_create(request: Request):
     bulk = str(payload.get("bulk") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
     try:
         platform = normalize_platform(payload.get("platform") or DEFAULT_PLATFORM)
-        default_quota_limit = 1 if platform == "dola" else 5 if platform == "qianwen" else 2
+        default_quota_limit = load_settings().account_default_quotas[platform]
         quota_limit = int(payload.get("quota_limit") if payload.get("quota_limit") not in {None, ""} else default_quota_limit)
         enabled = str(payload.get("enabled") if payload.get("enabled") is not None else "true").lower() not in {"0", "false", "no", "off"}
         if bulk:
-            result = await asyncio.to_thread(add_accounts_bulk_result, cookie_data, quota_limit, enabled, platform)
+            result = await asyncio.to_thread(add_accounts_bulk_result, cookie_data, quota_limit, enabled, platform, "admin")
             _clear_account_list_cache()
             return {"ok": True, **result}
         account = await asyncio.to_thread(
@@ -3911,6 +3992,7 @@ async def accounts_create(request: Request):
             enabled,
             quota_limit,
             platform,
+            "admin",
         )
         _clear_account_list_cache()
     except ValueError as exc:

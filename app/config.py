@@ -59,6 +59,17 @@ DEFAULT_MODEL_DURATION_COSTS = {
     }
     for platform, models in DEFAULT_MODEL_DURATIONS.items()
 }
+DEFAULT_ACCOUNT_QUOTA_LIMITS = {"dola": 2, "doubao": 2, "qianwen": 5}
+DEFAULT_ACCOUNT_QUOTA_COSTS = {
+    platform: {
+        model: {
+            str(duration): 2 if platform == "dola" and duration == 15 else 1
+            for duration in durations
+        }
+        for model, durations in models.items()
+    }
+    for platform, models in DEFAULT_MODEL_DURATIONS.items()
+}
 
 
 def _read_mem_gb() -> float:
@@ -119,6 +130,9 @@ def default_config() -> dict[str, Any]:
         "model_costs": DEFAULT_MODEL_COSTS,
         "model_durations": DEFAULT_MODEL_DURATIONS,
         "model_duration_costs": DEFAULT_MODEL_DURATION_COSTS,
+        "account_default_quotas": DEFAULT_ACCOUNT_QUOTA_LIMITS,
+        "account_quota_costs": DEFAULT_ACCOUNT_QUOTA_COSTS,
+        "account_quota_policy_version": 0,
         "proxy_api_url": "",
         "proxy_api_scheme": "http",
         "proxy_api_timeout_seconds": 20,
@@ -362,6 +376,8 @@ class Settings:
     model_costs: dict[str, dict[str, int | float]]
     model_durations: dict[str, dict[str, list[int]]]
     model_duration_costs: dict[str, dict[str, dict[int, int | float]]]
+    account_default_quotas: dict[str, int]
+    account_quota_costs: dict[str, dict[str, dict[int, int]]]
     proxy_api_url: str
     proxy_api_scheme: str
     proxy_api_timeout_seconds: int
@@ -438,11 +454,15 @@ def load_settings() -> Settings:
     raw_costs = data.get("model_costs") if isinstance(data.get("model_costs"), dict) else {}
     raw_durations = data.get("model_durations") if isinstance(data.get("model_durations"), dict) else {}
     raw_duration_costs = data.get("model_duration_costs") if isinstance(data.get("model_duration_costs"), dict) else {}
+    raw_account_default_quotas = data.get("account_default_quotas") if isinstance(data.get("account_default_quotas"), dict) else {}
+    raw_account_quota_costs = data.get("account_quota_costs") if isinstance(data.get("account_quota_costs"), dict) else {}
     platform_models: dict[str, list[str]] = {}
     platform_model_states: dict[str, dict[str, bool]] = {}
     model_costs: dict[str, dict[str, int | float]] = {}
     model_durations: dict[str, dict[str, list[int]]] = {}
     model_duration_costs: dict[str, dict[str, dict[int, int | float]]] = {}
+    account_default_quotas: dict[str, int] = {}
+    account_quota_costs: dict[str, dict[str, dict[int, int]]] = {}
     for platform, defaults in DEFAULT_MODELS.items():
         values = raw_models.get(platform, defaults) if isinstance(raw_models, dict) else defaults
         if isinstance(values, list):
@@ -460,6 +480,13 @@ def load_settings() -> Settings:
         model_durations[platform] = {}
         configured_duration_costs = raw_duration_costs.get(platform, {}) if isinstance(raw_duration_costs.get(platform, {}), dict) else {}
         model_duration_costs[platform] = {}
+        try:
+            account_default_quota = int(raw_account_default_quotas.get(platform, DEFAULT_ACCOUNT_QUOTA_LIMITS[platform]))
+        except (TypeError, ValueError):
+            account_default_quota = DEFAULT_ACCOUNT_QUOTA_LIMITS[platform]
+        account_default_quotas[platform] = max(0, min(1_000_000, account_default_quota))
+        configured_account_costs = raw_account_quota_costs.get(platform, {}) if isinstance(raw_account_quota_costs.get(platform, {}), dict) else {}
+        account_quota_costs[platform] = {}
         for model in models:
             value = costs.get(model, default_costs.get(model, 1))
             try:
@@ -480,6 +507,8 @@ def load_settings() -> Settings:
             model_durations[platform][model] = [duration for duration in supported_durations if duration in selected]
             raw_model_duration_costs = configured_duration_costs.get(model, {}) if isinstance(configured_duration_costs.get(model, {}), dict) else {}
             model_duration_costs[platform][model] = {}
+            raw_model_account_costs = configured_account_costs.get(model, {}) if isinstance(configured_account_costs.get(model, {}), dict) else {}
+            account_quota_costs[platform][model] = {}
             for duration in supported_durations:
                 value = raw_model_duration_costs.get(str(duration), raw_model_duration_costs.get(duration, model_costs[platform][model]))
                 try:
@@ -489,6 +518,12 @@ def load_settings() -> Settings:
                 if duration_cost <= 0 or round(duration_cost * 10) != duration_cost * 10:
                     duration_cost = float(model_costs[platform][model])
                 model_duration_costs[platform][model][duration] = int(duration_cost) if duration_cost.is_integer() else duration_cost
+                default_account_cost = 2 if platform == "dola" and duration == 15 else 1
+                try:
+                    account_cost = int(raw_model_account_costs.get(str(duration), raw_model_account_costs.get(duration, default_account_cost)))
+                except (TypeError, ValueError):
+                    account_cost = default_account_cost
+                account_quota_costs[platform][model][duration] = max(1, min(1000, account_cost))
     return Settings(
         api_token=str(data.get("api_token") or ""),
         account_access_key_hash=str(data.get("account_access_key_hash") or ""),
@@ -519,6 +554,8 @@ def load_settings() -> Settings:
         model_costs=model_costs,
         model_durations=model_durations,
         model_duration_costs=model_duration_costs,
+        account_default_quotas=account_default_quotas,
+        account_quota_costs=account_quota_costs,
         proxy_api_url=str(data.get("proxy_api_url") or "").strip(),
         proxy_api_scheme=proxy_api_scheme,
         proxy_api_timeout_seconds=max(3, int(data.get("proxy_api_timeout_seconds") or 20)),
@@ -555,6 +592,19 @@ def load_settings() -> Settings:
         reclaim_memory_after_task=_as_bool(data.get("reclaim_memory_after_task"), True),
         drop_os_cache_when_idle=_as_bool(data.get("drop_os_cache_when_idle"), False),
     )
+
+
+def account_quota_cost_units(
+    platform: str,
+    model: str,
+    duration: int,
+    settings: Settings | None = None,
+) -> int:
+    current = settings or load_settings()
+    target_platform = normalize_platform(platform)
+    model_costs = current.account_quota_costs.get(target_platform, {}).get(str(model or ""), {})
+    default_cost = 2 if target_platform == "dola" and int(duration or 0) == 15 else 1
+    return max(1, min(1000, int(model_costs.get(int(duration or 0), default_cost))))
 
 
 def normalize_proxy_server(server: str, default_scheme: str = "http") -> str:

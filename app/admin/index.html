@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.9.8" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.9.9" />
   </head>
   <body>
     <script>
@@ -670,6 +670,7 @@
                   <select id="accountStatusFilter" aria-label="账号状态筛选">
                     <option value="all">全部状态</option>
                     <option value="normal">正常</option>
+                    <option value="api">API账号</option>
                     <option value="ten_second">10秒</option>
                     <option value="slider_verification">跳验证</option>
                     <option value="abnormal">登录异常</option>
@@ -685,6 +686,7 @@
                 <input class="account-task-search" id="accountTaskSearch" type="search" placeholder="搜索正在执行任务 ID" />
                 <span class="quota-reset-countdown" id="accountResetCountdown">清零倒计时 --:--:--</span>
                 <button class="secondary-button icon-text-button" id="openAccountDeletionHistory" type="button"><i data-lucide="history" aria-hidden="true"></i>删除详情</button>
+                <button class="secondary-button icon-text-button" id="openAccountQuotaSettings" type="button"><i data-lucide="gauge" aria-hidden="true"></i>额度设定</button>
                 <button class="secondary-button" id="refreshAccounts" type="button">刷新</button>
               </div>
             </div>
@@ -697,7 +699,7 @@
                 </label>
                 <label class="field account-quota-field">
                   <span>额度上限</span>
-                  <input id="accountQuotaLimit" type="number" min="0" step="1" value="1" placeholder="Dola 默认 1" />
+                  <input id="accountQuotaLimit" type="number" min="0" step="1" value="2" placeholder="Dola 默认 2" />
                 </label>
                 <label class="field account-quota-field">
                   <span>号池平台</span>
@@ -1158,6 +1160,13 @@
         <div class="modal-actions"><button class="secondary-button" id="cancelAccountAccessModal" type="button">关闭</button></div>
       </section>
     </div>
+    <div class="modal-backdrop hidden" id="accountQuotaSettingsModal" aria-hidden="true">
+      <section class="modal-panel settings-model-modal" role="dialog" aria-modal="true" aria-labelledby="accountQuotaSettingsTitle">
+        <div class="modal-header model-modal-header"><div><h2 id="accountQuotaSettingsTitle">账号额度设定</h2><p>设置平台账号每日默认额度，以及各模型不同时长每次生成消耗的账号额度。</p></div><button class="modal-close" id="closeAccountQuotaSettings" type="button" aria-label="关闭">×</button></div>
+        <div class="model-config-list account-quota-config-list" id="accountQuotaConfigList"></div>
+        <div class="modal-actions model-modal-actions"><span>保存后同步更新号池中三个平台的账号额度</span><button class="secondary-button" id="cancelAccountQuotaSettings" type="button">取消</button><button class="primary-button" id="saveAccountQuotaSettings" type="button">保存额度设定</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="invitationManagementModal" aria-hidden="true">
       <section class="modal-panel admin-management-modal" role="dialog" aria-modal="true" aria-labelledby="invitationManagementTitle">
         <div class="modal-header"><div><h2 id="invitationManagementTitle">邀请码管理</h2><p>生成纯英文字母邀请码，长期有效，手动删除后失效。</p></div><button class="modal-close" id="closeInvitationManagementModal" type="button" aria-label="关闭">×</button></div>
@@ -1368,6 +1377,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.9.8"></script>
+    <script src="/admin/assets/app.js?v=1.9.9"></script>
   </body>
 </html>

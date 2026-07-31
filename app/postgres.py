@@ -624,12 +624,14 @@ def claim_available_account(
     now: str,
     mutator: Callable[[dict[str, Any]], T],
     preferred_id: str = "",
+    quota_cost: int = 1,
 ) -> T | None:
     from psycopg.types.json import Jsonb
 
     quota_limit = "CASE WHEN COALESCE(payload->>'quota_limit', '') ~ '^[0-9]+$' THEN (payload->>'quota_limit')::integer ELSE 0 END"
     quota_used = "CASE WHEN COALESCE(payload->>'quota_used', '') ~ '^[0-9]+$' THEN (payload->>'quota_used')::integer ELSE 0 END"
     excluded = sorted({str(item) for item in excluded_ids if str(item)})
+    quota_cost = max(1, int(quota_cost or 1))
     conditions = [
         "COALESCE(payload->>'enabled', 'true') = 'true'",
         "COALESCE(payload->>'account_status', 'normal') = 'normal'",
@@ -638,12 +640,12 @@ def claim_available_account(
         "jsonb_typeof(payload->'cookies') = 'array'",
         "jsonb_array_length(payload->'cookies') > 0",
         "COALESCE(payload->>'quota_exhausted_date', '') <> %s",
-        f"({quota_limit} = 0 OR {quota_used} < {quota_limit})",
+        f"({quota_limit} = 0 OR {quota_used} + %s <= {quota_limit})",
         "(COALESCE(payload->>'cooldown_until', '') = '' OR payload->>'cooldown_until' <= %s)",
     ]
     if platform == "dola":
         conditions.append("COALESCE(payload->>'ten_second_only', 'false') <> 'true'")
-    params: list[Any] = [platform, today, now]
+    params: list[Any] = [platform, today, quota_cost, now]
     if excluded:
         conditions.append("NOT (id = ANY(%s))")
         params.append(excluded)
@@ -653,11 +655,12 @@ def claim_available_account(
         params.append(preferred_id)
     query = (
         f"SELECT id, payload FROM dola_accounts WHERE {' AND '.join(conditions)} "
-        f"ORDER BY CASE WHEN {quota_limit} = 2 AND {quota_used} = 0 THEN 0 ELSE 1 END, "
+        f"ORDER BY CASE WHEN %s = 'dola' AND COALESCE(payload->>'account_source', 'admin') = 'api' THEN 0 ELSE 1 END, "
         f"CASE WHEN {quota_limit} = 0 THEN 1000000 ELSE {quota_limit} - {quota_used} END DESC, "
         f"{quota_used}, COALESCE(payload->>'last_used_at', ''), id "
         "FOR UPDATE SKIP LOCKED LIMIT 1"
     )
+    params.append(platform)
     with connection() as conn:
         row = conn.execute(query, tuple(params)).fetchone()
         if not row:

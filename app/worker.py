@@ -14,7 +14,7 @@ from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSE
 from .doubao_automation import DoubaoVideoAutomation
 from .qianwen_automation import QianwenVideoAutomation
 from .proxy_manager import shutdown_task_mihomo_pool, task_mihomo_pool_snapshot
-from .config import load_settings
+from .config import account_quota_cost_units, load_settings
 from .memory import reclaim_memory_after_task
 from .store import (
     claim_next_pending,
@@ -810,6 +810,11 @@ class WorkerManager:
                     exclude_ids=failed_account_ids,
                     platform=platform,
                     preferred_id=preferred_account_id,
+                    quota_cost=account_quota_cost_units(
+                        platform,
+                        str(meta.get("model") or ""),
+                        int(meta.get("duration") or 10),
+                    ),
                 )
                 if not account:
                     if preferred_account_id:

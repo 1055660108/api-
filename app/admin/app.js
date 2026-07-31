@@ -503,6 +503,12 @@ const els = {
   accountNormalCount: document.getElementById("accountNormalCount"),
   accountSliderVerificationCount: document.getElementById("accountSliderVerificationCount"),
   accountAbnormalCount: document.getElementById("accountAbnormalCount"),
+  openAccountQuotaSettings: document.getElementById("openAccountQuotaSettings"),
+  accountQuotaSettingsModal: document.getElementById("accountQuotaSettingsModal"),
+  closeAccountQuotaSettings: document.getElementById("closeAccountQuotaSettings"),
+  cancelAccountQuotaSettings: document.getElementById("cancelAccountQuotaSettings"),
+  saveAccountQuotaSettings: document.getElementById("saveAccountQuotaSettings"),
+  accountQuotaConfigList: document.getElementById("accountQuotaConfigList"),
   openAccountDeletionHistory: document.getElementById("openAccountDeletionHistory"),
   accountDeletionHistoryModal: document.getElementById("accountDeletionHistoryModal"),
   closeAccountDeletionHistory: document.getElementById("closeAccountDeletionHistory"),
@@ -707,6 +713,7 @@ const state = {
   adminAuditSearchTimer: 0,
   adminAuditEntries: [],
   accountQuotaSummary: null,
+  accountQuotaConfig: null,
   savingTokenIds: new Set(),
   autoRefreshing: false,
   refreshTimer: 0,
@@ -3837,7 +3844,7 @@ async function importAccount(event) {
   if (portal === "client") return;
   const name = els.accountName.value.trim();
   const platform = els.accountPlatform?.value || "dola";
-  const defaultQuota = platform === "dola" ? 1 : platform === "qianwen" ? 5 : 2;
+  const defaultQuota = accountDefaultQuota(platform);
   const quotaLimit = Number.parseInt(els.accountQuotaLimit?.value || String(defaultQuota), 10) || defaultQuota;
   const cookieData = els.accountCookieData.value.trim();
   if (!cookieData) {
@@ -3853,7 +3860,7 @@ async function importAccount(event) {
       body: { name, cookie_data: cookieData, quota_limit: quotaLimit, bulk: isBulk, platform },
     });
     els.accountName.value = "";
-    if (els.accountQuotaLimit) els.accountQuotaLimit.value = platform === "dola" ? "1" : platform === "qianwen" ? "5" : "2";
+    if (els.accountQuotaLimit) els.accountQuotaLimit.value = String(accountDefaultQuota(platform));
     els.accountCookieData.value = "";
     updateAccountDetectedCount();
     const skipped = Number(data.skipped || 0);
@@ -3988,6 +3995,87 @@ async function loadPlatforms() {
   renderPlatformControls();
   renderModelConfig();
   if (portal === "admin") await loadPreferredAccounts();
+}
+
+function accountDefaultQuota(platform) {
+  const configured = Number(state.accountQuotaConfig?.default_quotas?.[platform]);
+  if (Number.isInteger(configured) && configured >= 0) return configured;
+  return platform === "dola" ? 2 : platform === "qianwen" ? 5 : 2;
+}
+
+function renderAccountQuotaConfig() {
+  if (!els.accountQuotaConfigList || !state.accountQuotaConfig) return;
+  const defaults = state.accountQuotaConfig.default_quotas || {};
+  const costs = state.accountQuotaConfig.quota_costs || {};
+  const platforms = Array.isArray(state.accountQuotaConfig.platforms) ? state.accountQuotaConfig.platforms : [];
+  els.accountQuotaConfigList.innerHTML = platforms.map((platform) => `
+    <section class="account-quota-platform" data-account-quota-platform="${escapeHtml(platform.id)}">
+      <div class="account-quota-platform-head">
+        <div><strong>${escapeHtml(platform.name || platform.id)}</strong><span>${escapeHtml((platform.models || []).length)} 个模型</span></div>
+        <label class="field"><span>账号每日默认额度</span><input type="number" min="0" max="1000000" step="1" value="${escapeHtml(defaults[platform.id] ?? accountDefaultQuota(platform.id))}" data-account-default-quota /></label>
+      </div>
+      <div class="account-quota-models">
+        ${(platform.models || []).map((model) => `
+          <article class="account-quota-model" data-account-quota-model="${escapeHtml(model.name)}">
+            <strong>${escapeHtml(model.name)}</strong>
+            <div class="account-quota-duration-grid">
+              ${(model.durations || []).map((duration) => `<label><span>${escapeHtml(duration)} 秒消耗</span><input type="number" min="1" max="1000" step="1" value="${escapeHtml(costs?.[platform.id]?.[model.name]?.[String(duration)] ?? (platform.id === "dola" && Number(duration) === 15 ? 2 : 1))}" data-account-quota-cost data-duration="${escapeHtml(duration)}" /></label>`).join("")}
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `).join("");
+}
+
+async function openAccountQuotaSettings() {
+  if (portal !== "admin" || !els.accountQuotaSettingsModal) return;
+  els.accountQuotaConfigList.innerHTML = '<div class="empty-state">正在读取额度设定</div>';
+  els.accountQuotaSettingsModal.classList.remove("hidden");
+  els.accountQuotaSettingsModal.setAttribute("aria-hidden", "false");
+  try {
+    state.accountQuotaConfig = await apiFetch("/config/account-quotas");
+    renderAccountQuotaConfig();
+  } catch (error) {
+    els.accountQuotaConfigList.innerHTML = `<div class="empty-state">读取失败：${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function saveAccountQuotaSettings() {
+  if (!state.accountQuotaConfig) return;
+  const defaultQuotas = {};
+  const quotaCosts = {};
+  for (const platformSection of els.accountQuotaConfigList.querySelectorAll("[data-account-quota-platform]")) {
+    const platform = platformSection.dataset.accountQuotaPlatform;
+    const defaultQuota = Number.parseInt(platformSection.querySelector("[data-account-default-quota]")?.value || "", 10);
+    if (!Number.isInteger(defaultQuota) || defaultQuota < 0 || defaultQuota > 1000000) return toast(`${PLATFORM_LABELS[platform] || platform} 默认额度需为 0 - 1000000`, "error");
+    defaultQuotas[platform] = defaultQuota;
+    quotaCosts[platform] = {};
+    for (const modelRow of platformSection.querySelectorAll("[data-account-quota-model]")) {
+      const model = modelRow.dataset.accountQuotaModel;
+      quotaCosts[platform][model] = {};
+      for (const input of modelRow.querySelectorAll("[data-account-quota-cost]")) {
+        const cost = Number.parseInt(input.value || "", 10);
+        if (!Number.isInteger(cost) || cost < 1 || cost > 1000) return toast(`${model} ${input.dataset.duration} 秒消耗额度需为 1 - 1000`, "error");
+        quotaCosts[platform][model][input.dataset.duration] = cost;
+      }
+    }
+  }
+  setBusy(els.saveAccountQuotaSettings, true, "保存中");
+  try {
+    const data = await apiFetch("/config/account-quotas", { method: "POST", body: { default_quotas: defaultQuotas, quota_costs: quotaCosts } });
+    state.accountQuotaConfig = data;
+    if (els.accountQuotaLimit) els.accountQuotaLimit.value = String(accountDefaultQuota(els.accountPlatform?.value || "dola"));
+    els.accountQuotaSettingsModal.classList.add("hidden");
+    els.accountQuotaSettingsModal.setAttribute("aria-hidden", "true");
+    const synced = Object.values(data.synced_accounts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+    toast(`额度设定已保存，同步 ${synced} 个账号`);
+    await refreshAccounts({ quiet: true });
+  } catch (error) {
+    toast(`额度设定保存失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.saveAccountQuotaSettings, false);
+  }
 }
 
 const PLATFORM_DURATION_DEFAULTS = { dola: [5, 10, 15], doubao: [10], qianwen: [10] };
@@ -4585,6 +4673,7 @@ function renderAccountTable() {
     const abnormal = item.account_status === "abnormal";
     const sliderVerification = item.account_status === "slider_verification" || /跳验证|滑块风控/i.test(String(item.status_reason || "")) && !abnormal;
     const tenSecondOnly = Boolean(item.ten_second_only);
+    const apiAccount = String(item.account_source || "admin") === "api";
     const accountStatus = sliderVerification ? "跳验证" : (abnormal ? "登录异常" : (enabled ? "正常" : "停用"));
     const tenSecondChip = tenSecondOnly ? '<span class="chip unknown" title="该账号返回过长于 10 秒的视频限制">10秒</span>' : "";
     const quotaLimit = Number(item.quota_limit || 0);
@@ -4605,7 +4694,7 @@ function renderAccountTable() {
           <div class="account-name-cell">
             <span class="account-card-label">账号</span>
             <strong>${escapeHtml(name)}</strong>
-            <span class="chip unknown">${escapeHtml(platformLabel)}</span>
+            <span class="chip unknown">${escapeHtml(platformLabel)}</span>${apiAccount ? '<span class="chip success">API账号</span>' : ""}
             <code>${escapeHtml(id)}</code>
           </div>
         </td>
@@ -7112,7 +7201,7 @@ function bindEvents() {
       toast(`会员套餐读取失败：${error.message}`, "error");
     }
   });
-  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.notificationHistoryModal, els.closeNotificationHistory, els.cancelNotificationHistory], [els.announcementHistoryModal, els.closeAnnouncementHistory, els.cancelAnnouncementHistory], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.accountProxyImportModal, els.closeAccountProxyImport, els.cancelAccountProxyImport], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal], [els.batchAutoModal, els.closeBatchAutoModal, els.cancelBatchAutoModal], [els.videoDownloadSettingsModal, els.closeVideoDownloadSettings, els.cancelVideoDownloadSettings]].forEach(([modal, closeButton, cancelButton]) => {
+  [[els.passwordModal, els.closePasswordModal, els.cancelPasswordModal], [els.clientPasswordModal, els.closeClientPasswordModal, els.cancelClientPasswordModal], [els.clientEmailModal, els.closeClientEmailModal, els.cancelClientEmailModal], [els.forgotPasswordModal, els.closeForgotPasswordModal, els.cancelForgotPasswordModal], [els.feedbackModal, els.closeFeedbackModal, els.cancelFeedbackModal], [els.redeemModal, els.closeRedeemModal, els.cancelRedeemModal], [els.notificationHistoryModal, els.closeNotificationHistory, els.cancelNotificationHistory], [els.announcementHistoryModal, els.closeAnnouncementHistory, els.cancelAnnouncementHistory], [els.proxyModal, els.closeProxyModal, els.cancelProxyModal], [els.accountProxyImportModal, els.closeAccountProxyImport, els.cancelAccountProxyImport], [els.emailModal, els.closeEmailModal, els.cancelEmailModal], [els.modelModal, els.closeModelModal, els.cancelModelModal], [els.accountQuotaSettingsModal, els.closeAccountQuotaSettings, els.cancelAccountQuotaSettings], [els.packageModal, els.closePackageModal, els.cancelPackageModal], [els.membershipModal, els.closeMembershipModal, els.cancelMembershipModal], [els.membershipDetailsModal, els.closeMembershipDetailsModal, els.cancelMembershipDetailsModal], [els.pointCardModal, els.closePointCardModal, els.cancelPointCardModal], [els.promptPickerModal, els.closePromptPickerModal, els.cancelPromptPickerModal], [els.batchAutoModal, els.closeBatchAutoModal, els.cancelBatchAutoModal], [els.videoDownloadSettingsModal, els.closeVideoDownloadSettings, els.cancelVideoDownloadSettings]].forEach(([modal, closeButton, cancelButton]) => {
     if (closeButton) closeButton.onclick = (event) => {
       event.preventDefault();
       closeSettingsModal(modal);
@@ -7518,6 +7607,8 @@ function bindEvents() {
   els.openCreateTokenModal?.addEventListener("click", openCreateTokenModal);
   els.refreshAccounts?.addEventListener("click", () => refreshAccounts());
   els.openAccountDeletionHistory?.addEventListener("click", openAccountDeletionHistory);
+  els.openAccountQuotaSettings?.addEventListener("click", openAccountQuotaSettings);
+  els.saveAccountQuotaSettings?.addEventListener("click", saveAccountQuotaSettings);
   els.closeAccountDeletionHistory?.addEventListener("click", closeAccountDeletionHistory);
   els.confirmAccountDeletionHistory?.addEventListener("click", closeAccountDeletionHistory);
   els.accountDeletionHistoryModal?.addEventListener("click", (event) => {
@@ -7561,7 +7652,7 @@ function bindEvents() {
   els.nextAccountPage?.addEventListener("click", () => { state.accountPage = Math.min(state.accountTotalPages, state.accountPage + 1); refreshAccounts({ quiet: true }); });
   els.accountPageSize?.addEventListener("change", () => { state.accountPageSize = Number(els.accountPageSize.value || 20); state.accountPage = 1; refreshAccounts({ quiet: true }); });
   els.accountPlatform?.addEventListener("change", () => {
-    if (els.accountQuotaLimit) els.accountQuotaLimit.value = els.accountPlatform.value === "dola" ? "1" : els.accountPlatform.value === "qianwen" ? "5" : "2";
+    if (els.accountQuotaLimit) els.accountQuotaLimit.value = String(accountDefaultQuota(els.accountPlatform.value || "dola"));
   });
   els.accountCookieData?.addEventListener("input", updateAccountDetectedCount);
   els.accountCookieData?.addEventListener("paste", () => window.setTimeout(updateAccountDetectedCount, 0));

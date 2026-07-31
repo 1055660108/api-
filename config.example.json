@@ -33,6 +33,12 @@
     "doubao": {"Seedance 2.0 Mini": {"10": 1}, "Seedance 2.0 Fast": {"10": 1}},
     "qianwen": {"万相 2.7": {"10": 0.8}}
   },
+  "account_default_quotas": {"dola": 2, "doubao": 2, "qianwen": 5},
+  "account_quota_costs": {
+    "dola": {"Seedance 2.0": {"5": 1, "10": 1, "15": 2}},
+    "doubao": {"Seedance 2.0 Mini": {"10": 1}, "Seedance 2.0 Fast": {"10": 1}},
+    "qianwen": {"万相 2.7": {"10": 1}}
+  },
   "proxy_api_url": "https://example.com/get-proxy?num=1&type=txt",
   "proxy_api_scheme": "http",
   "proxy_api_timeout_seconds": 20,

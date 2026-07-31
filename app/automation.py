@@ -74,6 +74,19 @@ FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
 SERVICE_FREQUENT_OBSERVE_SECONDS = 15.0
 SERVICE_FREQUENT_POLL_INTERVAL_MS = 500
 SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
+
+
+def dola_service_frequent_abnormal_outcome(state: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "retryable": True,
+        "reason": f"service frequent (risk check: {str(state or 'service_frequent')})",
+        "account_fault": True,
+        "account_login_invalid": True,
+        "switch_account": True,
+    }
+
+
 SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
 () => {
   const visible = element => {
@@ -1543,12 +1556,7 @@ class DolaFetchAutomation:
                     )
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "service_frequent", "submit_phase": "submission_response"})
-                    return {
-                        "success": False,
-                        "retryable": True,
-                        "reason": f"service frequent (risk check: {account_state['state']})",
-                        "infrastructure_fault": True,
-                    }
+                    return dola_service_frequent_abnormal_outcome(account_state["state"])
                 if result.get("country_restricted"):
                     self._mark_active_proxy_unavailable(reason="country_restricted")
                     release_task_submission(self.task_id)

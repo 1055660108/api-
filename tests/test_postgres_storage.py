@@ -252,10 +252,10 @@ class MemoryPostgres:
         start = (current_page - 1) * page_size
         return {"activities": rows[start:start + page_size], "total": total, "page": current_page, "page_size": page_size, "total_pages": total_pages}
 
-    def claim_available_account(self, platform: str, excluded_ids: set[str], today: str, now: str, mutator, preferred_id: str = ""):
+    def claim_available_account(self, platform: str, excluded_ids: set[str], today: str, now: str, mutator, preferred_id: str = "", quota_cost: int = 1):
         with self.lock:
             rows = self.documents.get("accounts", {}).get("accounts", [])
-            selected = accounts._select_account(rows, excluded_ids, platform, preferred_id)
+            selected = accounts._select_account(rows, excluded_ids, platform, preferred_id, quota_cost)
             if selected is None:
                 return None
             account = next(item for item in rows if str(item.get("id") or "") == selected["id"])

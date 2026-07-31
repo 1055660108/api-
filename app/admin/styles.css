@@ -2572,6 +2572,23 @@ textarea:focus {
 .model-config-row .secondary-button { min-height: 32px; padding: 5px 8px; font-size: 12px; }
 .model-modal-actions { padding: 16px 26px 22px; border-top: 1px solid var(--line); }
 .model-modal-actions span { margin-right: auto; color: var(--muted); font-size: 12px; }
+.account-quota-config-list { gap: 18px; }
+.account-quota-platform { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.account-quota-platform-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 260px); gap: 16px; align-items: end; }
+.account-quota-platform-head > div { display: flex; gap: 8px; align-items: center; }
+.account-quota-platform-head > div strong { font-size: 17px; }
+.account-quota-platform-head > div span { color: var(--muted); font-size: 12px; }
+.account-quota-models { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.account-quota-model { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-strong); }
+.account-quota-model > strong { overflow-wrap: anywhere; font-size: 13px; }
+.account-quota-duration-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.account-quota-duration-grid label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.account-quota-duration-grid input { width: 100%; min-width: 0; }
+@media (max-width: 780px) {
+  .account-quota-platform-head,
+  .account-quota-models { grid-template-columns: minmax(0, 1fr); }
+  .account-quota-duration-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .list-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 16px; color: var(--muted); }
 .security-modal { width: min(100%, 480px); padding: 24px; border-radius: 18px; }
 .security-modal .modal-header > div { display: grid; gap: 4px; }

@@ -391,8 +391,22 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('href="/admin/assets/hs-logo.png', self.html)
         self.assertEqual(self.html.count('src="/admin/assets/hs-logo.png'), 3)
         self.assertNotIn('<div class="brand-mark">DF</div>', self.html)
-        self.assertIn('value="1" placeholder="Dola 默认 1"', self.html)
-        self.assertIn('platform === "dola" ? 1', self.javascript)
+        self.assertIn('value="2" placeholder="Dola 默认 2"', self.html)
+        self.assertIn('platform === "dola" ? 2', self.javascript)
+
+    def test_account_quota_settings_and_api_account_filter_are_bound(self) -> None:
+        for element_id in (
+            "openAccountQuotaSettings",
+            "accountQuotaSettingsModal",
+            "accountQuotaConfigList",
+            "saveAccountQuotaSettings",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('<option value="api">API账号</option>', self.html)
+        self.assertIn('apiFetch("/config/account-quotas")', self.javascript)
+        self.assertIn('apiFetch("/config/account-quotas", { method: "POST"', self.javascript)
+        self.assertIn('data-account-quota-cost', self.javascript)
+        self.assertIn('API账号</span>', self.javascript)
 
     def test_batch_row_images_use_natural_ordinal_mapping(self) -> None:
         self.assertIn('function naturallySortedBatchImageFiles(files)', self.javascript)

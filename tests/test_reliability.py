@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app import accounts, automation, config, store, task_queue, temp_access
-from app.automation import DolaFetchAutomation, is_infrastructure_failure
+from app.automation import DolaFetchAutomation, dola_service_frequent_abnormal_outcome, is_infrastructure_failure
 from app.resilience import fair_owner_capacity_limits
 from app.worker import IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
 
@@ -531,11 +531,48 @@ class ReliabilityTests(unittest.TestCase):
         token_data = json.loads(self.tokens_path.read_text(encoding="utf-8"))
         self.assertEqual(token_data["tokens"]["owner"]["used"], 0)
 
-    def test_dola_account_defaults_to_one_daily_video(self) -> None:
+    def test_dola_account_defaults_to_two_daily_quota_units(self) -> None:
         created = accounts.add_account("Dola", "session=value")
-        self.assertEqual(created["quota_limit"], 1)
+        self.assertEqual(created["quota_limit"], 2)
         parsed = accounts.parse_bulk_accounts("Dola----session=value")
-        self.assertEqual(parsed[0]["quota_limit"], 1)
+        self.assertEqual(parsed[0]["quota_limit"], 2)
+
+    def test_dola_duration_quota_costs_match_five_ten_and_fifteen_seconds(self) -> None:
+        settings = config.load_settings()
+
+        self.assertEqual(config.account_quota_cost_units("dola", "Seedance 2.0", 5, settings), 1)
+        self.assertEqual(config.account_quota_cost_units("dola", "Seedance 2.0", 10, settings), 1)
+        self.assertEqual(config.account_quota_cost_units("dola", "Seedance 2.0", 15, settings), 2)
+
+    def test_account_quota_ledger_charges_configured_units(self) -> None:
+        created = accounts.add_account("Dola", "session=weighted", quota_limit=2)
+
+        claimed = accounts.claim_account_for_worker("worker-15", "task-15", quota_cost=2)
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["quota_cost"], 2)
+        self.assertEqual(accounts.list_accounts()[0]["quota_used"], 2)
+        accounts.clear_account_current_task(created["id"], "task-15")
+        self.assertIsNone(accounts.claim_account_for_worker("worker-next", "task-next", quota_cost=1))
+
+    def test_dola_api_accounts_are_selected_before_admin_accounts(self) -> None:
+        accounts.add_account("后台账号", "session=admin", quota_limit=2, account_source="admin")
+        api_account = accounts.add_account("API账号", "session=api", quota_limit=2, account_source="api")
+
+        claimed = accounts.claim_account_for_worker("worker-api", "task-api", platform="dola")
+
+        self.assertEqual(claimed["id"], api_account["id"])
+        self.assertEqual(claimed["account_source"], "api")
+
+    def test_sync_account_default_quotas_updates_existing_platform_pools(self) -> None:
+        accounts.add_account("Dola", "session=dola", quota_limit=9)
+        accounts.add_account("豆包", "session=doubao", quota_limit=9, platform="doubao")
+        accounts.add_account("千问", "session=qianwen", quota_limit=9, platform="qianwen")
+
+        synced = accounts.sync_account_default_quotas({"dola": 2, "doubao": 3, "qianwen": 4})
+
+        self.assertEqual(synced, {"dola": 1, "doubao": 1, "qianwen": 1})
+        self.assertEqual({item["platform"]: item["quota_limit"] for item in accounts.list_accounts()}, {"dola": 2, "doubao": 3, "qianwen": 4})
 
     def test_bulk_account_import_is_single_write_and_deduplicated(self) -> None:
         raw = "\n".join([f"账号 {index}----session=value-{index}" for index in range(500)] + ["重复账号----session=value-10"])
@@ -563,8 +600,8 @@ class ReliabilityTests(unittest.TestCase):
         created = accounts.add_account("Dola", "session=value")
         self.assertTrue(accounts.exhaust_account_quota(created["id"]))
         exhausted = accounts.list_accounts(platform="dola")[0]
-        self.assertEqual(exhausted["quota_limit"], 1)
-        self.assertEqual(exhausted["quota_used"], 1)
+        self.assertEqual(exhausted["quota_limit"], 2)
+        self.assertEqual(exhausted["quota_used"], 2)
         self.assertIsNone(accounts.account_for_worker("worker-1", platform="dola"))
 
     def test_stale_refund_cannot_reduce_a_later_charge(self) -> None:
@@ -731,6 +768,15 @@ class ReliabilityTests(unittest.TestCase):
         repeated = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 23, 1, tzinfo=accounts.LOCAL_TZ))
         self.assertEqual(repeated["removed"], 0)
         self.assertEqual(accounts.list_account_deletion_history()[0]["total"], 2)
+
+    def test_service_frequent_without_slider_is_treated_as_abnormal_account(self) -> None:
+        outcome = dola_service_frequent_abnormal_outcome("service_frequent")
+
+        self.assertTrue(outcome["account_fault"])
+        self.assertTrue(outcome["account_login_invalid"])
+        self.assertTrue(outcome["switch_account"])
+        self.assertNotIn("infrastructure_fault", outcome)
+        self.assertEqual(outcome["reason"], "service frequent (risk check: service_frequent)")
 
     def test_service_frequent_account_state_detects_slider_and_login_loss(self) -> None:
         task = self.create_task("risk-check-owner")

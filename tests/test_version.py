@@ -19,7 +19,7 @@ class VersionTests(unittest.TestCase):
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
         admin_html = (root / "app" / "admin" / "index.html").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.9.8")
+        self.assertEqual(version, "1.9.9")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertEqual(compose.count("build:"), 1)
@@ -64,7 +64,7 @@ class VersionTests(unittest.TestCase):
     def test_compose_file_is_valid_yaml(self) -> None:
         root = Path(__file__).resolve().parents[1]
         compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(compose["x-app-base"]["image"], "${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.9.8}")
+        self.assertEqual(compose["x-app-base"]["image"], "${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.9.9}")
         self.assertEqual(compose["services"]["api"]["image"], compose["x-app-base"]["image"])
         self.assertEqual(compose["services"]["worker"]["image"], compose["x-app-base"]["image"])
 

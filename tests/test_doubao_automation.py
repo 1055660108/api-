@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -69,6 +69,30 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertTrue(outcome["defer_only"])
         self.assertEqual(outcome["retry_after"], 7)
         self.assertEqual(outcome["defer_category"], "proxy_refresh")
+
+    def test_browser_timeout_does_not_requeue_an_already_submitted_task(self) -> None:
+        runner = self.runner(SimpleNamespace())
+        runner._run_once = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        with patch("app.doubao_automation.task_exists", return_value=True), patch(
+            "app.doubao_automation.get_meta", return_value={"status": "submitted"}
+        ), patch("app.doubao_automation.mark_pending") as mark_pending:
+            outcome = asyncio.run(runner.run())
+
+        self.assertFalse(outcome["retryable"])
+        mark_pending.assert_not_called()
+
+    def test_browser_timeout_requeues_before_submission(self) -> None:
+        runner = self.runner(SimpleNamespace())
+        runner._run_once = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        with patch("app.doubao_automation.task_exists", return_value=True), patch(
+            "app.doubao_automation.get_meta", return_value={"status": "running"}
+        ), patch("app.doubao_automation.mark_pending") as mark_pending:
+            outcome = asyncio.run(runner.run())
+
+        self.assertTrue(outcome["retryable"])
+        mark_pending.assert_called_once_with("doubao-task", "doubao browser timeout")
 
     def test_region_restriction_recognizes_redirect_and_page_message(self) -> None:
         self.assertTrue(
@@ -144,6 +168,67 @@ class DoubaoAutomationTests(unittest.TestCase):
         cookies = {item["name"]: item["value"] for item in state["cookies"]}
         self.assertEqual(cookies, {"session": "latest", "saved_only": "keep", "account_only": "new"})
         self.assertEqual(state["origins"][0]["localStorage"][0]["value"], "known")
+
+    def test_video_response_recognizes_doubao_media_url(self) -> None:
+        response = SimpleNamespace(
+            url="https://v6-default.douyin.com/video/path?mime_type=video_mp4",
+            headers={"content-type": "video/mp4"},
+        )
+        self.assertEqual(DoubaoVideoAutomation._response_video_url(response), response.url)
+        self.assertEqual(
+            DoubaoVideoAutomation._response_video_url(SimpleNamespace(url="https://example.com/cover.png", headers={"content-type": "image/png"})),
+            "",
+        )
+
+    def test_page_video_url_reads_current_src_and_source_children(self) -> None:
+        video_locator = SimpleNamespace(evaluate_all=AsyncMock(return_value=["https://media.example/result.mp4"]))
+        empty_locator = SimpleNamespace(evaluate_all=AsyncMock(return_value=[]))
+        page = SimpleNamespace(locator=Mock(side_effect=lambda selector: video_locator if selector == "video" else empty_locator))
+
+        url, source = asyncio.run(DoubaoVideoAutomation._page_video_url(page, []))
+
+        self.assertEqual(url, "https://media.example/result.mp4")
+        self.assertEqual(source, "video_current_src")
+
+    def test_completed_video_poster_activates_player_wrapper(self) -> None:
+        poster = SimpleNamespace(click=AsyncMock())
+        posters = SimpleNamespace(count=AsyncMock(return_value=1), last=poster)
+        wrapper = SimpleNamespace(click=AsyncMock())
+        wrappers = SimpleNamespace(count=AsyncMock(return_value=1), last=wrapper)
+        page = SimpleNamespace(
+            locator=Mock(side_effect=lambda selector: posters if selector.startswith("img") else wrappers),
+            wait_for_timeout=AsyncMock(),
+        )
+
+        activated = asyncio.run(DoubaoVideoAutomation._activate_completed_video(page))
+
+        self.assertTrue(activated)
+        wrapper.click.assert_awaited_once_with(force=True, timeout=5000)
+        poster.click.assert_not_awaited()
+        page.wait_for_timeout.assert_awaited_once_with(1500)
+        self.assertGreaterEqual(DOUBAO_RESULT_WAIT_SECONDS, 600)
+
+    def test_video_success_writes_shared_task_video_result(self) -> None:
+        runner = self.runner(SimpleNamespace())
+        runner._refresh_cookies = AsyncMock()
+        context = SimpleNamespace()
+        page = SimpleNamespace(url="https://www.doubao.com/chat/123456789012345678")
+
+        with patch("app.doubao_automation.save_result") as save, patch("app.doubao_automation.mark_success") as mark_success:
+            outcome = asyncio.run(
+                runner._save_video_success(
+                    context,
+                    page,
+                    "https://media.example/result.mp4",
+                    "video_current_src",
+                )
+            )
+
+        self.assertTrue(outcome["success"])
+        runner._refresh_cookies.assert_awaited_once_with(context)
+        self.assertEqual(save.call_args.kwargs["extra"]["decoded_main_url"], "https://media.example/result.mp4")
+        self.assertEqual(save.call_args.kwargs["extra"]["doubao_video_detection_source"], "video_current_src")
+        mark_success.assert_called_once_with("doubao-task")
 
 
 class QianwenProxyAutomationTests(unittest.TestCase):

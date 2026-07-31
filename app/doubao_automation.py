@@ -10,7 +10,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
-from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
+from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
 from .profile_lock import account_profile_lock
 
 
@@ -27,6 +27,8 @@ DOUBAO_MODEL_CODES = {
     "Seedance 2.0 Mini": "seedance_v2.0_mini",
     "Seedance 2.0 Fast": "seedance_v2.0",
 }
+DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
+DOUBAO_RESULT_POLL_MILLISECONDS = 5000
 
 
 DOUBAO_SUBMIT_SCRIPT = r"""
@@ -387,11 +389,12 @@ class DoubaoVideoAutomation:
 
     async def run(self) -> dict[str, Any]:
         try:
-            return await asyncio.wait_for(self._run_once(), timeout=max(self.settings.task_timeout_seconds, 600))
+            return await asyncio.wait_for(self._run_once(), timeout=max(self.settings.task_timeout_seconds, 900))
         except asyncio.TimeoutError:
-            if task_exists(self.task_id):
+            submitted = task_exists(self.task_id) and str(get_meta(self.task_id).get("status") or "") == STATUS_SUBMITTED
+            if task_exists(self.task_id) and not submitted:
                 mark_pending(self.task_id, "doubao browser timeout")
-            return {"success": False, "retryable": True, "reason": "doubao browser timeout"}
+            return {"success": False, "retryable": not submitted, "reason": "doubao browser timeout"}
         except Exception as exc:
             if all(hasattr(exc, name) for name in ("retry_after", "queue_reason", "queue_category")):
                 return {
@@ -470,6 +473,76 @@ class DoubaoVideoAutomation:
         if task_exists(self.task_id):
             set_execution_phase(self.task_id, phase, status_reason)
 
+    @staticmethod
+    def _response_video_url(response) -> str:
+        try:
+            url = str(response.url or "")
+            content_type = str(response.headers.get("content-type") or "").lower()
+        except Exception:
+            return ""
+        if url.startswith("http") and (
+            "video/" in content_type
+            or "mime_type=video_mp4" in url.lower()
+            or ".mp4" in url.lower()
+        ):
+            return url
+        return ""
+
+    @staticmethod
+    async def _page_video_url(page, captured_urls: list[str]) -> tuple[str, str]:
+        for url in reversed(captured_urls):
+            if str(url).startswith("http"):
+                return str(url), "media_response"
+        video_urls = await page.locator("video").evaluate_all(
+            """elements => elements.flatMap(element => [
+                element.currentSrc || "",
+                element.getAttribute("src") || "",
+                ...Array.from(element.querySelectorAll("source")).map(source => source.src || source.getAttribute("src") || "")
+            ]).filter(Boolean)"""
+        )
+        for url in video_urls:
+            if str(url).startswith("http"):
+                return str(url), "video_current_src"
+        source_urls = await page.locator("source").evaluate_all(
+            "elements => elements.map(element => element.src || element.getAttribute('src') || '').filter(Boolean)"
+        )
+        for url in source_urls:
+            if str(url).startswith("http"):
+                return str(url), "source_src"
+        links = await page.locator('a[href*="video"],a[href$=".mp4"],a[download]').evaluate_all(
+            "elements => elements.map(element => element.href).filter(Boolean)"
+        )
+        for url in links:
+            if str(url).startswith("http"):
+                return str(url), "download_link"
+        return "", ""
+
+    @staticmethod
+    async def _activate_completed_video(page) -> bool:
+        posters = page.locator('img[src*="video_dsz_watermark"]')
+        if not await posters.count():
+            return False
+        wrappers = page.locator('div[class*="video-player-wrapper"]')
+        if await wrappers.count():
+            await wrappers.last.click(force=True, timeout=5000)
+        else:
+            await posters.last.click(force=True, timeout=5000)
+        await page.wait_for_timeout(1500)
+        return True
+
+    async def _save_video_success(self, context, page, url: str, source: str) -> dict[str, Any]:
+        await self._refresh_cookies(context)
+        save_result(
+            self.task_id,
+            extra={
+                "decoded_main_url": url,
+                "doubao_page_url": page.url,
+                "doubao_video_detection_source": source,
+            },
+        )
+        mark_success(self.task_id)
+        return {"success": True, "retryable": False, "reason": ""}
+
     async def _observe_service_frequent(
         self,
         page: Page,
@@ -515,6 +588,7 @@ class DoubaoVideoAutomation:
             context: BrowserContext | None = None
             lease: BrowserContextLease | None = None
             page = None
+            capture_video_response = None
             try:
                 self._set_phase("starting_browser", "正在启动豆包生成环境")
                 executable_path = resolve_browser_executable(self.settings.browser_executable_path)
@@ -683,44 +757,52 @@ class DoubaoVideoAutomation:
                     },
                 )
                 conversation_id = str(completion_result.get("conversation_id") or "")
+                captured_video_urls: list[str] = []
+
+                def capture_video_response(response) -> None:
+                    url = self._response_video_url(response)
+                    if url and url not in captured_video_urls:
+                        captured_video_urls.append(url)
+
+                page.on("response", capture_video_response)
                 if conversation_id:
                     try:
                         await page.goto(f"https://www.doubao.com/chat/{conversation_id}", wait_until="domcontentloaded", timeout=90000)
                         await page.wait_for_timeout(3000)
                     except Exception as exc:
                         save_result(self.task_id, extra={"doubao_conversation_open_error": str(exc)[:500]})
-                deadline = asyncio.get_running_loop().time() + 240
+                deadline = asyncio.get_running_loop().time() + DOUBAO_RESULT_WAIT_SECONDS
+                playback_triggered = False
                 self._set_phase("waiting_result", "豆包正在生成视频")
                 while asyncio.get_running_loop().time() < deadline:
                     if completion_result.get("video_url"):
                         url = str(completion_result.get("video_url") or "")
-                        await self._refresh_cookies(context)
-                        save_result(self.task_id, extra={"decoded_main_url": url, "doubao_page_url": page.url})
-                        mark_success(self.task_id)
-                        return {"success": True, "retryable": False, "reason": ""}
-                    videos = page.locator("video")
-                    count = await videos.count()
-                    for index in range(count):
-                        src = str(await videos.nth(index).get_attribute("src") or "")
-                        if src.startswith("http"):
-                            await self._refresh_cookies(context)
-                            save_result(self.task_id, extra={"decoded_main_url": src, "doubao_page_url": page.url})
-                            mark_success(self.task_id)
-                            return {"success": True, "retryable": False, "reason": ""}
-                    links = await page.locator('a[href*="video"],a[href$=".mp4"],a[download]').evaluate_all("els => els.map(e => e.href).filter(Boolean)")
-                    for url in links:
-                        if str(url).startswith("http"):
-                            await self._refresh_cookies(context)
-                            save_result(self.task_id, extra={"decoded_main_url": str(url), "doubao_page_url": page.url})
-                            mark_success(self.task_id)
-                            return {"success": True, "retryable": False, "reason": ""}
+                        return await self._save_video_success(context, page, url, "submission_response")
+                    url, source = await self._page_video_url(page, captured_video_urls)
+                    if url:
+                        return await self._save_video_success(context, page, url, source)
                     text = await page.locator("body").inner_text()
+                    if not playback_triggered:
+                        try:
+                            playback_triggered = await self._activate_completed_video(page)
+                        except Exception as exc:
+                            save_result(self.task_id, extra={"doubao_video_activation_error": str(exc)[:500]})
+                        if playback_triggered:
+                            url, source = await self._page_video_url(page, captured_video_urls)
+                            if url:
+                                return await self._save_video_success(context, page, url, source)
                     if any(marker in text[-1500:] for marker in ("生成失败", "无法生成", "内容违规")):
-                        return {"success": False, "retryable": True, "reason": "doubao generation failed"}
-                    await page.wait_for_timeout(10000)
+                        return {"success": False, "retryable": False, "reason": "doubao generation failed"}
+                    await page.wait_for_timeout(DOUBAO_RESULT_POLL_MILLISECONDS)
                 await self._refresh_cookies(context)
-                return {"success": False, "retryable": True, "reason": "doubao video result timeout"}
+                save_result(self.task_id, extra={"doubao_video_result_timeout": True, "doubao_page_url": page.url})
+                return {"success": False, "retryable": False, "reason": "doubao video result timeout"}
             finally:
+                if page is not None and capture_video_response is not None:
+                    try:
+                        page.remove_listener("response", capture_video_response)
+                    except Exception:
+                        pass
                 if lease is not None:
                     await bounded_cleanup(lease.release())
                 else:

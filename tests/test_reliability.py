@@ -248,6 +248,39 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["status"], store.STATUS_CANCELED)
         self.assertFalse(store.begin_task_submission(task["id"]))
 
+    def test_admin_cancel_can_end_submitted_task(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.mark_submitted(task["id"])
+        canceled, meta = store.request_task_cancel(task["id"], "管理员取消生成", allow_submitted=True)
+        self.assertTrue(canceled)
+        self.assertEqual(meta["status"], store.STATUS_CANCELED)
+        self.assertTrue(meta["cancel_requested"])
+
+    def test_pause_cancels_only_pending_tasks_and_blocks_claims(self) -> None:
+        pending = self.create_task("pending-owner")
+        running = self.create_task("running-owner")
+        submitted = self.create_task("submitted-owner")
+        self.assertTrue(store.mark_running(running["id"], "worker-running"))
+        self.assertTrue(store.mark_running(submitted["id"], "worker-submitted"))
+        store.mark_submitted(submitted["id"])
+
+        runtime = store.set_task_submission_paused(True)
+        canceled = store.cancel_pending_tasks()
+
+        self.assertTrue(runtime["task_submission_paused"])
+        self.assertTrue(runtime["task_submission_paused_at"])
+        self.assertEqual([item["id"] for item in canceled], [pending["id"]])
+        self.assertEqual(store.get_meta(pending["id"])["status"], store.STATUS_CANCELED)
+        self.assertEqual(store.get_meta(running["id"])["status"], store.STATUS_RUNNING)
+        self.assertEqual(store.get_meta(submitted["id"])["status"], store.STATUS_SUBMITTED)
+        self.assertIsNone(store.claim_next_pending("paused-worker", set()))
+        self.assertFalse(store.has_pending_tasks())
+
+        resumed = store.set_task_submission_paused(False)
+        self.assertFalse(resumed["task_submission_paused"])
+        self.assertEqual(resumed["task_submission_paused_at"], "")
+
     def test_file_queue_remains_compatible_with_store_claiming(self) -> None:
         task = self.create_task()
         queue = task_queue.FileTaskQueue()
@@ -444,8 +477,13 @@ class ReliabilityTests(unittest.TestCase):
     def test_corrupt_runtime_json_is_reset(self) -> None:
         runtime_path = self.root / "runtime.json"
         runtime_path.write_bytes(b"\x00\x00")
-        self.assertEqual(store.load_runtime(), {"active_task_ids": []})
-        self.assertEqual(json.loads(runtime_path.read_text(encoding="utf-8")), {"active_task_ids": []})
+        expected = {
+            "active_task_ids": [],
+            "task_submission_paused": False,
+            "task_submission_paused_at": "",
+        }
+        self.assertEqual(store.load_runtime(), expected)
+        self.assertEqual(json.loads(runtime_path.read_text(encoding="utf-8")), expected)
 
     def test_refunds_are_idempotent_without_task_result_file(self) -> None:
         task = self.create_task("owner")

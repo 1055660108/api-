@@ -1595,6 +1595,44 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(meta["status"], store.STATUS_SUBMITTED)
         self.assertFalse(bool(meta.get("cancel_requested")))
 
+    def test_admin_can_cancel_submitted_task(self) -> None:
+        task = store.create_task("管理员取消已提交任务", "9:16", model="Seedance 2.0")
+        self.assertTrue(store.mark_running(task["id"], "worker-admin-cancel"))
+        store.mark_submitted(task["id"])
+
+        response = self.client.delete(f"/tasks/{task['id']}", headers={"X-API-Token": self.admin_token})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["canceled"])
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_CANCELED)
+        self.assertTrue(meta["cancel_requested"])
+
+    def test_admin_pause_cancels_pending_and_blocks_new_tasks(self) -> None:
+        pending = store.create_task("等待暂停取消", "9:16", model="Seedance 2.0")
+        running = store.create_task("继续生成", "9:16", model="Seedance 2.0")
+        self.assertTrue(store.mark_running(running["id"], "worker-keep-running"))
+        batch_job = batch_jobs.create_job("batch-owner", [{"prompt": "批量排队任务"}], ratio="9:16", concurrency=1)
+        headers = {"X-API-Token": self.admin_token}
+
+        paused = self.client.post("/admin/task-pause", headers=headers, json={"paused": True})
+
+        self.assertEqual(paused.status_code, 200)
+        self.assertTrue(paused.json()["paused"])
+        self.assertEqual(paused.json()["canceled_pending"], 1)
+        self.assertEqual(paused.json()["canceled_batch_rows"], 1)
+        self.assertEqual(store.get_meta(pending["id"])["status"], store.STATUS_CANCELED)
+        self.assertEqual(store.get_meta(running["id"])["status"], store.STATUS_RUNNING)
+        self.assertEqual(batch_jobs.get_job(batch_job["id"])["rows"][0]["status"], "canceled")
+        self.assertTrue(self.client.get("/admin/task-pause", headers=headers).json()["paused"])
+        blocked = self.client.post("/tasks", headers=headers, data={"prompt": "暂停期间提交"})
+        self.assertEqual(blocked.status_code, 503)
+        self.assertEqual(blocked.json()["detail"], "任务发布已暂停")
+
+        resumed = self.client.post("/admin/task-pause", headers=headers, json={"paused": False})
+        self.assertEqual(resumed.status_code, 200)
+        self.assertFalse(resumed.json()["paused"])
+
     def test_client_failed_cleanup_does_not_remove_admin_history(self) -> None:
         registered = self.register()
         token = registered["token"]

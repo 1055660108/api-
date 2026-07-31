@@ -558,6 +558,13 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn("retry_timed_out_submitted_task", worker)
         self.assertIn(r"/生成超过\d+分钟", self.javascript)
 
+    def test_admin_task_pause_control_is_wired(self) -> None:
+        self.assertIn('id="toggleTaskPause"', self.html)
+        self.assertIn('apiFetch("/admin/task-pause")', self.javascript)
+        self.assertIn('body: { paused }', self.javascript)
+        self.assertIn('全部排队任务会立即取消', self.javascript)
+        self.assertIn('els.toggleTaskPause?.addEventListener("click", toggleTaskPause)', self.javascript)
+
     def test_requested_security_and_node_copy_is_simplified(self) -> None:
         self.assertNotIn('<span class="modal-eyebrow">账号安全</span><h2 id="clientPasswordModalTitle">', self.html)
         self.assertNotIn('<span class="modal-eyebrow">账号安全</span><h2 id="clientEmailModalTitle">', self.html)

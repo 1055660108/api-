@@ -88,11 +88,13 @@ from .store import (
     active_task_ids,
     active_task_count_for_owner,
     account_active_tasks,
+    cancel_pending_tasks,
     cleanup_terminal_tasks_before_local_day,
     create_task,
     fail_initializing_tasks,
     finalize_task_creation,
     find_or_create_task,
+    load_runtime,
     load_result,
     delete_task,
     get_meta,
@@ -108,7 +110,9 @@ from .store import (
     task_image_paths,
     task_states,
     request_task_cancel,
+    set_task_submission_paused,
     task_has_video,
+    task_submission_paused,
     validate_task_id,
     update_meta,
 )
@@ -1497,12 +1501,30 @@ def _client_access_payload(access: AccessContext) -> dict:
 def _admit_task_creation() -> None:
     from .task_queue import get_task_queue
 
+    if task_submission_paused():
+        raise HTTPException(status_code=503, detail="任务发布已暂停", headers={"Retry-After": "30"})
     queue_health = get_task_queue().health()
     if not queue_health.get("ok"):
         raise HTTPException(status_code=503, detail="任务队列暂不可用", headers={"Retry-After": "5"})
     admission = queue_admission(queue_health)
     if not admission.allowed:
         raise HTTPException(status_code=503, detail="任务队列繁忙，请稍后重试", headers={"Retry-After": str(admission.retry_after)})
+
+
+def _refund_canceled_task(meta: dict[str, Any]) -> None:
+    task_id = str(meta.get("id") or "")
+    if not task_id:
+        return
+    result = load_result(task_id)
+    account_id = str(result.get("account_id") or "")
+    account = account_for_current_task(task_id)
+    if not account_id and account:
+        account_id = str(account.get("id") or "")
+    if account_id:
+        clear_account_current_task(account_id, task_id)
+        charge_id = str(result.get("account_quota_charge_id") or (account or {}).get("current_quota_charge_id") or "")
+        refund_account_quota_once(task_id, account_id, charge_id)
+    refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
 
 
 def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
@@ -3014,6 +3036,59 @@ async def runtime_config():
         "dola_global_submit_interval_seconds": settings.dola_global_submit_interval_seconds,
         "task_retry_limit": settings.task_retry_limit,
         "batch_history_retention_days": settings.batch_history_retention_days,
+    }
+
+
+@app.get("/admin/task-pause", dependencies=[Depends(require_admin)])
+async def admin_task_pause_state():
+    runtime = await asyncio.to_thread(load_runtime)
+    return {
+        "paused": bool(runtime.get("task_submission_paused", False)),
+        "paused_at": str(runtime.get("task_submission_paused_at") or ""),
+    }
+
+
+@app.post("/admin/task-pause", dependencies=[Depends(require_admin)])
+async def update_admin_task_pause(request: Request):
+    payload = await _request_payload(request)
+    if not isinstance(payload.get("paused"), bool):
+        raise HTTPException(status_code=400, detail="paused must be a boolean")
+    paused = bool(payload["paused"])
+    runtime = await asyncio.to_thread(set_task_submission_paused, paused)
+    canceled_metas = await asyncio.to_thread(cancel_pending_tasks) if paused else []
+    canceled_batch_rows = 0
+    if paused:
+        active_batch_jobs = await asyncio.to_thread(list_batch_jobs, None, active_only=True, limit=1000)
+        for job in active_batch_jobs:
+            queued_rows = sum(
+                str(row.get("status") or "") in {"queued", "creating"} and not str(row.get("task_id") or "")
+                for row in job.get("rows", [])
+                if isinstance(row, dict)
+            )
+            if not queued_rows:
+                continue
+            await asyncio.to_thread(
+                cancel_persistent_batch_job,
+                str(job.get("id") or ""),
+                str(job.get("owner_token_hash") or ""),
+                "管理员暂停任务发布",
+            )
+            canceled_batch_rows += queued_rows
+    for meta in canceled_metas:
+        await asyncio.to_thread(_refund_canceled_task, meta)
+    await _record_admin_action_safe(
+        "task_pause" if paused else "task_resume",
+        "暂停任务发布" if paused else "恢复任务发布",
+        detail=f"取消排队任务 {len(canceled_metas) + canceled_batch_rows} 条" if paused else "已恢复接收和发布任务",
+        actor=load_settings().admin_username,
+        ip_address=_request_client_key(request),
+    )
+    return {
+        "ok": True,
+        "paused": paused,
+        "paused_at": str(runtime.get("task_submission_paused_at") or ""),
+        "canceled_pending": len(canceled_metas),
+        "canceled_batch_rows": canceled_batch_rows,
     }
 
 
@@ -5335,21 +5410,14 @@ async def remove_task(access: Annotated[AccessContext, Depends(require_token)], 
             raise HTTPException(status_code=404, detail="task not found")
         activity_user_id = _transaction_user_id(access)
         status = str(meta.get("status") or "")
-        if status == "submitted" or str(meta.get("submit_phase") or "") in {"committing", "submitted"}:
+        if not access.is_admin and (status == "submitted" or str(meta.get("submit_phase") or "") in {"committing", "submitted"}):
             return {"ok": False, "cancelable": False, "detail": "已提交生成，无法取消"}
-        if status in {"pending", "running"}:
-            canceled, canceled_meta = request_task_cancel(task_id)
+        if status in {"pending", "running", "submitted"}:
+            cancel_reason = "管理员取消生成" if access.is_admin else "用户取消生成"
+            canceled, canceled_meta = request_task_cancel(task_id, cancel_reason, allow_submitted=access.is_admin)
             if not canceled:
                 return {"ok": False, "cancelable": False, "detail": "任务正在提交平台，无法取消"}
-            result = load_result(task_id)
-            account_id = str(result.get("account_id") or "")
-            account = account_for_current_task(task_id)
-            if not account_id and account:
-                account_id = str(account.get("id") or "")
-            if account_id:
-                clear_account_current_task(account_id, task_id)
-                refund_account_quota_once(task_id, account_id, str((account or {}).get("current_quota_charge_id") or ""))
-            refund_temp_quota_once(task_id, str(canceled_meta.get("owner_token_hash") or ""))
+            await asyncio.to_thread(_refund_canceled_task, canceled_meta)
             await _record_activity_safe(activity_user_id, "task_cancel", "取消视频生成任务", reference_id=task_id)
             return {"ok": True, "canceled": True}
         audience = "client" if access.is_temp else "admin"

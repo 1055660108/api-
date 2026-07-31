@@ -52,6 +52,7 @@ LOCAL_TZ = timezone(timedelta(hours=8))
 _TASK_LOCKS_LOCK = threading.RLock()
 _TASK_LOCKS: dict[str, threading.RLock] = {}
 _TASK_CREATE_LOCK = threading.RLock()
+_RUNTIME_LOCK = threading.RLock()
 TRANSIENT_RESULT_FIELDS = {
     "chat_status",
     "chat_content_type",
@@ -545,6 +546,8 @@ def mark_retry_queue_verified(task_id: str) -> bool:
 
 
 def mark_running(task_id: str, worker_id: str, concurrency_limits: dict[str, int] | None = None) -> bool:
+    if task_submission_paused():
+        return False
     limits = concurrency_limits or {}
     claimed_at = utc_now()
     with task_lock(task_id):
@@ -638,16 +641,31 @@ def release_task_submission(task_id: str) -> None:
     update_meta_if(task_id, {STATUS_RUNNING}, submit_phase="", submit_started_at="")
 
 
-def request_task_cancel(task_id: str, reason: str = "用户取消生成") -> tuple[bool, dict[str, Any]]:
+def request_task_cancel(task_id: str, reason: str = "用户取消生成", *, allow_submitted: bool = False) -> tuple[bool, dict[str, Any]]:
+    cancelable_statuses = {STATUS_PENDING, STATUS_RUNNING}
+    if allow_submitted:
+        cancelable_statuses.add(STATUS_SUBMITTED)
+
     with task_lock(task_id):
         if postgres.enabled():
             outcome: dict[str, Any] = {}
 
             def mutate(meta: dict[str, Any]) -> dict[str, Any]:
                 outcome.update(meta)
-                if str(meta.get("status") or "") not in {STATUS_PENDING, STATUS_RUNNING} or str(meta.get("submit_phase") or "") == "committing":
+                if str(meta.get("status") or "") not in cancelable_statuses or (not allow_submitted and str(meta.get("submit_phase") or "") == "committing"):
                     return dict(meta)
-                meta.update(status=STATUS_CANCELED, worker_id="", finished_at=utc_now(), error=reason, updated_at=utc_now())
+                now = utc_now()
+                meta.update(
+                    status=STATUS_CANCELED,
+                    worker_id="",
+                    finished_at=now,
+                    error=reason,
+                    cancel_requested=True,
+                    execution_phase="canceled",
+                    status_reason=reason,
+                    phase_updated_at=now,
+                    updated_at=now,
+                )
                 outcome.clear()
                 outcome.update(meta)
                 outcome["cancel_applied"] = True
@@ -656,11 +674,33 @@ def request_task_cancel(task_id: str, reason: str = "用户取消生成") -> tup
             postgres.mutate_task_part(task_id, "meta", mutate)
             return bool(outcome.pop("cancel_applied", False)), outcome
         meta = get_meta(task_id)
-        if str(meta.get("status") or "") not in {STATUS_PENDING, STATUS_RUNNING} or str(meta.get("submit_phase") or "") == "committing":
+        if str(meta.get("status") or "") not in cancelable_statuses or (not allow_submitted and str(meta.get("submit_phase") or "") == "committing"):
             return False, meta
-        meta.update(status=STATUS_CANCELED, worker_id="", finished_at=utc_now(), error=reason, updated_at=utc_now())
+        now = utc_now()
+        meta.update(
+            status=STATUS_CANCELED,
+            worker_id="",
+            finished_at=now,
+            error=reason,
+            cancel_requested=True,
+            execution_phase="canceled",
+            status_reason=reason,
+            phase_updated_at=now,
+            updated_at=now,
+        )
         _write_storage_json(meta_path(task_id), meta)
         return True, meta
+
+
+def cancel_pending_tasks(reason: str = "管理员暂停任务发布") -> list[dict[str, Any]]:
+    canceled: list[dict[str, Any]] = []
+    for task_id, _meta in list_task_metas_by_statuses({STATUS_PENDING}):
+        if not task_id:
+            continue
+        applied, meta = request_task_cancel(task_id, reason)
+        if applied:
+            canceled.append(meta)
+    return canceled
 
 
 def record_failed_account(task_id: str, account_id: str) -> None:
@@ -1642,6 +1682,8 @@ def reset_running_tasks() -> None:
 
 def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_counts: dict[str, int] | None = None, token_concurrency_limits: dict[str, int] | None = None) -> str | None:
     ensure_storage()
+    if task_submission_paused():
+        return None
     concurrency_limits = token_concurrency_limits or {}
     claim_lock = TASKS_DIR / ".claim.lock"
     deadline = time.monotonic() + 5
@@ -1660,6 +1702,8 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
                 return None
             time.sleep(0.01)
     try:
+        if task_submission_paused():
+            return None
         supplied_counts: dict[str, int] = {
             str(owner): max(0, int(count))
             for owner, count in (token_active_counts or {}).items()
@@ -1685,6 +1729,8 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
         }
         candidates.sort(key=lambda meta: (str(meta.get("queue_priority_at") or meta.get("created_at") or meta.get("queued_at") or ""), str(meta.get("created_at") or ""), str(meta.get("id") or "")))
         for meta in candidates:
+            if task_submission_paused():
+                return None
             task_id = str(meta["id"])
             next_attempt_at = parse_time(str(meta.get("next_attempt_at") or ""))
             if next_attempt_at and datetime.now(timezone.utc) < next_attempt_at:
@@ -1707,6 +1753,8 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
 
 def has_pending_tasks(claimed_ids: set[str] | None = None) -> bool:
     ensure_storage()
+    if task_submission_paused():
+        return False
     claimed = claimed_ids or set()
     for item in list_tasks():
         task_id = item["id"]
@@ -1724,34 +1772,73 @@ def has_pending_tasks(claimed_ids: set[str] | None = None) -> bool:
 def default_runtime() -> dict[str, Any]:
     return {
         "active_task_ids": [],
+        "task_submission_paused": False,
+        "task_submission_paused_at": "",
+    }
+
+
+def _normalize_runtime(data: dict[str, Any]) -> dict[str, Any]:
+    active = data.get("active_task_ids")
+    if not isinstance(active, list):
+        active = []
+    paused = bool(data.get("task_submission_paused", False))
+    return {
+        "active_task_ids": sorted({str(item) for item in active}),
+        "task_submission_paused": paused,
+        "task_submission_paused_at": str(data.get("task_submission_paused_at") or "") if paused else "",
     }
 
 
 def load_runtime() -> dict[str, Any]:
-    ensure_storage()
-    try:
-        data = _read_storage_json(runtime_path(), default_runtime())
-    except CorruptJSONError:
-        data = default_runtime()
-        save_runtime(data)
-    active = data.get("active_task_ids")
-    if not isinstance(active, list):
-        active = []
-    return {"active_task_ids": [str(item) for item in active]}
+    with _RUNTIME_LOCK:
+        ensure_storage()
+        try:
+            data = _read_storage_json(runtime_path(), default_runtime())
+        except CorruptJSONError:
+            data = default_runtime()
+            save_runtime(data)
+        return _normalize_runtime(data)
 
 
 def save_runtime(data: dict[str, Any]) -> None:
-    active = data.get("active_task_ids")
-    if not isinstance(active, list):
-        active = []
-    _write_storage_json(runtime_path(), {"active_task_ids": sorted({str(item) for item in active})})
+    with _RUNTIME_LOCK:
+        _write_storage_json(runtime_path(), _normalize_runtime(data))
 
 
 def set_active_tasks(task_ids: Iterable[str]) -> None:
-    data = load_runtime()
-    data["active_task_ids"] = sorted(set(task_ids))
-    save_runtime(data)
+    active = sorted({str(task_id) for task_id in task_ids})
+    if postgres.enabled():
+        def mutate(data: dict[str, Any]) -> None:
+            data["active_task_ids"] = active
+
+        postgres.mutate_document("runtime", default_runtime(), mutate)
+        return
+    with _RUNTIME_LOCK:
+        data = load_runtime()
+        data["active_task_ids"] = active
+        save_runtime(data)
 
 
 def active_task_ids() -> set[str]:
     return set(load_runtime().get("active_task_ids") or [])
+
+
+def task_submission_paused() -> bool:
+    return bool(load_runtime().get("task_submission_paused", False))
+
+
+def set_task_submission_paused(paused: bool) -> dict[str, Any]:
+    paused_at = utc_now() if paused else ""
+    if postgres.enabled():
+        def mutate(data: dict[str, Any]) -> dict[str, Any]:
+            data["task_submission_paused"] = bool(paused)
+            data["task_submission_paused_at"] = paused_at
+            return _normalize_runtime(data)
+
+        return postgres.mutate_document("runtime", default_runtime(), mutate)
+    with _RUNTIME_LOCK:
+        data = load_runtime()
+        data["task_submission_paused"] = bool(paused)
+        data["task_submission_paused_at"] = paused_at
+        save_runtime(data)
+        return data

@@ -324,6 +324,7 @@ const els = {
   imageList: document.getElementById("imageList"),
   ratioValue: document.getElementById("ratioValue"),
   refreshTasks: document.getElementById("refreshTasks"),
+  toggleTaskPause: document.getElementById("toggleTaskPause"),
   queryVisibleTasks: document.getElementById("queryVisibleTasks"),
   clearTasks: document.getElementById("clearTasks"),
   deleteFailedTasks: document.getElementById("deleteFailedTasks"),
@@ -637,6 +638,8 @@ const state = {
   taskStatusFilter: "all",
   selectedTaskIds: new Set(),
   bulkRetryRunning: false,
+  taskSubmissionPaused: false,
+  taskPauseBusy: false,
   quotaPage: 1,
   quotaPageSize: 50,
   userPage: 1,
@@ -4187,6 +4190,7 @@ async function refreshTasks(options = {}) {
     state.taskTotalPages = Math.max(1, Number(data.total_pages || 1));
     state.page = Math.max(1, Number(data.page || state.page));
     state.taskStats = data.stats || null;
+    if (portal === "admin") await refreshTaskPauseState({ quiet: true });
     if (portal === "client" && state.autoDownloadEnabled) {
       if (!state.autoDownloadBaselineReady) baselineAutoDownloadedTasks();
       else tasks.forEach((task) => {
@@ -4204,6 +4208,50 @@ async function refreshTasks(options = {}) {
   } finally {
     if (!options.quiet) setBusy(els.refreshTasks, false);
     if (requestId === state.taskRefreshRequestId) els.taskTableBody?.setAttribute("aria-busy", "false");
+  }
+}
+
+function renderTaskPauseControl() {
+  if (!els.toggleTaskPause) return;
+  els.toggleTaskPause.disabled = state.taskPauseBusy;
+  els.toggleTaskPause.textContent = state.taskPauseBusy
+    ? "处理中"
+    : (state.taskSubmissionPaused ? "恢复任务" : "暂停任务");
+  els.toggleTaskPause.classList.toggle("danger-button", !state.taskSubmissionPaused);
+  els.toggleTaskPause.classList.toggle("secondary-button", state.taskSubmissionPaused);
+  els.toggleTaskPause.title = state.taskSubmissionPaused
+    ? "任务发布已暂停，点击恢复"
+    : "暂停新任务并取消全部排队任务";
+}
+
+async function refreshTaskPauseState(options = {}) {
+  if (portal !== "admin") return;
+  try {
+    const data = await apiFetch("/admin/task-pause");
+    state.taskSubmissionPaused = Boolean(data.paused);
+    renderTaskPauseControl();
+  } catch (error) {
+    if (!options.quiet) toast(`暂停状态读取失败：${error.message}`, "error");
+  }
+}
+
+async function toggleTaskPause() {
+  if (state.taskPauseBusy) return;
+  const paused = !state.taskSubmissionPaused;
+  if (paused && !window.confirm("暂停后将停止接收和发布新任务，全部排队任务会立即取消；已经开始生成的任务会继续正常生成。确认暂停？")) return;
+  state.taskPauseBusy = true;
+  renderTaskPauseControl();
+  try {
+    const data = await apiFetch("/admin/task-pause", { method: "POST", body: { paused } });
+    state.taskSubmissionPaused = Boolean(data.paused);
+    const canceled = Number(data.canceled_pending || 0) + Number(data.canceled_batch_rows || 0);
+    toast(paused ? `任务已暂停，已取消 ${canceled} 条排队任务` : "任务发布已恢复");
+    await refreshTasks({ quiet: true, keepPage: true });
+  } catch (error) {
+    toast(`操作失败：${error.message}`, "error");
+  } finally {
+    state.taskPauseBusy = false;
+    renderTaskPauseControl();
   }
 }
 
@@ -7380,6 +7428,7 @@ function bindEvents() {
   });
 
   els.refreshTasks.addEventListener("click", () => refreshTasks());
+  els.toggleTaskPause?.addEventListener("click", toggleTaskPause);
   els.queryVisibleTasks.addEventListener("click", queryVisibleTasks);
   els.deleteFailedTasks?.addEventListener("click", deleteFailedTasks);
   els.clearTasks.addEventListener("click", clearTasks);

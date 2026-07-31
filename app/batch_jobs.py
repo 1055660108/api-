@@ -326,14 +326,14 @@ def public_job(job: dict[str, Any], since_revision: int | None = None) -> dict[s
     }
 
 
-def cancel_job(job_id: str, owner_token_hash: str) -> dict[str, Any]:
+def cancel_job(job_id: str, owner_token_hash: str, reason: str = "用户停止批量生成") -> dict[str, Any]:
     def mutate(job: dict[str, Any]):
         if str(job.get("owner_token_hash") or "") != str(owner_token_hash):
             raise PermissionError(job_id)
         job["canceled_at"] = _now()
         for row in job.get("rows", []):
             if str(row.get("status") or "") in {"queued", "creating"} and not str(row.get("task_id") or ""):
-                row.update(status="canceled", error="用户停止批量生成", finished_at=_now())
+                row.update(status="canceled", error=str(reason or "用户停止批量生成")[:500], finished_at=_now())
         job["status"] = "canceling" if any(str(row.get("status") or "") == "running" for row in job.get("rows", [])) else "canceled"
         return job
 

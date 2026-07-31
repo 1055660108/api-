@@ -655,12 +655,11 @@ def claim_available_account(
         params.append(preferred_id)
     query = (
         f"SELECT id, payload FROM dola_accounts WHERE {' AND '.join(conditions)} "
-        f"ORDER BY CASE WHEN %s = 'dola' AND COALESCE(payload->>'account_source', 'admin') = 'api' THEN 0 ELSE 1 END, "
+        "ORDER BY CASE WHEN COALESCE(payload->>'account_source', 'admin') = 'api' THEN 0 ELSE 1 END, "
         f"CASE WHEN {quota_limit} = 0 THEN 1000000 ELSE {quota_limit} - {quota_used} END DESC, "
         f"{quota_used}, COALESCE(payload->>'last_used_at', ''), id "
         "FOR UPDATE SKIP LOCKED LIMIT 1"
     )
-    params.append(platform)
     with connection() as conn:
         row = conn.execute(query, tuple(params)).fetchone()
         if not row:

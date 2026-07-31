@@ -3978,11 +3978,12 @@ async def accounts_create(request: Request):
     bulk = str(payload.get("bulk") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
     try:
         platform = normalize_platform(payload.get("platform") or DEFAULT_PLATFORM)
+        account_source = "api" if str(payload.get("account_source") or "admin").strip().lower() == "api" else "admin"
         default_quota_limit = load_settings().account_default_quotas[platform]
         quota_limit = int(payload.get("quota_limit") if payload.get("quota_limit") not in {None, ""} else default_quota_limit)
         enabled = str(payload.get("enabled") if payload.get("enabled") is not None else "true").lower() not in {"0", "false", "no", "off"}
         if bulk:
-            result = await asyncio.to_thread(add_accounts_bulk_result, cookie_data, quota_limit, enabled, platform, "admin")
+            result = await asyncio.to_thread(add_accounts_bulk_result, cookie_data, quota_limit, enabled, platform, account_source)
             _clear_account_list_cache()
             return {"ok": True, **result}
         account = await asyncio.to_thread(
@@ -3992,7 +3993,7 @@ async def accounts_create(request: Request):
             enabled,
             quota_limit,
             platform,
-            "admin",
+            account_source,
         )
         _clear_account_list_cache()
     except ValueError as exc:

@@ -1747,6 +1747,33 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["days"][0]["total"], 2)
         self.assertEqual(payload["days"][0]["by_status"], {"abnormal": 1, "slider_verification": 1})
 
+    def test_manual_account_import_preserves_api_source_for_single_and_bulk_accounts(self) -> None:
+        self.login_admin()
+        single = self.client.post(
+            "/accounts",
+            json={
+                "name": "豆包 API账号",
+                "cookie_data": "session=doubao-api-single",
+                "platform": "doubao",
+                "account_source": "api",
+            },
+        )
+        self.assertEqual(single.status_code, 200)
+        self.assertEqual(single.json()["account"]["account_source"], "api")
+
+        bulk = self.client.post(
+            "/accounts",
+            json={
+                "cookie_data": "千问 API 1----session=qianwen-api-1\n千问 API 2----session=qianwen-api-2",
+                "platform": "qianwen",
+                "account_source": "api",
+                "bulk": True,
+            },
+        )
+        self.assertEqual(bulk.status_code, 200)
+        self.assertEqual(bulk.json()["created"], 2)
+        self.assertTrue(all(item["account_source"] == "api" for item in bulk.json()["accounts"]))
+
     def test_account_list_snapshot_coalesces_repeated_expensive_builds(self) -> None:
         snapshot = {
             "accounts": [],

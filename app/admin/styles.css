@@ -2386,6 +2386,34 @@ textarea:focus {
   height: 44px;
 }
 
+.account-api-source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  color: #4b5963;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.account-api-source input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.account-api-source:has(input:checked) {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
 .account-cookie-field textarea {
   min-height: 116px;
   max-height: 180px;

@@ -918,7 +918,7 @@ def _select_account(
         quota_limit = max(0, int(item.get("quota_limit") or 0))
         quota_used = max(0, int(item.get("quota_used") or 0))
         quota_remaining = max(0, quota_limit - quota_used) if quota_limit else 1000000
-        api_priority = 0 if target_platform == "dola" and str(item.get("account_source") or "").lower() == "api" else 1
+        api_priority = 0 if str(item.get("account_source") or "").lower() == "api" else 1
         return (api_priority, -quota_remaining, quota_used, str(item.get("last_used_at") or ""))
 
     enabled_accounts.sort(key=priority)

@@ -555,14 +555,27 @@ class ReliabilityTests(unittest.TestCase):
         accounts.clear_account_current_task(created["id"], "task-15")
         self.assertIsNone(accounts.claim_account_for_worker("worker-next", "task-next", quota_cost=1))
 
-    def test_dola_api_accounts_are_selected_before_admin_accounts(self) -> None:
-        accounts.add_account("后台账号", "session=admin", quota_limit=2, account_source="admin")
-        api_account = accounts.add_account("API账号", "session=api", quota_limit=2, account_source="api")
+    def test_all_platforms_select_api_accounts_before_admin_accounts(self) -> None:
+        for platform in ("dola", "doubao", "qianwen"):
+            accounts.add_account(
+                f"{platform} 后台账号",
+                f"session={platform}-admin",
+                quota_limit=10,
+                platform=platform,
+                account_source="admin",
+            )
+            api_account = accounts.add_account(
+                f"{platform} API账号",
+                f"session={platform}-api",
+                quota_limit=2,
+                platform=platform,
+                account_source="api",
+            )
 
-        claimed = accounts.claim_account_for_worker("worker-api", "task-api", platform="dola")
+            claimed = accounts.claim_account_for_worker(f"worker-{platform}", f"task-{platform}", platform=platform)
 
-        self.assertEqual(claimed["id"], api_account["id"])
-        self.assertEqual(claimed["account_source"], "api")
+            self.assertEqual(claimed["id"], api_account["id"])
+            self.assertEqual(claimed["account_source"], "api")
 
     def test_sync_account_default_quotas_updates_existing_platform_pools(self) -> None:
         accounts.add_account("Dola", "session=dola", quota_limit=9)

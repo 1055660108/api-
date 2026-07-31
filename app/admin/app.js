@@ -489,6 +489,7 @@ const els = {
   accountName: document.getElementById("accountName"),
   accountQuotaLimit: document.getElementById("accountQuotaLimit"),
   accountPlatform: document.getElementById("accountPlatform"),
+  accountIsApi: document.getElementById("accountIsApi"),
   accountCookieData: document.getElementById("accountCookieData"),
   accountDetectedCount: document.getElementById("accountDetectedCount"),
   accountImportState: document.getElementById("accountImportState"),
@@ -3857,7 +3858,14 @@ async function importAccount(event) {
     const isBulk = cookieData.split(/\r?\n/).filter((line) => line.trim()).length > 1;
     const data = await apiFetch("/accounts", {
       method: "POST",
-      body: { name, cookie_data: cookieData, quota_limit: quotaLimit, bulk: isBulk, platform },
+      body: {
+        name,
+        cookie_data: cookieData,
+        quota_limit: quotaLimit,
+        bulk: isBulk,
+        platform,
+        account_source: els.accountIsApi?.checked ? "api" : "admin",
+      },
     });
     els.accountName.value = "";
     if (els.accountQuotaLimit) els.accountQuotaLimit.value = String(accountDefaultQuota(platform));

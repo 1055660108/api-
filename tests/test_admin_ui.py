@@ -183,6 +183,12 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('form.append("preferred_account_id", els.preferredAccountSelect.value)', self.javascript)
         self.assertIn('preferredAccountId: portal === "admin"', self.javascript)
 
+    def test_manual_account_import_can_mark_api_accounts(self) -> None:
+        self.assertIn('id="accountIsApi" type="checkbox"', self.html)
+        self.assertIn("标记为 API 账号", self.html)
+        self.assertIn('accountIsApi: document.getElementById("accountIsApi")', self.javascript)
+        self.assertIn('account_source: els.accountIsApi?.checked ? "api" : "admin"', self.javascript)
+
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):
             self.assertIn(f'id="{element_id}"', self.html)

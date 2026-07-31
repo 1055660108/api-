@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, doubao_video_url_score
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, doubao_video_url_score
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -225,6 +225,51 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(selected["url"], original)
         self.assertGreaterEqual(selected["score"], DOUBAO_ORIGINAL_VIDEO_SCORE)
         self.assertLess(doubao_video_url_score(preview, "preview_video_url"), doubao_video_url_score(playback, "video_url"))
+
+    def test_generic_download_and_player_urls_are_not_treated_as_original(self) -> None:
+        self.assertLess(
+            doubao_video_url_score("https://media.example/download.mp4", "download_url"),
+            DOUBAO_ORIGINAL_VIDEO_SCORE,
+        )
+        self.assertLess(
+            doubao_video_url_score("https://media.example/player.mp4", "dom.video_current_src"),
+            DOUBAO_ORIGINAL_VIDEO_SCORE,
+        )
+
+    def test_single_chain_script_uses_dola_original_video_route(self) -> None:
+        for fragment in (
+            "/im/chain/single?",
+            "cmd: 3100",
+            "pull_singe_chain_uplink_body",
+            'aid: "497858"',
+            '"agw-js-conv": "str"',
+        ):
+            self.assertIn(fragment, DOUBAO_SINGLE_CHAIN_SCRIPT)
+
+    def test_single_chain_candidate_uses_latest_message_main_url(self) -> None:
+        old_url = "https://media.example/old-original.mp4"
+        latest_url = "https://media.example/latest-original.mp4"
+        body = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [
+                        {"message_index": 2, "video_model": {"main_url": old_url}},
+                        {"message_index": 4, "video_model": {"main_url": latest_url}},
+                    ]
+                }
+            }
+        })
+        page = SimpleNamespace(evaluate=AsyncMock(return_value={"ok": True, "status": 200, "body": body}))
+        candidates = {}
+
+        error = asyncio.run(DoubaoVideoAutomation._fetch_single_chain_candidates(page, "123456789012345", candidates))
+
+        self.assertEqual(error, "")
+        self.assertEqual(set(candidates), {latest_url})
+        selected = best_doubao_video_candidate(candidates)
+        self.assertEqual(selected["source"], "single_chain")
+        self.assertEqual(selected["key"], "video_model.main_url")
+        self.assertGreaterEqual(selected["score"], DOUBAO_ORIGINAL_VIDEO_SCORE)
 
     def test_doubao_collects_nested_original_url_without_mp4_suffix(self) -> None:
         original = "https://tos.example/video/source/12345?signature=abc"

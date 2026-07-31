@@ -4,7 +4,6 @@ import asyncio
 import html
 import json
 import re
-import time
 from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -12,6 +11,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
+from .query import decode_main_url, extract_main_url
 from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
 from .profile_lock import account_profile_lock
 
@@ -31,7 +31,6 @@ DOUBAO_MODEL_CODES = {
 }
 DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
 DOUBAO_RESULT_POLL_MILLISECONDS = 5000
-DOUBAO_VIDEO_CANDIDATE_SETTLE_SECONDS = 8
 DOUBAO_ORIGINAL_VIDEO_SCORE = 240
 
 
@@ -55,7 +54,7 @@ def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
     if any(marker in field for marker in ("original", "origin", "source_url", "raw_url")):
         score += 380
     if "download" in field:
-        score += 320
+        score += 120
     if "main_url" in field:
         score += 240
     elif "video_url" in field:
@@ -64,6 +63,8 @@ def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
         score += 60
     if candidate_source == "submission_response":
         score += 30
+    elif candidate_source == "single_chain":
+        score += 100
     elif candidate_source == "media_response":
         score += 20
     elif candidate_source in {"video_current_src", "source_src", "download_link"}:
@@ -183,6 +184,81 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
     if not result.get("accepted"):
         return "doubao generation acknowledgement missing", "generation_ack_missing"
     return "", ""
+
+
+DOUBAO_SINGLE_CHAIN_SCRIPT = r"""
+async ({conversationId}) => {
+  function cookieValue(name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+  function storageDigits(regex) {
+    for (const store of [localStorage, sessionStorage]) {
+      for (let index = 0; index < store.length; index += 1) {
+        const key = store.key(index);
+        const value = store.getItem(key) || "";
+        const match = regex.test(key) ? value.match(/\d{15,24}/) : null;
+        if (match) return match[0];
+      }
+    }
+    return "";
+  }
+  const webId = storageDigits(/web_id|tea_uuid|device_id/i) || "111";
+  const region = cookieValue("flow_user_country") || "JP";
+  const params = new URLSearchParams({
+    version_code: "20800",
+    language: "zh",
+    device_platform: "web",
+    aid: "497858",
+    real_aid: "497858",
+    pkg_type: "release_version",
+    device_id: webId,
+    pc_version: "3.29.10",
+    web_id: webId,
+    tea_uuid: webId,
+    region,
+    sys_region: region,
+    samantha_web: "1",
+    web_platform: "browser",
+    "use-olympus-account": "1",
+    web_tab_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now())
+  });
+  const response = await fetch(`${location.origin}/im/chain/single?${params.toString()}`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "agw-js-conv": "str",
+      "content-type": "application/json; encoding=utf-8"
+    },
+    body: JSON.stringify({
+      cmd: 3100,
+      uplink_body: {
+        pull_singe_chain_uplink_body: {
+          conversation_id: String(conversationId || ""),
+          anchor_index: 111,
+          conversation_type: 3,
+          direction: 1,
+          limit: 20,
+          ext: {},
+          filter: {index_list: []},
+          evaluate_ab_params: "",
+          evaluate_common_params: ""
+        }
+      },
+      sequence_id: "111",
+      channel: 2,
+      version: "1"
+    })
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: (await response.text()).slice(0, 2097152)
+  };
+}
+"""
 
 
 DOUBAO_SUBMIT_SCRIPT = r"""
@@ -729,7 +805,7 @@ class DoubaoVideoAutomation:
                 return
             response_url = str(response.url or "")
             lowered_url = response_url.lower()
-            if not any(marker in lowered_url for marker in ("/chat", "conversation", "message", "video", "aigc", "generate", "task", "completion")):
+            if not any(marker in lowered_url for marker in ("/chat", "/im/chain/", "conversation", "message", "video", "aigc", "generate", "task", "completion")):
                 return
             content_length = int(response.headers.get("content-length") or 0)
             if content_length > 2 * 1024 * 1024:
@@ -739,6 +815,38 @@ class DoubaoVideoAutomation:
             return
         body = str(body or "")[:2 * 1024 * 1024]
         collect_doubao_response_candidates(body, candidates)
+
+    @staticmethod
+    async def _fetch_single_chain_candidates(
+        page: Page,
+        conversation_id: str,
+        candidates: dict[str, dict[str, Any]],
+    ) -> str:
+        try:
+            result = await page.evaluate(
+                DOUBAO_SINGLE_CHAIN_SCRIPT,
+                {"conversationId": conversation_id},
+            )
+        except Exception as exc:
+            return f"single chain request failed: {str(exc)[:300]}"
+        if not isinstance(result, dict):
+            return "single chain returned an invalid response"
+        if not result.get("ok"):
+            return f"single chain http {int(result.get('status') or 0)}"
+        body = str(result.get("body") or "")
+        try:
+            payload = json.loads(body.lstrip("\ufeff"))
+        except (TypeError, ValueError):
+            return "single chain returned invalid JSON"
+        original_url = decode_main_url(extract_main_url(payload))
+        if original_url:
+            add_doubao_video_candidate(
+                candidates,
+                original_url,
+                key="video_model.main_url",
+                source="single_chain",
+            )
+        return ""
 
     @staticmethod
     async def _page_video_url(page, captured_urls: list[str]) -> tuple[str, str]:
@@ -1047,9 +1155,13 @@ class DoubaoVideoAutomation:
                         save_result(self.task_id, extra={"doubao_conversation_open_error": str(exc)[:500]})
                 deadline = asyncio.get_running_loop().time() + DOUBAO_RESULT_WAIT_SECONDS
                 playback_triggered = False
-                first_candidate_at = time.monotonic() if video_candidates else 0.0
+                single_chain_error = ""
                 self._set_phase("waiting_result", "豆包正在生成视频")
                 while asyncio.get_running_loop().time() < deadline:
+                    if conversation_id:
+                        query_error = await self._fetch_single_chain_candidates(page, conversation_id, video_candidates)
+                        if query_error:
+                            single_chain_error = query_error
                     url, source = await self._page_video_url(page, [])
                     if url:
                         add_doubao_video_candidate(video_candidates, url, key=f"dom.{source}", source=source)
@@ -1063,12 +1175,9 @@ class DoubaoVideoAutomation:
                             url, source = await self._page_video_url(page, [])
                             if url:
                                 add_doubao_video_candidate(video_candidates, url, key=f"dom.{source}", source=source)
-                    if video_candidates and not first_candidate_at:
-                        first_candidate_at = time.monotonic()
                     candidate = best_doubao_video_candidate(video_candidates)
                     candidate_score = int(candidate.get("score") or 0)
-                    candidates_settled = first_candidate_at and time.monotonic() - first_candidate_at >= DOUBAO_VIDEO_CANDIDATE_SETTLE_SECONDS
-                    if candidate and (candidate_score >= DOUBAO_ORIGINAL_VIDEO_SCORE or candidates_settled):
+                    if candidate and candidate_score >= DOUBAO_ORIGINAL_VIDEO_SCORE:
                         return await self._save_video_success(
                             context,
                             page,
@@ -1082,7 +1191,7 @@ class DoubaoVideoAutomation:
                         return {"success": False, "retryable": False, "reason": "doubao generation failed"}
                     await page.wait_for_timeout(DOUBAO_RESULT_POLL_MILLISECONDS)
                 candidate = best_doubao_video_candidate(video_candidates)
-                if candidate:
+                if candidate and int(candidate.get("score") or 0) >= DOUBAO_ORIGINAL_VIDEO_SCORE:
                     return await self._save_video_success(
                         context,
                         page,
@@ -1093,8 +1202,18 @@ class DoubaoVideoAutomation:
                         candidate_count=len(video_candidates),
                     )
                 await self._refresh_cookies(context)
-                save_result(self.task_id, extra={"doubao_video_result_timeout": True, "doubao_page_url": page.url})
-                return {"success": False, "retryable": False, "reason": "doubao video result timeout"}
+                save_result(
+                    self.task_id,
+                    extra={
+                        "doubao_video_result_timeout": True,
+                        "doubao_page_url": page.url,
+                        "doubao_single_chain_error": single_chain_error,
+                        "doubao_rejected_fallback_source": str(candidate.get("source") or ""),
+                        "doubao_rejected_fallback_key": str(candidate.get("key") or ""),
+                        "doubao_rejected_fallback_score": int(candidate.get("score") or 0),
+                    },
+                )
+                return {"success": False, "retryable": False, "reason": "doubao original video result timeout"}
             finally:
                 if page is not None and capture_video_response is not None:
                     try:

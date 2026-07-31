@@ -78,6 +78,32 @@ def rollback_image_name() -> str:
     return f"{IMAGE_REPOSITORY}:rollback"
 
 
+def service_container_id(service: str) -> str:
+    container_id = run("docker", "compose", "ps", "-q", service, timeout=15).strip()
+    if not container_id:
+        raise RuntimeError(f"deployment service is not running: {service}")
+    return container_id
+
+
+def running_service_image(service: str = "api") -> str:
+    return run("docker", "inspect", "--format", "{{.Image}}", service_container_id(service), timeout=15).strip()
+
+
+def running_service_version(service: str = "api") -> str:
+    try:
+        return run(
+            "docker",
+            "exec",
+            service_container_id(service),
+            "python",
+            "-c",
+            "from app import __version__; print(__version__)",
+            timeout=15,
+        ).strip()
+    except Exception:
+        return ""
+
+
 def normalized_repository(value: str) -> str:
     repository = str(value or "").strip().rstrip("/")
     if repository.startswith("git@github.com:"):
@@ -115,17 +141,19 @@ def status(refresh: bool = True) -> dict[str, str | bool]:
         commit_message = git("log", "-1", "--format=%s", "HEAD", timeout=15)
         latest_commit_message = git("log", "-1", "--format=%s", f"origin/{BRANCH}", timeout=15)
         latest_version = git("show", f"origin/{BRANCH}:VERSION", timeout=15).strip()
-    version = VERSION_PATH.read_text(encoding="utf-8").strip()
+    source_version = VERSION_PATH.read_text(encoding="utf-8").strip()
+    runtime_version = running_service_version() or source_version
     current.update({
         "repository": EXPECTED_ORIGIN,
         "branch": BRANCH,
         "revision": revision,
-        "version": version,
+        "version": runtime_version,
+        "source_version": source_version,
         "latest_version": latest_version,
         "commit_message": commit_message,
         "latest_revision": latest_revision,
         "latest_commit_message": latest_commit_message,
-        "update_available": revision != latest_revision,
+        "update_available": revision != latest_revision or runtime_version != source_version,
     })
     return current
 
@@ -150,7 +178,6 @@ def wait_for_health() -> None:
 
 def deploy() -> None:
     before = ""
-    current_image = image_name()
     try:
         set_state(phase="检查仓库", error="")
         if normalized_repository(git("remote", "get-url", "origin", timeout=15)) != normalized_repository(EXPECTED_ORIGIN):
@@ -159,16 +186,22 @@ def deploy() -> None:
         if changes:
             raise RuntimeError(f"application repository has uncommitted changes: {', '.join(changes[:10])}")
         before = git("rev-parse", "HEAD", timeout=15)
-        run("docker", "image", "inspect", current_image, timeout=30)
-        run("docker", "tag", current_image, rollback_image_name(), timeout=30)
+        deployed_image = running_service_image()
+        run("docker", "tag", deployed_image, rollback_image_name(), timeout=30)
         set_state(phase="拉取代码")
         git("fetch", "--prune", "origin", BRANCH)
         target = git("rev-parse", f"origin/{BRANCH}", timeout=15)
-        if before == target:
-            set_state(updating=False, phase="已是最新", error="", updated=False)
+        code_updated = before != target
+        if code_updated:
+            git("merge-base", "--is-ancestor", before, target, timeout=15)
+            git("merge", "--ff-only", target)
+        target_version = VERSION_PATH.read_text(encoding="utf-8").strip()
+        runtime_version = running_service_version()
+        target_image = image_name()
+        if not code_updated and runtime_version == target_version:
+            run("docker", "tag", deployed_image, target_image, timeout=30)
+            set_state(updating=False, phase="已是最新", error="", updated=False, update_available=False)
             return
-        git("merge-base", "--is-ancestor", before, target, timeout=15)
-        git("merge", "--ff-only", target)
         set_state(phase="构建镜像")
         run("docker", "compose", "build", "api", timeout=BUILD_TIMEOUT_SECONDS)
         set_state(phase="更新服务")

@@ -828,7 +828,7 @@ class WorkerManager:
                     clear_account_current_task(account_id, task_id)
                     refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
                     continue
-                if platform != "dola":
+                if platform == "qianwen":
                     set_execution_phase(task_id, "submitting_request", "正在提交生成请求")
                 if platform == "doubao":
                     proxy_session = DolaFetchAutomation(
@@ -844,6 +844,7 @@ class WorkerManager:
                         str(meta.get("prompt") or ""),
                         str(meta.get("ratio") or "9:16"),
                         str(meta.get("model") or "Seedance 2.0 Mini"),
+                        int(meta.get("duration") or 10),
                         account=account,
                         proxy_session=proxy_session,
                         browser_pool=self._dola_browser_pool,

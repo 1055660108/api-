@@ -7,7 +7,7 @@ from typing import Any
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
-from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
+from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
 from .profile_lock import account_profile_lock
@@ -22,7 +22,245 @@ REGION_RESTRICTION_MARKERS = (
     "not available in your region",
     "region is not supported",
 )
-VIDEO_ENTRY_NAMES = ("视频生成", "生成视频", "AI 视频", "AI视频")
+DOUBAO_MODEL_CODES = {
+    "Seedance 2.0 Mini": "seedance_v2.0_mini",
+    "Seedance 2.0 Fast": "seedance_v2.0",
+}
+
+
+DOUBAO_SUBMIT_SCRIPT = r"""
+async ({prompt, ratio, model, duration}) => {
+  function uuid() {
+    return crypto.randomUUID ? crypto.randomUUID() :
+      "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === "x" ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+  }
+  function randomDigits(len) {
+    let out = "";
+    for (let i = 0; i < len; i += 1) out += String(Math.floor(Math.random() * 10));
+    return out.replace(/^0/, "1");
+  }
+  function cookieValue(name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+  function storageFind(regex) {
+    for (const store of [localStorage, sessionStorage]) {
+      for (let index = 0; index < store.length; index += 1) {
+        const key = store.key(index);
+        const value = store.getItem(key) || "";
+        if (regex.test(key) && value && value.length < 100) return value;
+      }
+    }
+    return "";
+  }
+  function trySign(url) {
+    const signers = [window.byted_acrawler, window.bytedAcrawler, window.__acrawler, window.ABogus].filter(Boolean);
+    for (const signer of signers) {
+      try {
+        if (typeof signer.sign !== "function") continue;
+        const signed = signer.sign({url});
+        if (typeof signed === "string" && signed) return signed;
+        if (signed && typeof signed === "object") {
+          if (typeof signed.a_bogus === "string") return signed.a_bogus;
+          if (typeof signed.aBogus === "string") return signed.aBogus;
+          if (typeof signed.url === "string") {
+            const value = new URL(signed.url, location.origin).searchParams.get("a_bogus");
+            if (value) return value;
+          }
+        }
+      } catch (_) {}
+    }
+    return "";
+  }
+  function extract(patterns, text) {
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return match[1];
+    }
+    return "";
+  }
+
+  const localConversationId = `local_${randomDigits(16)}`;
+  const uniqueKey = uuid();
+  const webId = (storageFind(/web_id|tea_uuid|device_id/i).match(/\d{15,24}/) || [])[0]
+    || `${Date.now()}${randomDigits(6)}`;
+  const fp = cookieValue("s_v_web_id") || storageFind(/s_v_web_id|fp|verify/i) || `verify_${randomDigits(12)}`;
+  const region = cookieValue("flow_user_country") || "JP";
+  const params = new URLSearchParams({
+    aid: "497858",
+    device_id: webId,
+    device_platform: "web",
+    doubao_device_platform: "web",
+    doubao_pc_version: "3.29.10",
+    fp,
+    language: "zh",
+    pc_version: "3.29.10",
+    pkg_type: "release_version",
+    real_aid: "497858",
+    region,
+    samantha_web: "1",
+    sys_region: region,
+    tea_uuid: webId,
+    tz_name: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
+    "use-olympus-account": "1",
+    version_code: "20800",
+    web_id: webId,
+    web_platform: "browser",
+    web_tab_id: uuid()
+  });
+  const msToken = cookieValue("msToken") || storageFind(/mstoken/i);
+  if (msToken) params.set("msToken", msToken);
+  let requestUrl = `${location.origin}/chat/completion?${params.toString()}`;
+  const aBogus = trySign(requestUrl);
+  if (aBogus) {
+    params.set("a_bogus", aBogus);
+    requestUrl = `${location.origin}/chat/completion?${params.toString()}`;
+  }
+
+  const seconds = Math.max(1, Number(duration) || 10);
+  const payload = {
+    client_meta: {
+      local_conversation_id: localConversationId,
+      conversation_id: "",
+      bot_id: "7338286299411103781",
+      last_section_id: "",
+      last_message_index: null
+    },
+    messages: [{
+      local_message_id: uuid(),
+      content_block: [{
+        block_type: 10000,
+        content: {
+          text_block: {text: `生成视频：${prompt}，${seconds}s`, icon_url: "", icon_url_dark: "", summary: ""},
+          pc_event_block: ""
+        },
+        block_id: uuid(),
+        parent_id: "",
+        meta_info: [],
+        append_fields: []
+      }],
+      message_status: 0
+    }],
+    option: {
+      send_message_scene: "",
+      create_time_ms: Date.now(),
+      collect_id: "",
+      is_audio: false,
+      answer_with_suggest: false,
+      tts_switch: false,
+      need_deep_think: 0,
+      click_clear_context: false,
+      from_suggest: false,
+      is_regen: false,
+      is_replace: false,
+      is_from_click_option: false,
+      is_from_click_softlink: false,
+      disable_sse_cache: false,
+      select_text_action: "",
+      is_select_text: false,
+      resend_for_regen: false,
+      scene_type: 0,
+      unique_key: uniqueKey,
+      start_seq: 0,
+      need_create_conversation: true,
+      conversation_init_option: {need_ack_conversation: true},
+      regen_query_id: [],
+      edit_query_id: [],
+      regen_instruction: "",
+      no_replace_for_regen: false,
+      message_from: 0,
+      shared_app_name: "",
+      shared_app_id: "",
+      sse_recv_event_options: {support_chunk_delta: true},
+      is_ai_playground: false,
+      is_old_user: true,
+      recovery_option: {
+        is_recovery: false,
+        req_create_time_sec: Math.floor(Date.now() / 1000),
+        append_sse_event_scene: 0
+      },
+      message_storage_type: 0
+    },
+    chat_ability: {
+      ability_type: 17,
+      ability_param: JSON.stringify({ratio: ratio || "auto", model, duration: seconds})
+    },
+    user_context: [],
+    ext: {
+      answer_with_suggest: "0",
+      sub_conv_firstmet_type: "1",
+      collection_id: "",
+      conversation_init_option: JSON.stringify({need_ack_conversation: true}),
+      commerce_credit_config_enable: "0"
+    }
+  };
+  history.pushState({}, "", `/chat/${localConversationId}`);
+  const response = await fetch(requestUrl, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      accept: "*/*",
+      "agw-js-conv": "str, str",
+      "content-type": "application/json",
+      "last-event-id": "undefined"
+    },
+    body: JSON.stringify(payload)
+  });
+  let text = "";
+  let timedOut = false;
+  const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+  if (reader) {
+    const decoder = new TextDecoder("utf-8");
+    const deadline = Date.now() + 90000;
+    for (;;) {
+      const remain = Math.max(1, deadline - Date.now());
+      const item = await Promise.race([
+        reader.read(),
+        new Promise(resolve => setTimeout(() => resolve({timeout: true}), remain))
+      ]);
+      if (item.timeout) {
+        timedOut = true;
+        break;
+      }
+      const {done, value} = item;
+      if (done) break;
+      text += decoder.decode(value, {stream: true});
+      if (text.includes("710022002") || text.includes("710022004") || text.includes("STREAM_ERROR") || text.includes("SSE_REPLY_END")) break;
+    }
+    try { await reader.cancel(); } catch (_) {}
+    try { text += decoder.decode(); } catch (_) {}
+  } else {
+    text = await response.text();
+  }
+  const decodedText = text.replace(/\\u0026/g, "&").replace(/\\\//g, "/");
+  const conversationId = extract([
+    /"(?:conversation_id|conversationId|conversationID|conv_id|convId)"\s*:\s*"?(\d{15,24})"?/,
+    /(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:\\?"|)\s*[:=]\s*(?:\\?")?(\d{15,24})/
+  ], text);
+  const videoUrl = extract([
+    /(https?:\/\/[^"\\\s]+(?:mime_type=video_mp4|\.mp4(?:\?[^"\\\s]*)?))/i
+  ], decodedText);
+  const preview = text.length <= 6000 ? text : `${text.slice(0, 3000)}\n...[truncated]...\n${text.slice(-3000)}`;
+  return {
+    ok: response.ok,
+    status: response.status,
+    response_preview: preview,
+    conversation_id: conversationId,
+    local_conversation_id: localConversationId,
+    video_url: videoUrl,
+    accepted: text.includes("SSE_REPLY_END") && !text.includes("STREAM_ERROR"),
+    service_frequent: text.includes("710022002") || text.includes("当前服务访问频繁") || text.includes("服务访问频繁"),
+    slider_verification: text.includes("710022004") || text.includes('"type":"verify"') || text.includes('"verify_scene":"doubao_message_web"'),
+    stream_error: text.includes("STREAM_ERROR"),
+    sse_timed_out: timedOut
+  };
+}
+"""
 
 
 class DoubaoVideoAutomation:
@@ -32,6 +270,7 @@ class DoubaoVideoAutomation:
         prompt: str,
         ratio: str,
         model: str,
+        duration: int = 10,
         account: dict[str, Any] | None = None,
         proxy_session: Any | None = None,
         browser_pool: ReusableBrowserPool | None = None,
@@ -40,6 +279,7 @@ class DoubaoVideoAutomation:
         self.prompt = prompt
         self.ratio = ratio
         self.model = model
+        self.duration = max(1, int(duration or 10))
         self.account = account or {}
         self.proxy_session = proxy_session
         self.browser_pool = browser_pool
@@ -99,9 +339,12 @@ class DoubaoVideoAutomation:
         proxy_config = None
         proxy_acquired = False
         try:
+            self._set_phase("connecting_node", "正在连接豆包生成节点")
             if self.proxy_session is not None:
                 proxy_config = await self.proxy_session.acquire_browser_proxy()
                 proxy_acquired = True
+            if task_exists(self.task_id) and is_task_canceled(self.task_id):
+                return {"success": False, "retryable": False, "reason": "用户取消生成"}
             return await self._run_browser(proxy_config)
         except Exception:
             if proxy_acquired:
@@ -176,42 +419,6 @@ class DoubaoVideoAutomation:
             return True
         return any(marker in body[:2000] for marker in ("扫码登录", "手机号登录", "登录豆包"))
 
-    @staticmethod
-    async def _click_first_visible(locators: list[Any]) -> bool:
-        for locator in locators:
-            try:
-                count = min(await locator.count(), 5)
-                for index in range(count):
-                    candidate = locator.nth(index)
-                    if await candidate.is_visible():
-                        await candidate.click(timeout=10000)
-                        return True
-            except Exception:
-                continue
-        return False
-
-    async def _open_video_generation(self, page, body: str) -> bool:
-        if "/video" in str(page.url).lower() and await page.locator('[contenteditable="true"][role="textbox"]').count():
-            return True
-        name_pattern = re.compile(r"^(?:视频生成|生成视频|AI\s*视频)$", re.IGNORECASE)
-        entry_locators = [
-            page.get_by_role("link", name=name_pattern),
-            page.get_by_role("button", name=name_pattern),
-            page.get_by_text(name_pattern),
-            page.locator('a[href*="video"],button[data-testid*="video" i]'),
-        ]
-        if await self._click_first_visible(entry_locators):
-            await page.wait_for_timeout(2000)
-            return True
-        creation_entry = page.get_by_text(re.compile(r"^(?:AI\s*创作|创作中心)$", re.IGNORECASE))
-        if await self._click_first_visible([creation_entry]):
-            await page.wait_for_timeout(1500)
-            if await self._click_first_visible(entry_locators):
-                await page.wait_for_timeout(2000)
-                return True
-        editor_exists = bool(await page.locator('[contenteditable="true"][role="textbox"]').count())
-        return editor_exists and any(marker in body for marker in (*VIDEO_ENTRY_NAMES, "Seedance"))
-
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:
         runtime = self.browser_pool.playwright_context() if self.browser_pool is not None else async_playwright()
         async with runtime as playwright:
@@ -219,8 +426,6 @@ class DoubaoVideoAutomation:
             context: BrowserContext | None = None
             lease: BrowserContextLease | None = None
             page = None
-            response_handler = None
-            response_tasks: set[asyncio.Task[Any]] = set()
             try:
                 self._set_phase("starting_browser", "正在启动豆包生成环境")
                 executable_path = resolve_browser_executable(self.settings.browser_executable_path)
@@ -285,98 +490,58 @@ class DoubaoVideoAutomation:
                         "switch_account": True,
                     }
                 await self._refresh_cookies(context)
-                self._set_phase("opening_video_generation", "正在进入豆包视频生成")
-                if not await self._open_video_generation(page, body):
-                    await self._record_diagnostic(page, "doubao_video_entry_missing", body)
-                    return {
-                        "success": False,
-                        "retryable": True,
-                        "reason": f"doubao video entry unavailable at {str(page.url)[:300]}",
-                        "infrastructure_fault": True,
-                    }
-                if self.model != "Seedance 2.0 Mini":
-                    self._set_phase("selecting_model", "正在选择豆包生成模型")
-                    model_button = page.get_by_role("button", name=re.compile(r"Mini|Fast|Pro|Seedance|\d+\.\d+", re.IGNORECASE)).first
-                    if await model_button.count():
-                        await model_button.click(force=True)
-                        option = page.get_by_text(self.model, exact=True)
-                        if not await option.count():
-                            option = page.get_by_text(self.model.removeprefix("Seedance "), exact=True)
-                        if await option.count():
-                            await option.last.click(force=True)
-                        else:
-                            return {"success": False, "retryable": False, "reason": "doubao model unavailable"}
-                completion_result: dict[str, Any] = {
-                    "done": False,
-                    "error": "",
-                    "error_category": "",
-                    "video_url": "",
-                    "accepted": False,
-                    "response_preview": "",
-                }
-
-                async def capture_completion(response) -> None:
-                    if "/chat/completion" not in response.url:
-                        return
-                    try:
-                        text = await response.text()
-                    except Exception:
-                        return
-                    completion_result["done"] = True
-                    completion_result["response_preview"] = re.sub(r"\s+", " ", text)[:1200]
-                    if "710022002" in text:
-                        completion_result["error"] = "doubao service frequent"
-                        completion_result["error_category"] = "service_frequent"
-                        set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包当前服务访问频繁")
-                        return
-                    if "710022004" in text or '"type":"verify"' in text or '"verify_scene":"doubao_message_web"' in text:
-                        completion_result["error"] = "doubao verification required"
-                        completion_result["error_category"] = "slider_verification"
-                        return
-                    if "STREAM_ERROR" in text:
-                        completion_result["error"] = "doubao submit rejected"
-                        completion_result["error_category"] = "submit_rejected"
-                        set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包提交被拒绝")
-                        return
-                    if "SSE_REPLY_END" in text and "STREAM_ERROR" not in text:
-                        completion_result["accepted"] = True
-                    match = VIDEO_URL_RE.search(text.replace("\\u0026", "&").replace("\\/", "/"))
-                    if match:
-                        completion_result["video_url"] = match.group(0)
-
-                response_handler = lambda response: create_tracked_task(response_tasks, capture_completion(response))
-                page.on("response", response_handler)
-                editor = page.locator('[contenteditable="true"][role="textbox"]').first
-                await editor.click()
-                await editor.fill(self.prompt)
-                if self.ratio:
-                    ratio_button = page.get_by_role("button", name="比例")
-                    if await ratio_button.count():
-                        await ratio_button.click()
-                        option = page.get_by_text(self.ratio, exact=True)
-                        if await option.count():
-                            await option.last.click()
+                model_code = DOUBAO_MODEL_CODES.get(self.model)
+                if not model_code:
+                    return {"success": False, "retryable": False, "reason": "doubao model unavailable"}
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 self._set_phase("submitting_request", "正在提交豆包生成请求")
-                await editor.press("Enter")
-                submit_deadline = asyncio.get_running_loop().time() + 30
-                while not completion_result["done"] and asyncio.get_running_loop().time() < submit_deadline:
-                    await page.wait_for_timeout(500)
-                if completion_result["error_category"] == "service_frequent":
+                completion_result = await page.evaluate(
+                    DOUBAO_SUBMIT_SCRIPT,
+                    {
+                        "prompt": self.prompt,
+                        "ratio": self.ratio or "auto",
+                        "model": model_code,
+                        "duration": self.duration,
+                    },
+                )
+                if not isinstance(completion_result, dict):
+                    release_task_submission(self.task_id)
+                    return {"success": False, "retryable": True, "reason": "doubao submission returned an invalid response"}
+
+                error = ""
+                category = ""
+                if completion_result.get("service_frequent"):
+                    error = "doubao service frequent"
+                    category = "service_frequent"
+                    set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包当前服务访问频繁")
+                elif completion_result.get("slider_verification"):
+                    error = "doubao verification required"
+                    category = "slider_verification"
+                elif completion_result.get("stream_error"):
+                    error = "doubao submit rejected"
+                    category = "submit_rejected"
+                    set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包提交被拒绝")
+                elif not completion_result.get("ok"):
+                    error = f"doubao submit http {int(completion_result.get('status') or 0)}"
+                    category = "http_error"
+                elif completion_result.get("sse_timed_out") and not completion_result.get("accepted"):
+                    error = "doubao submit not confirmed"
+                    category = "confirmation_timeout"
+
+                if category == "service_frequent":
                     risk_state = await self._observe_service_frequent(page)
                     if risk_state == "login_invalid":
-                        completion_result["error"] = "doubao account not logged in"
-                        completion_result["error_category"] = "login_invalid"
+                        error = "doubao account not logged in"
+                        category = "login_invalid"
                 await self._refresh_cookies(context)
                 self._set_phase("submission_received", "豆包生成请求已接收，正在确认状态")
-                if completion_result["error"]:
+                if error:
                     release_task_submission(self.task_id)
-                    category = str(completion_result["error_category"])
                     save_result(self.task_id, extra={
                         "doubao_submit_error_category": category,
-                        "doubao_submission_response_preview": str(completion_result["response_preview"]),
+                        "doubao_submission_response_preview": str(completion_result.get("response_preview") or "")[:6000],
                     })
                     if category == "service_frequent":
                         if self.proxy_session is not None:
@@ -384,7 +549,7 @@ class DoubaoVideoAutomation:
                         return {
                             "success": False,
                             "retryable": True,
-                            "reason": str(completion_result["error"]),
+                            "reason": error,
                             "infrastructure_fault": True,
                         }
                     if category == "slider_verification":
@@ -392,7 +557,7 @@ class DoubaoVideoAutomation:
                         return {
                             "success": False,
                             "retryable": True,
-                            "reason": str(completion_result["error"]),
+                            "reason": error,
                             "account_fault": True,
                             "account_slider_verification": True,
                             "switch_account": True,
@@ -402,17 +567,13 @@ class DoubaoVideoAutomation:
                         return {
                             "success": False,
                             "retryable": True,
-                            "reason": str(completion_result["error"]),
+                            "reason": error,
                             "account_fault": True,
                             "account_login_invalid": True,
                             "switch_account": True,
                         }
-                    return {"success": False, "retryable": True, "reason": str(completion_result["error"])}
-                if not completion_result["done"]:
-                    release_task_submission(self.task_id)
-                    save_result(self.task_id, extra={"doubao_submit_error_category": "confirmation_timeout"})
-                    return {"success": False, "retryable": True, "reason": "doubao submit not confirmed"}
-                if not completion_result["accepted"] and not completion_result["video_url"]:
+                    return {"success": False, "retryable": True, "reason": error}
+                if not completion_result.get("accepted") and not completion_result.get("video_url"):
                     release_task_submission(self.task_id)
                     return {"success": False, "retryable": True, "reason": "doubao submit not accepted"}
                 mark_submitted(self.task_id)
@@ -425,17 +586,22 @@ class DoubaoVideoAutomation:
                         "account_name": str(self.account.get("name") or ""),
                         "account_quota_charge_id": str(self.account.get("quota_charge_id") or ""),
                         "doubao_page_url": page.url,
-                        "doubao_submit_confirmed": bool(completion_result["accepted"]),
+                        "doubao_submit_confirmed": bool(completion_result.get("accepted")),
+                        "doubao_conversation_id": str(completion_result.get("conversation_id") or ""),
                     },
                 )
+                conversation_id = str(completion_result.get("conversation_id") or "")
+                if conversation_id:
+                    try:
+                        await page.goto(f"https://www.doubao.com/chat/{conversation_id}", wait_until="domcontentloaded", timeout=90000)
+                        await page.wait_for_timeout(3000)
+                    except Exception as exc:
+                        save_result(self.task_id, extra={"doubao_conversation_open_error": str(exc)[:500]})
                 deadline = asyncio.get_running_loop().time() + 240
                 self._set_phase("waiting_result", "豆包正在生成视频")
                 while asyncio.get_running_loop().time() < deadline:
-                    if completion_result["error"]:
-                        await self._refresh_cookies(context)
-                        return {"success": False, "retryable": True, "reason": str(completion_result["error"])}
-                    if completion_result["video_url"]:
-                        url = str(completion_result["video_url"])
+                    if completion_result.get("video_url"):
+                        url = str(completion_result.get("video_url") or "")
                         await self._refresh_cookies(context)
                         save_result(self.task_id, extra={"decoded_main_url": url, "doubao_page_url": page.url})
                         mark_success(self.task_id)
@@ -463,9 +629,6 @@ class DoubaoVideoAutomation:
                 await self._refresh_cookies(context)
                 return {"success": False, "retryable": True, "reason": "doubao video result timeout"}
             finally:
-                if page is not None and response_handler is not None:
-                    page.remove_listener("response", response_handler)
-                await cancel_tracked_tasks(response_tasks)
                 if lease is not None:
                     await bounded_cleanup(lease.release())
                 else:

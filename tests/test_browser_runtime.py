@@ -366,12 +366,16 @@ class BrowserRuntimeTests(unittest.TestCase):
         self.assertNotIn("launch_persistent_context", doubao)
         self.assertNotIn("find_slider_page", doubao)
         self.assertNotIn("slider_solver", doubao)
+        self.assertIn("await page.evaluate(", doubao)
+        self.assertIn("DOUBAO_SUBMIT_SCRIPT", doubao)
+        self.assertNotIn("_open_video_generation", doubao)
+        self.assertNotIn('editor.press("Enter")', doubao)
+        self.assertNotIn('get_by_role("button", name="比例")', doubao)
+        self.assertNotIn('name=re.compile(r"Mini|Fast|Pro|Seedance', doubao)
         self.assertGreaterEqual((root / "worker.py").read_text(encoding="utf-8").count("browser_pool=self._dola_browser_pool"), 2)
         self.assertIn("await self.proxy_session.release_browser_proxy()", doubao)
-        for source in (doubao, qianwen):
-            self.assertLess(source.index('page.remove_listener("response", response_handler)'), source.index("await cancel_tracked_tasks(response_tasks)"))
-            self.assertNotIn('asyncio.create_task(capture_completion(response))', source)
-        self.assertLess(doubao.index("await cancel_tracked_tasks(response_tasks)"), doubao.index("await bounded_cleanup(safe_close(context))"))
+        self.assertLess(qianwen.index('page.remove_listener("response", response_handler)'), qianwen.index("await cancel_tracked_tasks(response_tasks)"))
+        self.assertNotIn('asyncio.create_task(capture_completion(response))', qianwen)
         self.assertLess(qianwen.index("await cancel_tracked_tasks(response_tasks)"), qianwen.index("await safe_close(context)"))
 
     def test_submission_barrier_only_reports_real_user_cancellation(self) -> None:

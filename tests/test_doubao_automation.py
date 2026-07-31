@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from app.doubao_automation import DoubaoVideoAutomation
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -90,6 +90,21 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(state, "login_invalid")
         page.wait_for_timeout.assert_not_awaited()
         self.assertEqual(save.call_args.kwargs["extra"]["doubao_service_frequent_state"], "login_invalid")
+
+    def test_direct_submit_script_matches_captured_doubao_contract(self) -> None:
+        for fragment in (
+            'aid: "497858"',
+            'bot_id: "7338286299411103781"',
+            "ability_type: 17",
+            '"agw-js-conv": "str, str"',
+            '`${location.origin}/chat/completion?',
+            'text.includes("710022002")',
+            'text.includes("710022004")',
+            'text.includes("SSE_REPLY_END")',
+        ):
+            self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
+        self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Mini"], "seedance_v2.0_mini")
+        self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Fast"], "seedance_v2.0")
 
 
 class QianwenProxyAutomationTests(unittest.TestCase):

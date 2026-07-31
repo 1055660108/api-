@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
+import time
 from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
-from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, resolve_browser_executable, safe_close
+from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
 from .profile_lock import account_profile_lock
@@ -29,6 +31,144 @@ DOUBAO_MODEL_CODES = {
 }
 DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
 DOUBAO_RESULT_POLL_MILLISECONDS = 5000
+DOUBAO_VIDEO_CANDIDATE_SETTLE_SECONDS = 8
+DOUBAO_ORIGINAL_VIDEO_SCORE = 240
+
+
+def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
+    value = str(url or "").lower()
+    field = str(key or "").lower()
+    candidate_source = str(source or "").lower()
+    score = 0
+    clean_markers = (
+        "no_watermark",
+        "without_watermark",
+        "watermark_free",
+        "unwatermarked",
+        "watermark=0",
+        "watermark%3d0",
+        "wm=0",
+    )
+    explicitly_clean = any(marker in field or marker in value for marker in clean_markers)
+    if explicitly_clean:
+        score += 500
+    if any(marker in field for marker in ("original", "origin", "source_url", "raw_url")):
+        score += 380
+    if "download" in field:
+        score += 320
+    if "main_url" in field:
+        score += 240
+    elif "video_url" in field:
+        score += 100
+    elif "play_url" in field or "play_addr" in field:
+        score += 60
+    if candidate_source == "submission_response":
+        score += 30
+    elif candidate_source == "media_response":
+        score += 20
+    elif candidate_source in {"video_current_src", "source_src", "download_link"}:
+        score += 10
+    if ".mp4" in value or "video_mp4" in value:
+        score += 20
+    if ".m3u8" in value:
+        score -= 20
+    if not explicitly_clean and ("watermark" in field or "watermark=1" in value or "wm=1" in value):
+        score -= 600
+    if any(marker in field or marker in value for marker in ("preview", "thumbnail", "poster", "cover", "sample")):
+        score -= 180
+    return score
+
+
+def add_doubao_video_candidate(
+    candidates: dict[str, dict[str, Any]],
+    url: str,
+    *,
+    key: str = "",
+    source: str = "network_json",
+) -> None:
+    normalized = html.unescape(str(url or "").strip()).replace("\\u0026", "&").replace("\\/", "/")
+    normalized = normalized.rstrip('"\' ,')
+    if not normalized.startswith(("http://", "https://")):
+        return
+    path = normalized.split("?", 1)[0].lower()
+    if path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")):
+        return
+    score = doubao_video_url_score(normalized, key, source)
+    current = candidates.get(normalized)
+    if current is None or score > int(current.get("score") or -1000):
+        candidates[normalized] = {"url": normalized, "key": str(key or ""), "source": str(source or ""), "score": score}
+
+
+def collect_doubao_video_candidates(
+    value: Any,
+    candidates: dict[str, dict[str, Any]],
+    key: str = "",
+    *,
+    source: str = "network_json",
+) -> None:
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            path = f"{key}.{child_key}" if key else str(child_key)
+            collect_doubao_video_candidates(child, candidates, path, source=source)
+        return
+    if isinstance(value, list):
+        for child in value:
+            collect_doubao_video_candidates(child, candidates, key, source=source)
+        return
+    if not isinstance(value, str):
+        return
+    text = html.unescape(value).replace("\\u0026", "&").replace("\\/", "/")
+    stripped = text.strip()
+    if stripped.startswith(("{", "[")):
+        try:
+            nested = json.loads(stripped)
+        except (TypeError, ValueError):
+            nested = None
+        if isinstance(nested, (dict, list)):
+            collect_doubao_video_candidates(nested, candidates, key, source=source)
+            return
+    matches = VIDEO_URL_RE.findall(text)
+    video_field = re.search(r"video|play|download|origin|original|source|watermark|main_url", key, re.IGNORECASE)
+    image_field = re.search(r"cover|poster|thumbnail|image|avatar", key, re.IGNORECASE)
+    if video_field and not image_field and stripped.startswith(("http://", "https://")) and not re.search(r"\s", stripped):
+        matches.insert(0, stripped)
+    for match in dict.fromkeys(matches):
+        add_doubao_video_candidate(candidates, match, key=key, source=source)
+
+
+def collect_doubao_response_candidates(body: str, candidates: dict[str, dict[str, Any]]) -> None:
+    text = str(body or "")
+    parsed = False
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, (dict, list)):
+        collect_doubao_video_candidates(payload, candidates, "response", source="network_json")
+        parsed = True
+    for line in text.splitlines():
+        value = line.strip()
+        if value.startswith("data:"):
+            value = value[5:].strip()
+        if not value or value == "[DONE]" or not value.startswith(("{", "[")):
+            continue
+        try:
+            payload = json.loads(value)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, (dict, list)):
+            collect_doubao_video_candidates(payload, candidates, "response", source="network_json")
+            parsed = True
+    if not parsed:
+        collect_doubao_video_candidates(text, candidates, "response", source="network_json")
+
+
+def best_doubao_video_candidate(candidates: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return max(
+        candidates.values(),
+        key=lambda item: (int(item.get("score") or 0), ".mp4" in str(item.get("url") or "").lower()),
+        default={},
+    )
 
 
 DOUBAO_SUBMIT_SCRIPT = r"""
@@ -488,6 +628,24 @@ class DoubaoVideoAutomation:
             return url
         return ""
 
+    async def _capture_video_candidates(self, response, candidates: dict[str, dict[str, Any]]) -> None:
+        try:
+            request = response.request
+            if request.resource_type not in {"xhr", "fetch"} or int(response.status or 0) >= 400:
+                return
+            response_url = str(response.url or "")
+            lowered_url = response_url.lower()
+            if not any(marker in lowered_url for marker in ("/chat", "conversation", "message", "video", "aigc", "generate", "task", "completion")):
+                return
+            content_length = int(response.headers.get("content-length") or 0)
+            if content_length > 2 * 1024 * 1024:
+                return
+            body = await response.text()
+        except Exception:
+            return
+        body = str(body or "")[:2 * 1024 * 1024]
+        collect_doubao_response_candidates(body, candidates)
+
     @staticmethod
     async def _page_video_url(page, captured_urls: list[str]) -> tuple[str, str]:
         for url in reversed(captured_urls):
@@ -530,7 +688,17 @@ class DoubaoVideoAutomation:
         await page.wait_for_timeout(1500)
         return True
 
-    async def _save_video_success(self, context, page, url: str, source: str) -> dict[str, Any]:
+    async def _save_video_success(
+        self,
+        context,
+        page,
+        url: str,
+        source: str,
+        *,
+        score: int = 0,
+        candidate_key: str = "",
+        candidate_count: int = 1,
+    ) -> dict[str, Any]:
         await self._refresh_cookies(context)
         save_result(
             self.task_id,
@@ -538,6 +706,10 @@ class DoubaoVideoAutomation:
                 "decoded_main_url": url,
                 "doubao_page_url": page.url,
                 "doubao_video_detection_source": source,
+                "doubao_selected_video_key": candidate_key,
+                "doubao_video_url_score": int(score),
+                "doubao_video_candidate_count": max(1, int(candidate_count)),
+                "doubao_watermark_status": "original" if int(score) >= DOUBAO_ORIGINAL_VIDEO_SCORE else "fallback",
             },
         )
         mark_success(self.task_id)
@@ -589,6 +761,7 @@ class DoubaoVideoAutomation:
             lease: BrowserContextLease | None = None
             page = None
             capture_video_response = None
+            capture_tasks: set[asyncio.Task[Any]] = set()
             try:
                 self._set_phase("starting_browser", "正在启动豆包生成环境")
                 executable_path = resolve_browser_executable(self.settings.browser_executable_path)
@@ -757,12 +930,14 @@ class DoubaoVideoAutomation:
                     },
                 )
                 conversation_id = str(completion_result.get("conversation_id") or "")
-                captured_video_urls: list[str] = []
+                video_candidates: dict[str, dict[str, Any]] = {}
+                collect_doubao_video_candidates(completion_result, video_candidates, "submission", source="submission_response")
 
                 def capture_video_response(response) -> None:
                     url = self._response_video_url(response)
-                    if url and url not in captured_video_urls:
-                        captured_video_urls.append(url)
+                    if url:
+                        add_doubao_video_candidate(video_candidates, url, key="response.url", source="media_response")
+                    create_tracked_task(capture_tasks, self._capture_video_candidates(response, video_candidates))
 
                 page.on("response", capture_video_response)
                 if conversation_id:
@@ -773,14 +948,12 @@ class DoubaoVideoAutomation:
                         save_result(self.task_id, extra={"doubao_conversation_open_error": str(exc)[:500]})
                 deadline = asyncio.get_running_loop().time() + DOUBAO_RESULT_WAIT_SECONDS
                 playback_triggered = False
+                first_candidate_at = time.monotonic() if video_candidates else 0.0
                 self._set_phase("waiting_result", "豆包正在生成视频")
                 while asyncio.get_running_loop().time() < deadline:
-                    if completion_result.get("video_url"):
-                        url = str(completion_result.get("video_url") or "")
-                        return await self._save_video_success(context, page, url, "submission_response")
-                    url, source = await self._page_video_url(page, captured_video_urls)
+                    url, source = await self._page_video_url(page, [])
                     if url:
-                        return await self._save_video_success(context, page, url, source)
+                        add_doubao_video_candidate(video_candidates, url, key=f"dom.{source}", source=source)
                     text = await page.locator("body").inner_text()
                     if not playback_triggered:
                         try:
@@ -788,12 +961,38 @@ class DoubaoVideoAutomation:
                         except Exception as exc:
                             save_result(self.task_id, extra={"doubao_video_activation_error": str(exc)[:500]})
                         if playback_triggered:
-                            url, source = await self._page_video_url(page, captured_video_urls)
+                            url, source = await self._page_video_url(page, [])
                             if url:
-                                return await self._save_video_success(context, page, url, source)
+                                add_doubao_video_candidate(video_candidates, url, key=f"dom.{source}", source=source)
+                    if video_candidates and not first_candidate_at:
+                        first_candidate_at = time.monotonic()
+                    candidate = best_doubao_video_candidate(video_candidates)
+                    candidate_score = int(candidate.get("score") or 0)
+                    candidates_settled = first_candidate_at and time.monotonic() - first_candidate_at >= DOUBAO_VIDEO_CANDIDATE_SETTLE_SECONDS
+                    if candidate and (candidate_score >= DOUBAO_ORIGINAL_VIDEO_SCORE or candidates_settled):
+                        return await self._save_video_success(
+                            context,
+                            page,
+                            str(candidate.get("url") or ""),
+                            str(candidate.get("source") or ""),
+                            score=candidate_score,
+                            candidate_key=str(candidate.get("key") or ""),
+                            candidate_count=len(video_candidates),
+                        )
                     if any(marker in text[-1500:] for marker in ("生成失败", "无法生成", "内容违规")):
                         return {"success": False, "retryable": False, "reason": "doubao generation failed"}
                     await page.wait_for_timeout(DOUBAO_RESULT_POLL_MILLISECONDS)
+                candidate = best_doubao_video_candidate(video_candidates)
+                if candidate:
+                    return await self._save_video_success(
+                        context,
+                        page,
+                        str(candidate.get("url") or ""),
+                        str(candidate.get("source") or ""),
+                        score=int(candidate.get("score") or 0),
+                        candidate_key=str(candidate.get("key") or ""),
+                        candidate_count=len(video_candidates),
+                    )
                 await self._refresh_cookies(context)
                 save_result(self.task_id, extra={"doubao_video_result_timeout": True, "doubao_page_url": page.url})
                 return {"success": False, "retryable": False, "reason": "doubao video result timeout"}
@@ -803,6 +1002,7 @@ class DoubaoVideoAutomation:
                         page.remove_listener("response", capture_video_response)
                     except Exception:
                         pass
+                await cancel_tracked_tasks(capture_tasks)
                 if lease is not None:
                     await bounded_cleanup(lease.release())
                 else:

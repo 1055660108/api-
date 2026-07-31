@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation, best_doubao_video_candidate, collect_doubao_response_candidates, collect_doubao_video_candidates, doubao_video_url_score
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -180,6 +180,84 @@ class DoubaoAutomationTests(unittest.TestCase):
             "",
         )
 
+    def test_doubao_prefers_original_download_url_over_watermarked_preview(self) -> None:
+        preview = "https://media.example/preview-watermark.mp4?watermark=1"
+        playback = "https://media.example/play.mp4"
+        original = "https://media.example/original.mp4"
+        candidates = {}
+
+        collect_doubao_video_candidates(
+            {
+                "preview_video_url": preview,
+                "video_url": playback,
+                "download_url_without_watermark": original,
+            },
+            candidates,
+        )
+        selected = best_doubao_video_candidate(candidates)
+
+        self.assertEqual(selected["url"], original)
+        self.assertGreaterEqual(selected["score"], DOUBAO_ORIGINAL_VIDEO_SCORE)
+        self.assertLess(doubao_video_url_score(preview, "preview_video_url"), doubao_video_url_score(playback, "video_url"))
+
+    def test_doubao_collects_nested_original_url_without_mp4_suffix(self) -> None:
+        original = "https://tos.example/video/source/12345?signature=abc"
+        candidates = {}
+
+        collect_doubao_video_candidates(
+            {"video": {"origin": {"source_url": original}}},
+            candidates,
+        )
+
+        self.assertIn(original, candidates)
+        self.assertGreaterEqual(candidates[original]["score"], DOUBAO_ORIGINAL_VIDEO_SCORE)
+
+    def test_doubao_does_not_treat_original_cover_as_video(self) -> None:
+        cover = "https://media.example/original-cover.webp"
+        video = "https://media.example/play.mp4"
+        candidates = {}
+
+        collect_doubao_video_candidates(
+            {"video": {"origin_cover_url": cover, "play_url": video}},
+            candidates,
+        )
+
+        self.assertNotIn(cover, candidates)
+        self.assertEqual(best_doubao_video_candidate(candidates)["url"], video)
+
+    def test_doubao_response_json_collects_original_video_candidate(self) -> None:
+        runner = self.runner(SimpleNamespace())
+        candidates = {}
+        response = SimpleNamespace(
+            request=SimpleNamespace(resource_type="xhr"),
+            status=200,
+            url="https://www.doubao.com/chat/conversation/detail",
+            headers={"content-type": "application/json"},
+            text=AsyncMock(return_value=json.dumps({
+                "video": {
+                    "play_url": "https://media.example/watermark.mp4?watermark=1",
+                    "original_download_url": "https://media.example/original.mp4",
+                }
+            })),
+        )
+
+        asyncio.run(runner._capture_video_candidates(response, candidates))
+
+        self.assertEqual(best_doubao_video_candidate(candidates)["url"], "https://media.example/original.mp4")
+
+    def test_doubao_response_sse_preserves_main_url_field_priority(self) -> None:
+        original = "https://media.example/generated.mp4"
+        candidates = {}
+
+        collect_doubao_response_candidates(
+            f'event: message\ndata: {{"video_model":{{"main_url":"{original}"}}}}\n\n',
+            candidates,
+        )
+
+        selected = best_doubao_video_candidate(candidates)
+        self.assertEqual(selected["url"], original)
+        self.assertGreaterEqual(selected["score"], DOUBAO_ORIGINAL_VIDEO_SCORE)
+
     def test_page_video_url_reads_current_src_and_source_children(self) -> None:
         video_locator = SimpleNamespace(evaluate_all=AsyncMock(return_value=["https://media.example/result.mp4"]))
         empty_locator = SimpleNamespace(evaluate_all=AsyncMock(return_value=[]))
@@ -228,6 +306,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner._refresh_cookies.assert_awaited_once_with(context)
         self.assertEqual(save.call_args.kwargs["extra"]["decoded_main_url"], "https://media.example/result.mp4")
         self.assertEqual(save.call_args.kwargs["extra"]["doubao_video_detection_source"], "video_current_src")
+        self.assertEqual(save.call_args.kwargs["extra"]["doubao_watermark_status"], "fallback")
         mark_success.assert_called_once_with("doubao-task")
 
 

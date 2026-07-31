@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from app.doubao_automation import DoubaoVideoAutomation
 from app.qianwen_automation import QianwenVideoAutomation
@@ -76,6 +76,20 @@ class DoubaoAutomationTests(unittest.TestCase):
         )
         self.assertTrue(DoubaoVideoAutomation._is_region_restricted(DOUBAO_CHAT_URL, "当前地区暂不支持豆包"))
         self.assertFalse(DoubaoVideoAutomation._is_region_restricted(DOUBAO_CHAT_URL, "开始视频生成"))
+
+    def test_service_frequent_observation_marks_login_immediately(self) -> None:
+        runner = self.runner(SimpleNamespace())
+        runner._set_phase = Mock()
+        runner._login_required = AsyncMock(return_value=True)
+        body = SimpleNamespace(inner_text=AsyncMock(return_value="登录豆包"))
+        page = SimpleNamespace(locator=Mock(return_value=body), wait_for_timeout=AsyncMock())
+
+        with patch("app.doubao_automation.save_result") as save:
+            state = asyncio.run(runner._observe_service_frequent(page, seconds=15))
+
+        self.assertEqual(state, "login_invalid")
+        page.wait_for_timeout.assert_not_awaited()
+        self.assertEqual(save.call_args.kwargs["extra"]["doubao_service_frequent_state"], "login_invalid")
 
 
 class QianwenProxyAutomationTests(unittest.TestCase):

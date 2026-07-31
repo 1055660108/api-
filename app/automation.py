@@ -23,7 +23,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .account_proxies import account_browser_config, account_proxy_candidates, account_proxy_configured, account_proxy_url
 from .api_proxy_pool import ApiProxyLease, ReusableApiProxyPool
-from .browser_runtime import BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
+from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
 from .proxy_manager import (
     NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,
@@ -67,15 +67,6 @@ IMAGEX_REGION = "us-east-1"
 IMAGEX_SERVICE = "imagex"
 IMAGEX_API_VERSION = "2018-08-01"
 PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "4", "resource_type": 2}
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
-)
-BROWSER_EXTRA_HTTP_HEADERS = {
-    "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-}
 SUBMISSION_SECRET_RE = re.compile(
     r'(?i)("?(?:authorization|cookie|msToken|oauth_token(?:_v2)?|sessionid|sid_tt|sid_guard|odin_tt|passport_csrf_token(?:_default)?)"?\s*[:=]\s*"?)([^"\s,;}]+)'
 )
@@ -355,51 +346,6 @@ def clear_reference_attachment_cache() -> None:
     with _REFERENCE_CACHE_LOCK:
         _REFERENCE_ATTACHMENT_CACHE.clear()
         _REFERENCE_UPLOADS_IN_FLIGHT.clear()
-
-
-BROWSER_INIT_SCRIPT = r"""
-(() => {
-  const brands = [
-    { brand: "Google Chrome", version: "149" },
-    { brand: "Chromium", version: "149" },
-    { brand: "Not)A;Brand", version: "24" }
-  ];
-  const fullVersionList = [
-    { brand: "Google Chrome", version: "149.0.0.0" },
-    { brand: "Chromium", version: "149.0.0.0" },
-    { brand: "Not)A;Brand", version: "24.0.0.0" }
-  ];
-  const userAgentData = {
-    brands,
-    mobile: false,
-    platform: "Windows",
-    getHighEntropyValues: async (hints = []) => {
-      const values = { brands, mobile: false, platform: "Windows" };
-      const map = {
-        architecture: "x86",
-        bitness: "64",
-        fullVersionList,
-        model: "",
-        platformVersion: "10.0.0",
-        uaFullVersion: "149.0.0.0",
-        wow64: false
-      };
-      for (const hint of hints) {
-        if (Object.prototype.hasOwnProperty.call(map, hint)) values[hint] = map[hint];
-      }
-      return values;
-    },
-    toJSON: () => ({ brands, mobile: false, platform: "Windows" })
-  };
-  const define = (target, name, value) => {
-    try {
-      Object.defineProperty(target, name, { get: () => value, configurable: true });
-    } catch (_) {}
-  };
-  define(Navigator.prototype, "platform", "Win32");
-  define(Navigator.prototype, "userAgentData", userAgentData);
-})();
-"""
 
 
 PREPARE_UPLOAD_SCRIPT = r"""

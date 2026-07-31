@@ -4,12 +4,12 @@ import asyncio
 import re
 from typing import Any
 
-from playwright.async_api import async_playwright
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
-from .browser_runtime import cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
-from .config import DOUBAO_PROFILES_DIR, DOUBAO_STATES_DIR, ensure_dirs, load_settings
-from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, task_exists
+from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
+from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
+from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
 from .profile_lock import account_profile_lock
 
 
@@ -34,6 +34,7 @@ class DoubaoVideoAutomation:
         model: str,
         account: dict[str, Any] | None = None,
         proxy_session: Any | None = None,
+        browser_pool: ReusableBrowserPool | None = None,
     ):
         self.task_id = task_id
         self.prompt = prompt
@@ -41,10 +42,10 @@ class DoubaoVideoAutomation:
         self.model = model
         self.account = account or {}
         self.proxy_session = proxy_session
+        self.browser_pool = browser_pool
         self.settings = load_settings()
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
-        self.profile_path = DOUBAO_PROFILES_DIR / str(self.account.get("id") or "unknown")
 
     async def _refresh_cookies(self, context) -> None:
         account_id = str(self.account.get("id") or "")
@@ -133,6 +134,32 @@ class DoubaoVideoAutomation:
             },
         )
 
+    def _set_phase(self, phase: str, status_reason: str) -> None:
+        if task_exists(self.task_id):
+            set_execution_phase(self.task_id, phase, status_reason)
+
+    async def _observe_service_frequent(
+        self,
+        page: Page,
+        *,
+        seconds: float = 15.0,
+    ) -> str:
+        self._set_phase("checking_account_risk", "正在确认豆包账号登录状态")
+        deadline = asyncio.get_running_loop().time() + max(0.0, seconds)
+        while True:
+            try:
+                body = await page.locator("body").inner_text()
+                if await self._login_required(page, body):
+                    save_result(self.task_id, extra={"doubao_service_frequent_state": "login_invalid"})
+                    return "login_invalid"
+            except Exception as exc:
+                save_result(self.task_id, extra={"doubao_service_frequent_check_error": str(exc)[:300]})
+
+            if asyncio.get_running_loop().time() >= deadline:
+                save_result(self.task_id, extra={"doubao_service_frequent_state": "service_frequent"})
+                return "service_frequent"
+            await page.wait_for_timeout(500)
+
     @staticmethod
     def _is_region_restricted(page_url: str, body: str) -> bool:
         haystack = f"{page_url}\n{body[:3000]}".lower()
@@ -186,28 +213,53 @@ class DoubaoVideoAutomation:
         return editor_exists and any(marker in body for marker in (*VIDEO_ENTRY_NAMES, "Seedance"))
 
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:
-        async with async_playwright() as playwright:
-            launch_options: dict[str, Any] = {
-                "headless": self.settings.headless,
-                "executable_path": resolve_browser_executable(self.settings.browser_executable_path),
-                "locale": "zh-CN",
-                "viewport": {"width": 1365, "height": 900},
-                "args": ["--disable-dev-shm-usage", "--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            }
-            if proxy_config:
-                launch_options["proxy"] = proxy_config
-            context = await playwright.chromium.launch_persistent_context(
-                str(self.profile_path),
-                **launch_options,
-            )
+        runtime = self.browser_pool.playwright_context() if self.browser_pool is not None else async_playwright()
+        async with runtime as playwright:
+            browser: Browser | None = None
+            context: BrowserContext | None = None
+            lease: BrowserContextLease | None = None
             page = None
             response_handler = None
             response_tasks: set[asyncio.Task[Any]] = set()
             try:
+                self._set_phase("starting_browser", "正在启动豆包生成环境")
+                executable_path = resolve_browser_executable(self.settings.browser_executable_path)
+                browser_args = ["--disable-dev-shm-usage", "--no-sandbox", "--disable-blink-features=AutomationControlled"]
+                context_options: dict[str, Any] = {
+                    "locale": "zh-CN",
+                    "viewport": {"width": 1365, "height": 900},
+                    "user_agent": BROWSER_USER_AGENT,
+                    "extra_http_headers": BROWSER_EXTRA_HTTP_HEADERS,
+                    "accept_downloads": False,
+                }
+                if self.state_path.is_file():
+                    context_options["storage_state"] = str(self.state_path)
+                if self.browser_pool is not None:
+                    self._set_phase("allocating_browser", "正在分配豆包浏览器资源")
+                    lease = await self.browser_pool.acquire_context(
+                        executable_path=executable_path,
+                        headless=self.settings.headless,
+                        proxy=proxy_config,
+                        browser_args=browser_args,
+                        context_options=context_options,
+                    )
+                    browser = lease.browser
+                    context = lease.context
+                else:
+                    self._set_phase("launching_browser", "正在启动豆包浏览器")
+                    browser = await playwright.chromium.launch(
+                        headless=self.settings.headless,
+                        executable_path=executable_path,
+                        proxy=proxy_config,
+                        args=browser_args,
+                    )
+                    context = await browser.new_context(**context_options)
+                await context.add_init_script(BROWSER_INIT_SCRIPT)
                 page = context.pages[0] if context.pages else await context.new_page()
                 cookies = [dict(item) for item in self.account.get("cookies") or [] if isinstance(item, dict) and item.get("name")]
                 if cookies:
                     await context.add_cookies(cookies)
+                self._set_phase("opening_generation_page", "正在打开豆包生成页面")
                 await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)
                 await page.wait_for_timeout(5000)
                 body = await page.locator("body").inner_text()
@@ -233,6 +285,7 @@ class DoubaoVideoAutomation:
                         "switch_account": True,
                     }
                 await self._refresh_cookies(context)
+                self._set_phase("opening_video_generation", "正在进入豆包视频生成")
                 if not await self._open_video_generation(page, body):
                     await self._record_diagnostic(page, "doubao_video_entry_missing", body)
                     return {
@@ -242,6 +295,7 @@ class DoubaoVideoAutomation:
                         "infrastructure_fault": True,
                     }
                 if self.model != "Seedance 2.0 Mini":
+                    self._set_phase("selecting_model", "正在选择豆包生成模型")
                     model_button = page.get_by_role("button", name=re.compile(r"Mini|Fast|Pro|Seedance|\d+\.\d+", re.IGNORECASE)).first
                     if await model_button.count():
                         await model_button.click(force=True)
@@ -278,7 +332,6 @@ class DoubaoVideoAutomation:
                     if "710022004" in text or '"type":"verify"' in text or '"verify_scene":"doubao_message_web"' in text:
                         completion_result["error"] = "doubao verification required"
                         completion_result["error_category"] = "slider_verification"
-                        set_account_cooldown(str(self.account.get("id") or ""), 86400, "豆包触发网页人机验证，请在固定 Profile 中人工验证")
                         return
                     if "STREAM_ERROR" in text:
                         completion_result["error"] = "doubao submit rejected"
@@ -306,11 +359,18 @@ class DoubaoVideoAutomation:
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
+                self._set_phase("submitting_request", "正在提交豆包生成请求")
                 await editor.press("Enter")
                 submit_deadline = asyncio.get_running_loop().time() + 30
                 while not completion_result["done"] and asyncio.get_running_loop().time() < submit_deadline:
                     await page.wait_for_timeout(500)
+                if completion_result["error_category"] == "service_frequent":
+                    risk_state = await self._observe_service_frequent(page)
+                    if risk_state == "login_invalid":
+                        completion_result["error"] = "doubao account not logged in"
+                        completion_result["error_category"] = "login_invalid"
                 await self._refresh_cookies(context)
+                self._set_phase("submission_received", "豆包生成请求已接收，正在确认状态")
                 if completion_result["error"]:
                     release_task_submission(self.task_id)
                     category = str(completion_result["error_category"])
@@ -328,12 +388,23 @@ class DoubaoVideoAutomation:
                             "infrastructure_fault": True,
                         }
                     if category == "slider_verification":
+                        set_account_cooldown(str(self.account.get("id") or ""), 86400, "豆包触发网页人机验证")
                         return {
                             "success": False,
                             "retryable": True,
                             "reason": str(completion_result["error"]),
                             "account_fault": True,
                             "account_slider_verification": True,
+                            "switch_account": True,
+                        }
+                    if category == "login_invalid":
+                        disable_account_for_login(str(self.account.get("id") or ""), "豆包登录状态失效，请重新导入 Cookie")
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": str(completion_result["error"]),
+                            "account_fault": True,
+                            "account_login_invalid": True,
                             "switch_account": True,
                         }
                     return {"success": False, "retryable": True, "reason": str(completion_result["error"])}
@@ -358,6 +429,7 @@ class DoubaoVideoAutomation:
                     },
                 )
                 deadline = asyncio.get_running_loop().time() + 240
+                self._set_phase("waiting_result", "豆包正在生成视频")
                 while asyncio.get_running_loop().time() < deadline:
                     if completion_result["error"]:
                         await self._refresh_cookies(context)
@@ -394,4 +466,8 @@ class DoubaoVideoAutomation:
                 if page is not None and response_handler is not None:
                     page.remove_listener("response", response_handler)
                 await cancel_tracked_tasks(response_tasks)
-                await safe_close(context)
+                if lease is not None:
+                    await bounded_cleanup(lease.release())
+                else:
+                    await bounded_cleanup(safe_close(context))
+                    await bounded_cleanup(safe_close(browser))

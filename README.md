@@ -65,6 +65,7 @@ systemctl restart dola-fetch-service dola-fetch-service-worker
 - 根据容器或主机内存压力自适应收缩 Worker
 - Docker Compose 一键启动 API、Worker、Redis、PostgreSQL 四服务
 - 每个任务使用独立的浏览会话数据
+- Dola 与豆包共用可回收 Playwright 浏览器池，豆包按账号保存并恢复 `storage_state`
 - 任务完成后自动关闭会话并回收内存
 
 ## 队列与 Worker

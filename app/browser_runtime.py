@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Coroutine
+from typing import Any, AsyncIterator, Awaitable, Coroutine
 
 from playwright.async_api import Browser, BrowserContext, Error as PlaywrightError, Playwright, async_playwright
 
@@ -22,6 +22,58 @@ BROWSER_RECYCLE_TASKS = 80
 BROWSER_RECYCLE_SECONDS = 30 * 60
 BROWSER_CONTEXT_CLOSE_TIMEOUT_SECONDS = 8.0
 BROWSER_PROCESS_CLOSE_TIMEOUT_SECONDS = 5.0
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+)
+BROWSER_EXTRA_HTTP_HEADERS = {
+    "sec-ch-ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+}
+BROWSER_INIT_SCRIPT = r"""
+(() => {
+  const brands = [
+    { brand: "Google Chrome", version: "149" },
+    { brand: "Chromium", version: "149" },
+    { brand: "Not)A;Brand", version: "24" }
+  ];
+  const fullVersionList = [
+    { brand: "Google Chrome", version: "149.0.0.0" },
+    { brand: "Chromium", version: "149.0.0.0" },
+    { brand: "Not)A;Brand", version: "24.0.0.0" }
+  ];
+  const userAgentData = {
+    brands,
+    mobile: false,
+    platform: "Windows",
+    getHighEntropyValues: async (hints = []) => {
+      const values = { brands, mobile: false, platform: "Windows" };
+      const map = {
+        architecture: "x86",
+        bitness: "64",
+        fullVersionList,
+        model: "",
+        platformVersion: "10.0.0",
+        uaFullVersion: "149.0.0.0",
+        wow64: false
+      };
+      for (const hint of hints) {
+        if (Object.prototype.hasOwnProperty.call(map, hint)) values[hint] = map[hint];
+      }
+      return values;
+    },
+    toJSON: () => ({ brands, mobile: false, platform: "Windows" })
+  };
+  const define = (target, name, value) => {
+    try {
+      Object.defineProperty(target, name, { get: () => value, configurable: true });
+    } catch (_) {}
+  };
+  define(Navigator.prototype, "platform", "Win32");
+  define(Navigator.prototype, "userAgentData", userAgentData);
+})();
+"""
 
 
 @dataclass(eq=False)
@@ -297,6 +349,13 @@ def resolve_browser_executable(configured_path: str = "") -> str | None:
         if candidate.is_file():
             return str(candidate.resolve())
     return None
+
+
+async def bounded_cleanup(awaitable: Awaitable[Any], timeout_seconds: float = 12.0) -> None:
+    try:
+        await asyncio.wait_for(awaitable, timeout=max(0.1, float(timeout_seconds)))
+    except Exception:
+        pass
 
 
 def create_tracked_task(tasks: set[asyncio.Task[Any]], coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:

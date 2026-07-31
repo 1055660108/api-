@@ -12,6 +12,12 @@ from app import browser_runtime
 
 
 class BrowserRuntimeTests(unittest.TestCase):
+    def test_bounded_cleanup_contains_cleanup_failures(self) -> None:
+        async def fail() -> None:
+            raise RuntimeError("cleanup failed")
+
+        asyncio.run(browser_runtime.bounded_cleanup(fail(), timeout_seconds=0.1))
+
     def test_reusable_pool_limits_processes_and_contexts(self) -> None:
         class FakeContext:
             def __init__(self):
@@ -352,12 +358,21 @@ class BrowserRuntimeTests(unittest.TestCase):
         self.assertIn("browser_pool=self._dola_browser_pool", (root / "worker.py").read_text(encoding="utf-8"))
         self.assertIn("submission_pacer=self._wait_for_dola_submit_slot", (root / "worker.py").read_text(encoding="utf-8"))
         self.assertIn("proxy_session=proxy_session", (root / "worker.py").read_text(encoding="utf-8"))
-        self.assertIn('launch_options["proxy"] = proxy_config', doubao)
+        self.assertIn("proxy=proxy_config", doubao)
+        self.assertIn("await bounded_cleanup(lease.release())", doubao)
+        self.assertIn("await self.browser_pool.acquire_context(", doubao)
+        self.assertIn('context_options["storage_state"] = str(self.state_path)', doubao)
+        self.assertIn("await context.add_init_script(BROWSER_INIT_SCRIPT)", doubao)
+        self.assertNotIn("launch_persistent_context", doubao)
+        self.assertNotIn("find_slider_page", doubao)
+        self.assertNotIn("slider_solver", doubao)
+        self.assertGreaterEqual((root / "worker.py").read_text(encoding="utf-8").count("browser_pool=self._dola_browser_pool"), 2)
         self.assertIn("await self.proxy_session.release_browser_proxy()", doubao)
         for source in (doubao, qianwen):
             self.assertLess(source.index('page.remove_listener("response", response_handler)'), source.index("await cancel_tracked_tasks(response_tasks)"))
-            self.assertLess(source.index("await cancel_tracked_tasks(response_tasks)"), source.index("await safe_close(context)"))
             self.assertNotIn('asyncio.create_task(capture_completion(response))', source)
+        self.assertLess(doubao.index("await cancel_tracked_tasks(response_tasks)"), doubao.index("await bounded_cleanup(safe_close(context))"))
+        self.assertLess(qianwen.index("await cancel_tracked_tasks(response_tasks)"), qianwen.index("await safe_close(context)"))
 
     def test_submission_barrier_only_reports_real_user_cancellation(self) -> None:
         root = Path(__file__).parents[1] / "app"

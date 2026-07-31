@@ -846,6 +846,7 @@ class WorkerManager:
                         str(meta.get("model") or "Seedance 2.0 Mini"),
                         account=account,
                         proxy_session=proxy_session,
+                        browser_pool=self._dola_browser_pool,
                     )
                 elif platform == "qianwen":
                     proxy_session = DolaFetchAutomation(

@@ -171,8 +171,22 @@ def best_doubao_video_candidate(candidates: dict[str, dict[str, Any]]) -> dict[s
     )
 
 
+def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
+    if result.get("service_frequent"):
+        return "doubao service frequent", "service_frequent"
+    if result.get("slider_verification"):
+        return "doubao verification required", "slider_verification"
+    if result.get("stream_error"):
+        return "doubao submit rejected", "submit_rejected"
+    if not result.get("ok"):
+        return f"doubao submit http {int(result.get('status') or 0)}", "http_error"
+    if not result.get("accepted"):
+        return "doubao generation acknowledgement missing", "generation_ack_missing"
+    return "", ""
+
+
 DOUBAO_SUBMIT_SCRIPT = r"""
-async ({prompt, ratio, model, duration}) => {
+async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
   function uuid() {
     return crypto.randomUUID ? crypto.randomUUID() :
       "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
@@ -240,6 +254,21 @@ async ({prompt, ratio, model, duration}) => {
     const asksInChinese = /(?:是否|请问).{0,40}(?:需要|生成|创建)|(?:需要|要).{0,20}(?:我|为您|帮您).{0,30}(?:生成|创建)/i.test(text);
     const asksInEnglish = /(?:would you like|do you want|shall i|should i).{0,80}(?:create|generate|proceed)/i.test(text);
     return mentionsVideo && (asksInChinese || asksInEnglish);
+  }
+  function generationWaitMessage(value) {
+    const text = searchableText(value);
+    const match = text.match(/本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟/i);
+    return match ? match[0] : "";
+  }
+  function terminalSubmissionSignal(value) {
+    const text = searchableText(value);
+    return text.includes("710022002")
+      || text.includes("710022004")
+      || text.includes("当前服务访问频繁")
+      || text.includes("服务访问频繁")
+      || text.includes("STREAM_ERROR")
+      || text.includes('"type":"verify"')
+      || text.includes('"verify_scene":"doubao_message_web"');
   }
   function lastMessageIndex(value) {
     const matches = [...String(value || "").matchAll(/"(?:message_index|messageIndex)"\s*:\s*(\d+)/g)];
@@ -414,36 +443,91 @@ async ({prompt, ratio, model, duration}) => {
     ], searchableText(value));
   }
 
-  let submission = await submitPayload(payload);
-  let response = submission.response;
-  let text = submission.text;
-  let timedOut = submission.timedOut;
-  let conversationId = findConversationId(text);
-  let videoUrl = findVideoUrl(text);
-  const initialResponsePreview = text.length <= 6000 ? text : `${text.slice(0, 3000)}\n...[truncated]...\n${text.slice(-3000)}`;
-  const confirmationPromptDetected = asksForVideoConfirmation(text);
-  let autoConfirmationSent = false;
-  if (response.ok && conversationId && confirmationPromptDetected) {
-    const confirmationPayload = JSON.parse(JSON.stringify(payload));
-    confirmationPayload.client_meta.local_conversation_id = localConversationId;
-    confirmationPayload.client_meta.conversation_id = conversationId;
-    confirmationPayload.client_meta.last_section_id = extract([/"(?:section_id|sectionId)"\s*:\s*"?(\d{15,24})"?/], text);
-    confirmationPayload.client_meta.last_message_index = lastMessageIndex(text);
-    confirmationPayload.messages[0].local_message_id = uuid();
-    confirmationPayload.messages[0].content_block[0].block_id = uuid();
-    confirmationPayload.messages[0].content_block[0].content.text_block.text = "需要";
-    confirmationPayload.option.create_time_ms = Date.now();
-    confirmationPayload.option.unique_key = uuid();
-    confirmationPayload.option.need_create_conversation = false;
-    confirmationPayload.option.conversation_init_option = {need_ack_conversation: false};
-    confirmationPayload.ext.conversation_init_option = JSON.stringify({need_ack_conversation: false});
-    submission = await submitPayload(confirmationPayload);
-    response = submission.response;
-    text = submission.text;
-    timedOut = submission.timedOut;
-    conversationId = findConversationId(text) || conversationId;
-    videoUrl = findVideoUrl(text);
-    autoConfirmationSent = true;
+  function conversationPayload(source, conversationId, responseText, messageText) {
+    const body = JSON.parse(JSON.stringify(source));
+    body.client_meta.local_conversation_id = localConversationId;
+    body.client_meta.conversation_id = conversationId || "";
+    body.client_meta.last_section_id = extract([/"(?:section_id|sectionId)"\s*:\s*"?(\d{15,24})"?/], responseText);
+    body.client_meta.last_message_index = lastMessageIndex(responseText);
+    body.messages[0].local_message_id = uuid();
+    body.messages[0].content_block[0].block_id = uuid();
+    body.messages[0].content_block[0].content.text_block.text = messageText;
+    body.option.create_time_ms = Date.now();
+    body.option.unique_key = uuid();
+    body.option.need_create_conversation = !conversationId;
+    body.option.conversation_init_option = {need_ack_conversation: !conversationId};
+    body.ext.conversation_init_option = JSON.stringify({need_ack_conversation: !conversationId});
+    return body;
+  }
+  async function performAttempt(body, fallbackConversationId) {
+    let submission = await submitPayload(body);
+    let response = submission.response;
+    let text = submission.text;
+    let timedOut = submission.timedOut;
+    let conversationId = findConversationId(text) || fallbackConversationId || "";
+    let videoUrl = findVideoUrl(text);
+    const initialText = text;
+    const confirmationPromptDetected = asksForVideoConfirmation(text);
+    let autoConfirmationSent = false;
+    if (response.ok && conversationId && confirmationPromptDetected) {
+      const confirmationPayload = conversationPayload(body, conversationId, text, "需要");
+      submission = await submitPayload(confirmationPayload);
+      response = submission.response;
+      text = `${text}\n${submission.text}`;
+      timedOut = timedOut || submission.timedOut;
+      conversationId = findConversationId(submission.text) || conversationId;
+      videoUrl = findVideoUrl(submission.text) || videoUrl;
+      autoConfirmationSent = true;
+    }
+    return {
+      response,
+      text,
+      timedOut,
+      conversationId,
+      videoUrl,
+      confirmationPromptDetected,
+      autoConfirmationSent,
+      initialText
+    };
+  }
+
+  const maxResends = Math.max(0, Math.min(10, Number.parseInt(retryLimit, 10) || 0));
+  const resendDelayMs = Math.max(5000, Number(retryDelayMs) || 15000);
+  const promptText = payload.messages[0].content_block[0].content.text_block.text;
+  let attempt = await performAttempt(payload, "");
+  let response = attempt.response;
+  let text = attempt.text;
+  let timedOut = attempt.timedOut;
+  let conversationId = attempt.conversationId;
+  let videoUrl = attempt.videoUrl;
+  let confirmationPromptDetected = attempt.confirmationPromptDetected;
+  let autoConfirmationSent = attempt.autoConfirmationSent;
+  const initialResponsePreview = attempt.initialText.length <= 6000
+    ? attempt.initialText
+    : `${attempt.initialText.slice(0, 3000)}\n...[truncated]...\n${attempt.initialText.slice(-3000)}`;
+  let detectedWaitMessage = generationWaitMessage(text);
+  let sameAccountResendCount = 0;
+  let sameAccountAttemptCount = 1;
+  while (
+    response.ok
+    && !detectedWaitMessage
+    && !videoUrl
+    && !terminalSubmissionSignal(text)
+    && sameAccountResendCount < maxResends
+  ) {
+    await new Promise(resolve => setTimeout(resolve, resendDelayMs));
+    const resendPayload = conversationPayload(payload, conversationId, text, promptText);
+    attempt = await performAttempt(resendPayload, conversationId);
+    response = attempt.response;
+    text = `${text}\n${attempt.text}`;
+    timedOut = timedOut || attempt.timedOut;
+    conversationId = attempt.conversationId || conversationId;
+    videoUrl = attempt.videoUrl || videoUrl;
+    confirmationPromptDetected = confirmationPromptDetected || attempt.confirmationPromptDetected;
+    autoConfirmationSent = autoConfirmationSent || attempt.autoConfirmationSent;
+    detectedWaitMessage = generationWaitMessage(attempt.text) || generationWaitMessage(text);
+    sameAccountResendCount += 1;
+    sameAccountAttemptCount += 1;
   }
   const preview = text.length <= 6000 ? text : `${text.slice(0, 3000)}\n...[truncated]...\n${text.slice(-3000)}`;
   return {
@@ -456,7 +540,13 @@ async ({prompt, ratio, model, duration}) => {
     confirmation_prompt_detected: confirmationPromptDetected,
     auto_confirmation_sent: autoConfirmationSent,
     initial_response_preview: initialResponsePreview,
-    accepted: text.includes("SSE_REPLY_END") && !text.includes("STREAM_ERROR"),
+    generation_wait_message_detected: Boolean(detectedWaitMessage),
+    generation_wait_message: detectedWaitMessage,
+    same_account_resend_count: sameAccountResendCount,
+    same_account_attempt_count: sameAccountAttemptCount,
+    same_account_retry_limit: maxResends,
+    resend_delay_ms: resendDelayMs,
+    accepted: Boolean(detectedWaitMessage || videoUrl),
     service_frequent: text.includes("710022002") || text.includes("当前服务访问频繁") || text.includes("服务访问频繁"),
     slider_verification: text.includes("710022004") || text.includes('"type":"verify"') || text.includes('"verify_scene":"doubao_message_web"'),
     stream_error: text.includes("STREAM_ERROR"),
@@ -529,7 +619,11 @@ class DoubaoVideoAutomation:
 
     async def run(self) -> dict[str, Any]:
         try:
-            return await asyncio.wait_for(self._run_once(), timeout=max(self.settings.task_timeout_seconds, 900))
+            submit_timeout = 120 * (max(0, min(10, int(self.settings.doubao_submit_retry_limit))) + 1) + 90
+            return await asyncio.wait_for(
+                self._run_once(),
+                timeout=max(self.settings.task_timeout_seconds, 900, submit_timeout),
+            )
         except asyncio.TimeoutError:
             submitted = task_exists(self.task_id) and str(get_meta(self.task_id).get("status") or "") == STATUS_SUBMITTED
             if task_exists(self.task_id) and not submitted:
@@ -838,31 +932,19 @@ class DoubaoVideoAutomation:
                         "ratio": self.ratio or "auto",
                         "model": model_code,
                         "duration": self.duration,
+                        "retryLimit": self.settings.doubao_submit_retry_limit,
+                        "retryDelayMs": 15000,
                     },
                 )
                 if not isinstance(completion_result, dict):
                     release_task_submission(self.task_id)
                     return {"success": False, "retryable": True, "reason": "doubao submission returned an invalid response"}
 
-                error = ""
-                category = ""
-                if completion_result.get("service_frequent"):
-                    error = "doubao service frequent"
-                    category = "service_frequent"
+                error, category = classify_doubao_submission(completion_result)
+                if category == "service_frequent":
                     set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包当前服务访问频繁")
-                elif completion_result.get("slider_verification"):
-                    error = "doubao verification required"
-                    category = "slider_verification"
-                elif completion_result.get("stream_error"):
-                    error = "doubao submit rejected"
-                    category = "submit_rejected"
+                elif category == "submit_rejected":
                     set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包提交被拒绝")
-                elif not completion_result.get("ok"):
-                    error = f"doubao submit http {int(completion_result.get('status') or 0)}"
-                    category = "http_error"
-                elif completion_result.get("sse_timed_out") and not completion_result.get("accepted"):
-                    error = "doubao submit not confirmed"
-                    category = "confirmation_timeout"
 
                 if category == "service_frequent":
                     risk_state = await self._observe_service_frequent(page)
@@ -879,6 +961,12 @@ class DoubaoVideoAutomation:
                         "doubao_confirmation_prompt_detected": bool(completion_result.get("confirmation_prompt_detected")),
                         "doubao_auto_confirmation_sent": bool(completion_result.get("auto_confirmation_sent")),
                         "doubao_initial_response_preview": str(completion_result.get("initial_response_preview") or "")[:6000],
+                        "doubao_generation_wait_message_detected": bool(completion_result.get("generation_wait_message_detected")),
+                        "doubao_generation_wait_message": str(completion_result.get("generation_wait_message") or "")[:1000],
+                        "doubao_same_account_resend_count": int(completion_result.get("same_account_resend_count") or 0),
+                        "doubao_same_account_attempt_count": int(completion_result.get("same_account_attempt_count") or 1),
+                        "doubao_same_account_retry_limit": int(completion_result.get("same_account_retry_limit") or 0),
+                        "doubao_resend_delay_ms": int(completion_result.get("resend_delay_ms") or 0),
                     })
                     if category == "service_frequent":
                         if self.proxy_session is not None:
@@ -909,10 +997,15 @@ class DoubaoVideoAutomation:
                             "account_login_invalid": True,
                             "switch_account": True,
                         }
+                    if category == "generation_ack_missing":
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": error,
+                            "account_fault": True,
+                            "switch_account": True,
+                        }
                     return {"success": False, "retryable": True, "reason": error}
-                if not completion_result.get("accepted") and not completion_result.get("video_url"):
-                    release_task_submission(self.task_id)
-                    return {"success": False, "retryable": True, "reason": "doubao submit not accepted"}
                 mark_submitted(self.task_id)
                 save_result(
                     self.task_id,
@@ -927,6 +1020,12 @@ class DoubaoVideoAutomation:
                         "doubao_conversation_id": str(completion_result.get("conversation_id") or ""),
                         "doubao_confirmation_prompt_detected": bool(completion_result.get("confirmation_prompt_detected")),
                         "doubao_auto_confirmation_sent": bool(completion_result.get("auto_confirmation_sent")),
+                        "doubao_generation_wait_message_detected": bool(completion_result.get("generation_wait_message_detected")),
+                        "doubao_generation_wait_message": str(completion_result.get("generation_wait_message") or "")[:1000],
+                        "doubao_same_account_resend_count": int(completion_result.get("same_account_resend_count") or 0),
+                        "doubao_same_account_attempt_count": int(completion_result.get("same_account_attempt_count") or 1),
+                        "doubao_same_account_retry_limit": int(completion_result.get("same_account_retry_limit") or 0),
+                        "doubao_resend_delay_ms": int(completion_result.get("resend_delay_ms") or 0),
                     },
                 )
                 conversation_id = str(completion_result.get("conversation_id") or "")

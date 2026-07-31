@@ -377,16 +377,19 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(current["dola_submit_interval_seconds"], 5.0)
         self.assertEqual(current["dola_global_submit_interval_seconds"], 8.0)
         self.assertEqual(current["task_retry_limit"], 2)
+        self.assertEqual(current["doubao_submit_retry_limit"], 2)
         self.assertEqual(current["batch_history_retention_days"], 30)
-        updated = self.client.post("/config/runtime", json={"dola_submit_interval_seconds": 2.5, "dola_global_submit_interval_seconds": 9.5, "task_retry_limit": 5, "batch_history_retention_days": 14})
+        updated = self.client.post("/config/runtime", json={"dola_submit_interval_seconds": 2.5, "dola_global_submit_interval_seconds": 9.5, "task_retry_limit": 5, "doubao_submit_retry_limit": 4, "batch_history_retention_days": 14})
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["dola_submit_interval_seconds"], 2.5)
         self.assertEqual(updated.json()["dola_global_submit_interval_seconds"], 9.5)
         self.assertEqual(updated.json()["task_retry_limit"], 5)
+        self.assertEqual(updated.json()["doubao_submit_retry_limit"], 4)
         self.assertEqual(updated.json()["batch_history_retention_days"], 14)
         self.assertEqual(config.load_settings().dola_submit_interval_seconds, 2.5)
         self.assertEqual(config.load_settings().dola_global_submit_interval_seconds, 9.5)
         self.assertEqual(config.load_settings().task_retry_limit, 5)
+        self.assertEqual(config.load_settings().doubao_submit_retry_limit, 4)
         self.assertEqual(config.load_settings().batch_history_retention_days, 14)
         for invalid in (0.9, 5.1, "invalid"):
             self.assertEqual(self.client.post("/config/runtime", json={"dola_submit_interval_seconds": invalid}).status_code, 400)
@@ -394,6 +397,7 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(self.client.post("/config/runtime", json={"dola_global_submit_interval_seconds": invalid}).status_code, 400)
         for invalid in (-1, 11, "invalid"):
             self.assertEqual(self.client.post("/config/runtime", json={"task_retry_limit": invalid}).status_code, 400)
+            self.assertEqual(self.client.post("/config/runtime", json={"doubao_submit_retry_limit": invalid}).status_code, 400)
         for invalid in (6, 31, "invalid"):
             self.assertEqual(self.client.post("/config/runtime", json={"batch_history_retention_days": invalid}).status_code, 400)
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation, best_doubao_video_candidate, collect_doubao_response_candidates, collect_doubao_video_candidates, doubao_video_url_score
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, doubao_video_url_score
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -17,7 +17,7 @@ class DoubaoAutomationTests(unittest.TestCase):
     def runner(proxy_session) -> DoubaoVideoAutomation:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner.proxy_session = proxy_session
-        runner.settings = SimpleNamespace(task_timeout_seconds=600)
+        runner.settings = SimpleNamespace(task_timeout_seconds=600, doubao_submit_retry_limit=2)
         runner.task_id = "doubao-task"
         return runner
 
@@ -129,9 +129,9 @@ class DoubaoAutomationTests(unittest.TestCase):
             'text.includes("710022004")',
             'text.includes("SSE_REPLY_END")',
             "asksForVideoConfirmation(text)",
-            'confirmationPayload.messages[0].content_block[0].content.text_block.text = "需要"',
-            "confirmationPayload.option.need_create_conversation = false",
-            "confirmationPayload.client_meta.conversation_id = conversationId",
+            'conversationPayload(body, conversationId, text, "需要")',
+            "body.option.need_create_conversation = !conversationId",
+            "body.client_meta.conversation_id = conversationId",
             "auto_confirmation_sent: autoConfirmationSent",
         ):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
@@ -139,6 +139,32 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("是否|请问", DOUBAO_SUBMIT_SCRIPT)
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Mini"], "seedance_v2.0_mini")
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Fast"], "seedance_v2.0")
+
+    def test_submit_script_waits_for_generation_ack_before_accepting(self) -> None:
+        for fragment in (
+            "本次使用",
+            "预计等待",
+            "generation_wait_message_detected: Boolean(detectedWaitMessage)",
+            "accepted: Boolean(detectedWaitMessage || videoUrl)",
+            "sameAccountResendCount < maxResends",
+            "setTimeout(resolve, resendDelayMs)",
+            "const resendDelayMs = Math.max(5000, Number(retryDelayMs) || 15000)",
+            "const maxResends = Math.max(0, Math.min(10",
+            "performAttempt(resendPayload, conversationId)",
+        ):
+            self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
+        self.assertNotIn('accepted: text.includes("SSE_REPLY_END")', DOUBAO_SUBMIT_SCRIPT)
+
+    def test_missing_generation_acknowledgement_requests_account_switch(self) -> None:
+        error, category = classify_doubao_submission({"ok": True, "accepted": False})
+
+        self.assertEqual(error, "doubao generation acknowledgement missing")
+        self.assertEqual(category, "generation_ack_missing")
+
+    def test_direct_video_is_an_accepted_submission(self) -> None:
+        error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})
+
+        self.assertEqual((error, category), ("", ""))
 
     def test_context_storage_state_merges_saved_state_and_latest_account_cookies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

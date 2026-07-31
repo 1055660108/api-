@@ -418,7 +418,12 @@ class WorkerManager:
                 worker_id = str(meta.get("worker_id") or "")
                 task = self._workers.get(worker_id) if worker_id else None
                 if task and not task.done():
-                    stale_after = max(240, int(load_settings().task_timeout_seconds)) + RUNNING_WATCH_GRACE_SECONDS
+                    settings = load_settings()
+                    phase_timeout = max(240, int(settings.task_timeout_seconds))
+                    if str(meta.get("platform") or "") == "doubao" and str(meta.get("execution_phase") or "") == "submitting_request":
+                        doubao_submit_timeout = 120 * (max(0, min(10, int(settings.doubao_submit_retry_limit))) + 1) + 90
+                        phase_timeout = max(phase_timeout, doubao_submit_timeout)
+                    stale_after = phase_timeout + RUNNING_WATCH_GRACE_SECONDS
                     if phase_age < timedelta(seconds=stale_after):
                         continue
                     reason = f"execution phase timed out: {str(meta.get('execution_phase') or 'unknown')}"

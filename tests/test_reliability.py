@@ -339,6 +339,34 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(recovered["infrastructure_retry_count"], 1)
         self.assertIn("opening_generation_page", recovered["infrastructure_error"])
 
+    def test_watchdog_allows_doubao_same_account_resend_window(self) -> None:
+        config.update_config({"doubao_submit_retry_limit": 10})
+        task = self.create_task()
+        self.assertTrue(store.mark_running(task["id"], "worker-doubao-submit"))
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        store.update_meta(
+            task["id"],
+            started_at=stale,
+            phase_updated_at=stale,
+            execution_phase="submitting_request",
+            platform="doubao",
+        )
+        manager = WorkerManager()
+
+        async def inspect() -> None:
+            live = asyncio.create_task(asyncio.sleep(60))
+            manager._workers["worker-doubao-submit"] = live
+            await manager._watch_running_tasks_once()
+            self.assertFalse(live.done())
+            live.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await live
+
+        asyncio.run(inspect())
+        current = store.get_meta(task["id"])
+        self.assertEqual(current["status"], "running")
+        self.assertEqual(int(current.get("infrastructure_retry_count") or 0), 0)
+
     def test_watchdog_requeues_due_pending_retry(self) -> None:
         task = self.create_task()
         self.assertTrue(store.mark_running(task["id"], "worker-retry-reconcile"))

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -105,6 +108,35 @@ class DoubaoAutomationTests(unittest.TestCase):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Mini"], "seedance_v2.0_mini")
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Fast"], "seedance_v2.0")
+
+    def test_context_storage_state_merges_saved_state_and_latest_account_cookies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "doubao.json"
+            state_path.write_text(
+                json.dumps({
+                    "cookies": [
+                        {"name": "session", "value": "old", "domain": ".doubao.com", "path": "/"},
+                        {"name": "saved_only", "value": "keep", "domain": ".doubao.com", "path": "/"},
+                    ],
+                    "origins": [{"origin": "https://www.doubao.com", "localStorage": [{"name": "device", "value": "known"}]}],
+                }),
+                encoding="utf-8",
+            )
+            runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+            runner.state_path = state_path
+            runner.account = {
+                "cookies": [
+                    {"name": "session", "value": "latest", "domain": ".doubao.com", "path": "/"},
+                    {"name": "account_only", "value": "new", "domain": ".doubao.com", "path": "/"},
+                ]
+            }
+
+            state = runner._context_storage_state()
+
+        self.assertIsNotNone(state)
+        cookies = {item["name"]: item["value"] for item in state["cookies"]}
+        self.assertEqual(cookies, {"session": "latest", "saved_only": "keep", "account_only": "new"})
+        self.assertEqual(state["origins"][0]["localStorage"][0]["value"], "known")
 
 
 class QianwenProxyAutomationTests(unittest.TestCase):

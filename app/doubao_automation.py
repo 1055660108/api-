@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from typing import Any
 
@@ -287,6 +288,34 @@ class DoubaoVideoAutomation:
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
 
+    def _context_storage_state(self) -> dict[str, Any] | None:
+        saved: dict[str, Any] = {}
+        if self.state_path.is_file():
+            try:
+                value = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    saved = value
+            except (OSError, ValueError):
+                saved = {}
+
+        merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for source in (saved.get("cookies") or [], self.account.get("cookies") or []):
+            for item in source:
+                if not isinstance(item, dict) or not item.get("name"):
+                    continue
+                cookie = dict(item)
+                key = (
+                    str(cookie.get("name") or ""),
+                    str(cookie.get("domain") or cookie.get("url") or ""),
+                    str(cookie.get("path") or "/"),
+                )
+                merged[key] = cookie
+
+        origins = [dict(item) for item in saved.get("origins") or [] if isinstance(item, dict)]
+        if not merged and not origins:
+            return None
+        return {"cookies": list(merged.values()), "origins": origins}
+
     async def _refresh_cookies(self, context) -> None:
         account_id = str(self.account.get("id") or "")
         if not account_id:
@@ -437,8 +466,9 @@ class DoubaoVideoAutomation:
                     "extra_http_headers": BROWSER_EXTRA_HTTP_HEADERS,
                     "accept_downloads": False,
                 }
-                if self.state_path.is_file():
-                    context_options["storage_state"] = str(self.state_path)
+                storage_state = self._context_storage_state()
+                if storage_state is not None:
+                    context_options["storage_state"] = storage_state
                 if self.browser_pool is not None:
                     self._set_phase("allocating_browser", "正在分配豆包浏览器资源")
                     lease = await self.browser_pool.acquire_context(
@@ -461,9 +491,6 @@ class DoubaoVideoAutomation:
                     context = await browser.new_context(**context_options)
                 await context.add_init_script(BROWSER_INIT_SCRIPT)
                 page = context.pages[0] if context.pages else await context.new_page()
-                cookies = [dict(item) for item in self.account.get("cookies") or [] if isinstance(item, dict) and item.get("name")]
-                if cookies:
-                    await context.add_cookies(cookies)
                 self._set_phase("opening_generation_page", "正在打开豆包生成页面")
                 await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)
                 await page.wait_for_timeout(5000)

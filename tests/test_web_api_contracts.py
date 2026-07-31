@@ -513,6 +513,30 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(canceled.json()["job"]["counts"]["canceled"], 3)
         self.assertEqual(store.list_tasks(owner_token_hash=owner_hash), [])
 
+    def test_persistent_batch_uses_selected_platform_and_model(self) -> None:
+        registered = self.register("persistent_batch_model")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        headers = {"X-API-Token": registered["token"]}
+        manifest = {
+            "platform": "doubao",
+            "model": "Seedance 2.0 Fast",
+            "duration": 15,
+            "ratio": "16:9",
+            "concurrency": 1,
+            "rows": [{"client_index": 0, "sheet_row": 2, "prompt": "豆包批量模型任务", "image_count": 0}],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            response = self.client.post("/batch-prompts/jobs", headers=headers, data={"manifest": json.dumps(manifest, ensure_ascii=False)})
+            self.assertEqual(response.status_code, 201, response.text)
+            job = response.json()["job"]
+            self.assertEqual((job["platform"], job["model"], job["duration"]), ("doubao", "Seedance 2.0 Fast", 15))
+            claim = batch_jobs.claim_next_row(owner_hash)
+            task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
+
+        meta = store.get_meta(task_id)
+        self.assertEqual((meta["platform"], meta["model"], meta["duration"]), ("doubao", "Seedance 2.0 Fast", 15))
+
     def test_one_hundred_row_images_are_uploaded_in_chunks_before_job_creation(self) -> None:
         registered = self.register("chunked_batch_images")
         owner_hash = temp_access.hash_token(registered["token"])
@@ -1717,7 +1741,7 @@ class WebAPIContractTests(unittest.TestCase):
         platforms = self.client.get("/config/platforms").json()
         self.assertEqual(set(workers), {"browser_workers", "max_effective_workers", "effective_browser_workers", "capacity_limit", "browser_pool_processes", "browser_contexts_per_process", "submission_concurrency", "remote_generation_limit"})
         self.assertEqual((workers["browser_pool_processes"], workers["browser_contexts_per_process"], workers["submission_concurrency"]), (12, 3, 36))
-        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_source", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_account_configured", "proxy_account_count", "proxy_account_scheme", "proxy_account_host", "proxy_account_port", "proxy_account_username_masked", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
+        self.assertEqual(set(proxy), {"proxy_api_url", "proxy_api_scheme", "proxy_api_timeout_seconds", "proxy_source", "platform_proxy_sources", "platform_proxy_random", "proxy_subscription_configured", "proxy_subscription_scheme", "proxy_subscription_refresh_seconds", "proxy_account_configured", "proxy_account_count", "proxy_account_scheme", "proxy_account_host", "proxy_account_port", "proxy_account_username_masked", "proxy_enabled", "proxy_auto_select", "proxy_selected_node", "proxy_auto_countries", "proxy_latency_threshold_ms", "proxy_health_refresh_seconds"})
         self.assertNotIn("proxy_subscription_url", proxy)
         self.assertNotIn("proxy_account_password", proxy)
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
@@ -1986,6 +2010,24 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(config.load_settings().proxy_auto_countries, ["日本", "美国"])
         self.assertEqual(response.json()["proxy_health_refresh_seconds"], 120)
         self.assertEqual(config.load_settings().proxy_health_refresh_seconds, 120)
+
+    def test_platform_proxy_sources_and_random_modes_are_independent(self) -> None:
+        self.login_admin()
+        response = self.client.post(
+            "/config/proxy-api",
+            json={
+                "proxy_api_url": "https://proxy.example/api",
+                "proxy_subscription_url": "https://subscription.example/token",
+                "platform_proxy_sources": {"dola": "api", "doubao": "subscription", "qianwen": "direct"},
+                "platform_proxy_random": {"dola": True, "doubao": True, "qianwen": False},
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["platform_proxy_sources"], {"dola": "api", "doubao": "subscription", "qianwen": "direct"})
+        self.assertEqual(response.json()["platform_proxy_random"], {"dola": True, "doubao": True, "qianwen": False})
+        settings = config.load_settings()
+        self.assertEqual(settings.platform_proxy_sources, response.json()["platform_proxy_sources"])
+        self.assertEqual(settings.platform_proxy_random, response.json()["platform_proxy_random"])
 
     def test_proxy_latency_filters_threshold_and_persists_automatic_selection(self) -> None:
         self.login_admin()

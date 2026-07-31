@@ -947,6 +947,7 @@ class DolaFetchAutomation:
         submission_pacer: Callable[[str], Awaitable[None]] | None = None,
         image_upload_slot: Callable[[], AsyncContextManager[None]] | None = None,
         image_preparation_done: Callable[[], None] | None = None,
+        proxy_platform: str = "dola",
     ):
         self.task_id = task_id
         self.prompt = prompt
@@ -959,6 +960,9 @@ class DolaFetchAutomation:
         self.submission_pacer = submission_pacer
         self.image_upload_slot = image_upload_slot
         self.image_preparation_done = image_preparation_done
+        self.proxy_platform = str(proxy_platform or "dola").strip().lower()
+        if self.proxy_platform not in {"dola", "doubao", "qianwen"}:
+            self.proxy_platform = "dola"
         self.settings = load_settings()
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
@@ -1655,14 +1659,16 @@ class DolaFetchAutomation:
         api_proxy_pool = getattr(self, "api_proxy_pool", None)
         if api_proxy_pool is not None:
             try:
-                lease = await api_proxy_pool.acquire(
-                    self.settings.proxy_api_url,
-                    timeout_seconds=self.settings.proxy_api_timeout_seconds,
-                    scheme=self.settings.proxy_api_scheme,
-                    excluded_node_ids=excluded_node_ids,
-                )
+                acquire_options: dict[str, Any] = {
+                    "timeout_seconds": self.settings.proxy_api_timeout_seconds,
+                    "scheme": self.settings.proxy_api_scheme,
+                    "excluded_node_ids": excluded_node_ids,
+                }
+                if bool(getattr(self.settings, "platform_proxy_random", {}).get(self.proxy_platform)):
+                    acquire_options["random_select"] = True
+                lease = await api_proxy_pool.acquire(self.settings.proxy_api_url, **acquire_options)
             except Exception as exc:
-                self._save_result(extra={"proxy_source": "api", "api_proxy_last_error": str(exc)[:800]})
+                self._save_result(extra={"proxy_source": "api", "proxy_platform": self.proxy_platform, "api_proxy_last_error": str(exc)[:800]})
                 raise ProxyCoolingDownError(
                     API_PROXY_RETRY_AFTER_SECONDS,
                     reason="api proxy pool is refreshing",
@@ -1680,6 +1686,7 @@ class DolaFetchAutomation:
             self._save_result(
                 extra={
                     "proxy_source": "api",
+                    "proxy_platform": self.proxy_platform,
                     "proxy_server": lease.server,
                     "proxy_node_id": lease.node_id,
                     "proxy_node_name": lease.host_port,
@@ -1738,6 +1745,7 @@ class DolaFetchAutomation:
             self._save_result(
                 extra={
                     "proxy_source": "api",
+                    "proxy_platform": self.proxy_platform,
                     "proxy_server": server,
                     "proxy_node_id": node_id,
                     "proxy_node_name": host_port,
@@ -1752,6 +1760,7 @@ class DolaFetchAutomation:
         self._save_result(
             extra={
                 "proxy_source": "api",
+                "proxy_platform": self.proxy_platform,
                 "api_proxy_candidate_count": len(seen_endpoints),
                 "api_proxy_fetch_count": fetch_count,
                 "api_proxy_rejected_endpoints": rejected_endpoints[-3:],
@@ -1767,6 +1776,7 @@ class DolaFetchAutomation:
 
     async def _browser_proxy_config(self) -> dict[str, str] | None:
         self.settings = load_settings()
+        self.proxy_platform = str(getattr(self, "proxy_platform", "dola") or "dola")
         self.active_proxy_source = ""
         self.proxy_node_id = ""
         self.proxy_exit_id = "direct"
@@ -1780,10 +1790,14 @@ class DolaFetchAutomation:
         if avoid_node_id:
             excluded_node_ids.add(avoid_node_id)
         if not self.settings.proxy_enabled:
-            self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
+            self._save_result(extra={"proxy_source": "direct", "proxy_platform": self.proxy_platform, "proxy_server": ""})
             return None
-        if self.settings.proxy_source == "direct":
-            self._save_result(extra={"proxy_source": "direct", "proxy_server": ""})
+        platform_sources = getattr(self.settings, "platform_proxy_sources", {})
+        platform_random = getattr(self.settings, "platform_proxy_random", {})
+        selected_source = str(platform_sources.get(self.proxy_platform) or self.settings.proxy_source).strip().lower()
+        random_select = bool(platform_random.get(self.proxy_platform))
+        if selected_source == "direct":
+            self._save_result(extra={"proxy_source": "direct", "proxy_platform": self.proxy_platform, "proxy_server": ""})
             return None
 
         configured = {
@@ -1791,7 +1805,6 @@ class DolaFetchAutomation:
             "account": account_proxy_configured(self.settings),
             "api": bool(self.settings.proxy_api_url),
         }
-        selected_source = str(self.settings.proxy_source or "").strip().lower()
         candidates = [selected_source] if configured.get(selected_source) else []
         errors: list[str] = []
         attempted_sources = 0
@@ -1814,6 +1827,7 @@ class DolaFetchAutomation:
                         selected_countries=self.settings.proxy_auto_countries,
                         latency_threshold_ms=self.settings.proxy_latency_threshold_ms,
                         excluded_node_ids=excluded_node_ids,
+                        random_select=random_select,
                     )
                     self.subscription_proxy = proxy
                     self.proxy_node_id = str(proxy.get("node_id") or "")
@@ -1825,6 +1839,7 @@ class DolaFetchAutomation:
                     self._save_result(
                         extra={
                             "proxy_source": source,
+                            "proxy_platform": self.proxy_platform,
                             "proxy_server": proxy["server"],
                             "proxy_node_count": int(proxy["node_count"]) if proxy["node_count"].isdigit() else proxy["node_count"],
                             "proxy_node_id": self.proxy_node_id,
@@ -1836,7 +1851,10 @@ class DolaFetchAutomation:
                 if source == "account":
                     account_errors = 0
                     cooling_delays_for_accounts: list[int] = []
-                    for entry in account_proxy_candidates(self.settings):
+                    account_candidates = account_proxy_candidates(self.settings)
+                    if random_select:
+                        secrets.SystemRandom().shuffle(account_candidates)
+                    for entry in account_candidates:
                         entry_id = str(entry.get("id") or "")
                         if entry_id in excluded_node_ids:
                             continue
@@ -1866,6 +1884,7 @@ class DolaFetchAutomation:
                             update_meta(self.task_id, proxy_retry_avoid_node_id="")
                         self._save_result(extra={
                             "proxy_source": source,
+                            "proxy_platform": self.proxy_platform,
                             "proxy_server": config["server"] if config else "",
                             "proxy_node_id": self.proxy_node_id,
                             "proxy_node_name": f"{entry.get('host')}:{entry.get('port')}",

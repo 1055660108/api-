@@ -839,6 +839,7 @@ async def _acquire_task_mihomo_proxy(
     selected_countries: Iterable[str],
     latency_threshold_ms: int,
     excluded_node_ids: Iterable[str],
+    random_select: bool = False,
 ) -> dict[str, str]:
     global _TASK_MIHOMO_CONDITION
     if _TASK_MIHOMO_CONDITION is None:
@@ -854,7 +855,8 @@ async def _acquire_task_mihomo_proxy(
     allowed_node_ids = {
         node.id for node in nodes
         if (auto_select and node.country in selected_country_set)
-        or (not auto_select and (not selected_node or node.id == selected_node))
+        or (random_select and (not selected_country_set or node.country in selected_country_set))
+        or (not auto_select and not random_select and (not selected_node or node.id == selected_node))
     }
     if auto_select and not allowed_node_ids:
         raise RuntimeError("selected proxy countries contain no usable nodes")
@@ -889,7 +891,7 @@ async def _acquire_task_mihomo_proxy(
                 slot for slot in _TASK_MIHOMO_SLOTS
                 if slot.subscription_url == subscription_url and slot.snapshot_digest == digest and not slot.retiring
             ]
-            can_launch = len(_TASK_MIHOMO_SLOTS) < TASK_MIHOMO_MAX_SLOTS and (auto_select or not matching_slots)
+            can_launch = len(_TASK_MIHOMO_SLOTS) < TASK_MIHOMO_MAX_SLOTS and (auto_select or random_select or not matching_slots)
             chosen: ProxyNode | None = None
             choose_error: Exception | None = None
             if can_launch:
@@ -903,12 +905,15 @@ async def _acquire_task_mihomo_proxy(
                         selected_countries=selected_countries,
                         latency_threshold_ms=latency_threshold_ms,
                         excluded_node_ids=base_excluded | failed_launch_ids | active_node_ids,
+                        random_select=random_select,
                     )
                 except Exception as exc:
                     choose_error = exc
             if chosen is None:
                 if ready:
-                    slot = min(ready, key=lambda item: (item.active, item.slot_id))
+                    minimum_active = min(item.active for item in ready)
+                    least_active = [item for item in ready if item.active == minimum_active]
+                    slot = secrets.choice(least_active) if random_select else min(least_active, key=lambda item: item.slot_id)
                     slot.active += 1
                     proxy = {
                         "server": slot.server or f"http://127.0.0.1:{slot.port}",
@@ -1199,17 +1204,23 @@ async def _choose_subscription_node(
     selected_countries: Iterable[str],
     latency_threshold_ms: int,
     excluded_node_ids: Iterable[str],
+    random_select: bool = False,
 ) -> ProxyNode:
     countries = {str(item).strip() for item in selected_countries if str(item or "").strip()}
     excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
-    eligible_nodes = tuple(node for node in nodes if not auto_select or (countries and node.country in countries))
+    if auto_select:
+        eligible_nodes = tuple(node for node in nodes if countries and node.country in countries)
+    elif random_select:
+        eligible_nodes = tuple(node for node in nodes if not countries or node.country in countries)
+    else:
+        eligible_nodes = nodes
     if not eligible_nodes:
         raise RuntimeError("automatic proxy selection requires at least one selected country" if auto_select and not countries else "selected proxy countries contain no usable nodes")
     selectable_nodes = tuple(node for node in eligible_nodes if node.id not in excluded and not _node_is_cooling_down(node.id))
     if not selectable_nodes:
         raise RuntimeError("no alternative proxy node is currently available" if excluded else "all eligible proxy nodes are temporarily unavailable")
-    chosen = next((node for node in selectable_nodes if node.id == selected_node), None)
-    if auto_select:
+    chosen = None if random_select else next((node for node in selectable_nodes if node.id == selected_node), None)
+    if auto_select or random_select:
         fresh_delays = {
             node.id: delay
             for node in selectable_nodes
@@ -1229,7 +1240,7 @@ async def _choose_subscription_node(
             if all_available:
                 raise RuntimeError("all eligible proxy nodes exceed the latency threshold")
             raise RuntimeError("all eligible proxy nodes are unavailable")
-        chosen = min(available, key=lambda item: item[0])[1]
+        chosen = secrets.choice(available)[1] if random_select else min(available, key=lambda item: item[0])[1]
     elif chosen is None and not selected_node:
         chosen = selectable_nodes[0]
     elif chosen is None:
@@ -1263,6 +1274,7 @@ async def resolve_subscription_proxy(
     selected_countries: Iterable[str] = (),
     latency_threshold_ms: int = 5000,
     excluded_node_ids: Iterable[str] = (),
+    random_select: bool = False,
 ) -> dict[str, str]:
     global _SUBSCRIPTION_RESOLVE_LOCK
     if _SUBSCRIPTION_RESOLVE_LOCK is None:
@@ -1282,6 +1294,7 @@ async def resolve_subscription_proxy(
             selected_countries=selected_countries,
             latency_threshold_ms=latency_threshold_ms,
             excluded_node_ids=excluded_node_ids,
+            random_select=random_select,
         )
         if chosen.protocol in {"http", "https", "socks5", "socks5h"}:
             server = chosen.uri.split("#", 1)[0]
@@ -1314,6 +1327,7 @@ async def acquire_dola_subscription_proxy(
     selected_countries: Iterable[str] = (),
     latency_threshold_ms: int = 5000,
     excluded_node_ids: Iterable[str] = (),
+    random_select: bool = False,
 ) -> dict[str, str]:
     nodes = await fetch_subscription_node_list(
         subscription_url,
@@ -1331,6 +1345,7 @@ async def acquire_dola_subscription_proxy(
         selected_countries=selected_countries,
         latency_threshold_ms=latency_threshold_ms,
         excluded_node_ids=excluded_node_ids,
+        random_select=random_select,
     )
 
 

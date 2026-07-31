@@ -127,7 +127,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("overflow-y: auto", styles)
 
     def test_proxy_settings_support_node_subscriptions(self) -> None:
-        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyAccountField", "proxyAccountScheme", "proxyAccountHost", "proxyAccountPort", "proxyAccountUsername", "proxyAccountPassword", "proxyApiUrl", "proxyApiScheme", "testProxyApi", "openAccountProxyImport", "accountProxyImportModal", "accountProxyImportText", "accountProxyBulkbar", "proxyHealthRefreshMinutes", "proxyRefreshCountdown"):
+        for element_id in ("proxySource", "proxySubscriptionUrl", "proxyAccountField", "proxyAccountScheme", "proxyAccountHost", "proxyAccountPort", "proxyAccountUsername", "proxyAccountPassword", "proxyApiUrl", "proxyApiScheme", "testProxyApi", "openAccountProxyImport", "accountProxyImportModal", "accountProxyImportText", "accountProxyBulkbar", "proxyHealthRefreshMinutes", "proxyRefreshCountdown", "dolaProxySource", "doubaoProxySource", "qianwenProxySource", "dolaProxyRandom", "doubaoProxyRandom", "qianwenProxyRandom", "savePlatformProxyRouting"):
             self.assertIn(f'id="{element_id}"', self.html)
         self.assertIn('<option value="account">账密连接</option>', self.html)
         self.assertIn('id="proxyAccountPassword" type="password"', self.html)
@@ -141,6 +141,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('proxy_subscription_refresh_seconds: 900', self.javascript)
         self.assertIn('toast("请输入节点订阅链接", "error")', self.javascript)
         self.assertIn('els.proxySource?.addEventListener("change", updateProxySourceFields)', self.javascript)
+        self.assertIn('platform_proxy_sources: sources', self.javascript)
+        self.assertIn('platform_proxy_random: random', self.javascript)
         self.assertIn('function proxySubscriptionError(error)', self.javascript)
         self.assertIn('await loadProxyNodes(source === "subscription")', self.javascript)
         self.assertIn('/config/account-proxies/import', self.javascript)
@@ -680,7 +682,7 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('"停止生成"', self.javascript)
         self.assertNotIn('data-title="多任务提交"', self.html)
         self.assertIn('data-title="批量提交"', self.html)
-        self.assertIn("任务只使用当前模式，并在该模式已选择的可用节点内切换", self.html)
+        self.assertIn("在节点选择页分别指定三个平台使用哪个代理池", self.html)
         self.assertNotIn("首选模式不可用时自动切换备用模式", self.html)
         self.assertIn('els.submitBatchTasks.disabled = state.batchAutoStopRequested', self.javascript)
         self.assertIn('await requestBatchSubmissionStop()', self.javascript)
@@ -692,10 +694,12 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn('await apiFetch(`/tasks/${encodeURIComponent(taskId)}`', self.javascript)
         self.assertIn('URL.createObjectURL(file)', self.javascript)
         self.assertIn('class="batch-reference-thumbs"', self.html)
-        self.assertNotIn('id="batchPlatformSelect"', self.html)
-        self.assertNotIn('id="batchModelSelect"', self.html)
-        self.assertNotIn('<span>生成平台</span>', self.html)
-        self.assertNotIn('<span>生成模型</span><select id="batchModelSelect"', self.html)
+        self.assertIn('id="batchPlatformSelect"', self.html)
+        self.assertIn('id="batchModelSelect"', self.html)
+        self.assertIn("platform: state.batchPlatform", self.javascript)
+        self.assertIn("model: state.batchModel", self.javascript)
+        self.assertIn('<span>生成平台</span>', self.html)
+        self.assertIn('<span>生成模型</span><select id="batchModelSelect"', self.html)
         self.assertNotIn('id="batchAutoConcurrencyState"', self.html)
         self.assertNotIn("当前最多可使用", self.javascript)
         self.assertNotIn('function dolaBatchGenerationSelection()', self.javascript)

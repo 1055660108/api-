@@ -108,6 +108,8 @@ def default_config() -> dict[str, Any]:
         "proxy_api_scheme": "http",
         "proxy_api_timeout_seconds": 20,
         "proxy_source": "direct",
+        "platform_proxy_sources": {platform: "direct" for platform in DEFAULT_MODELS},
+        "platform_proxy_random": {platform: False for platform in DEFAULT_MODELS},
         "proxy_subscription_url": "",
         "proxy_subscription_scheme": "http",
         "proxy_subscription_refresh_seconds": 900,
@@ -176,6 +178,11 @@ def _load_config_dict() -> dict[str, Any]:
             data["proxy_source"] = "account"
         elif str(raw.get("proxy_api_url") or "").strip():
             data["proxy_source"] = "api"
+    if "platform_proxy_sources" not in raw:
+        data["platform_proxy_sources"] = {
+            platform: str(data.get("proxy_source") or "direct")
+            for platform in DEFAULT_MODELS
+        }
     changed = data != raw
     if not data.get("api_token"):
         data["api_token"] = secrets.token_urlsafe(32)
@@ -329,6 +336,8 @@ class Settings:
     proxy_api_scheme: str
     proxy_api_timeout_seconds: int
     proxy_source: str
+    platform_proxy_sources: dict[str, str]
+    platform_proxy_random: dict[str, bool]
     proxy_subscription_url: str
     proxy_subscription_scheme: str
     proxy_subscription_refresh_seconds: int
@@ -379,6 +388,14 @@ def load_settings() -> Settings:
     proxy_source = str(data.get("proxy_source") or "direct").strip().lower()
     if proxy_source not in {"subscription", "account", "api", "direct"}:
         proxy_source = "direct"
+    raw_platform_proxy_sources = data.get("platform_proxy_sources") if isinstance(data.get("platform_proxy_sources"), dict) else {}
+    raw_platform_proxy_random = data.get("platform_proxy_random") if isinstance(data.get("platform_proxy_random"), dict) else {}
+    platform_proxy_sources: dict[str, str] = {}
+    platform_proxy_random: dict[str, bool] = {}
+    for platform in DEFAULT_MODELS:
+        source = str(raw_platform_proxy_sources.get(platform) or proxy_source).strip().lower()
+        platform_proxy_sources[platform] = source if source in {"subscription", "account", "api", "direct"} else proxy_source
+        platform_proxy_random[platform] = _as_bool(raw_platform_proxy_random.get(platform), False)
     proxy_account_scheme = str(data.get("proxy_account_scheme") or "socks5").strip().lower()
     if proxy_account_scheme not in VALID_PROXY_SERVER_SCHEMES:
         proxy_account_scheme = "socks5"
@@ -444,6 +461,8 @@ def load_settings() -> Settings:
         proxy_api_scheme=proxy_api_scheme,
         proxy_api_timeout_seconds=max(3, int(data.get("proxy_api_timeout_seconds") or 20)),
         proxy_source=proxy_source,
+        platform_proxy_sources=platform_proxy_sources,
+        platform_proxy_random=platform_proxy_random,
         proxy_subscription_url=str(data.get("proxy_subscription_url") or "").strip(),
         proxy_subscription_scheme=proxy_api_scheme if str(data.get("proxy_subscription_scheme") or "").strip().lower() not in VALID_PROXY_SERVER_SCHEMES else str(data.get("proxy_subscription_scheme")).strip().lower(),
         proxy_subscription_refresh_seconds=max(60, min(86400, int(data.get("proxy_subscription_refresh_seconds") or 900))),

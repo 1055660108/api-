@@ -86,7 +86,7 @@ export DOLA_QUEUE_VISIBILITY_TIMEOUT=180
 
 Redis 队列将任务原子移动到 processing，并通过租约心跳确认 Worker 存活；租约过期时，未提交到上游平台的任务恢复为 pending，已提交任务恢复为 submitted 继续查询结果。延迟重试保存在有序集合，到期后自动回到 ready 队列。
 
-多任务提交使用独立的后台公平调度：批次计划和每一行状态持久化在 PostgreSQL，Redis 保存跨用户轮询顺序和调度锁。尚未取得全局及用户并发槽位的行不会创建任务 ID，也不会扣除额度或积分；槽位释放后按用户轮询创建下一条。关闭或刷新浏览器不会中断批次，旧版已经创建的批量任务仍沿用原任务接口查询。
+多任务提交使用独立的后台公平调度：批次计划和每一行状态持久化在 PostgreSQL，Redis 保存跨用户轮询顺序和调度锁。批量页面可选择生成平台与该平台已启用模型；尚未取得全局及用户并发槽位的行不会创建任务 ID，也不会扣除额度或积分。槽位释放后按用户轮询创建下一条，关闭或刷新浏览器不会中断批次。
 
 未配置 `DOLA_QUEUE_BACKEND` 时默认使用 `file`，继续通过任务文件扫描领取，便于本地运行和兼容既有测试。生产 Redis 模式要求 API 与 Worker 使用共享任务存储；多机部署时应同时配置 `DOLA_DATABASE_URL`。
 
@@ -277,6 +277,8 @@ docker compose up -d api worker
   "proxy_api_scheme": "http",
   "proxy_api_timeout_seconds": 20,
   "proxy_source": "direct",
+  "platform_proxy_sources": {"dola": "api", "doubao": "subscription", "qianwen": "direct"},
+  "platform_proxy_random": {"dola": true, "doubao": true, "qianwen": false},
   "proxy_account_scheme": "socks5",
   "proxy_account_host": "",
   "proxy_account_port": 0,
@@ -289,7 +291,7 @@ docker compose up -d api worker
 
 `proxy_api_url` 应返回单个 `ip:port`。服务会在每个任务启动前直接请求代理提取 API，然后只把这个代理传给 Chromium。
 
-`proxy_source` 可设为 `subscription`、`account`、`api` 或 `direct`。节点订阅与账密代理可同时保留配置，首选代理不可用于 Dola 时会自动尝试另一种已配置模式。账密代理密码只保存在服务器本地数据文件中，管理接口只返回是否已配置和脱敏用户名，不会回传密码。
+`proxy_source` 用于选择后台当前管理的代理池，可设为 `subscription`、`account`、`api` 或 `direct`。`platform_proxy_sources` 可分别为 Dola、豆包和千问分配代理池，`platform_proxy_random` 控制每个平台是否在可用出口中按任务随机选择。账密代理密码只保存在服务器本地数据文件中，管理接口只返回是否已配置和脱敏用户名，不会回传密码。
 
 后台“节点选择”页面在账密连接模式下会显示独立代理列表。支持逐行导入 `socks5://用户名:密码@主机:端口`、`http://用户名:密码@主机:端口` 或 `主机:端口:用户名:密码`，导入后自动进行 Dola 可用性测速。勾选一个代理时固定使用该代理；勾选多个并开启轮询后按任务轮换，单个出口不可用时会先尝试列表中的下一个出口。代理列表保存在应用数据卷的 `account_proxies.json`，密码不会通过管理接口返回。
 

@@ -27,6 +27,8 @@
   "proxy_api_scheme": "http",
   "proxy_api_timeout_seconds": 20,
   "proxy_source": "direct",
+  "platform_proxy_sources": {"dola": "api", "doubao": "subscription", "qianwen": "direct"},
+  "platform_proxy_random": {"dola": true, "doubao": true, "qianwen": false},
   "proxy_subscription_url": "",
   "proxy_subscription_scheme": "http",
   "proxy_subscription_refresh_seconds": 900,

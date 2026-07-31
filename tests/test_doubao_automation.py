@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from app.doubao_automation import DoubaoVideoAutomation
+from app.qianwen_automation import QianwenVideoAutomation
 
 
 class DoubaoAutomationTests(unittest.TestCase):
@@ -75,6 +76,22 @@ class DoubaoAutomationTests(unittest.TestCase):
         )
         self.assertTrue(DoubaoVideoAutomation._is_region_restricted(DOUBAO_CHAT_URL, "当前地区暂不支持豆包"))
         self.assertFalse(DoubaoVideoAutomation._is_region_restricted(DOUBAO_CHAT_URL, "开始视频生成"))
+
+
+class QianwenProxyAutomationTests(unittest.TestCase):
+    def test_shared_proxy_is_passed_to_qianwen_browser_and_released(self) -> None:
+        proxy = {"server": "http://proxy.example:18080"}
+        session = SimpleNamespace(acquire_browser_proxy=AsyncMock(return_value=proxy), release_browser_proxy=AsyncMock())
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+        runner.proxy_session = session
+        runner._run_browser = AsyncMock(return_value={"success": True})
+
+        outcome = asyncio.run(runner._run_profile())
+
+        self.assertTrue(outcome["success"])
+        runner._run_browser.assert_awaited_once_with(proxy)
+        session.acquire_browser_proxy.assert_awaited_once()
+        session.release_browser_proxy.assert_awaited_once()
 
 
 DOUBAO_CHAT_URL = "https://www.doubao.com/chat/"

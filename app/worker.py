@@ -837,6 +837,7 @@ class WorkerManager:
                         "",
                         account=account,
                         api_proxy_pool=self._api_proxy_pool,
+                        proxy_platform="doubao",
                     )
                     runner = DoubaoVideoAutomation(
                         task_id,
@@ -847,7 +848,23 @@ class WorkerManager:
                         proxy_session=proxy_session,
                     )
                 elif platform == "qianwen":
-                    runner = QianwenVideoAutomation(task_id, str(meta.get("prompt") or ""), str(meta.get("ratio") or "9:16"), str(meta.get("model") or "万相 2.7"), str(meta.get("task_type") or "video"), account=account)
+                    proxy_session = DolaFetchAutomation(
+                        task_id,
+                        "",
+                        "",
+                        account=account,
+                        api_proxy_pool=self._api_proxy_pool,
+                        proxy_platform="qianwen",
+                    )
+                    runner = QianwenVideoAutomation(
+                        task_id,
+                        str(meta.get("prompt") or ""),
+                        str(meta.get("ratio") or "9:16"),
+                        str(meta.get("model") or "万相 2.7"),
+                        str(meta.get("task_type") or "video"),
+                        account=account,
+                        proxy_session=proxy_session,
+                    )
                 else:
                     runner = DolaFetchAutomation(
                         task_id,

@@ -289,6 +289,8 @@ const els = {
   batchReferenceThumbs: document.getElementById("batchReferenceThumbs"),
   batchReferenceIsRealPerson: document.getElementById("batchReferenceIsRealPerson"),
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
+  batchPlatformSelect: document.getElementById("batchPlatformSelect"),
+  batchModelSelect: document.getElementById("batchModelSelect"),
   batchTaskRatio: document.getElementById("batchTaskRatio"),
   batchStatusFilter: document.getElementById("batchStatusFilter"),
   batchSelectionLimit: document.getElementById("batchSelectionLimit"),
@@ -362,6 +364,13 @@ const els = {
   proxyHealthRefreshMinutes: document.getElementById("proxyHealthRefreshMinutes"),
   proxyNodeCount: document.getElementById("proxyNodeCount"),
   proxyNodesState: document.getElementById("proxyNodesState"),
+  dolaProxySource: document.getElementById("dolaProxySource"),
+  doubaoProxySource: document.getElementById("doubaoProxySource"),
+  qianwenProxySource: document.getElementById("qianwenProxySource"),
+  dolaProxyRandom: document.getElementById("dolaProxyRandom"),
+  doubaoProxyRandom: document.getElementById("doubaoProxyRandom"),
+  qianwenProxyRandom: document.getElementById("qianwenProxyRandom"),
+  savePlatformProxyRouting: document.getElementById("savePlatformProxyRouting"),
   refreshProxyNodes: document.getElementById("refreshProxyNodes"),
   openProxyModalFromNodes: document.getElementById("openProxyModalFromNodes"),
   proxyApiDisplay: document.getElementById("proxyApiDisplay"),
@@ -644,6 +653,8 @@ const state = {
   submitFingerprint: "",
   batchSpreadsheet: null,
   batchSpreadsheetName: "",
+  batchPlatform: "dola",
+  batchModel: "Seedance 2.0",
   batchPrompts: [],
   batchStatusFilter: "all",
   batchRetrying: false,
@@ -699,6 +710,8 @@ const state = {
   proxyNodes: [],
   proxyApiPool: null,
   proxySource: "direct",
+  platformProxySources: { dola: "direct", doubao: "direct", qianwen: "direct" },
+  platformProxyRandom: { dola: false, doubao: false, qianwen: false },
   proxyAccountConfigured: false,
   proxySelectedIds: [],
   proxyFilteredCount: 0,
@@ -1828,6 +1841,8 @@ async function logout() {
   clearBatchReferenceImages();
   state.batchSpreadsheet = null;
   state.batchSpreadsheetName = "";
+  state.batchPlatform = "dola";
+  state.batchModel = "Seedance 2.0";
   state.batchPrompts = [];
   state.batchDraftOwner = "";
   localStorage.removeItem(portalStorageKey(TOKEN_KEY));
@@ -3059,6 +3074,8 @@ async function loadProxyConfig() {
   if (els.proxySubscriptionUrl) els.proxySubscriptionUrl.value = "";
   if (els.proxySource) els.proxySource.value = data.proxy_source || "direct";
   state.proxySource = data.proxy_source || "direct";
+  state.platformProxySources = { dola: "direct", doubao: "direct", qianwen: "direct", ...(data.platform_proxy_sources || {}) };
+  state.platformProxyRandom = { dola: false, doubao: false, qianwen: false, ...(data.platform_proxy_random || {}) };
   state.proxyAccountConfigured = Boolean(data.proxy_account_configured);
   if (els.proxySubscriptionHint) els.proxySubscriptionHint.textContent = data.proxy_subscription_configured ? "订阅已安全保存，留空保持不变；输入新链接可替换" : "支持 VLESS、VMess、Trojan、Hysteria2、SS、TUIC 及 Clash/Mihomo 订阅";
   if (els.proxyAccountScheme) els.proxyAccountScheme.value = data.proxy_account_scheme || "socks5";
@@ -3085,8 +3102,47 @@ async function loadProxyConfig() {
   if (els.proxyAutoSelect) els.proxyAutoSelect.value = String(state.proxyAutoSelect);
   if (els.proxyLatencyThreshold) els.proxyLatencyThreshold.value = String(state.proxyLatencyThreshold);
   if (els.proxyHealthRefreshMinutes) els.proxyHealthRefreshMinutes.value = String(Math.max(1, Math.round(state.proxyHealthRefreshSeconds / 60)));
+  renderPlatformProxyRouting();
   if (els.configState) els.configState.textContent = "已读取";
   return data;
+}
+
+function renderPlatformProxyRouting() {
+  for (const platform of ["dola", "doubao", "qianwen"]) {
+    const sourceControl = els[`${platform}ProxySource`];
+    const randomControl = els[`${platform}ProxyRandom`];
+    if (sourceControl) sourceControl.value = state.platformProxySources[platform] || "direct";
+    if (randomControl) {
+      const direct = (sourceControl?.value || "direct") === "direct";
+      randomControl.checked = direct ? false : Boolean(state.platformProxyRandom[platform]);
+      randomControl.disabled = direct;
+    }
+  }
+}
+
+async function savePlatformProxyRouting() {
+  const sources = {};
+  const random = {};
+  for (const platform of ["dola", "doubao", "qianwen"]) {
+    sources[platform] = els[`${platform}ProxySource`]?.value || "direct";
+    random[platform] = Boolean(els[`${platform}ProxyRandom`]?.checked && sources[platform] !== "direct");
+  }
+  setBusy(els.savePlatformProxyRouting, true, "保存中");
+  try {
+    const data = await apiFetch("/config/proxy-api", {
+      method: "POST",
+      body: { platform_proxy_sources: sources, platform_proxy_random: random },
+    });
+    state.platformProxySources = { ...sources };
+    state.platformProxyRandom = { ...random };
+    renderPlatformProxyRouting();
+    toast("三个平台的代理分配已保存");
+  } catch (error) {
+    toast(`平台代理保存失败：${error.message}`, "error");
+    await loadProxyConfig();
+  } finally {
+    setBusy(els.savePlatformProxyRouting, false);
+  }
 }
 
 function renderProxyNodes() {
@@ -3982,6 +4038,20 @@ function renderPlatformControls() {
   state.model = selected.model;
   els.platformSelect.value = state.platform;
   els.modelSelect.innerHTML = choices.map((item) => `<option value="${escapeHtml(`${item.platform}::${item.model}`)}"${item.platform === state.platform && item.model === state.model ? " selected" : ""}>${escapeHtml(item.model)}</option>`).join("");
+  renderBatchPlatformControls();
+}
+
+function renderBatchPlatformControls() {
+  if (!els.batchPlatformSelect || !els.batchModelSelect) return;
+  const platforms = (state.platforms.length ? state.platforms : [{ id: "dola", label: "Dola", models: ["Seedance 2.0"], enabled: true }])
+    .filter((item) => item.enabled !== false && Array.isArray(item.models) && item.models.length);
+  let selectedPlatform = platforms.find((item) => String(item.id) === state.batchPlatform) || platforms[0];
+  if (!selectedPlatform) return;
+  state.batchPlatform = String(selectedPlatform.id || "dola");
+  const models = selectedPlatform.models.map(String);
+  if (!models.includes(state.batchModel)) state.batchModel = models[0] || "";
+  els.batchPlatformSelect.innerHTML = platforms.map((item) => `<option value="${escapeHtml(item.id)}"${String(item.id) === state.batchPlatform ? " selected" : ""}>${escapeHtml(item.label || PLATFORM_LABELS[item.id] || item.id)}</option>`).join("");
+  els.batchModelSelect.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"${model === state.batchModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("");
 }
 
 async function refreshDashboard() {
@@ -5283,6 +5353,8 @@ function saveBatchDraft() {
     localStorage.setItem(key, JSON.stringify({
       version: BATCH_DRAFT_VERSION,
       filename: String(state.batchSpreadsheet?.name || state.batchSpreadsheetName || "").slice(0, 240),
+      platform: state.batchPlatform,
+      model: state.batchModel,
       ratio: String(els.batchTaskRatio?.value || "9:16"),
       pageSize: state.batchPageSize,
       autoConcurrency: Math.max(1, Math.min(batchConcurrencyLimit(), Number(els.batchAutoConcurrency?.value || 1))),
@@ -5324,6 +5396,9 @@ async function loadBatchDraft() {
     const stored = JSON.parse(localStorage.getItem(batchDraftStorageKey(owner)) || "null");
     if (!stored || stored.version !== BATCH_DRAFT_VERSION || !Array.isArray(stored.prompts)) throw new Error("no draft");
     state.batchSpreadsheetName = String(stored.filename || "").slice(0, 240);
+    state.batchPlatform = String(stored.platform || "dola");
+    state.batchModel = String(stored.model || "Seedance 2.0");
+    renderBatchPlatformControls();
     state.batchJobId = String(stored.batchJobId || "").slice(0, 80);
     state.batchSessionId = state.batchJobId;
     state.batchReferenceIsRealPerson = Boolean(stored.referenceIsRealPerson);
@@ -5520,6 +5595,9 @@ function resetBatchTaskPage() {
   if (els.batchReferenceIsRealPerson) els.batchReferenceIsRealPerson.checked = false;
   if (els.batchSpreadsheetName) els.batchSpreadsheetName.textContent = "未选择文件";
   if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
+  state.batchPlatform = "dola";
+  state.batchModel = "Seedance 2.0";
+  renderBatchPlatformControls();
   if (els.batchStatusFilter) els.batchStatusFilter.value = "all";
   if (els.batchSelectionLimit) els.batchSelectionLimit.value = "1";
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = "等待导入";
@@ -5825,6 +5903,9 @@ function applyPersistentBatchJob(job) {
   state.batchSessionId = state.batchJobId;
   state.batchJobRevision = Math.max(0, Number(job.revision || 0));
   state.batchJobCursorReady = true;
+  state.batchPlatform = String(job.platform || state.batchPlatform || "dola");
+  state.batchModel = String(job.model || state.batchModel || "Seedance 2.0");
+  renderBatchPlatformControls();
   if (Object.prototype.hasOwnProperty.call(job, "reference_is_real_person")) {
     state.batchReferenceIsRealPerson = Boolean(job.reference_is_real_person);
     if (els.batchReferenceIsRealPerson) els.batchReferenceIsRealPerson.checked = state.batchReferenceIsRealPerson;
@@ -6115,6 +6196,9 @@ async function autoSubmitBatchTasks() {
       return { client_index: index, sheet_row: Number(item.row || index + 1), prompt: item.prompt.trim(), image_count: (item.images || []).length };
     });
     form.append("manifest", JSON.stringify({
+      platform: state.batchPlatform,
+      model: state.batchModel,
+      duration: 15,
       ratio,
       concurrency,
       reference_id: referenceBundle?.id || "",
@@ -7109,6 +7193,16 @@ function bindEvents() {
     syncBatchConcurrencyControls();
     scheduleBatchDraftSave();
   });
+  els.batchPlatformSelect?.addEventListener("change", () => {
+    state.batchPlatform = els.batchPlatformSelect.value || "dola";
+    state.batchModel = "";
+    renderBatchPlatformControls();
+    scheduleBatchDraftSave();
+  });
+  els.batchModelSelect?.addEventListener("change", () => {
+    state.batchModel = els.batchModelSelect.value || "";
+    scheduleBatchDraftSave();
+  });
   els.batchTaskRatio?.addEventListener("change", scheduleBatchDraftSave);
   els.openMyPrompts?.addEventListener("click", () => {
     state.promptPickerPage = 1;
@@ -7197,6 +7291,13 @@ function bindEvents() {
   els.saveProxyConfig?.addEventListener("click", saveProxyConfig);
   els.testProxyApi?.addEventListener("click", testProxyApi);
   els.proxySource?.addEventListener("change", updateProxySourceFields);
+  for (const platform of ["dola", "doubao", "qianwen"]) {
+    els[`${platform}ProxySource`]?.addEventListener("change", () => {
+      state.platformProxySources[platform] = els[`${platform}ProxySource`].value || "direct";
+      renderPlatformProxyRouting();
+    });
+  }
+  els.savePlatformProxyRouting?.addEventListener("click", savePlatformProxyRouting);
   els.refreshProxyNodes?.addEventListener("click", () => loadProxyNodes(true));
   els.proxyEnabledSelect?.addEventListener("change", saveProxyMode);
   els.proxyAutoSelect?.addEventListener("change", saveProxyMode);

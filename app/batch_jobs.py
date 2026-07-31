@@ -51,7 +51,21 @@ def _write_local(payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str, concurrency: int, reference_id: str = "", reference_count: int = 0, reference_batch_id: str = "", reference_is_real_person: bool = False, job_id: str = "") -> dict[str, Any]:
+def create_job(
+    owner_token_hash: str,
+    rows: list[dict[str, Any]],
+    *,
+    ratio: str,
+    concurrency: int,
+    platform: str = "dola",
+    model: str = "Seedance 2.0",
+    duration: int = 15,
+    reference_id: str = "",
+    reference_count: int = 0,
+    reference_batch_id: str = "",
+    reference_is_real_person: bool = False,
+    job_id: str = "",
+) -> dict[str, Any]:
     job_id = str(job_id or "").strip().lower() or secrets.token_hex(16)
     if len(job_id) != 32 or any(character not in "0123456789abcdef" for character in job_id):
         raise ValueError("invalid batch job id")
@@ -80,9 +94,9 @@ def create_job(owner_token_hash: str, rows: list[dict[str, Any]], *, ratio: str,
         "owner_token_hash": str(owner_token_hash),
         "status": "queued",
         "ratio": str(ratio),
-        "duration": 15,
-        "platform": "dola",
-        "model": "Seedance 2.0",
+        "duration": max(1, int(duration)),
+        "platform": str(platform),
+        "model": str(model),
         "concurrency": max(1, int(concurrency)),
         "reference_id": str(reference_id or ""),
         "reference_count": max(0, int(reference_count or 0)),
@@ -298,6 +312,8 @@ def public_job(job: dict[str, Any], since_revision: int | None = None) -> dict[s
         "status": str(job.get("status") or "queued"),
         "ratio": str(job.get("ratio") or "9:16"),
         "duration": int(job.get("duration") or 15),
+        "platform": str(job.get("platform") or "dola"),
+        "model": str(job.get("model") or "Seedance 2.0"),
         "concurrency": int(job.get("concurrency") or 1),
         "reference_is_real_person": bool(job.get("reference_is_real_person")),
         "created_at": str(job.get("created_at") or ""),

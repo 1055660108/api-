@@ -860,7 +860,11 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
 
     prompt = repair_text(str(row.get("prompt") or "").strip())
     ratio = str(job.get("ratio") or DEFAULT_RATIO).strip()
-    platform, model = validate_task_platform_model("dola", str(job.get("model") or "Seedance 2.0"))
+    platform, model = validate_task_platform_model(
+        str(job.get("platform") or "dola"),
+        str(job.get("model") or "Seedance 2.0"),
+    )
+    duration = int(job.get("duration") or 15)
     if not prompt or ratio not in VALID_RATIOS:
         raise ValueError("批量任务参数无效")
     shared_reference_paths: list[Path] = []
@@ -898,7 +902,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
     fingerprint = _request_fingerprint(
         "batch-jobs",
         owner_hash,
-        {"job_id": job_id, "row_index": row_index, "prompt": prompt, "ratio": ratio, "duration": 15, "reference_is_real_person": reference_is_real_person, "images": [path.name for path in row_reference_paths]},
+        {"job_id": job_id, "row_index": row_index, "prompt": prompt, "ratio": ratio, "duration": duration, "platform": platform, "model": model, "reference_is_real_person": reference_is_real_person, "images": [path.name for path in row_reference_paths]},
     )
     meta: dict[str, object] | None = None
     reserved_access: AccessContext | None = None
@@ -918,7 +922,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
                 key,
                 fingerprint,
                 "batch-jobs",
-                15,
+                duration,
                 job_id,
                 row_index,
                 int(row.get("sheet_row") or 0),
@@ -2516,6 +2520,8 @@ def _proxy_config_payload(settings) -> dict:
         "proxy_api_scheme": settings.proxy_api_scheme,
         "proxy_api_timeout_seconds": settings.proxy_api_timeout_seconds,
         "proxy_source": settings.proxy_source,
+        "platform_proxy_sources": settings.platform_proxy_sources,
+        "platform_proxy_random": settings.platform_proxy_random,
         "proxy_subscription_configured": bool(settings.proxy_subscription_url),
         "proxy_subscription_scheme": settings.proxy_subscription_scheme,
         "proxy_subscription_refresh_seconds": settings.proxy_subscription_refresh_seconds,
@@ -3867,6 +3873,28 @@ async def update_proxy_api_config(
             if proxy_source not in {"subscription", "account", "api", "direct"}:
                 raise ValueError("proxy_source must be one of subscription, account, api, direct")
             updates["proxy_source"] = proxy_source
+        if "platform_proxy_sources" in payload:
+            raw_sources = payload.get("platform_proxy_sources")
+            if not isinstance(raw_sources, dict):
+                raise ValueError("platform_proxy_sources must be an object")
+            platform_sources = dict(current.platform_proxy_sources)
+            for platform in PLATFORM_LABELS:
+                if platform not in raw_sources:
+                    continue
+                source = str(raw_sources.get(platform) or "").strip().lower()
+                if source not in {"subscription", "account", "api", "direct"}:
+                    raise ValueError(f"invalid proxy source for {platform}")
+                platform_sources[platform] = source
+            updates["platform_proxy_sources"] = platform_sources
+        if "platform_proxy_random" in payload:
+            raw_random = payload.get("platform_proxy_random")
+            if not isinstance(raw_random, dict):
+                raise ValueError("platform_proxy_random must be an object")
+            platform_random = dict(current.platform_proxy_random)
+            for platform in PLATFORM_LABELS:
+                if platform in raw_random:
+                    platform_random[platform] = str(raw_random.get(platform)).strip().lower() in {"1", "true", "yes", "on"}
+            updates["platform_proxy_random"] = platform_random
         if next_url is not None:
             updates["proxy_api_url"] = validate_proxy_api_url(next_url)
         if next_scheme:
@@ -3954,6 +3982,16 @@ async def update_proxy_api_config(
             raise ValueError("proxy subscription is not configured")
         if selected_source == "api" and not str(updates.get("proxy_api_url", current.proxy_api_url)):
             raise ValueError("proxy api is not configured")
+        platform_sources = updates.get("platform_proxy_sources", current.platform_proxy_sources)
+        configured_sources = {
+            "subscription": bool(str(updates.get("proxy_subscription_url", current.proxy_subscription_url))),
+            "account": bool(list_account_proxies(current)["proxies"]),
+            "api": bool(str(updates.get("proxy_api_url", current.proxy_api_url))),
+            "direct": True,
+        }
+        for platform, source in platform_sources.items():
+            if not configured_sources.get(str(source), False):
+                raise ValueError(f"{PLATFORM_LABELS.get(platform, platform)} proxy source is not configured")
         update_config(updates)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -4159,6 +4197,16 @@ async def create_persistent_batch_job(
     ratio = str(payload.get("ratio") or DEFAULT_RATIO).strip()
     if ratio not in VALID_RATIOS:
         raise HTTPException(status_code=400, detail="invalid ratio")
+    platform, model = validate_task_platform_model(
+        str(payload.get("platform") or "dola"),
+        str(payload.get("model") or ""),
+    )
+    try:
+        duration = int(payload.get("duration") or 15)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="视频时长无效") from exc
+    if duration not in VALID_VIDEO_DURATIONS:
+        raise HTTPException(status_code=400, detail="视频时长仅支持 5、10 或 15 秒")
     try:
         concurrency = max(1, min(int(access.concurrency or 1), int(payload.get("concurrency") or access.concurrency or 1)))
     except (TypeError, ValueError) as exc:
@@ -4242,6 +4290,9 @@ async def create_persistent_batch_job(
             normalized_rows,
             ratio=ratio,
             concurrency=concurrency,
+            platform=platform,
+            model=model,
+            duration=duration,
             reference_id=reference_id,
             reference_count=reference_count,
             reference_batch_id=reference_batch_id,

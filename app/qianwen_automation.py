@@ -58,13 +58,23 @@ def best_qianwen_video_url(candidates: dict[str, int] | list[str]) -> str:
 
 
 class QianwenVideoAutomation:
-    def __init__(self, task_id: str, prompt: str, ratio: str, model: str, task_type: str = "video", account: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        task_id: str,
+        prompt: str,
+        ratio: str,
+        model: str,
+        task_type: str = "video",
+        account: dict[str, Any] | None = None,
+        proxy_session: Any | None = None,
+    ):
         self.task_id = task_id
         self.prompt = prompt
         self.ratio = ratio
         self.model = model
         self.task_type = "image" if task_type == "image" or model == "AI生图" else "video"
         self.account = account or {}
+        self.proxy_session = proxy_session
         self.settings = load_settings()
         ensure_dirs()
         self.profile_path = QIANWEN_PROFILES_DIR / str(self.account.get("id") or "unknown")
@@ -171,7 +181,12 @@ class QianwenVideoAutomation:
             reason = str(exc)[:500]
             if task_exists(self.task_id):
                 mark_pending(self.task_id, reason)
-            return {"success": False, "retryable": True, "reason": reason}
+            return {
+                "success": False,
+                "retryable": True,
+                "reason": reason,
+                "infrastructure_fault": self.proxy_session is not None,
+            }
 
     async def _run_once(self) -> dict[str, Any]:
         if not task_exists(self.task_id):
@@ -184,15 +199,33 @@ class QianwenVideoAutomation:
             return await self._run_profile()
 
     async def _run_profile(self) -> dict[str, Any]:
+        proxy_config = None
+        proxy_acquired = False
+        try:
+            if self.proxy_session is not None:
+                proxy_config = await self.proxy_session.acquire_browser_proxy()
+                proxy_acquired = True
+            return await self._run_browser(proxy_config)
+        except Exception:
+            if proxy_acquired:
+                self.proxy_session.mark_browser_proxy_unavailable(reason="qianwen_browser_failure")
+            raise
+        finally:
+            if self.proxy_session is not None:
+                await self.proxy_session.release_browser_proxy()
+
+    async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:
         async with async_playwright() as playwright:
-            context = await playwright.chromium.launch_persistent_context(
-                str(self.profile_path),
-                headless=self.settings.headless,
-                executable_path=resolve_browser_executable(self.settings.browser_executable_path),
-                locale="zh-CN",
-                viewport={"width": 1365, "height": 900},
-                args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
+            launch_options: dict[str, Any] = {
+                "headless": self.settings.headless,
+                "executable_path": resolve_browser_executable(self.settings.browser_executable_path),
+                "locale": "zh-CN",
+                "viewport": {"width": 1365, "height": 900},
+                "args": ["--disable-dev-shm-usage", "--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            }
+            if proxy_config:
+                launch_options["proxy"] = proxy_config
+            context = await playwright.chromium.launch_persistent_context(str(self.profile_path), **launch_options)
             page = None
             response_handler = None
             response_tasks: set[asyncio.Task[Any]] = set()

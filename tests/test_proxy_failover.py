@@ -13,6 +13,8 @@ def proxy_settings(primary: str) -> SimpleNamespace:
     return SimpleNamespace(
         proxy_enabled=True,
         proxy_source=primary,
+        platform_proxy_sources={"dola": primary, "doubao": primary, "qianwen": primary},
+        platform_proxy_random={"dola": False, "doubao": False, "qianwen": False},
         proxy_subscription_url="https://subscription.example/token",
         proxy_subscription_scheme="http",
         proxy_subscription_refresh_seconds=900,
@@ -56,6 +58,55 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.data_patch.stop()
         self.temporary_directory.cleanup()
+
+    async def test_platform_proxy_source_overrides_legacy_global_source(self) -> None:
+        instance = automation_instance()
+        instance.proxy_platform = "doubao"
+        settings = proxy_settings("subscription")
+        settings.platform_proxy_sources["doubao"] = "direct"
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock()
+        ) as subscription:
+            result = await instance._browser_proxy_config()
+
+        self.assertIsNone(result)
+        subscription.assert_not_awaited()
+
+    async def test_platform_random_mode_is_forwarded_to_subscription_pool(self) -> None:
+        instance = automation_instance()
+        instance.proxy_platform = "doubao"
+        settings = proxy_settings("subscription")
+        settings.platform_proxy_random["doubao"] = True
+        proxy = {"server": "http://127.0.0.1:7890", "node_id": "node-random", "node_name": "随机节点", "node_count": "2"}
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock(return_value=proxy)
+        ) as subscription:
+            await instance._browser_proxy_config()
+
+        self.assertTrue(subscription.await_args.kwargs["random_select"])
+
+    async def test_random_subscription_selection_ignores_fixed_node_without_auto_select(self) -> None:
+        nodes = (
+            proxy_manager.ProxyNode(id="fixed", name="fixed", country="JP", protocol="http", server="fixed.example", port=8001, uri="http://fixed.example:8001"),
+            proxy_manager.ProxyNode(id="other", name="other", country="US", protocol="http", server="other.example", port=8002, uri="http://other.example:8002"),
+        )
+        delay_state = {"fixed": (20, 1.0), "other": (30, 1.0)}
+        with patch.object(proxy_manager, "_NODE_DELAYS", delay_state), patch.object(proxy_manager.time, "monotonic", return_value=2.0), patch.object(
+            proxy_manager.secrets, "choice", return_value=(30, nodes[1])
+        ):
+            chosen = await proxy_manager._choose_subscription_node(
+                nodes,
+                "https://subscription.example/token",
+                timeout_seconds=10,
+                auto_select=False,
+                selected_node="fixed",
+                selected_countries=(),
+                latency_threshold_ms=5000,
+                excluded_node_ids=(),
+                random_select=True,
+            )
+
+        self.assertEqual(chosen.id, "other")
 
     async def test_subscription_mode_does_not_fall_back_to_authenticated_proxy(self) -> None:
         instance = automation_instance()

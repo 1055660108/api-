@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -87,6 +88,7 @@ class ReusableApiProxyPool:
         timeout_seconds: int,
         scheme: str,
         excluded_node_ids: set[str] | None = None,
+        random_select: bool = False,
     ) -> ApiProxyLease:
         excluded = {str(item) for item in excluded_node_ids or set() if str(item)}
         while True:
@@ -103,7 +105,10 @@ class ReusableApiProxyPool:
                     if not slot.invalid and slot.node_id not in excluded and slot.active < self.contexts_per_endpoint
                 ]
                 if candidates:
-                    selected = self._lease_slot(min(candidates, key=lambda slot: (slot.active, slot.node_id)))
+                    minimum_active = min(slot.active for slot in candidates)
+                    least_active = [slot for slot in candidates if slot.active == minimum_active]
+                    selected_slot = secrets.choice(least_active) if random_select else min(least_active, key=lambda slot: slot.node_id)
+                    selected = self._lease_slot(selected_slot)
                     return ApiProxyLease(self, selected)
                 known_node_ids = {slot.node_id for slot in self._slots}
                 refresh_wait_seconds = max(0.0, self._refresh_not_before - time.monotonic())

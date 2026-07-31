@@ -20,8 +20,18 @@
   "default_platform": "dola",
   "platform_models": {
     "dola": ["Seedance 2.0"],
-    "doubao": [],
-    "qianwen": []
+    "doubao": ["Seedance 2.0 Mini", "Seedance 2.0 Fast"],
+    "qianwen": ["万相 2.7"]
+  },
+  "model_durations": {
+    "dola": {"Seedance 2.0": [5, 10, 15]},
+    "doubao": {"Seedance 2.0 Mini": [10], "Seedance 2.0 Fast": [10]},
+    "qianwen": {"万相 2.7": [10]}
+  },
+  "model_duration_costs": {
+    "dola": {"Seedance 2.0": {"5": 1, "10": 1, "15": 1}},
+    "doubao": {"Seedance 2.0 Mini": {"10": 1}, "Seedance 2.0 Fast": {"10": 1}},
+    "qianwen": {"万相 2.7": {"10": 0.8}}
   },
   "proxy_api_url": "https://example.com/get-proxy?num=1&type=txt",
   "proxy_api_scheme": "http",

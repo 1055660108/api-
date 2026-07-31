@@ -13,6 +13,11 @@ DEFAULT_MODELS = {
     "doubao": ["Seedance 2.0 Mini", "Seedance 2.0 Fast"],
     "qianwen": ["万相 2.7"],
 }
+PLATFORM_VIDEO_DURATIONS = {
+    "dola": [5, 10, 15],
+    "doubao": [10],
+    "qianwen": [10],
+}
 
 
 def normalize_platform(value: str | None) -> str:

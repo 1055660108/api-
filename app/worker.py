@@ -864,6 +864,7 @@ class WorkerManager:
                         str(meta.get("ratio") or "9:16"),
                         str(meta.get("model") or "万相 2.7"),
                         str(meta.get("task_type") or "video"),
+                        int(meta.get("duration") or 10),
                         account=account,
                         proxy_session=proxy_session,
                     )

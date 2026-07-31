@@ -56,6 +56,13 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(model_cost_units("dola", "Seedance 2.0"), 17)
         self.assertEqual(model_cost_units("qianwen", "万相 2.7"), 8)
 
+    def test_model_costs_can_be_configured_per_duration(self) -> None:
+        config.ensure_config()
+        config.update_config({"model_duration_costs": {"dola": {"Seedance 2.0": {"5": 0.5, "10": 1.2, "15": 2.3}}, "doubao": {}, "qianwen": {}}})
+        self.assertEqual(model_cost_units("dola", "Seedance 2.0", duration=5), 5)
+        self.assertEqual(model_cost_units("dola", "Seedance 2.0", duration=10), 12)
+        self.assertEqual(model_cost_units("dola", "Seedance 2.0", duration=15), 23)
+
     def test_free_quota_is_reserved_before_credits(self) -> None:
         token = temp_access.create_temp_tokens(1, 1)[0]
         temp_access.add_temp_credit_units(token["id"], 20)

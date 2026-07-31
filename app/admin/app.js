@@ -273,6 +273,7 @@ const els = {
   ratioTrigger: document.querySelector("#ratioGroup .ratio-trigger"),
   platformSelect: document.getElementById("platformSelect"),
   modelSelect: document.getElementById("modelSelect"),
+  durationSelect: document.getElementById("durationSelect"),
   preferredAccountSelect: document.getElementById("preferredAccountSelect"),
   resetSubmit: document.getElementById("resetSubmit"),
   submitTask: document.getElementById("submitTask"),
@@ -290,6 +291,7 @@ const els = {
   batchReferenceIsRealPerson: document.getElementById("batchReferenceIsRealPerson"),
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
   batchModelSelect: document.getElementById("batchModelSelect"),
+  batchDurationSelect: document.getElementById("batchDurationSelect"),
   batchTaskRatio: document.getElementById("batchTaskRatio"),
   batchStatusFilter: document.getElementById("batchStatusFilter"),
   batchSelectionLimit: document.getElementById("batchSelectionLimit"),
@@ -643,6 +645,7 @@ const state = {
   ratio: "9:16",
   platform: "dola",
   model: "Seedance 2.0",
+  duration: 15,
   platforms: [],
   images: [],
   modalText: "",
@@ -654,6 +657,7 @@ const state = {
   batchSpreadsheetName: "",
   batchPlatform: "dola",
   batchModel: "Seedance 2.0",
+  batchDuration: 15,
   batchPrompts: [],
   batchStatusFilter: "all",
   batchRetrying: false,
@@ -1139,6 +1143,8 @@ function setSubmitControlsDisabled(disabled) {
   els.imageInput.disabled = disabled;
   if (els.referenceIsRealPerson) els.referenceIsRealPerson.disabled = disabled;
   if (els.preferredAccountSelect) els.preferredAccountSelect.disabled = disabled;
+  if (els.modelSelect) els.modelSelect.disabled = disabled;
+  if (els.durationSelect) els.durationSelect.disabled = disabled || !configuredModelDurations(state.platform, state.model).length;
   els.submitTask.disabled = disabled || (portal === "client" && state.freeRemaining + state.points <= 0);
   if (els.resetSubmit) els.resetSubmit.disabled = disabled;
   els.ratioTrigger.disabled = disabled;
@@ -1645,7 +1651,7 @@ function applyPortalText() {
 
 function updateBillingPreview() {
   const selectedPlatform = state.platforms.find((item) => item.id === state.platform);
-  const modelCost = Number(selectedPlatform?.model_costs?.[state.model] ?? 1);
+  const modelCost = Number(selectedPlatform?.model_duration_costs?.[state.model]?.[String(state.duration)] ?? selectedPlatform?.model_costs?.[state.model] ?? 1);
   const membershipDiscount = Math.max(0, Number(state.membership?.task_discount_points || 0));
   const discountedCost = Math.max(0.1, Math.round((modelCost - membershipDiscount) * 10) / 10);
   const usePoints = state.billingPriority === "points_first" && state.points >= discountedCost;
@@ -3951,11 +3957,33 @@ async function loadPlatforms() {
   if (portal === "admin") await loadPreferredAccounts();
 }
 
+const PLATFORM_DURATION_DEFAULTS = { dola: [5, 10, 15], doubao: [10], qianwen: [10] };
+
+function supportedPlatformDurations(platformId) {
+  const platform = state.platforms.find((item) => String(item.id) === String(platformId));
+  const values = Array.isArray(platform?.supported_durations) ? platform.supported_durations : PLATFORM_DURATION_DEFAULTS[platformId] || [10];
+  return values.map(Number).filter((value) => Number.isInteger(value) && value > 0);
+}
+
+function configuredModelDurations(platformId, modelName) {
+  const platform = state.platforms.find((item) => String(item.id) === String(platformId));
+  const configured = platform?.model_durations?.[modelName]
+    ?? (platform?.all_models || []).find((item) => String(item.name) === String(modelName))?.durations;
+  const supported = supportedPlatformDurations(platformId);
+  const selected = Array.isArray(configured) ? configured.map(Number) : supported;
+  return supported.filter((duration) => selected.includes(duration));
+}
+
+function modelDurationToggles(platformId, selectedDurations = supportedPlatformDurations(platformId), durationCosts = {}) {
+  const selected = new Set((selectedDurations || []).map(Number));
+  return `<span class="model-duration-field" aria-label="可用时长和积分">${supportedPlatformDurations(platformId).map((duration) => `<span class="model-duration-option"><label><input type="checkbox" data-model-duration value="${duration}" ${selected.has(duration) ? "checked" : ""}><span>${duration} 秒</span></label><span class="model-duration-cost"><input type="number" data-model-duration-cost="${duration}" min="0.1" step="0.1" value="${escapeHtml(durationCosts?.[String(duration)] ?? 1)}"><em>积分</em></span></span>`).join("")}</span>`;
+}
+
 function renderModelConfig() {
   if (!els.modelConfigList || portal !== "admin") return;
   els.modelConfigList.innerHTML = state.platforms.map((platform) => {
     const models = Array.isArray(platform.all_models) ? platform.all_models : (platform.models || []).map((name) => ({ name, enabled: true, cost: platform.model_costs?.[name] ?? 1 }));
-    const rows = models.map((item) => `<label class="model-config-row"><input type="checkbox" data-model-enabled ${item.enabled !== false ? "checked" : ""}><input type="text" data-model-name value="${escapeHtml(item.name || "")}"><span class="model-cost-field"><input type="number" data-model-cost min="0.1" step="0.1" value="${escapeHtml(item.cost ?? platform.model_costs?.[item.name] ?? 1)}"><em>积分/次</em></span><button class="secondary-button" type="button" data-remove-model>删除</button></label>`).join("");
+    const rows = models.map((item) => `<div class="model-config-row"><input type="checkbox" data-model-enabled ${item.enabled !== false ? "checked" : ""}><input type="text" data-model-name value="${escapeHtml(item.name || "")}">${modelDurationToggles(platform.id, item.durations, item.duration_costs ?? platform.model_duration_costs?.[item.name])}<button class="secondary-button" type="button" data-remove-model>删除</button></div>`).join("");
     return `<section class="model-config-platform" data-model-platform="${escapeHtml(platform.id)}"><div class="model-config-heading"><strong>${escapeHtml(platform.label || platform.id)}</strong><span>${models.length} 个模型</span><button class="secondary-button" type="button" data-add-model>添加</button></div><div class="model-config-rows" data-model-rows>${rows}</div></section>`;
   }).join("");
   if (els.modelConfigDisplay) {
@@ -3968,14 +3996,19 @@ function renderModelConfig() {
 async function saveModelConfig() {
   const platforms = Array.from(els.modelConfigList.querySelectorAll("[data-model-platform]")).map((section) => ({
     id: section.dataset.modelPlatform,
-    models: Array.from(section.querySelectorAll(".model-config-row")).map((row) => ({
-      name: row.querySelector("[data-model-name]").value.trim(),
-      enabled: row.querySelector("[data-model-enabled]").checked,
-      cost: Number(row.querySelector("[data-model-cost]").value),
-    })).filter((item) => item.name),
+    models: Array.from(section.querySelectorAll(".model-config-row")).map((row) => {
+      const durationCosts = Object.fromEntries(Array.from(row.querySelectorAll("[data-model-duration-cost]")).map((input) => [String(input.dataset.modelDurationCost), Number(input.value)]));
+      return {
+        name: row.querySelector("[data-model-name]").value.trim(),
+        enabled: row.querySelector("[data-model-enabled]").checked,
+        cost: Object.values(durationCosts)[0] ?? 1,
+        durations: Array.from(row.querySelectorAll("[data-model-duration]:checked")).map((input) => Number(input.value)),
+        duration_costs: durationCosts,
+      };
+    }).filter((item) => item.name),
   }));
-  if (platforms.some((platform) => platform.models.some((model) => !Number.isFinite(model.cost) || model.cost <= 0 || !Number.isInteger(model.cost * 10)))) {
-    toast("模型积分必须为正数且精确到 0.1", "error");
+  if (platforms.some((platform) => platform.models.some((model) => Object.values(model.duration_costs).some((cost) => !Number.isFinite(cost) || cost <= 0 || !Number.isInteger(cost * 10))))) {
+    toast("各时长积分必须为正数且精确到 0.1", "error");
     return;
   }
   setBusy(els.saveModelConfig, true, "保存中");
@@ -4037,7 +4070,24 @@ function renderPlatformControls() {
   state.model = selected.model;
   els.platformSelect.value = state.platform;
   els.modelSelect.innerHTML = choices.map((item) => `<option value="${escapeHtml(`${item.platform}::${item.model}`)}"${item.platform === state.platform && item.model === state.model ? " selected" : ""}>${escapeHtml(item.model)}</option>`).join("");
+  renderTaskDurationControl();
   renderBatchModelControl();
+}
+
+function selectedDuration(current, choices, preferred) {
+  const normalized = Number(current || 0);
+  if (choices.includes(normalized)) return normalized;
+  if (choices.includes(preferred)) return preferred;
+  return choices[0] || 0;
+}
+
+function renderTaskDurationControl() {
+  if (!els.durationSelect) return;
+  const choices = configuredModelDurations(state.platform, state.model);
+  state.duration = selectedDuration(state.duration, choices, state.platform === "dola" ? 15 : 10);
+  els.durationSelect.innerHTML = choices.map((duration) => `<option value="${duration}"${duration === state.duration ? " selected" : ""}>${duration} 秒</option>`).join("");
+  els.durationSelect.disabled = state.submitting || !choices.length;
+  updateBillingPreview();
 }
 
 function batchModelChoices() {
@@ -4062,6 +4112,15 @@ function renderBatchModelControl() {
     const isSelected = item.platform === state.batchPlatform && item.model === state.batchModel;
     return `<option value="${escapeHtml(value)}"${isSelected ? " selected" : ""}>${escapeHtml(item.model)}</option>`;
   }).join("");
+  renderBatchDurationControl();
+}
+
+function renderBatchDurationControl() {
+  if (!els.batchDurationSelect) return;
+  const choices = configuredModelDurations(state.batchPlatform, state.batchModel);
+  state.batchDuration = selectedDuration(state.batchDuration, choices, state.batchPlatform === "dola" ? 15 : 10);
+  els.batchDurationSelect.innerHTML = choices.map((duration) => `<option value="${duration}"${duration === state.batchDuration ? " selected" : ""}>${duration} 秒</option>`).join("");
+  els.batchDurationSelect.disabled = state.batchSubmitting || state.batchAutoRunning || !choices.length;
 }
 
 async function refreshDashboard() {
@@ -4973,6 +5032,7 @@ function resetSubmitForm(options = {}) {
   els.imageInput.value = "";
   if (els.referenceIsRealPerson) els.referenceIsRealPerson.checked = false;
   if (els.preferredAccountSelect) els.preferredAccountSelect.value = "";
+  renderTaskDurationControl();
   renderImages();
   els.submitState.textContent = "待提交";
 }
@@ -4983,6 +5043,7 @@ function currentSubmitFingerprint(prompt) {
     ratio: state.ratio,
     platform: state.platform || "dola",
     model: state.model || "",
+    duration: state.duration,
     preferredAccountId: portal === "admin" ? (els.preferredAccountSelect?.value || "") : "",
     referenceIsRealPerson: Boolean(els.referenceIsRealPerson?.checked),
     images: state.images.map((file) => [file.name, file.size, file.lastModified]),
@@ -5016,6 +5077,7 @@ async function submitTask(event) {
   form.append("ratio", state.ratio);
   form.append("platform", state.platform || "dola");
   form.append("model", state.model || "");
+  form.append("duration", String(state.duration));
   form.append("reference_is_real_person", els.referenceIsRealPerson?.checked ? "true" : "false");
   if (portal === "admin" && els.preferredAccountSelect?.value) form.append("preferred_account_id", els.preferredAccountSelect.value);
   state.images.forEach((file) => form.append("images", file, file.name));
@@ -5057,7 +5119,6 @@ async function submitTask(event) {
   }
 }
 
-const BATCH_VIDEO_DURATION = "15";
 const BATCH_DRAFT_VERSION = 1;
 const BATCH_IMAGE_DB_NAME = "dfyue_batch_images";
 const BATCH_IMAGE_DB_VERSION = 2;
@@ -5365,6 +5426,7 @@ function saveBatchDraft() {
       filename: String(state.batchSpreadsheet?.name || state.batchSpreadsheetName || "").slice(0, 240),
       platform: state.batchPlatform,
       model: state.batchModel,
+      duration: state.batchDuration,
       ratio: String(els.batchTaskRatio?.value || "9:16"),
       pageSize: state.batchPageSize,
       autoConcurrency: Math.max(1, Math.min(batchConcurrencyLimit(), Number(els.batchAutoConcurrency?.value || 1))),
@@ -5408,6 +5470,7 @@ async function loadBatchDraft() {
     state.batchSpreadsheetName = String(stored.filename || "").slice(0, 240);
     state.batchPlatform = String(stored.platform || "dola");
     state.batchModel = String(stored.model || "Seedance 2.0");
+    state.batchDuration = Number(stored.duration || (state.batchPlatform === "dola" ? 15 : 10));
     renderBatchModelControl();
     state.batchJobId = String(stored.batchJobId || "").slice(0, 80);
     state.batchSessionId = state.batchJobId;
@@ -5607,6 +5670,7 @@ function resetBatchTaskPage() {
   if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
   state.batchPlatform = "dola";
   state.batchModel = "Seedance 2.0";
+  state.batchDuration = 15;
   renderBatchModelControl();
   if (els.batchStatusFilter) els.batchStatusFilter.value = "all";
   if (els.batchSelectionLimit) els.batchSelectionLimit.value = "1";
@@ -6208,7 +6272,7 @@ async function autoSubmitBatchTasks() {
     form.append("manifest", JSON.stringify({
       platform: state.batchPlatform,
       model: state.batchModel,
-      duration: 15,
+      duration: state.batchDuration,
       ratio,
       concurrency,
       reference_id: referenceBundle?.id || "",
@@ -7210,6 +7274,11 @@ function bindEvents() {
       state.batchPlatform = selected.platform;
       state.batchModel = selected.model;
     }
+    renderBatchDurationControl();
+    scheduleBatchDraftSave();
+  });
+  els.batchDurationSelect?.addEventListener("change", () => {
+    state.batchDuration = Number(els.batchDurationSelect.value || 0);
     scheduleBatchDraftSave();
   });
   els.batchTaskRatio?.addEventListener("change", scheduleBatchDraftSave);
@@ -7349,7 +7418,7 @@ function bindEvents() {
     const section = event.target.closest("[data-model-platform]");
     if (!section) return;
     if (event.target.closest("[data-add-model]")) {
-      section.querySelector("[data-model-rows]").insertAdjacentHTML("beforeend", '<label class="model-config-row"><input type="checkbox" data-model-enabled checked><input type="text" data-model-name placeholder="模型名称"><span class="model-cost-field"><input type="number" data-model-cost min="0.1" step="0.1" value="1"><em>积分/次</em></span><button class="secondary-button" type="button" data-remove-model>删除</button></label>');
+      section.querySelector("[data-model-rows]").insertAdjacentHTML("beforeend", `<div class="model-config-row"><input type="checkbox" data-model-enabled checked><input type="text" data-model-name placeholder="模型名称">${modelDurationToggles(section.dataset.modelPlatform)}<button class="secondary-button" type="button" data-remove-model>删除</button></div>`);
     }
     if (event.target.closest("[data-remove-model]")) event.target.closest(".model-config-row")?.remove();
   });
@@ -7371,9 +7440,14 @@ function bindEvents() {
     const [platform, ...parts] = String(els.modelSelect.value || "").split("::");
     state.platform = platform || "dola";
     state.model = parts.join("::");
+    renderTaskDurationControl();
     applyAccessScope();
     els.platformSelect.value = state.platform;
     loadPreferredAccounts().catch((error) => toast(`可用账号读取失败：${error.message}`, "error"));
+  });
+  els.durationSelect?.addEventListener("change", () => {
+    state.duration = Number(els.durationSelect.value || 0);
+    updateBillingPreview();
   });
   els.accountForm?.addEventListener("submit", importAccount);
   els.accountTaskSearch?.addEventListener("input", () => {

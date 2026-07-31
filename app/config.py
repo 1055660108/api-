@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import copy
 import json
 import hashlib
 import os
@@ -13,7 +14,7 @@ from typing import Any, Mapping
 from urllib.parse import quote, unquote, urlparse
 
 from .admin_auth import hash_password, validate_username
-from .platforms import DEFAULT_MODELS, DEFAULT_PLATFORM, normalize_platform
+from .platforms import DEFAULT_MODELS, DEFAULT_PLATFORM, PLATFORM_VIDEO_DURATIONS, normalize_platform
 
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +47,17 @@ DEFAULT_MODEL_COSTS = {
     "dola": {"Seedance 2.0": 1},
     "doubao": {"Seedance 2.0 Mini": 1, "Seedance 2.0 Fast": 1},
     "qianwen": {"万相 2.7": 0.8, "万相 2.6": 0.5, "HappyHorse 1.0": 0.8},
+}
+DEFAULT_MODEL_DURATIONS = {
+    platform: {model: list(PLATFORM_VIDEO_DURATIONS[platform]) for model in models}
+    for platform, models in DEFAULT_MODELS.items()
+}
+DEFAULT_MODEL_DURATION_COSTS = {
+    platform: {
+        model: {str(duration): DEFAULT_MODEL_COSTS.get(platform, {}).get(model, 1) for duration in durations}
+        for model, durations in models.items()
+    }
+    for platform, models in DEFAULT_MODEL_DURATIONS.items()
 }
 
 
@@ -104,6 +116,8 @@ def default_config() -> dict[str, Any]:
         "platform_models": DEFAULT_MODELS,
         "platform_model_states": {},
         "model_costs": DEFAULT_MODEL_COSTS,
+        "model_durations": DEFAULT_MODEL_DURATIONS,
+        "model_duration_costs": DEFAULT_MODEL_DURATION_COSTS,
         "proxy_api_url": "",
         "proxy_api_scheme": "http",
         "proxy_api_timeout_seconds": 20,
@@ -291,6 +305,18 @@ def update_config(updates: Mapping[str, Any]) -> dict[str, Any]:
 
         data = {key: raw.get(key, value) for key, value in defaults.items()}
         data.update(updates)
+        if "model_costs" in updates and "model_duration_costs" not in updates:
+            raw_model_costs = updates.get("model_costs") if isinstance(updates.get("model_costs"), dict) else {}
+            duration_costs = copy.deepcopy(data.get("model_duration_costs") or {})
+            for platform, platform_costs in raw_model_costs.items():
+                if platform not in PLATFORM_VIDEO_DURATIONS or not isinstance(platform_costs, dict):
+                    continue
+                duration_costs.setdefault(platform, {})
+                for model, cost in platform_costs.items():
+                    duration_costs[platform][str(model)] = {
+                        str(duration): cost for duration in PLATFORM_VIDEO_DURATIONS[platform]
+                    }
+            data["model_duration_costs"] = duration_costs
         if not data.get("api_token"):
             data["api_token"] = secrets.token_urlsafe(32)
 
@@ -332,6 +358,8 @@ class Settings:
     platform_models: dict[str, list[str]]
     platform_model_states: dict[str, dict[str, bool]]
     model_costs: dict[str, dict[str, int | float]]
+    model_durations: dict[str, dict[str, list[int]]]
+    model_duration_costs: dict[str, dict[str, dict[int, int | float]]]
     proxy_api_url: str
     proxy_api_scheme: str
     proxy_api_timeout_seconds: int
@@ -406,9 +434,13 @@ def load_settings() -> Settings:
     raw_models = data.get("platform_models") if isinstance(data.get("platform_models"), dict) else {}
     raw_states = data.get("platform_model_states") if isinstance(data.get("platform_model_states"), dict) else {}
     raw_costs = data.get("model_costs") if isinstance(data.get("model_costs"), dict) else {}
+    raw_durations = data.get("model_durations") if isinstance(data.get("model_durations"), dict) else {}
+    raw_duration_costs = data.get("model_duration_costs") if isinstance(data.get("model_duration_costs"), dict) else {}
     platform_models: dict[str, list[str]] = {}
     platform_model_states: dict[str, dict[str, bool]] = {}
     model_costs: dict[str, dict[str, int | float]] = {}
+    model_durations: dict[str, dict[str, list[int]]] = {}
+    model_duration_costs: dict[str, dict[str, dict[int, int | float]]] = {}
     for platform, defaults in DEFAULT_MODELS.items():
         values = raw_models.get(platform, defaults) if isinstance(raw_models, dict) else defaults
         if isinstance(values, list):
@@ -421,6 +453,11 @@ def load_settings() -> Settings:
         costs = raw_costs.get(platform, {}) if isinstance(raw_costs.get(platform, {}), dict) else {}
         default_costs = DEFAULT_MODEL_COSTS.get(platform, {})
         model_costs[platform] = {}
+        configured_durations = raw_durations.get(platform, {}) if isinstance(raw_durations.get(platform, {}), dict) else {}
+        supported_durations = PLATFORM_VIDEO_DURATIONS[platform]
+        model_durations[platform] = {}
+        configured_duration_costs = raw_duration_costs.get(platform, {}) if isinstance(raw_duration_costs.get(platform, {}), dict) else {}
+        model_duration_costs[platform] = {}
         for model in models:
             value = costs.get(model, default_costs.get(model, 1))
             try:
@@ -430,6 +467,26 @@ def load_settings() -> Settings:
             if cost <= 0 or round(cost * 10) != cost * 10:
                 cost = 1.0
             model_costs[platform][model] = int(cost) if cost.is_integer() else cost
+            raw_model_durations = configured_durations.get(model, supported_durations)
+            if not isinstance(raw_model_durations, list):
+                raw_model_durations = supported_durations
+            selected = {
+                int(item)
+                for item in raw_model_durations
+                if isinstance(item, (int, float, str)) and str(item).strip().isdigit() and int(item) in supported_durations
+            }
+            model_durations[platform][model] = [duration for duration in supported_durations if duration in selected]
+            raw_model_duration_costs = configured_duration_costs.get(model, {}) if isinstance(configured_duration_costs.get(model, {}), dict) else {}
+            model_duration_costs[platform][model] = {}
+            for duration in supported_durations:
+                value = raw_model_duration_costs.get(str(duration), raw_model_duration_costs.get(duration, model_costs[platform][model]))
+                try:
+                    duration_cost = float(value)
+                except (TypeError, ValueError):
+                    duration_cost = float(model_costs[platform][model])
+                if duration_cost <= 0 or round(duration_cost * 10) != duration_cost * 10:
+                    duration_cost = float(model_costs[platform][model])
+                model_duration_costs[platform][model][duration] = int(duration_cost) if duration_cost.is_integer() else duration_cost
     return Settings(
         api_token=str(data.get("api_token") or ""),
         account_access_key_hash=str(data.get("account_access_key_hash") or ""),
@@ -457,6 +514,8 @@ def load_settings() -> Settings:
         platform_models=platform_models,
         platform_model_states=platform_model_states,
         model_costs=model_costs,
+        model_durations=model_durations,
+        model_duration_costs=model_duration_costs,
         proxy_api_url=str(data.get("proxy_api_url") or "").strip(),
         proxy_api_scheme=proxy_api_scheme,
         proxy_api_timeout_seconds=max(3, int(data.get("proxy_api_timeout_seconds") or 20)),

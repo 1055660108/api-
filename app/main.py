@@ -66,7 +66,7 @@ from .email_verification import consume_registration_code, normalize_domains, no
 from .feedback import create_feedback, delete_feedback, list_feedback, list_feedback_for_user, update_feedback
 from .invitation_codes import complete_reservation as complete_invitation_reservation, delete_code as delete_invitation_code, generate_codes as generate_invitation_codes, invitation_state, registration_required as invitation_registration_required, release_reservation as release_invitation_reservation, reserve_code as reserve_invitation_code, set_registration_required as set_invitation_registration_required, update_code_note as update_invitation_code_note
 from .notifications import create_announcement, create_notifications, delete_announcement, delete_notification, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, update_announcement
-from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, normalize_model, normalize_platform
+from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, PLATFORM_VIDEO_DURATIONS, normalize_model, normalize_platform
 from .query import query_task
 from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
@@ -139,7 +139,6 @@ IMAGE_MAGIC = {
     ".png": (b"\x89PNG\r\n\x1a\n",),
     ".webp": (b"RIFF",),
 }
-VALID_VIDEO_DURATIONS = {5, 10, 15}
 MAX_REFERENCE_IMAGE_NAME_LENGTH = 180
 logger = logging.getLogger(__name__)
 
@@ -864,7 +863,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
         str(job.get("platform") or "dola"),
         str(job.get("model") or "Seedance 2.0"),
     )
-    duration = int(job.get("duration") or 15)
+    duration = validate_task_duration(platform, model, int(job.get("duration") or 0) or None)
     if not prompt or ratio not in VALID_RATIOS:
         raise ValueError("批量任务参数无效")
     shared_reference_paths: list[Path] = []
@@ -930,7 +929,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
             resumed_initializing = not created and str(meta.get("status") or "") == "initializing"
             if not created and not resumed_initializing:
                 return str(meta["id"])
-            base_cost_units = model_cost_units(platform, model, "video")
+            base_cost_units = model_cost_units(platform, model, "video", duration)
             discount_units = await _storage_call(membership_task_discount_units_by_token_hash, owner_hash)
             cost_units = max(1, base_cost_units - discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
@@ -1392,6 +1391,7 @@ class OpenAIChatRequest(BaseModel):
     n: int = 1
     ratio: str = DEFAULT_RATIO
     task_type: str = "video"
+    duration: int | None = None
 
 
 class BulkTaskRetryRequest(BaseModel):
@@ -1594,6 +1594,23 @@ def validate_task_platform_model(platform_value: str | None, model_value: str | 
     if platform == "qianwen" and not model:
         model = "万相 2.7"
     return platform, model
+
+
+def validate_task_duration(platform: str, model: str, duration_value: int | None) -> int:
+    settings = load_settings()
+    enabled = list(settings.model_durations.get(platform, {}).get(model, []))
+    if not enabled:
+        raise HTTPException(status_code=400, detail="该模型暂无已启用时长")
+    if duration_value is None:
+        preferred = settings.video_duration if platform == "dola" else 10
+        return preferred if preferred in enabled else enabled[0]
+    try:
+        duration = int(duration_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="视频时长无效") from exc
+    if duration not in enabled:
+        raise HTTPException(status_code=400, detail=f"该模型未开启 {duration} 秒时长")
+    return duration
 
 
 @app.get("/health", dependencies=[Depends(require_token)])
@@ -3023,13 +3040,32 @@ async def platforms_config():
             {
                 "id": platform,
                 "label": PLATFORM_LABELS.get(platform, platform),
-                "models": [model for model in settings.platform_models.get(platform, []) if settings.platform_model_states.get(platform, {}).get(model, True)],
+                "models": [
+                    model
+                    for model in settings.platform_models.get(platform, [])
+                    if settings.platform_model_states.get(platform, {}).get(model, True)
+                    and settings.model_durations.get(platform, {}).get(model, [])
+                ],
                 "model_costs": {model: model_cost_points(platform, model) for model in settings.platform_models.get(platform, [])},
+                "model_durations": {model: settings.model_durations.get(platform, {}).get(model, []) for model in settings.platform_models.get(platform, [])},
+                "model_duration_costs": {
+                    model: {
+                        str(duration): model_cost_points(platform, model, duration=duration)
+                        for duration in PLATFORM_VIDEO_DURATIONS[platform]
+                    }
+                    for model in settings.platform_models.get(platform, [])
+                },
+                "supported_durations": list(PLATFORM_VIDEO_DURATIONS[platform]),
                 "all_models": [
                     {
                         "name": model,
                         "enabled": settings.platform_model_states.get(platform, {}).get(model, True),
                         "cost": model_cost_points(platform, model),
+                        "durations": settings.model_durations.get(platform, {}).get(model, []),
+                        "duration_costs": {
+                            str(duration): model_cost_points(platform, model, duration=duration)
+                            for duration in PLATFORM_VIDEO_DURATIONS[platform]
+                        },
                     }
                     for model in settings.platform_models.get(platform, [])
                 ],
@@ -3046,7 +3082,7 @@ async def openai_models(_access: Annotated[AccessContext, Depends(require_openai
     data = []
     for platform in PLATFORM_LABELS:
         for model in settings.platform_models.get(platform, []):
-            if settings.platform_model_states.get(platform, {}).get(model, True):
+            if settings.platform_model_states.get(platform, {}).get(model, True) and settings.model_durations.get(platform, {}).get(model, []):
                 data.append({"id": f"{platform}:{model}", "object": "model", "created": 0, "owned_by": platform})
     return {"object": "list", "data": data}
 
@@ -3084,15 +3120,19 @@ async def openai_chat_completions(
         raise OpenAIAPIError(400, "Invalid ratio", "invalid_request_error", "ratio", "invalid_value")
     if platform == "qianwen" and payload.task_type != "video":
         raise OpenAIAPIError(400, "Qianwen only supports video tasks", "invalid_request_error", "task_type", "unsupported_value")
+    try:
+        duration = validate_task_duration(platform, model, payload.duration)
+    except HTTPException as exc:
+        raise OpenAIAPIError(400, str(exc.detail), "invalid_request_error", "duration", "invalid_value")
     task_type = "video"
     await _rate_limit(request, "openai-task", 30, 60, access.token_hash)
     key = _idempotency_key(idempotency_key)
-    fingerprint = _request_fingerprint("openai", access.token_hash, {"prompt": repair_text(prompt), "ratio": payload.ratio, "platform": platform, "model": model, "task_type": task_type})
+    fingerprint = _request_fingerprint("openai", access.token_hash, {"prompt": repair_text(prompt), "ratio": payload.ratio, "duration": duration, "platform": platform, "model": model, "task_type": task_type})
     try:
         if key:
-            meta, created = find_or_create_task(repair_text(prompt), payload.ratio, access.token_hash if access.is_temp else "", platform, model, task_type, key, fingerprint, "openai")
+            meta, created = find_or_create_task(repair_text(prompt), payload.ratio, access.token_hash if access.is_temp else "", platform, model, task_type, key, fingerprint, "openai", duration)
         else:
-            meta, created = create_task(repair_text(prompt), payload.ratio, owner_token_hash=access.token_hash if access.is_temp else "", platform=platform, model=model, task_type=task_type, enqueue=False), True
+            meta, created = create_task(repair_text(prompt), payload.ratio, owner_token_hash=access.token_hash if access.is_temp else "", platform=platform, model=model, task_type=task_type, enqueue=False, duration=duration), True
         if not created:
             task_id = str(meta["id"])
             content = json.dumps({"task_id": task_id, "status": str(meta.get("status") or "submitted"), "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
@@ -3101,7 +3141,7 @@ async def openai_chat_completions(
         if access.is_temp:
             access = get_temp_context_by_hash(access.token_hash) or access
             queued_for_concurrency = active_task_count_for_owner(access.token_hash) >= access.concurrency
-        base_cost_units = model_cost_units(platform, model, task_type)
+        base_cost_units = model_cost_units(platform, model, task_type, duration)
         discount_units = membership_task_discount_units_by_token_hash(access.token_hash) if access.is_temp else 0
         cost_units = max(1, base_cost_units - discount_units)
         user_id = _transaction_user_id(access)
@@ -3164,6 +3204,8 @@ async def update_platforms_config(request: Request):
     models_by_platform: dict[str, list[str]] = {platform: [] for platform in PLATFORM_LABELS}
     states_by_platform: dict[str, dict[str, bool]] = {platform: {} for platform in PLATFORM_LABELS}
     costs_by_platform: dict[str, dict[str, int | float]] = {platform: {} for platform in PLATFORM_LABELS}
+    durations_by_platform: dict[str, dict[str, list[int]]] = {platform: {} for platform in PLATFORM_LABELS}
+    duration_costs_by_platform: dict[str, dict[str, dict[str, int | float]]] = {platform: {} for platform in PLATFORM_LABELS}
     for item in raw_platforms:
         if not isinstance(item, dict):
             continue
@@ -3183,20 +3225,38 @@ async def update_platforms_config(request: Request):
                     cost = units_to_points(points_to_units(raw_model.get("cost", 1)))
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=f"{platform} {model or '模型'}: {exc}")
+                raw_durations = raw_model.get("durations", PLATFORM_VIDEO_DURATIONS[platform])
+                if not isinstance(raw_durations, list):
+                    raise HTTPException(status_code=400, detail=f"{platform} {model or '模型'}: 时长配置无效")
+                unsupported = [value for value in raw_durations if not isinstance(value, int) or value not in PLATFORM_VIDEO_DURATIONS[platform]]
+                if unsupported:
+                    raise HTTPException(status_code=400, detail=f"{platform} {model or '模型'}: 包含不支持的时长")
+                durations = [value for value in PLATFORM_VIDEO_DURATIONS[platform] if value in raw_durations]
+                raw_duration_costs = raw_model.get("duration_costs") if isinstance(raw_model.get("duration_costs"), dict) else {}
+                duration_costs: dict[str, int | float] = {}
+                for duration in PLATFORM_VIDEO_DURATIONS[platform]:
+                    try:
+                        duration_costs[str(duration)] = units_to_points(points_to_units(raw_duration_costs.get(str(duration), cost)))
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=f"{platform} {model or '模型'} {duration} 秒: {exc}")
             else:
                 model = normalize_model(str(raw_model or ""))
                 enabled = True
                 cost = model_cost_points(platform, model)
+                durations = list(PLATFORM_VIDEO_DURATIONS[platform])
+                duration_costs = {str(duration): model_cost_points(platform, model, duration=duration) for duration in durations}
             if not model or model in seen:
                 continue
             seen.add(model)
             models_by_platform[platform].append(model)
             states_by_platform[platform][model] = enabled
             costs_by_platform[platform][model] = cost
+            durations_by_platform[platform][model] = durations
+            duration_costs_by_platform[platform][model] = duration_costs
     default_platform = str(payload.get("default_platform") or load_settings().default_platform)
     try:
         default_platform = normalize_platform(default_platform)
-        update_config({"default_platform": default_platform, "platform_models": models_by_platform, "platform_model_states": states_by_platform, "model_costs": costs_by_platform})
+        update_config({"default_platform": default_platform, "platform_models": models_by_platform, "platform_model_states": states_by_platform, "model_costs": costs_by_platform, "model_durations": durations_by_platform, "model_duration_costs": duration_costs_by_platform})
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return await platforms_config()
@@ -4201,12 +4261,7 @@ async def create_persistent_batch_job(
         str(payload.get("platform") or "dola"),
         str(payload.get("model") or ""),
     )
-    try:
-        duration = int(payload.get("duration") or 15)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="视频时长无效") from exc
-    if duration not in VALID_VIDEO_DURATIONS:
-        raise HTTPException(status_code=400, detail="视频时长仅支持 5、10 或 15 秒")
+    duration = validate_task_duration(platform, model, payload.get("duration"))
     try:
         concurrency = max(1, min(int(access.concurrency or 1), int(payload.get("concurrency") or access.concurrency or 1)))
     except (TypeError, ValueError) as exc:
@@ -4464,8 +4519,6 @@ async def submit_task(
             raise HTTPException(status_code=400, detail="prompt is required")
         if ratio not in VALID_RATIOS:
             raise HTTPException(status_code=400, detail="invalid ratio")
-        if duration is not None and duration not in VALID_VIDEO_DURATIONS:
-            raise HTTPException(status_code=400, detail="视频时长仅支持 5、10 或 15 秒")
         batch_id = str(batch_id or "").strip()[:100] if batch else ""
         batch_index = max(0, min(1000, int(batch_index or 0))) if batch else 0
         batch_row = max(0, min(1_000_000, int(batch_row or 0))) if batch else 0
@@ -4474,6 +4527,7 @@ async def submit_task(
         batch_reference_image_count = max(0, min(load_settings().max_image_count, int(batch_reference_image_count or 0))) if batch else 0
         _ensure_batch_active(access, batch_id)
         platform, model = validate_task_platform_model(platform, model)
+        duration = validate_task_duration(platform, model, duration)
         preferred_account_id = str(preferred_account_id or "").strip().lower()[:64]
         if preferred_account_id:
             if not access.is_admin:
@@ -4566,7 +4620,7 @@ async def submit_task(
             queued_for_concurrency = False
             if access.is_temp:
                 queued_for_concurrency = await _storage_call(active_task_count_for_owner, access.token_hash) >= access.concurrency
-            base_cost_units = model_cost_units(platform, model, task_type)
+            base_cost_units = model_cost_units(platform, model, task_type, duration)
             discount_units = await _storage_call(membership_task_discount_units_by_token_hash, access.token_hash) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
@@ -5032,6 +5086,8 @@ async def _create_manual_retry_task(
     prompt = str(original.get("prompt") or "").strip()
     ratio = str(original.get("ratio") or DEFAULT_RATIO)
     duration = int(original.get("duration") or 0) or None
+    platform, model = validate_task_platform_model(platform, model)
+    duration = validate_task_duration(platform, model, duration)
     reserved_access = None
     reservation: dict = {}
     retry_meta: dict | None = None
@@ -5048,7 +5104,7 @@ async def _create_manual_retry_task(
             duration=duration,
         )
         if retry_access.is_temp:
-            base_cost_units = model_cost_units(platform, model, task_type)
+            base_cost_units = model_cost_units(platform, model, task_type, duration)
             discount_units = await asyncio.to_thread(membership_task_discount_units_by_token_hash, owner_hash)
             cost_units = max(1, base_cost_units - discount_units)
             user_id = _transaction_user_id(retry_access)

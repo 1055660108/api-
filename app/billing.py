@@ -40,20 +40,32 @@ def units_to_points(units: int) -> int | float:
     return value // POINT_SCALE if value % POINT_SCALE == 0 else value / POINT_SCALE
 
 
-def model_cost_units(platform: str, model: str, task_type: str = "video") -> int:
+def model_cost_units(platform: str, model: str, task_type: str = "video", duration: int | None = None) -> int:
     from .config import load_settings
 
     settings = load_settings()
-    platform_costs = settings.model_costs.get(str(platform or "").strip().lower(), {})
+    normalized_platform = str(platform or "").strip().lower()
+    normalized_model = str(model or "").strip().casefold()
+    platform_duration_costs = settings.model_duration_costs.get(normalized_platform, {})
+    for configured_model, duration_costs in platform_duration_costs.items():
+        if configured_model.casefold() != normalized_model:
+            continue
+        selected_duration = int(duration or 0)
+        if not selected_duration:
+            enabled = settings.model_durations.get(normalized_platform, {}).get(configured_model, [])
+            preferred = settings.video_duration if normalized_platform == "dola" else 10
+            selected_duration = preferred if preferred in enabled else (enabled[0] if enabled else preferred)
+        if selected_duration in duration_costs:
+            return points_to_units(duration_costs[selected_duration])
+    platform_costs = settings.model_costs.get(normalized_platform, {})
     for configured_model, points in platform_costs.items():
-        if configured_model.casefold() == str(model or "").strip().casefold():
+        if configured_model.casefold() == normalized_model:
             return points_to_units(points)
-    name = str(model or "").strip().casefold()
-    return MODEL_COST_UNITS.get(name, DEFAULT_MODEL_COST_UNITS)
+    return MODEL_COST_UNITS.get(normalized_model, DEFAULT_MODEL_COST_UNITS)
 
 
-def model_cost_points(platform: str, model: str, task_type: str = "video") -> int | float:
-    return units_to_points(model_cost_units(platform, model, task_type))
+def model_cost_points(platform: str, model: str, task_type: str = "video", duration: int | None = None) -> int | float:
+    return units_to_points(model_cost_units(platform, model, task_type, duration))
 
 
 def package_bonus_free_uses(points: object) -> int:

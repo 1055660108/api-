@@ -481,6 +481,39 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(meta["duration"], 10)
         self.assertEqual((meta["batch_id"], meta["batch_index"], meta["batch_row"]), ("batch-order-1", 1, 2))
 
+    def test_duration_configuration_controls_submission_and_points_charge(self) -> None:
+        config.update_config({
+            "model_durations": {
+                "dola": {"Seedance 2.0": [5, 15]},
+                "doubao": {"Seedance 2.0 Mini": [10], "Seedance 2.0 Fast": [10]},
+                "qianwen": {"万相 2.7": [10]},
+            },
+            "model_duration_costs": {
+                "dola": {"Seedance 2.0": {"5": 0.5, "10": 1.1, "15": 2.3}},
+                "doubao": {"Seedance 2.0 Mini": {"10": 1}, "Seedance 2.0 Fast": {"10": 1}},
+                "qianwen": {"万相 2.7": {"10": 0.8}},
+            },
+        })
+        registered = self.register("duration_price_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 50)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        headers = {"X-API-Token": registered["token"]}
+
+        disabled = self.client.post("/tasks", headers=headers, data={"prompt": "禁用时长", "platform": "dola", "model": "Seedance 2.0", "duration": "10"})
+        self.assertEqual(disabled.status_code, 400)
+        self.assertIn("未开启 10 秒", disabled.text)
+        doubao_invalid = self.client.post("/tasks", headers=headers, data={"prompt": "豆包错误时长", "platform": "doubao", "model": "Seedance 2.0 Mini", "duration": "15"})
+        self.assertEqual(doubao_invalid.status_code, 400)
+
+        before = temp_access.get_temp_context_by_hash(owner_hash)
+        submitted = self.client.post("/tasks", headers=headers, data={"prompt": "十五秒正确扣费", "platform": "dola", "model": "Seedance 2.0", "duration": "15"})
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        meta = store.get_meta(submitted.json()["id"])
+        after = temp_access.get_temp_context_by_hash(owner_hash)
+        self.assertEqual(meta["duration"], 15)
+        self.assertEqual(before.credit_units - after.credit_units, 23)
+
     def test_persistent_batch_plan_has_no_task_id_or_charge_before_scheduler_claim(self) -> None:
         registered = self.register("persistent_batch_waiting")
         owner_hash = temp_access.hash_token(registered["token"])
@@ -521,7 +554,7 @@ class WebAPIContractTests(unittest.TestCase):
         manifest = {
             "platform": "doubao",
             "model": "Seedance 2.0 Fast",
-            "duration": 15,
+            "duration": 10,
             "ratio": "16:9",
             "concurrency": 1,
             "rows": [{"client_index": 0, "sheet_row": 2, "prompt": "豆包批量模型任务", "image_count": 0}],
@@ -530,12 +563,12 @@ class WebAPIContractTests(unittest.TestCase):
             response = self.client.post("/batch-prompts/jobs", headers=headers, data={"manifest": json.dumps(manifest, ensure_ascii=False)})
             self.assertEqual(response.status_code, 201, response.text)
             job = response.json()["job"]
-            self.assertEqual((job["platform"], job["model"], job["duration"]), ("doubao", "Seedance 2.0 Fast", 15))
+            self.assertEqual((job["platform"], job["model"], job["duration"]), ("doubao", "Seedance 2.0 Fast", 10))
             claim = batch_jobs.claim_next_row(owner_hash)
             task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
 
         meta = store.get_meta(task_id)
-        self.assertEqual((meta["platform"], meta["model"], meta["duration"]), ("doubao", "Seedance 2.0 Fast", 15))
+        self.assertEqual((meta["platform"], meta["model"], meta["duration"]), ("doubao", "Seedance 2.0 Fast", 10))
 
     def test_one_hundred_row_images_are_uploaded_in_chunks_before_job_creation(self) -> None:
         registered = self.register("chunked_batch_images")
@@ -1747,9 +1780,9 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
         self.assertEqual({item["id"] for item in platforms["platforms"]}, {"dola", "doubao", "qianwen"})
         for platform in platforms["platforms"]:
-            self.assertEqual(set(platform), {"id", "label", "models", "model_costs", "all_models", "enabled"})
+            self.assertEqual(set(platform), {"id", "label", "models", "model_costs", "model_durations", "model_duration_costs", "supported_durations", "all_models", "enabled"})
             for model in platform["all_models"]:
-                self.assertEqual(set(model), {"name", "enabled", "cost"})
+                self.assertEqual(set(model), {"name", "enabled", "cost", "durations", "duration_costs"})
 
     def test_proxy_health_refresh_switches_within_checked_countries(self) -> None:
         nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
@@ -2232,7 +2265,7 @@ class WebAPIContractTests(unittest.TestCase):
             json={
                 "default_platform": "dola",
                 "platforms": [
-                    {"id": "dola", "models": [{"name": "Seedance 2.0", "enabled": True, "cost": 1.7}]},
+                    {"id": "dola", "models": [{"name": "Seedance 2.0", "enabled": True, "cost": 1.7, "durations": [5, 15], "duration_costs": {"5": 0.5, "10": 1.1, "15": 2.3}}]},
                     {"id": "doubao", "models": []},
                     {"id": "qianwen", "models": []},
                 ],
@@ -2240,8 +2273,9 @@ class WebAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         dola = next(item for item in response.json()["platforms"] if item["id"] == "dola")
-        self.assertEqual(dola["model_costs"]["Seedance 2.0"], 1.7)
-        self.assertEqual(dola["all_models"][0]["cost"], 1.7)
+        self.assertEqual(dola["model_durations"]["Seedance 2.0"], [5, 15])
+        self.assertEqual(dola["model_duration_costs"]["Seedance 2.0"], {"5": 0.5, "10": 1.1, "15": 2.3})
+        self.assertEqual(dola["all_models"][0]["duration_costs"]["15"], 2.3)
 
     def test_registration_email_config_preserves_saved_credentials(self) -> None:
         response = self.client.post(

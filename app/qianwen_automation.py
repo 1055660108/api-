@@ -65,6 +65,7 @@ class QianwenVideoAutomation:
         ratio: str,
         model: str,
         task_type: str = "video",
+        duration: int = 10,
         account: dict[str, Any] | None = None,
         proxy_session: Any | None = None,
     ):
@@ -73,6 +74,7 @@ class QianwenVideoAutomation:
         self.ratio = ratio
         self.model = model
         self.task_type = "image" if task_type == "image" or model == "AI生图" else "video"
+        self.duration = max(1, int(duration or 10))
         self.account = account or {}
         self.proxy_session = proxy_session
         self.settings = load_settings()
@@ -92,6 +94,26 @@ class QianwenVideoAutomation:
         cookies = await context.cookies([QIANWEN_URL])
         if cookies:
             update_account_cookies(account_id, cookies)
+
+    async def _ensure_video_duration(self, page) -> bool:
+        if self.duration != 10:
+            return False
+        duration_pattern = re.compile(r"^(?:视频时长[:：]?\s*)?(?:5|10|15)\s*(?:秒|s)$", re.IGNORECASE)
+        controls = page.get_by_role("button", name=duration_pattern)
+        for index in range(min(await controls.count(), 5)):
+            control = controls.nth(index)
+            if not await control.is_visible():
+                continue
+            label = str(await control.inner_text() or "")
+            if re.search(r"10\s*(?:秒|s)", label, re.IGNORECASE):
+                return True
+            await control.click()
+            option = page.get_by_text(re.compile(r"^10\s*(?:秒|s)$", re.IGNORECASE))
+            if await option.count():
+                await option.last.click()
+                return True
+            return False
+        return True
 
     async def _login_state(self, page, context) -> tuple[bool, bool]:
         body = await page.locator("body").inner_text(timeout=90000)
@@ -285,6 +307,9 @@ class QianwenVideoAutomation:
                         else:
                             await self._save_diagnostics(page, "model unavailable")
                             return self._failure("qianwen model unavailable", account_fault=False, retryable=False)
+                if self.task_type == "video" and not await self._ensure_video_duration(page):
+                    await self._save_diagnostics(page, "duration unavailable")
+                    return self._failure("qianwen duration unavailable", account_fault=False, retryable=False)
                 self.network_events.clear()
                 self.remote_task_ids.clear()
                 self.remote_video_urls.clear()

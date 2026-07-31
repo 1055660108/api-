@@ -2537,7 +2537,7 @@ textarea:focus {
 
 .model-config-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 126px auto;
+  grid-template-columns: 18px minmax(120px, 1fr) minmax(250px, 1.5fr) auto;
   gap: 8px;
   align-items: center;
   margin: 0;
@@ -2561,6 +2561,13 @@ textarea:focus {
 .model-cost-field { position: relative; display: block; }
 .model-cost-field input { padding-right: 52px !important; }
 .model-cost-field em { position: absolute; top: 50%; right: 8px; color: var(--muted); font-size: 11px; font-style: normal; transform: translateY(-50%); pointer-events: none; }
+.model-duration-field { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.model-duration-option { display: grid; grid-template-columns: auto 86px; align-items: center; gap: 6px; min-height: 34px; padding: 3px 5px 3px 8px; background: #f7f9f8; border: 1px solid var(--line); border-radius: 7px; }
+.model-duration-option > label { display: inline-flex; align-items: center; gap: 5px; margin: 0; white-space: nowrap; }
+.model-duration-option input[type="checkbox"] { margin: 0; }
+.model-duration-cost { position: relative; display: block; }
+.model-duration-cost input { min-height: 28px !important; padding: 4px 34px 4px 6px !important; }
+.model-duration-cost em { position: absolute; top: 50%; right: 6px; color: var(--muted); font-size: 10px; font-style: normal; transform: translateY(-50%); pointer-events: none; }
 
 .model-config-row .secondary-button { min-height: 32px; padding: 5px 8px; font-size: 12px; }
 .model-modal-actions { padding: 16px 26px 22px; border-top: 1px solid var(--line); }
@@ -7822,7 +7829,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 
 .batch-task-options {
   display: grid;
-  grid-template-columns: repeat(2, minmax(150px, 220px)) auto auto;
+  grid-template-columns: repeat(3, minmax(140px, 210px)) auto auto;
   align-items: end;
   justify-content: start;
   gap: 16px;
@@ -8098,6 +8105,8 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
 }
 
 @media (max-width: 700px) {
+  .model-config-row { grid-template-columns: 18px minmax(0, 1fr) auto; }
+  .model-duration-field { grid-column: 1 / -1; }
   .prompt-pager { justify-content: center; margin-top: 26px; }
   .prompt-manager-panel.is-empty .prompt-pager { justify-content: flex-end; }
   .batch-task-page { min-height: calc(100vh - 120px); grid-template-rows: auto auto auto minmax(260px, 1fr) auto; }

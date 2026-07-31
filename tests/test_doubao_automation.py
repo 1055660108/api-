@@ -154,6 +154,18 @@ class QianwenProxyAutomationTests(unittest.TestCase):
         session.acquire_browser_proxy.assert_awaited_once()
         session.release_browser_proxy.assert_awaited_once()
 
+    def test_qianwen_duration_is_explicitly_limited_to_ten_seconds(self) -> None:
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+        page = SimpleNamespace(get_by_role=Mock())
+        runner.duration = 15
+        self.assertFalse(asyncio.run(runner._ensure_video_duration(page)))
+        page.get_by_role.assert_not_called()
+
+        runner.duration = 10
+        controls = SimpleNamespace(count=AsyncMock(return_value=0))
+        page.get_by_role = Mock(return_value=controls)
+        self.assertTrue(asyncio.run(runner._ensure_video_duration(page)))
+
 
 DOUBAO_CHAT_URL = "https://www.doubao.com/chat/"
 

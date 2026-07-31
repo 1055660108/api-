@@ -7822,7 +7822,7 @@ body[data-portal="client"] .metric-card:nth-child(3n) { border-top-color: rgba(5
 
 .batch-task-options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(150px, 220px)) auto auto;
+  grid-template-columns: repeat(2, minmax(150px, 220px)) auto auto;
   align-items: end;
   justify-content: start;
   gap: 16px;

@@ -289,7 +289,6 @@ const els = {
   batchReferenceThumbs: document.getElementById("batchReferenceThumbs"),
   batchReferenceIsRealPerson: document.getElementById("batchReferenceIsRealPerson"),
   parseBatchSpreadsheet: document.getElementById("parseBatchSpreadsheet"),
-  batchPlatformSelect: document.getElementById("batchPlatformSelect"),
   batchModelSelect: document.getElementById("batchModelSelect"),
   batchTaskRatio: document.getElementById("batchTaskRatio"),
   batchStatusFilter: document.getElementById("batchStatusFilter"),
@@ -4038,20 +4037,31 @@ function renderPlatformControls() {
   state.model = selected.model;
   els.platformSelect.value = state.platform;
   els.modelSelect.innerHTML = choices.map((item) => `<option value="${escapeHtml(`${item.platform}::${item.model}`)}"${item.platform === state.platform && item.model === state.model ? " selected" : ""}>${escapeHtml(item.model)}</option>`).join("");
-  renderBatchPlatformControls();
+  renderBatchModelControl();
 }
 
-function renderBatchPlatformControls() {
-  if (!els.batchPlatformSelect || !els.batchModelSelect) return;
-  const platforms = (state.platforms.length ? state.platforms : [{ id: "dola", label: "Dola", models: ["Seedance 2.0"], enabled: true }])
-    .filter((item) => item.enabled !== false && Array.isArray(item.models) && item.models.length);
-  let selectedPlatform = platforms.find((item) => String(item.id) === state.batchPlatform) || platforms[0];
-  if (!selectedPlatform) return;
-  state.batchPlatform = String(selectedPlatform.id || "dola");
-  const models = selectedPlatform.models.map(String);
-  if (!models.includes(state.batchModel)) state.batchModel = models[0] || "";
-  els.batchPlatformSelect.innerHTML = platforms.map((item) => `<option value="${escapeHtml(item.id)}"${String(item.id) === state.batchPlatform ? " selected" : ""}>${escapeHtml(item.label || PLATFORM_LABELS[item.id] || item.id)}</option>`).join("");
-  els.batchModelSelect.innerHTML = models.map((model) => `<option value="${escapeHtml(model)}"${model === state.batchModel ? " selected" : ""}>${escapeHtml(model)}</option>`).join("");
+function batchModelChoices() {
+  const platforms = state.platforms.length ? state.platforms : [{ id: "dola", models: ["Seedance 2.0"], enabled: true }];
+  return platforms.flatMap((item) => item.enabled === false ? [] : (item.models || []).map((model) => ({
+    platform: String(item.id || "dola"),
+    model: String(model),
+  })));
+}
+
+function renderBatchModelControl() {
+  if (!els.batchModelSelect) return;
+  const choices = batchModelChoices();
+  const selected = choices.find((item) => item.platform === state.batchPlatform && item.model === state.batchModel)
+    || choices.find((item) => item.model === state.batchModel)
+    || choices[0]
+    || { platform: "dola", model: "Seedance 2.0" };
+  state.batchPlatform = selected.platform;
+  state.batchModel = selected.model;
+  els.batchModelSelect.innerHTML = choices.map((item) => {
+    const value = `${item.platform}::${item.model}`;
+    const isSelected = item.platform === state.batchPlatform && item.model === state.batchModel;
+    return `<option value="${escapeHtml(value)}"${isSelected ? " selected" : ""}>${escapeHtml(item.model)}</option>`;
+  }).join("");
 }
 
 async function refreshDashboard() {
@@ -5398,7 +5408,7 @@ async function loadBatchDraft() {
     state.batchSpreadsheetName = String(stored.filename || "").slice(0, 240);
     state.batchPlatform = String(stored.platform || "dola");
     state.batchModel = String(stored.model || "Seedance 2.0");
-    renderBatchPlatformControls();
+    renderBatchModelControl();
     state.batchJobId = String(stored.batchJobId || "").slice(0, 80);
     state.batchSessionId = state.batchJobId;
     state.batchReferenceIsRealPerson = Boolean(stored.referenceIsRealPerson);
@@ -5597,7 +5607,7 @@ function resetBatchTaskPage() {
   if (els.batchTaskRatio) els.batchTaskRatio.value = state.ratio;
   state.batchPlatform = "dola";
   state.batchModel = "Seedance 2.0";
-  renderBatchPlatformControls();
+  renderBatchModelControl();
   if (els.batchStatusFilter) els.batchStatusFilter.value = "all";
   if (els.batchSelectionLimit) els.batchSelectionLimit.value = "1";
   if (els.batchTaskProgress) els.batchTaskProgress.textContent = "等待导入";
@@ -5905,7 +5915,7 @@ function applyPersistentBatchJob(job) {
   state.batchJobCursorReady = true;
   state.batchPlatform = String(job.platform || state.batchPlatform || "dola");
   state.batchModel = String(job.model || state.batchModel || "Seedance 2.0");
-  renderBatchPlatformControls();
+  renderBatchModelControl();
   if (Object.prototype.hasOwnProperty.call(job, "reference_is_real_person")) {
     state.batchReferenceIsRealPerson = Boolean(job.reference_is_real_person);
     if (els.batchReferenceIsRealPerson) els.batchReferenceIsRealPerson.checked = state.batchReferenceIsRealPerson;
@@ -7193,14 +7203,13 @@ function bindEvents() {
     syncBatchConcurrencyControls();
     scheduleBatchDraftSave();
   });
-  els.batchPlatformSelect?.addEventListener("change", () => {
-    state.batchPlatform = els.batchPlatformSelect.value || "dola";
-    state.batchModel = "";
-    renderBatchPlatformControls();
-    scheduleBatchDraftSave();
-  });
   els.batchModelSelect?.addEventListener("change", () => {
-    state.batchModel = els.batchModelSelect.value || "";
+    const value = els.batchModelSelect.value;
+    const selected = batchModelChoices().find((item) => `${item.platform}::${item.model}` === value);
+    if (selected) {
+      state.batchPlatform = selected.platform;
+      state.batchModel = selected.model;
+    }
     scheduleBatchDraftSave();
   });
   els.batchTaskRatio?.addEventListener("change", scheduleBatchDraftSave);

@@ -104,8 +104,15 @@ class DoubaoAutomationTests(unittest.TestCase):
             'text.includes("710022002")',
             'text.includes("710022004")',
             'text.includes("SSE_REPLY_END")',
+            "asksForVideoConfirmation(text)",
+            'confirmationPayload.messages[0].content_block[0].content.text_block.text = "需要"',
+            "confirmationPayload.option.need_create_conversation = false",
+            "confirmationPayload.client_meta.conversation_id = conversationId",
+            "auto_confirmation_sent: autoConfirmationSent",
         ):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("would you like|do you want|shall i|should i", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("是否|请问", DOUBAO_SUBMIT_SCRIPT)
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Mini"], "seedance_v2.0_mini")
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Fast"], "seedance_v2.0")
 

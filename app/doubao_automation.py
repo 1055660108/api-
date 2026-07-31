@@ -85,6 +85,25 @@ async ({prompt, ratio, model, duration}) => {
     }
     return "";
   }
+  function searchableText(value) {
+    return String(value || "")
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/\\n/g, "\n")
+      .replace(/\\"/g, '"')
+      .replace(/\\\//g, "/");
+  }
+  function asksForVideoConfirmation(value) {
+    const text = searchableText(value);
+    const mentionsVideo = /视频|video/i.test(text);
+    const asksInChinese = /(?:是否|请问).{0,40}(?:需要|生成|创建)|(?:需要|要).{0,20}(?:我|为您|帮您).{0,30}(?:生成|创建)/i.test(text);
+    const asksInEnglish = /(?:would you like|do you want|shall i|should i).{0,80}(?:create|generate|proceed)/i.test(text);
+    return mentionsVideo && (asksInChinese || asksInEnglish);
+  }
+  function lastMessageIndex(value) {
+    const matches = [...String(value || "").matchAll(/"(?:message_index|messageIndex)"\s*:\s*(\d+)/g)];
+    if (!matches.length) return null;
+    return Math.max(...matches.map(item => Number(item[1])).filter(Number.isFinite));
+  }
 
   const localConversationId = `local_${randomDigits(16)}`;
   const uniqueKey = uuid();
@@ -201,51 +220,89 @@ async ({prompt, ratio, model, duration}) => {
     }
   };
   history.pushState({}, "", `/chat/${localConversationId}`);
-  const response = await fetch(requestUrl, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      accept: "*/*",
-      "agw-js-conv": "str, str",
-      "content-type": "application/json",
-      "last-event-id": "undefined"
-    },
-    body: JSON.stringify(payload)
-  });
-  let text = "";
-  let timedOut = false;
-  const reader = response.body && response.body.getReader ? response.body.getReader() : null;
-  if (reader) {
-    const decoder = new TextDecoder("utf-8");
-    const deadline = Date.now() + 90000;
-    for (;;) {
-      const remain = Math.max(1, deadline - Date.now());
-      const item = await Promise.race([
-        reader.read(),
-        new Promise(resolve => setTimeout(() => resolve({timeout: true}), remain))
-      ]);
-      if (item.timeout) {
-        timedOut = true;
-        break;
+  async function submitPayload(body) {
+    const response = await fetch(requestUrl, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        accept: "*/*",
+        "agw-js-conv": "str, str",
+        "content-type": "application/json",
+        "last-event-id": "undefined"
+      },
+      body: JSON.stringify(body)
+    });
+    let text = "";
+    let timedOut = false;
+    const reader = response.body && response.body.getReader ? response.body.getReader() : null;
+    if (reader) {
+      const decoder = new TextDecoder("utf-8");
+      const deadline = Date.now() + 90000;
+      for (;;) {
+        const remain = Math.max(1, deadline - Date.now());
+        const item = await Promise.race([
+          reader.read(),
+          new Promise(resolve => setTimeout(() => resolve({timeout: true}), remain))
+        ]);
+        if (item.timeout) {
+          timedOut = true;
+          break;
+        }
+        const {done, value} = item;
+        if (done) break;
+        text += decoder.decode(value, {stream: true});
+        if (text.includes("710022002") || text.includes("710022004") || text.includes("STREAM_ERROR") || text.includes("SSE_REPLY_END")) break;
       }
-      const {done, value} = item;
-      if (done) break;
-      text += decoder.decode(value, {stream: true});
-      if (text.includes("710022002") || text.includes("710022004") || text.includes("STREAM_ERROR") || text.includes("SSE_REPLY_END")) break;
+      try { await reader.cancel(); } catch (_) {}
+      try { text += decoder.decode(); } catch (_) {}
+    } else {
+      text = await response.text();
     }
-    try { await reader.cancel(); } catch (_) {}
-    try { text += decoder.decode(); } catch (_) {}
-  } else {
-    text = await response.text();
+    return {response, text, timedOut};
   }
-  const decodedText = text.replace(/\\u0026/g, "&").replace(/\\\//g, "/");
-  const conversationId = extract([
-    /"(?:conversation_id|conversationId|conversationID|conv_id|convId)"\s*:\s*"?(\d{15,24})"?/,
-    /(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:\\?"|)\s*[:=]\s*(?:\\?")?(\d{15,24})/
-  ], text);
-  const videoUrl = extract([
-    /(https?:\/\/[^"\\\s]+(?:mime_type=video_mp4|\.mp4(?:\?[^"\\\s]*)?))/i
-  ], decodedText);
+  function findConversationId(value) {
+    return extract([
+      /"(?:conversation_id|conversationId|conversationID|conv_id|convId)"\s*:\s*"?(\d{15,24})"?/,
+      /(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:\\?"|)\s*[:=]\s*(?:\\?")?(\d{15,24})/
+    ], value);
+  }
+  function findVideoUrl(value) {
+    return extract([
+      /(https?:\/\/[^"\\\s]+(?:mime_type=video_mp4|\.mp4(?:\?[^"\\\s]*)?))/i
+    ], searchableText(value));
+  }
+
+  let submission = await submitPayload(payload);
+  let response = submission.response;
+  let text = submission.text;
+  let timedOut = submission.timedOut;
+  let conversationId = findConversationId(text);
+  let videoUrl = findVideoUrl(text);
+  const initialResponsePreview = text.length <= 6000 ? text : `${text.slice(0, 3000)}\n...[truncated]...\n${text.slice(-3000)}`;
+  const confirmationPromptDetected = asksForVideoConfirmation(text);
+  let autoConfirmationSent = false;
+  if (response.ok && conversationId && confirmationPromptDetected) {
+    const confirmationPayload = JSON.parse(JSON.stringify(payload));
+    confirmationPayload.client_meta.local_conversation_id = localConversationId;
+    confirmationPayload.client_meta.conversation_id = conversationId;
+    confirmationPayload.client_meta.last_section_id = extract([/"(?:section_id|sectionId)"\s*:\s*"?(\d{15,24})"?/], text);
+    confirmationPayload.client_meta.last_message_index = lastMessageIndex(text);
+    confirmationPayload.messages[0].local_message_id = uuid();
+    confirmationPayload.messages[0].content_block[0].block_id = uuid();
+    confirmationPayload.messages[0].content_block[0].content.text_block.text = "需要";
+    confirmationPayload.option.create_time_ms = Date.now();
+    confirmationPayload.option.unique_key = uuid();
+    confirmationPayload.option.need_create_conversation = false;
+    confirmationPayload.option.conversation_init_option = {need_ack_conversation: false};
+    confirmationPayload.ext.conversation_init_option = JSON.stringify({need_ack_conversation: false});
+    submission = await submitPayload(confirmationPayload);
+    response = submission.response;
+    text = submission.text;
+    timedOut = submission.timedOut;
+    conversationId = findConversationId(text) || conversationId;
+    videoUrl = findVideoUrl(text);
+    autoConfirmationSent = true;
+  }
   const preview = text.length <= 6000 ? text : `${text.slice(0, 3000)}\n...[truncated]...\n${text.slice(-3000)}`;
   return {
     ok: response.ok,
@@ -254,6 +311,9 @@ async ({prompt, ratio, model, duration}) => {
     conversation_id: conversationId,
     local_conversation_id: localConversationId,
     video_url: videoUrl,
+    confirmation_prompt_detected: confirmationPromptDetected,
+    auto_confirmation_sent: autoConfirmationSent,
+    initial_response_preview: initialResponsePreview,
     accepted: text.includes("SSE_REPLY_END") && !text.includes("STREAM_ERROR"),
     service_frequent: text.includes("710022002") || text.includes("当前服务访问频繁") || text.includes("服务访问频繁"),
     slider_verification: text.includes("710022004") || text.includes('"type":"verify"') || text.includes('"verify_scene":"doubao_message_web"'),
@@ -569,6 +629,9 @@ class DoubaoVideoAutomation:
                     save_result(self.task_id, extra={
                         "doubao_submit_error_category": category,
                         "doubao_submission_response_preview": str(completion_result.get("response_preview") or "")[:6000],
+                        "doubao_confirmation_prompt_detected": bool(completion_result.get("confirmation_prompt_detected")),
+                        "doubao_auto_confirmation_sent": bool(completion_result.get("auto_confirmation_sent")),
+                        "doubao_initial_response_preview": str(completion_result.get("initial_response_preview") or "")[:6000],
                     })
                     if category == "service_frequent":
                         if self.proxy_session is not None:
@@ -615,6 +678,8 @@ class DoubaoVideoAutomation:
                         "doubao_page_url": page.url,
                         "doubao_submit_confirmed": bool(completion_result.get("accepted")),
                         "doubao_conversation_id": str(completion_result.get("conversation_id") or ""),
+                        "doubao_confirmation_prompt_detected": bool(completion_result.get("confirmation_prompt_detected")),
+                        "doubao_auto_confirmation_sent": bool(completion_result.get("auto_confirmation_sent")),
                     },
                 )
                 conversation_id = str(completion_result.get("conversation_id") or "")

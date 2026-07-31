@@ -713,6 +713,8 @@ const state = {
   proxyNodes: [],
   proxyApiPool: null,
   proxySource: "direct",
+  proxyPlatform: "dola",
+  proxyConfigPlatform: "",
   platformProxySources: { dola: "direct", doubao: "direct", qianwen: "direct" },
   platformProxyRandom: { dola: false, doubao: false, qianwen: false },
   proxyAccountConfigured: false,
@@ -3113,6 +3115,7 @@ async function loadProxyConfig() {
 }
 
 function renderPlatformProxyRouting() {
+  const activePlatform = state.proxyPlatform || "dola";
   for (const platform of ["dola", "doubao", "qianwen"]) {
     const sourceControl = els[`${platform}ProxySource`];
     const randomControl = els[`${platform}ProxyRandom`];
@@ -3123,6 +3126,14 @@ function renderPlatformProxyRouting() {
       randomControl.disabled = direct;
     }
   }
+  document.querySelectorAll("[data-proxy-platform]").forEach((button) => {
+    const active = button.dataset.proxyPlatform === activePlatform;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  document.querySelectorAll("[data-proxy-platform-panel]").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.proxyPlatformPanel !== activePlatform);
+  });
 }
 
 async function savePlatformProxyRouting() {
@@ -3141,7 +3152,8 @@ async function savePlatformProxyRouting() {
     state.platformProxySources = { ...sources };
     state.platformProxyRandom = { ...random };
     renderPlatformProxyRouting();
-    toast("三个平台的代理分配已保存");
+    await loadProxyNodes(sources[state.proxyPlatform] === "subscription");
+    toast(`${proxyPlatformLabel(state.proxyPlatform)}代理配置已保存`);
   } catch (error) {
     toast(`平台代理保存失败：${error.message}`, "error");
     await loadProxyConfig();
@@ -3159,12 +3171,13 @@ function renderProxyNodes() {
   els.openAccountProxyImport?.classList.toggle("hidden", !accountMode);
   els.accountProxyBulkbar?.classList.toggle("hidden", !accountMode);
   els.proxyCountryFilterRow?.classList.toggle("hidden", accountMode || state.proxySource !== "subscription");
-  if (els.proxyNodesTitle) els.proxyNodesTitle.textContent = accountMode ? "账密代理列表" : subscriptionMode ? "节点选择" : apiMode ? "API 代理池" : "代理状态";
+  const platformLabel = proxyPlatformLabel(state.proxyPlatform);
+  if (els.proxyNodesTitle) els.proxyNodesTitle.textContent = `${platformLabel} ${accountMode ? "账密代理" : subscriptionMode ? "节点订阅" : apiMode ? "API 代理" : "代理配置"}`;
   if (els.proxyNodesDescription) els.proxyNodesDescription.textContent = accountMode
-    ? "已勾选且启用的代理会用于生成任务；勾选多个代理时可按任务轮询使用。"
-    : subscriptionMode ? "通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。"
-      : apiMode ? "实时显示已提取的代理地址。每个地址同时只分配给一个任务，节点频繁后会换取新地址。"
-        : "当前代理模式不使用可选择的节点列表。";
+    ? `${platformLabel} 将使用已勾选且启用的账密代理；选择多个时可按任务轮询。`
+    : subscriptionMode ? `查看 ${platformLabel} 使用的订阅节点、国家和实时延迟。`
+      : apiMode ? `实时显示 ${platformLabel} 当前使用的 API 代理地址和分配状态。`
+        : `${platformLabel} 当前使用直连，不经过代理节点。`;
   if (els.proxyAutoSelect) {
     const labels = accountMode ? [["true", "多选轮询使用"], ["false", "固定使用首个选中代理"]] : [["true", "自动选择最低延迟"], ["false", "手动选择节点"]];
     els.proxyAutoSelect.innerHTML = labels.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
@@ -3288,11 +3301,14 @@ async function loadProxyNodes(refresh = false, refreshSubscription = refresh) {
   if (portal !== "admin") return;
   setBusy(els.refreshProxyNodes, true, "刷新中");
   try {
-    let data = await apiFetch(`/config/proxy-nodes${refreshSubscription ? "?refresh=true" : ""}`, { timeout: refreshSubscription ? 60000 : 20000 });
+    const platform = state.proxyPlatform || "dola";
+    const query = new URLSearchParams({ platform });
+    if (refreshSubscription) query.set("refresh", "true");
+    let data = await apiFetch(`/config/proxy-nodes?${query.toString()}`, { timeout: refreshSubscription ? 60000 : 20000 });
     let latencyError = null;
-    if (refresh && Array.isArray(data.nodes) && data.nodes.length) {
+    if (refresh && ["subscription", "account"].includes(data.source) && Array.isArray(data.nodes) && data.nodes.length) {
       try {
-        data = { ...data, ...(await apiFetch("/config/proxy-nodes/latency", { method: "POST", timeout: 90000 })) };
+        data = { ...data, ...(await apiFetch("/config/proxy-nodes/latency", { method: "POST", body: { platform }, timeout: 90000 })) };
       } catch (error) {
         latencyError = error;
       }
@@ -3336,7 +3352,7 @@ async function saveProxyMode() {
     }
     if (state.proxySource === "account") {
       const configData = await apiFetch("/config/proxy-api", { method: "POST", body: { proxy_enabled: els.proxyEnabledSelect.value === "true", proxy_latency_threshold_ms: threshold, proxy_health_refresh_seconds: healthRefreshSeconds } });
-      const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { node_ids: state.proxySelectedIds, rotation_enabled: els.proxyAutoSelect.value === "true" } });
+      const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { platform: state.proxyPlatform, node_ids: state.proxySelectedIds, rotation_enabled: els.proxyAutoSelect.value === "true" } });
       state.proxyEnabled = Boolean(configData.proxy_enabled);
       state.proxyLatencyThreshold = Number(configData.proxy_latency_threshold_ms || threshold);
       state.proxyHealthRefreshSeconds = Number(configData.proxy_health_refresh_seconds || healthRefreshSeconds);
@@ -3364,7 +3380,7 @@ async function saveProxyMode() {
 
 async function saveAccountProxySelection(ids) {
   try {
-    const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { node_ids: ids, rotation_enabled: els.proxyAutoSelect?.value === "true" } });
+    const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { platform: state.proxyPlatform, node_ids: ids, rotation_enabled: els.proxyAutoSelect?.value === "true" } });
     state.proxySelectedIds = Array.isArray(data.selected_ids) ? data.selected_ids : [];
     state.proxyAutoSelect = Boolean(data.auto_select);
     state.proxyNodes = Array.isArray(data.nodes) ? data.nodes : state.proxyNodes;
@@ -3385,7 +3401,7 @@ async function accountProxyAction(action, proxyIds) {
   if (action === "test") {
     setBusy(els.refreshProxyNodes, true, "测速中");
     try {
-      const data = await apiFetch("/config/proxy-nodes/latency", { method: "POST", body: { proxy_ids: ids }, timeout: 90000 });
+      const data = await apiFetch("/config/proxy-nodes/latency", { method: "POST", body: { platform: state.proxyPlatform, proxy_ids: ids }, timeout: 90000 });
       state.proxyNodes = Array.isArray(data.nodes) ? data.nodes : state.proxyNodes;
       renderProxyNodes();
       toast("代理测速已完成");
@@ -3435,7 +3451,7 @@ async function importAccountProxyList() {
 
 async function selectProxyNode(nodeId) {
   try {
-    const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { node_id: nodeId } });
+    const data = await apiFetch("/config/proxy-nodes/select", { method: "POST", body: { platform: state.proxyPlatform, node_id: nodeId } });
     state.proxySelectedNode = data.selected_node || nodeId;
     state.proxyAutoSelect = false;
     if (els.proxyAutoSelect) els.proxyAutoSelect.value = "false";
@@ -3458,6 +3474,10 @@ function proxySourceLabel(source) {
   return source === "subscription" ? "节点订阅" : source === "account" ? "账密连接" : source === "api" ? "代理提取 API" : "直连";
 }
 
+function proxyPlatformLabel(platform) {
+  return platform === "doubao" ? "豆包" : platform === "qianwen" ? "千问" : "Dola";
+}
+
 async function saveProxyConfig() {
   if (portal === "client") return;
   const source = els.proxySource?.value || "direct";
@@ -3477,7 +3497,10 @@ async function saveProxyConfig() {
   }
   setBusy(els.saveProxyConfig, true, "保存中");
   try {
-    const body = { proxy_source: source };
+    const platform = state.proxyConfigPlatform || "";
+    const body = platform
+      ? { platform_proxy_sources: { ...state.platformProxySources, [platform]: source } }
+      : { proxy_source: source };
     if (source === "subscription") Object.assign(body, { proxy_subscription_scheme: "http", proxy_subscription_refresh_seconds: 900 });
     if (source === "api") Object.assign(body, { proxy_api_url: apiUrl, proxy_api_scheme: els.proxyApiScheme?.value || "http" });
     if (source === "account" && accountHost && accountPort && accountUsername && accountPassword) Object.assign(body, { proxy_account_scheme: els.proxyAccountScheme?.value || "socks5", proxy_account_host: accountHost, proxy_account_port: accountPort, proxy_account_username: accountUsername, proxy_account_password: accountPassword });
@@ -3487,9 +3510,10 @@ async function saveProxyConfig() {
       body,
     });
     state.proxySource = source;
+    if (platform) state.platformProxySources[platform] = source;
     if (els.configState) els.configState.textContent = "已保存";
-    if (els.proxyApiDisplay) els.proxyApiDisplay.textContent = proxySourceLabel(source);
-    toast(source === "direct" ? "已切换为直连运行" : "代理配置已更新");
+    if (!platform && els.proxyApiDisplay) els.proxyApiDisplay.textContent = proxySourceLabel(source);
+    toast(platform ? `${proxyPlatformLabel(platform)}代理配置已更新` : source === "direct" ? "已切换为直连运行" : "代理配置已更新");
     closeSettingsModal(els.proxyModal);
     await loadProxyConfig();
     await loadProxyNodes(source === "subscription");
@@ -6976,6 +7000,7 @@ function bindEvents() {
   });
   els.openProxyModal?.addEventListener("click", async () => {
     try {
+      state.proxyConfigPlatform = "";
       await loadProxyConfig();
       openSettingsModal(els.proxyModal, els.proxySource);
     } catch (error) {
@@ -6984,7 +7009,10 @@ function bindEvents() {
   });
   els.openProxyModalFromNodes?.addEventListener("click", async () => {
     try {
+      state.proxyConfigPlatform = state.proxyPlatform || "dola";
       await loadProxyConfig();
+      if (els.proxySource) els.proxySource.value = state.platformProxySources[state.proxyConfigPlatform] || "direct";
+      updateProxySourceFields();
       openSettingsModal(els.proxyModal, els.proxySource);
     } catch (error) {
       toast(`读取失败：${error.message}`, "error");
@@ -7369,6 +7397,15 @@ function bindEvents() {
   els.saveProxyConfig?.addEventListener("click", saveProxyConfig);
   els.testProxyApi?.addEventListener("click", testProxyApi);
   els.proxySource?.addEventListener("change", updateProxySourceFields);
+  document.querySelectorAll("[data-proxy-platform]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const platform = button.dataset.proxyPlatform;
+      if (!platform || platform === state.proxyPlatform) return;
+      state.proxyPlatform = platform;
+      renderPlatformProxyRouting();
+      await loadProxyNodes(false, false);
+    });
+  });
   for (const platform of ["dola", "doubao", "qianwen"]) {
     els[`${platform}ProxySource`]?.addEventListener("change", () => {
       state.platformProxySources[platform] = els[`${platform}ProxySource`].value || "direct";

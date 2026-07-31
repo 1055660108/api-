@@ -153,6 +153,23 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('function updateProxyRefreshCountdown()', self.javascript)
         self.assertNotIn('每 10 分钟自动测速；未勾选国家时使用全部节点', self.html)
 
+    def test_proxy_nodes_are_split_into_platform_configuration_views(self) -> None:
+        for platform, label in (
+            ("dola", "Dola 代理配置"),
+            ("doubao", "豆包代理配置"),
+            ("qianwen", "千问代理配置"),
+        ):
+            self.assertIn(f'data-proxy-platform="{platform}"', self.html)
+            self.assertIn(f'>{label}</span>', self.html)
+            self.assertIn(f'data-proxy-platform-panel="{platform}"', self.html)
+        self.assertIn('proxyPlatform: "dola"', self.javascript)
+        self.assertIn('new URLSearchParams({ platform })', self.javascript)
+        self.assertIn('/config/proxy-nodes?${query.toString()}', self.javascript)
+        self.assertIn('body: { platform }', self.javascript)
+        self.assertIn('platform: state.proxyPlatform, node_id: nodeId', self.javascript)
+        self.assertIn('platform: state.proxyPlatform, node_ids: ids', self.javascript)
+        self.assertIn('state.proxyConfigPlatform = state.proxyPlatform || "dola"', self.javascript)
+
     def test_admin_submission_can_select_an_available_account(self) -> None:
         self.assertIn('id="preferredAccountSelect"', self.html)
         self.assertIn('class="composer-select admin-credential-field"', self.html)

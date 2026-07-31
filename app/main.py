@@ -2626,13 +2626,25 @@ def _api_proxy_pool_snapshot() -> dict[str, object]:
     }
 
 
+def _platform_proxy_source(settings, platform: str = "") -> tuple[str, str]:
+    normalized = str(platform or "").strip().lower()
+    if not normalized:
+        return str(settings.proxy_source or "direct"), ""
+    if normalized not in {"dola", "doubao", "qianwen"}:
+        raise HTTPException(status_code=400, detail="platform must be one of dola, doubao, qianwen")
+    source = str(settings.platform_proxy_sources.get(normalized) or settings.proxy_source or "direct").strip().lower()
+    return source if source in {"subscription", "account", "api", "direct"} else "direct", normalized
+
+
 @app.get("/config/proxy-nodes", dependencies=[Depends(require_admin)])
-async def proxy_nodes(refresh: bool = False):
+async def proxy_nodes(refresh: bool = False, platform: str = ""):
     settings = load_settings()
-    if settings.proxy_source == "account":
+    source, normalized_platform = _platform_proxy_source(settings, platform)
+    if source == "account":
         pool = list_account_proxies(settings)
         return {
             "source": "account",
+            "platform": normalized_platform,
             "nodes": pool["proxies"],
             "enabled": settings.proxy_enabled,
             "auto_select": pool["rotation_enabled"],
@@ -2642,10 +2654,11 @@ async def proxy_nodes(refresh: bool = False):
             "latency_threshold_ms": settings.proxy_latency_threshold_ms,
             "health_refresh_seconds": settings.proxy_health_refresh_seconds,
         }
-    if settings.proxy_source == "api":
+    if source == "api":
         pool = _api_proxy_pool_snapshot()
         return {
             "source": "api",
+            "platform": normalized_platform,
             "nodes": pool["slots"],
             "pool": pool,
             "enabled": settings.proxy_enabled,
@@ -2656,10 +2669,10 @@ async def proxy_nodes(refresh: bool = False):
             "latency_threshold_ms": settings.proxy_latency_threshold_ms,
             "health_refresh_seconds": settings.proxy_health_refresh_seconds,
         }
-    if settings.proxy_source != "subscription":
-        return {"source": settings.proxy_source, "nodes": [], "enabled": settings.proxy_enabled, "auto_select": False, "selected_node": "", "selected_ids": [], "auto_countries": [], "latency_threshold_ms": settings.proxy_latency_threshold_ms, "health_refresh_seconds": settings.proxy_health_refresh_seconds}
+    if source != "subscription":
+        return {"source": source, "platform": normalized_platform, "nodes": [], "enabled": settings.proxy_enabled, "auto_select": False, "selected_node": "", "selected_ids": [], "auto_countries": [], "latency_threshold_ms": settings.proxy_latency_threshold_ms, "health_refresh_seconds": settings.proxy_health_refresh_seconds}
     if not settings.proxy_subscription_url:
-        return {"source": "subscription", "nodes": [], "enabled": settings.proxy_enabled, "auto_select": settings.proxy_auto_select, "selected_node": "", "selected_ids": [], "auto_countries": settings.proxy_auto_countries, "latency_threshold_ms": settings.proxy_latency_threshold_ms, "health_refresh_seconds": settings.proxy_health_refresh_seconds}
+        return {"source": "subscription", "platform": normalized_platform, "nodes": [], "enabled": settings.proxy_enabled, "auto_select": settings.proxy_auto_select, "selected_node": "", "selected_ids": [], "auto_countries": settings.proxy_auto_countries, "latency_threshold_ms": settings.proxy_latency_threshold_ms, "health_refresh_seconds": settings.proxy_health_refresh_seconds}
     try:
         nodes = await fetch_subscription_node_list(
             settings.proxy_subscription_url,
@@ -2684,6 +2697,7 @@ async def proxy_nodes(refresh: bool = False):
     ]
     return {
         "source": "subscription",
+        "platform": normalized_platform,
         "nodes": visible,
         "filtered_count": len(payloads) - len(visible),
         "enabled": settings.proxy_enabled,
@@ -2714,13 +2728,16 @@ async def _measure_account_proxies(proxy_ids: list[str], settings) -> dict:
 @app.post("/config/proxy-nodes/latency", dependencies=[Depends(require_admin)])
 async def proxy_node_latency(request: Request):
     settings = load_settings()
-    if settings.proxy_source == "account":
-        payload = await _request_payload(request)
+    payload = await _request_payload(request)
+    source, normalized_platform = _platform_proxy_source(settings, str(payload.get("platform") or ""))
+    if source == "account":
         raw_ids = payload.get("proxy_ids", [])
         if not isinstance(raw_ids, list):
             raise HTTPException(status_code=400, detail="proxy_ids must be an array")
         pool = await _measure_account_proxies([str(item) for item in raw_ids if str(item)], settings)
-        return {"source": "account", "nodes": pool["proxies"], "selected_ids": pool["selected_ids"], "auto_select": pool["rotation_enabled"]}
+        return {"source": "account", "platform": normalized_platform, "nodes": pool["proxies"], "selected_ids": pool["selected_ids"], "auto_select": pool["rotation_enabled"]}
+    if source != "subscription":
+        raise HTTPException(status_code=409, detail=f"{source} proxy source does not support latency measurement")
     if not settings.proxy_subscription_url:
         raise HTTPException(status_code=409, detail="proxy subscription is not configured")
     try:
@@ -2741,9 +2758,19 @@ async def proxy_node_latency(request: Request):
         selected_node = min(selectable, key=lambda node: int(delays[node.id])).id if selectable else ""
         if selected_node != settings.proxy_selected_node:
             update_config({"proxy_selected_node": selected_node})
-    payloads = [node_payload(node, selected_node) for node in visible_nodes]
+    payloads = []
+    for node in visible_nodes:
+        item = node_payload(node, selected_node)
+        item.update({
+            "latency_ms": int(delays[node.id]),
+            "latency_measured": True,
+            "latency_cached": False,
+            "latency_status": "available",
+        })
+        payloads.append(item)
     return {
         "source": "subscription",
+        "platform": normalized_platform,
         "nodes": payloads,
         "filtered_count": len(nodes) - len(visible_nodes),
         "selected_node": selected_node,
@@ -2758,7 +2785,8 @@ async def select_proxy_node(request: Request):
     payload = await _request_payload(request)
     node_id = str(payload.get("node_id") or "").strip()
     settings = load_settings()
-    if settings.proxy_source == "account":
+    source, normalized_platform = _platform_proxy_source(settings, str(payload.get("platform") or ""))
+    if source == "account":
         raw_ids = payload.get("node_ids", [node_id] if node_id else [])
         if not isinstance(raw_ids, list):
             raise HTTPException(status_code=400, detail="node_ids must be an array")
@@ -2766,7 +2794,9 @@ async def select_proxy_node(request: Request):
             pool = select_account_proxies(raw_ids, bool(payload.get("rotation_enabled", len(raw_ids) > 1)), settings)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return {"ok": True, "source": "account", "selected_node": pool["selected_ids"][0] if len(pool["selected_ids"]) == 1 else "", "selected_ids": pool["selected_ids"], "auto_select": pool["rotation_enabled"], "nodes": pool["proxies"]}
+        return {"ok": True, "source": "account", "platform": normalized_platform, "selected_node": pool["selected_ids"][0] if len(pool["selected_ids"]) == 1 else "", "selected_ids": pool["selected_ids"], "auto_select": pool["rotation_enabled"], "nodes": pool["proxies"]}
+    if source != "subscription":
+        raise HTTPException(status_code=409, detail=f"{source} proxy source does not support node selection")
     if not settings.proxy_subscription_url:
         raise HTTPException(status_code=409, detail="proxy subscription is not configured")
     try:
@@ -2790,7 +2820,7 @@ async def select_proxy_node(request: Request):
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     update_config({"proxy_selected_node": selected.id, "proxy_auto_select": False})
-    return {"ok": True, "selected_node": selected.id, "node": node_payload(selected, selected.id)}
+    return {"ok": True, "source": "subscription", "platform": normalized_platform, "selected_node": selected.id, "node": node_payload(selected, selected.id)}
 
 
 @app.post("/config/account-proxies/import", dependencies=[Depends(require_admin)])

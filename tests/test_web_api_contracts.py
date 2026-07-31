@@ -1841,6 +1841,48 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(payload["nodes"][0]["host_port"], "198.51.100.10:10001")
         self.assertEqual(payload["nodes"][0]["total_leases"], 7)
 
+    def test_proxy_nodes_follow_the_requested_platform_source(self) -> None:
+        config.update_config({
+            "proxy_source": "direct",
+            "platform_proxy_sources": {"dola": "api", "doubao": "subscription", "qianwen": "direct"},
+            "proxy_subscription_url": "https://subscription.example/token",
+        })
+        (self.root / ".worker-health.json").write_text(
+            json.dumps({
+                "api_proxy_pool": {
+                    "capacity": 1,
+                    "endpoints": 1,
+                    "active": 1,
+                    "slots": [{"id": "api:198.51.100.30:10003", "host_port": "198.51.100.30:10003", "active": 1, "total_leases": 2, "state": "active"}],
+                }
+            }),
+            encoding="utf-8",
+        )
+        nodes = proxy_manager.subscription_node_list(
+            "vless://user@hk.example.com:443#Hong%20Kong\ntrojan://secret@jp.example.com:443#Japan"
+        )
+        headers = {"X-API-Token": self.admin_token}
+        with patch("app.main.fetch_subscription_node_list", new=AsyncMock(return_value=nodes)), patch(
+            "app.main.measure_node_delays", new=AsyncMock(return_value={node.id: 35 + index for index, node in enumerate(nodes)})
+        ):
+            dola = self.client.get("/config/proxy-nodes?platform=dola", headers=headers)
+            doubao = self.client.get("/config/proxy-nodes?platform=doubao", headers=headers)
+            measured = self.client.post("/config/proxy-nodes/latency", headers=headers, json={"platform": "doubao"})
+            qianwen = self.client.get("/config/proxy-nodes?platform=qianwen", headers=headers)
+
+        self.assertEqual(dola.status_code, 200, dola.text)
+        self.assertEqual((dola.json()["platform"], dola.json()["source"]), ("dola", "api"))
+        self.assertEqual(dola.json()["nodes"][0]["host_port"], "198.51.100.30:10003")
+        self.assertEqual(doubao.status_code, 200, doubao.text)
+        self.assertEqual((doubao.json()["platform"], doubao.json()["source"]), ("doubao", "subscription"))
+        self.assertEqual([item["country"] for item in doubao.json()["nodes"]], ["香港", "日本"])
+        self.assertEqual(measured.status_code, 200, measured.text)
+        self.assertEqual([item["latency_ms"] for item in measured.json()["nodes"]], [35, 36])
+        self.assertEqual(qianwen.status_code, 200, qianwen.text)
+        self.assertEqual((qianwen.json()["platform"], qianwen.json()["source"], qianwen.json()["nodes"]), ("qianwen", "direct", []))
+        invalid = self.client.get("/config/proxy-nodes?platform=unknown", headers=headers)
+        self.assertEqual(invalid.status_code, 400)
+
     def test_api_proxy_draft_can_be_tested_without_saving(self) -> None:
         self.assertEqual(
             self.client.post(

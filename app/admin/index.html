@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.9.0" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.9.1" />
   </head>
   <body>
     <script>
@@ -327,7 +327,7 @@
         <section class="view" id="proxy-nodesView" data-title="节点选择">
           <section class="panel node-selection-panel">
             <div class="panel-header">
-              <div><h2 id="proxyNodesTitle">节点选择</h2><p id="proxyNodesDescription">通过节点订阅获取国家节点和实时延迟，自动模式会为 Dola 任务选择延迟最低的节点。</p></div>
+              <div><h2 id="proxyNodesTitle">Dola 代理配置</h2><p id="proxyNodesDescription">查看 Dola 当前选择的代理来源和实时状态。</p></div>
               <div class="node-toolbar"><button class="primary-button hidden" id="openAccountProxyImport" type="button"><i data-lucide="plus" aria-hidden="true"></i>添加代理</button><button class="secondary-button" id="openProxyModalFromNodes" type="button">代理设置</button><button class="secondary-button" id="refreshProxyNodes" type="button"><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新延迟</button></div>
             </div>
             <div class="node-controls">
@@ -337,11 +337,18 @@
               <label class="field"><span>自动测速（分钟）</span><input id="proxyHealthRefreshMinutes" type="number" min="1" max="1440" step="1" value="10" /></label>
               <span class="settings-state" id="proxyNodesState">等待读取</span>
             </div>
-            <div class="platform-proxy-routing" aria-label="平台代理分配">
-              <div><strong>Dola</strong><select id="dolaProxySource"><option value="api">代理提取 API</option><option value="subscription">节点订阅</option><option value="account">账密连接</option><option value="direct">直连</option></select><label><input id="dolaProxyRandom" type="checkbox" /><span>随机换代理</span></label></div>
-              <div><strong>豆包</strong><select id="doubaoProxySource"><option value="subscription">节点订阅</option><option value="api">代理提取 API</option><option value="account">账密连接</option><option value="direct">直连</option></select><label><input id="doubaoProxyRandom" type="checkbox" /><span>随机换代理</span></label></div>
-              <div><strong>千问</strong><select id="qianwenProxySource"><option value="direct">直连</option><option value="subscription">节点订阅</option><option value="api">代理提取 API</option><option value="account">账密连接</option></select><label><input id="qianwenProxyRandom" type="checkbox" /><span>随机换代理</span></label></div>
-              <button class="primary-button" id="savePlatformProxyRouting" type="button">保存平台分配</button>
+            <div class="platform-proxy-workspace">
+              <div class="platform-proxy-tabs" role="tablist" aria-label="平台代理配置">
+                <button class="active" type="button" role="tab" aria-selected="true" data-proxy-platform="dola"><i data-lucide="circle-play" aria-hidden="true"></i><span>Dola 代理配置</span></button>
+                <button type="button" role="tab" aria-selected="false" data-proxy-platform="doubao"><i data-lucide="message-circle" aria-hidden="true"></i><span>豆包代理配置</span></button>
+                <button type="button" role="tab" aria-selected="false" data-proxy-platform="qianwen"><i data-lucide="cloud" aria-hidden="true"></i><span>千问代理配置</span></button>
+              </div>
+              <div class="platform-proxy-routing" aria-label="当前平台代理分配">
+                <div data-proxy-platform-panel="dola"><strong>Dola 使用</strong><select id="dolaProxySource"><option value="api">代理提取 API</option><option value="subscription">节点订阅</option><option value="account">账密连接</option><option value="direct">直连</option></select><label><input id="dolaProxyRandom" type="checkbox" /><span>每个任务随机换代理</span></label></div>
+                <div class="hidden" data-proxy-platform-panel="doubao"><strong>豆包使用</strong><select id="doubaoProxySource"><option value="subscription">节点订阅</option><option value="api">代理提取 API</option><option value="account">账密连接</option><option value="direct">直连</option></select><label><input id="doubaoProxyRandom" type="checkbox" /><span>每个任务随机换代理</span></label></div>
+                <div class="hidden" data-proxy-platform-panel="qianwen"><strong>千问使用</strong><select id="qianwenProxySource"><option value="direct">直连</option><option value="subscription">节点订阅</option><option value="api">代理提取 API</option><option value="account">账密连接</option></select><label><input id="qianwenProxyRandom" type="checkbox" /><span>每个任务随机换代理</span></label></div>
+                <button class="primary-button" id="savePlatformProxyRouting" type="button">保存当前平台</button>
+              </div>
             </div>
             <div class="proxy-country-filter" id="proxyCountryFilterRow"><span>自动切换国家</span><div class="proxy-country-options" id="proxyCountryFilter"><span class="muted">读取节点后可勾选</span></div></div>
             <div class="account-proxy-bulkbar hidden" id="accountProxyBulkbar"><span id="accountProxySelectedCount">已选择 0 个</span><div><button class="secondary-button" id="testSelectedAccountProxies" type="button"><i data-lucide="gauge" aria-hidden="true"></i>测速</button><button class="secondary-button" id="enableSelectedAccountProxies" type="button">启用</button><button class="secondary-button" id="disableSelectedAccountProxies" type="button">禁用</button><button class="danger-button" id="deleteSelectedAccountProxies" type="button"><i data-lucide="trash-2" aria-hidden="true"></i>删除</button></div></div>
@@ -1360,6 +1367,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.9.0"></script>
+    <script src="/admin/assets/app.js?v=1.9.1"></script>
   </body>
 </html>

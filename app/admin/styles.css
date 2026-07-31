@@ -4025,19 +4025,51 @@ body[data-portal="admin"] .client-billing-panel {
   text-align: center;
 }
 
+.platform-proxy-workspace {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.platform-proxy-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.platform-proxy-tabs button {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: #45524e;
+  background: #fff;
+  border: 1px solid #cfd8d4;
+  border-radius: 7px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.platform-proxy-tabs button:hover { border-color: #7fa9a1; background: #f6faf9; }
+.platform-proxy-tabs button.active { color: #075e57; background: #e8f5f3; border-color: #4d9b92; box-shadow: inset 0 0 0 1px #4d9b92; }
+.platform-proxy-tabs svg { width: 17px; height: 17px; flex: 0 0 auto; }
+.platform-proxy-tabs span { min-width: 0; overflow-wrap: anywhere; }
+
 .platform-proxy-routing {
   display: grid;
-  grid-template-columns: repeat(3, minmax(210px, 1fr)) auto;
+  grid-template-columns: minmax(260px, 1fr) auto;
   align-items: end;
   gap: 12px;
-  margin-top: 12px;
   padding: 14px;
   background: #f7f9f8;
   border: 1px solid var(--line);
   border-radius: 7px;
 }
 
-.platform-proxy-routing > div { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.platform-proxy-routing > div { display: grid; grid-template-columns: auto minmax(180px, 360px); align-items: center; gap: 8px 12px; }
 .platform-proxy-routing strong { color: #2d3733; font-size: 12px; }
 .platform-proxy-routing select { min-width: 0; min-height: 38px; }
 .platform-proxy-routing label { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; color: #66706c; font-size: 11px; cursor: pointer; }
@@ -4138,6 +4170,13 @@ body[data-portal="admin"] .client-billing-panel {
     flex-direction: column;
   }
   .proxy-country-filter { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  .platform-proxy-tabs,
+  .platform-proxy-routing { grid-template-columns: 1fr; }
+  .platform-proxy-routing > div { grid-template-columns: 1fr; }
+  .platform-proxy-routing label { grid-column: 1; }
 }
 
 /* Stable consumption ledger rows */

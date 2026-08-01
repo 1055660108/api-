@@ -3,8 +3,10 @@ annotated-doc==0.0.4
 annotated-types==0.8.0
 anyio==4.14.2
 certifi==2026.7.22
+cffi==2.0.0
 click==8.4.2
 colorama==0.4.6
+cryptography==48.0.0
 defusedxml==0.7.1
 et_xmlfile==2.0.0
 fastapi==0.121.0
@@ -25,6 +27,7 @@ psycopg-pool==3.3.1
 pydantic==2.12.4
 pydantic_core==2.41.5
 pyee==13.0.1
+pycparser==3.0
 python-dotenv==1.2.2
 python-multipart==0.0.20
 PyYAML==6.0.3

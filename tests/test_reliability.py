@@ -122,6 +122,7 @@ class ReliabilityTests(unittest.TestCase):
             "source": "single_chain",
             "key": "video_model.main_url",
             "score": 360,
+            "watermark_status": "watermarked_fallback",
         }
 
         with patch("app.doubao_automation.fetch_doubao_generation_result", new=AsyncMock(return_value={"state": "completed", "text": "生成完成", "candidate": candidate})), patch(
@@ -132,6 +133,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(outcome["code"], "2")
         self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUCCESS)
         self.assertEqual(store.load_result(task["id"])["decoded_main_url"], candidate["url"])
+        self.assertEqual(store.load_result(task["id"])["doubao_watermark_status"], "watermarked_fallback")
         self.assertNotIn("cookie_string", store.load_result(task["id"]))
         settle.assert_called_once_with("doubao-account", "doubao-charge")
         clear.assert_called_once_with("doubao-account", task["id"])

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import html
 import json
 import re
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
@@ -35,6 +39,10 @@ DOUBAO_MODEL_CODES = {
 DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
 DOUBAO_RESULT_POLL_MILLISECONDS = 5000
 DOUBAO_ORIGINAL_VIDEO_SCORE = 240
+QAAB_SALT = bytes.fromhex(
+    "4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524"
+    "f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58"
+)
 
 
 def _doubao_single_chain_url(web_id: str, region: str) -> str:
@@ -111,7 +119,218 @@ async def fetch_doubao_generation_result(
             json=_doubao_single_chain_payload(conversation_id),
         )
         response.raise_for_status()
-    return parse_doubao_generation_result(response.content.decode("utf-8-sig", errors="replace"))
+        body = response.content.decode("utf-8-sig", errors="replace")
+        parsed = parse_doubao_generation_result(body)
+        try:
+            payload = json.loads(body)
+            unwatermarked_url = await fetch_doubao_unwatermarked_url(
+                client,
+                cookie_header,
+                payload,
+            )
+        except Exception:
+            unwatermarked_url = ""
+        if unwatermarked_url:
+            return {
+                "state": "completed",
+                "text": str(parsed.get("text") or ""),
+                "candidate": {
+                    "url": unwatermarked_url,
+                    "key": "video_model.fallback_api",
+                    "source": "fallback_unwatermarked",
+                    "score": doubao_video_url_score(
+                        unwatermarked_url,
+                        "video_model.fallback_api.unwatermarked",
+                        "fallback_unwatermarked",
+                    ),
+                    "watermark_status": "original",
+                },
+            }
+        if parsed.get("state") == "completed":
+            candidate = parsed.get("candidate")
+            if isinstance(candidate, dict):
+                candidate["watermark_status"] = "watermarked_fallback"
+        return parsed
+
+
+def unwatermarked_fallback_url(url: str) -> str:
+    parsed = urlsplit(str(url or "").strip())
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    params.update(channel="no", codec_type="8", logo_type="unwatermarked")
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(params), parsed.fragment))
+
+
+def _decode_loose_base64(value: str) -> bytes:
+    text = str(value or "").strip()
+    variants = (
+        text,
+        text.translate(str.maketrans({"$": "_", "@": "/", "#": "."})),
+        text.translate(str.maketrans({"$": "+", "@": "/", "#": "="})),
+    )
+    for variant in dict.fromkeys(variants):
+        padded = variant + "=" * (-len(variant) % 4)
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                return decoder(padded.encode("ascii"))
+            except Exception:
+                continue
+    return b""
+
+
+def _aes_cbc_url(payload: bytes, key: bytes, iv: bytes) -> str:
+    try:
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        padded = decryptor.update(payload) + decryptor.finalize()
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        decoded = unpadder.update(padded) + unpadder.finalize()
+    except (TypeError, ValueError):
+        return ""
+    text = decoded.decode("utf-8", errors="ignore").strip("\x00\r\n\t ")
+    return text if text.startswith(("http://", "https://")) else ""
+
+
+def decode_qaab_url(token: str, key_seed: str) -> str:
+    data = _decode_loose_base64(token)
+    seed = _decode_loose_base64(key_seed)
+    if not data or not seed:
+        return ""
+    digest1 = hashlib.sha512(seed[:32]).digest()
+    digest2 = hashlib.sha512(digest1 + QAAB_SALT).digest()
+    key, iv = digest2[:16], digest2[16:32]
+    attempts = [(data, key, iv)]
+    if data.startswith(b"\xa8\x00\x01\x00"):
+        attempts = [(data[4:], key, iv), (data[4:], iv, key)]
+        if len(data) > 36:
+            attempts.extend(((data[36:], key, data[20:36]), (data[36:], key, iv)))
+    for encrypted, attempt_key, attempt_iv in attempts:
+        decoded = _aes_cbc_url(encrypted, attempt_key, attempt_iv)
+        if decoded:
+            return decoded
+    return ""
+
+
+def extract_doubao_fallback_apis(data: Any) -> list[str]:
+    found: list[str] = []
+
+    body = data.get("downlink_body", {}) if isinstance(data, dict) else {}
+    chain = body.get("pull_singe_chain_downlink_body", {}) if isinstance(body, dict) else {}
+    messages = chain.get("messages", []) if isinstance(chain, dict) else []
+    messages = [item for item in messages if isinstance(item, dict)]
+
+    def order_key(item: dict[str, Any], position: int) -> tuple[int, int]:
+        for key in ("message_index", "index", "create_time_ms", "create_time", "update_time", "message_id"):
+            try:
+                return int(str(item.get(key))), position
+            except (TypeError, ValueError):
+                continue
+        return 0, position
+
+    latest_message = max(
+        enumerate(messages),
+        key=lambda pair: order_key(pair[1], pair[0]),
+        default=(-1, {}),
+    )[1]
+
+    def walk(value: Any, depth: int = 0) -> None:
+        if depth > 12:
+            return
+        if isinstance(value, dict):
+            fallback_api = value.get("fallback_api")
+            if (
+                isinstance(fallback_api, str)
+                and fallback_api.startswith(("http://", "https://"))
+                and fallback_api not in found
+            ):
+                found.append(fallback_api)
+            for child in value.values():
+                walk(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, depth + 1)
+
+    walk(latest_message)
+    return found
+
+
+def _find_deep_string(value: Any, key: str, depth: int = 0) -> str:
+    if depth > 12:
+        return ""
+    if isinstance(value, dict):
+        direct = value.get(key)
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        for child in value.values():
+            found = _find_deep_string(child, key, depth + 1)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_deep_string(child, key, depth + 1)
+            if found:
+                return found
+    return ""
+
+
+def _quality_number(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def fallback_payload_video_url(payload: Any) -> str:
+    root = payload if isinstance(payload, dict) else {}
+    nested_data = root.get("data") if isinstance(root.get("data"), dict) else {}
+    video_info = root.get("video_info") or nested_data.get("video_info") or root
+    if not isinstance(video_info, dict):
+        return ""
+    data = video_info.get("data") if isinstance(video_info.get("data"), dict) else video_info
+    video_list = data.get("video_list") if isinstance(data, dict) else None
+    entries = list(video_list.values()) if isinstance(video_list, dict) else [data]
+    best_token = ""
+    best_score = -1
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        token = str(entry.get("main_url") or entry.get("play_url") or "").strip()
+        if not token:
+            continue
+        score = _quality_number(entry.get("bitrate") or entry.get("real_bitrate")) + (
+            _quality_number(entry.get("vwidth") or entry.get("width"))
+            * _quality_number(entry.get("vheight") or entry.get("height"))
+        )
+        if score > best_score:
+            best_score, best_token = score, token
+    return decode_qaab_url(best_token, _find_deep_string(payload, "key_seed")) or decode_main_url(best_token)
+
+
+async def fetch_doubao_unwatermarked_url(
+    client: httpx.AsyncClient,
+    cookie_header: str,
+    data: Any,
+) -> str:
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Cookie": str(cookie_header or ""),
+        "Origin": "https://www.doubao.com",
+        "Referer": DOUBAO_URL,
+        "User-Agent": BROWSER_USER_AGENT,
+    }
+    for fallback_api in extract_doubao_fallback_apis(data):
+        try:
+            response = await client.get(
+                unwatermarked_fallback_url(fallback_api),
+                headers=headers,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            payload = json.loads(response.content.decode("utf-8-sig"))
+            url = fallback_payload_video_url(payload)
+            if url:
+                return url
+        except (httpx.HTTPError, TypeError, ValueError, UnicodeDecodeError):
+            continue
+    return ""
 
 
 def parse_doubao_generation_result(body: str) -> dict[str, Any]:
@@ -172,6 +391,8 @@ def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
         score += 60
     if candidate_source == "submission_response":
         score += 30
+    elif candidate_source == "fallback_unwatermarked":
+        score += 700
     elif candidate_source == "single_chain":
         score += 100
     elif candidate_source == "media_response":

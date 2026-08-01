@@ -828,6 +828,9 @@ async def _query_doubao_task_once(
                 settle_account_quota(account_id, charge_id)
             clear_account_current_task(account_id, task_id)
         score = int(candidate.get("score") or 0)
+        watermark_status = str(candidate.get("watermark_status") or "").strip()
+        if not watermark_status:
+            watermark_status = "original" if score >= 240 else "watermarked_fallback"
         save_result(
             task_id,
             extra={
@@ -835,7 +838,7 @@ async def _query_doubao_task_once(
                 "doubao_video_detection_source": str(candidate.get("source") or "single_chain"),
                 "doubao_selected_video_key": str(candidate.get("key") or "video_model.main_url"),
                 "doubao_video_url_score": score,
-                "doubao_watermark_status": "original" if score >= 240 else "fallback",
+                "doubao_watermark_status": watermark_status,
                 "doubao_result_mode": "interface_poll_completed",
             },
             remove={"cookie_string", "conversation_id"},

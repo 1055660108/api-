@@ -1985,6 +1985,45 @@ textarea:focus {
   border-color: rgba(38, 98, 217, 0.18);
 }
 
+.user-balance-modal {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.user-balance-content {
+  display: grid;
+  gap: 18px;
+  padding: 20px 24px;
+}
+
+.user-balance-type {
+  width: 100%;
+}
+
+.user-balance-type button {
+  flex: 1 1 0;
+}
+
+.user-balance-current {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f9fa;
+}
+
+.user-balance-current span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.user-balance-current strong {
+  font-size: 16px;
+}
+
 .task-stat-pill.failed {
   color: #9f2f35;
   background: #fff7f7;

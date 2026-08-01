@@ -6,6 +6,7 @@ import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .billing import POINT_SCALE, points_to_units, units_to_points
@@ -296,6 +297,42 @@ def deduct_temp_points(token_hash: str, free_limit: int, amount: object) -> dict
         entry["updated_at"] = _now()
         _write_data(data)
         return _public_token(token_hash, entry)
+
+
+def adjust_temp_video_quota(token_hash: str, free_limit: int, amount: object) -> dict[str, Any]:
+    token_hash = str(token_hash or "").strip().lower()
+    try:
+        if isinstance(amount, bool):
+            raise ValueError
+        parsed = Decimal(str(amount).strip())
+        if not parsed.is_finite() or parsed != parsed.to_integral_value():
+            raise ValueError
+        change = int(parsed)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("视频额度数量必须是整数") from exc
+    if not change:
+        raise ValueError("视频额度数量不能为 0")
+
+    def apply(entry: dict[str, Any]) -> dict[str, Any]:
+        _migrate_entry(entry, free_limit)
+        current = max(0, int(entry.get("free_remaining") or 0))
+        if current + change < 0:
+            raise ValueError("用户视频额度不足")
+        entry["free_remaining"] = current + change
+        _sync_legacy_fields(entry)
+        entry["updated_at"] = _now()
+        return _public_token(token_hash, entry)
+
+    with _LOCK:
+        if postgres.enabled():
+            return postgres.mutate_temp_token(token_hash, apply)
+        data = _read_data()
+        entry = data["tokens"].get(token_hash)
+        if not isinstance(entry, dict):
+            raise KeyError("token not found")
+        result = apply(entry)
+        _write_data(data)
+        return result
 
 
 def purchase_temp_membership(token_hash: str, free_limit: int, points_cost: object, bonus_free_uses: int, concurrency: int) -> dict[str, Any]:

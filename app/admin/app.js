@@ -188,6 +188,17 @@ const els = {
   userActivitiesCount: document.getElementById("userActivitiesCount"),
   closeUserDetailsModal: document.getElementById("closeUserDetailsModal"),
   cancelUserDetailsModal: document.getElementById("cancelUserDetailsModal"),
+  userBalanceModal: document.getElementById("userBalanceModal"),
+  userBalanceForm: document.getElementById("userBalanceForm"),
+  userBalanceTitle: document.getElementById("userBalanceTitle"),
+  userBalanceSubtitle: document.getElementById("userBalanceSubtitle"),
+  userBalanceType: document.getElementById("userBalanceType"),
+  userBalanceCurrent: document.getElementById("userBalanceCurrent"),
+  userBalanceAmountLabel: document.getElementById("userBalanceAmountLabel"),
+  userBalanceAmount: document.getElementById("userBalanceAmount"),
+  closeUserBalanceModal: document.getElementById("closeUserBalanceModal"),
+  cancelUserBalanceModal: document.getElementById("cancelUserBalanceModal"),
+  submitUserBalance: document.getElementById("submitUserBalance"),
   tokenCommand: document.getElementById("tokenCommand"),
   copyTokenCommand: document.getElementById("copyTokenCommand"),
   appShell: document.getElementById("appShell"),
@@ -2452,7 +2463,7 @@ async function loadUsers() {
   if (els.prevUserPage) els.prevUserPage.disabled = state.userPage <= 1;
   if (els.nextUserPage) els.nextUserPage.disabled = state.userPage >= state.userTotalPages;
   const users = Array.isArray(data.users) ? data.users : [];
-  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}<br>远端 ${item.remote_generation_limit || item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-details="${escapeHtml(item.id)}">详情</button><button class="secondary-button" data-user-points="${escapeHtml(item.id)}">充值</button><button class="secondary-button deduct-button" data-deduct-user-points="${escapeHtml(item.id)}" data-user-points-balance="${Number(item.points || 0)}">扣除</button><button class="secondary-button" data-user-remote-limit="${escapeHtml(item.id)}" data-current-remote-limit="${Number(item.remote_generation_limit || item.concurrency || 1)}">远端上限</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
+  els.userTableBody.innerHTML = users.length ? users.map((item) => `<tr><td><strong>${escapeHtml(item.username)}</strong>${item.membership ? `<br><span class="chip success">${escapeHtml(item.membership.name)} 至 ${escapeHtml(formatTime(item.membership.expires_at))}</span>` : ""}<br><small>${escapeHtml(item.email || formatTime(item.last_login_at))}</small></td><td><div class="user-token-cell"><code title="${escapeHtml(item.token)}">${escapeHtml(item.token)}</code><button type="button" class="icon-button" data-copy-user-token="${escapeHtml(item.token)}">复制</button></div></td><td>${escapeHtml(formatTime(item.created_at))}</td><td>${escapeHtml(formatTime(item.last_seen_at))}</td><td>${item.enabled ? (item.online ? '<span class="online-dot"></span>在线' : '离线') : '<span class="chip failed">已停用</span>'}</td><td>视频额度 ${item.free_remaining}<br>积分 ${item.points}<br>并发 ${item.concurrency}<br>远端 ${item.remote_generation_limit || item.concurrency}</td><td><div class="row-actions user-point-actions"><button class="secondary-button" data-user-details="${escapeHtml(item.id)}">详情</button><button class="secondary-button" data-user-balance="${escapeHtml(item.id)}" data-user-balance-action="credit" data-user-name="${escapeHtml(item.username)}" data-user-points-balance="${Number(item.points || 0)}" data-user-quota-balance="${Number(item.free_remaining || 0)}">充值</button><button class="secondary-button deduct-button" data-user-balance="${escapeHtml(item.id)}" data-user-balance-action="deduct" data-user-name="${escapeHtml(item.username)}" data-user-points-balance="${Number(item.points || 0)}" data-user-quota-balance="${Number(item.free_remaining || 0)}">扣除</button><button class="secondary-button" data-user-remote-limit="${escapeHtml(item.id)}" data-current-remote-limit="${Number(item.remote_generation_limit || item.concurrency || 1)}">远端上限</button><button class="icon-button" data-toggle-user="${escapeHtml(item.id)}" data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-user="${escapeHtml(item.id)}" data-user-name="${escapeHtml(item.username)}">删除</button></div></td></tr>`).join("") : '<tr><td colspan="7"><div class="empty-state">未找到匹配用户</div></td></tr>';
 }
 
 function closeCreateUser() {
@@ -2481,7 +2492,74 @@ async function createAdminUser(event) {
   }
 }
 
-const userTransactionLabels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "积分充值", membership_purchase: "会员购买", admin_credit: "管理员充值", admin_deduct: "管理员扣除" };
+const userTransactionLabels = { consume: "积分消费", video_quota_consume: "额度使用", refund: "积分退款", video_quota_refund: "额度退款", video_quota_credit: "额度增加", redeem: "积分充值", membership_purchase: "会员购买", admin_credit: "管理员充值积分", admin_deduct: "管理员扣除积分", admin_video_quota_credit: "管理员充值视频额度", admin_video_quota_deduct: "管理员扣除视频额度" };
+
+const userBalanceState = { userId: "", userName: "", action: "credit", balanceType: "points", points: 0, videoQuota: 0 };
+
+function renderUserBalanceModal() {
+  if (!els.userBalanceModal) return;
+  const credit = userBalanceState.action === "credit";
+  const quota = userBalanceState.balanceType === "video_quota";
+  const balance = quota ? userBalanceState.videoQuota : userBalanceState.points;
+  els.userBalanceTitle.textContent = credit ? "充值用户余额" : "扣除用户余额";
+  els.userBalanceSubtitle.textContent = userBalanceState.userName || "用户余额";
+  els.userBalanceCurrent.textContent = quota ? `${balance} 次视频额度` : `${balance} 积分`;
+  els.userBalanceAmountLabel.textContent = quota ? "视频额度数量" : "积分数量";
+  els.userBalanceAmount.min = quota ? "1" : "0.1";
+  els.userBalanceAmount.step = quota ? "1" : "0.1";
+  els.userBalanceType.querySelectorAll("[data-user-balance-type]").forEach((button) => {
+    const active = button.dataset.userBalanceType === userBalanceState.balanceType;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-checked", String(active));
+  });
+  els.submitUserBalance.textContent = credit ? "确认充值" : "确认扣除";
+}
+
+function openUserBalance(button) {
+  userBalanceState.userId = String(button.dataset.userBalance || "");
+  userBalanceState.userName = String(button.dataset.userName || "");
+  userBalanceState.action = button.dataset.userBalanceAction === "deduct" ? "deduct" : "credit";
+  userBalanceState.balanceType = "points";
+  userBalanceState.points = Number(button.dataset.userPointsBalance || 0);
+  userBalanceState.videoQuota = Number(button.dataset.userQuotaBalance || 0);
+  els.userBalanceAmount.value = userBalanceState.action === "credit" ? "10" : "1";
+  renderUserBalanceModal();
+  openSettingsModal(els.userBalanceModal, els.userBalanceAmount);
+}
+
+function closeUserBalance() {
+  closeSettingsModal(els.userBalanceModal);
+  els.userBalanceForm?.reset();
+}
+
+async function submitUserBalance(event) {
+  event.preventDefault();
+  const quota = userBalanceState.balanceType === "video_quota";
+  const amount = Number(els.userBalanceAmount.value);
+  if (!Number.isFinite(amount) || amount <= 0 || quota && !Number.isInteger(amount) || !quota && !Number.isInteger(amount * 10)) {
+    return toast(quota ? "视频额度数量必须是正整数" : "积分最多保留 1 位小数", "error");
+  }
+  const current = quota ? userBalanceState.videoQuota : userBalanceState.points;
+  if (userBalanceState.action === "deduct" && amount > current) return toast(`扣除数量不能超过当前${quota ? "视频额度" : "积分"}`, "error");
+  const operation = userBalanceState.action === "credit" ? "充值" : "扣除";
+  const unit = quota ? "次视频额度" : "积分";
+  if (!window.confirm(`确认${operation} ${amount} ${unit}？`)) return;
+  setBusy(els.submitUserBalance, true, "处理中");
+  try {
+    const suffix = userBalanceState.action === "deduct" ? "/points/deduct" : "/points";
+    await apiFetch(`/users/${encodeURIComponent(userBalanceState.userId)}${suffix}`, {
+      method: "POST",
+      body: { amount, balance_type: userBalanceState.balanceType },
+    });
+    closeUserBalance();
+    toast(`已${operation} ${amount} ${unit}`);
+    await Promise.all([loadUsers(), refreshTempTokens({ quiet: true })]);
+  } catch (error) {
+    toast(`${operation}失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.submitUserBalance, false);
+  }
+}
 
 function closeUserDetails() {
   els.userDetailsModal?.classList.add("hidden");
@@ -7046,6 +7124,8 @@ function bindEvents() {
     try {
       const detailsButton = event.target.closest("[data-user-details]");
       if (detailsButton) return openUserDetails(detailsButton.dataset.userDetails);
+      const balanceButton = event.target.closest("[data-user-balance]");
+      if (balanceButton) return openUserBalance(balanceButton);
       const copyButton = event.target.closest("[data-copy-user-token]");
       if (copyButton) return copyText(copyButton.dataset.copyUserToken, "Token");
       const remoteLimitButton = event.target.closest("[data-user-remote-limit]");
@@ -7070,29 +7150,22 @@ function bindEvents() {
         toast("用户已删除");
         return loadUsers();
       }
-      const deductButton = event.target.closest("[data-deduct-user-points]");
-      if (deductButton) {
-        const balance = Number(deductButton.dataset.userPointsBalance || 0);
-        const amount = Number(window.prompt(`请输入扣除积分数量（当前可用 ${balance}）`, "1"));
-        if (!Number.isInteger(amount * 10) || amount <= 0) return;
-        if (amount > balance) return toast("扣除数量不能超过用户当前积分", "error");
-        if (!window.confirm(`确认扣除 ${amount} 积分？`)) return;
-        await apiFetch(`/users/${deductButton.dataset.deductUserPoints}/points/deduct`, { method: "POST", body: { amount } });
-        toast(`已扣除 ${amount} 积分`);
-        await Promise.all([loadUsers(), refreshTempTokens({ quiet: true })]);
-        return;
-      }
-      const button = event.target.closest("[data-user-points]");
-      if (!button) return;
-      const amount = Number(window.prompt("请输入充值积分数量", "10"));
-      if (!Number.isInteger(amount * 10) || amount <= 0) return;
-      await apiFetch(`/users/${button.dataset.userPoints}/points`, { method: "POST", body: { amount } });
-      toast("积分已充值");
-      await Promise.all([loadUsers(), refreshTempTokens({ quiet: true })]);
     } catch (error) {
       toast(`用户操作失败：${error.message}`, "error");
     }
   });
+  els.userBalanceForm?.addEventListener("submit", submitUserBalance);
+  els.userBalanceType?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-user-balance-type]");
+    if (!button) return;
+    userBalanceState.balanceType = button.dataset.userBalanceType === "video_quota" ? "video_quota" : "points";
+    els.userBalanceAmount.value = userBalanceState.action === "credit" ? (userBalanceState.balanceType === "video_quota" ? "1" : "10") : "1";
+    renderUserBalanceModal();
+    els.userBalanceAmount.focus();
+  });
+  els.closeUserBalanceModal?.addEventListener("click", closeUserBalance);
+  els.cancelUserBalanceModal?.addEventListener("click", closeUserBalance);
+  els.userBalanceModal?.addEventListener("click", (event) => { if (event.target === els.userBalanceModal) closeUserBalance(); });
   els.closeUserDetailsModal?.addEventListener("click", closeUserDetails);
   els.cancelUserDetailsModal?.addEventListener("click", closeUserDetails);
   els.userDetailsModal?.addEventListener("click", (event) => {

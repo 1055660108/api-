@@ -7,11 +7,12 @@ import re
 import secrets
 import threading
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .billing import nonnegative_points_to_units, points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
-from .temp_access import add_temp_credit_units, create_temp_tokens, deduct_temp_points, delete_temp_token, get_temp_context_by_hash, hash_token, list_temp_tokens, migrate_temp_token, purchase_temp_membership, rotate_temp_token, update_temp_token
+from .temp_access import add_temp_credit_units, adjust_temp_video_quota, create_temp_tokens, deduct_temp_points, delete_temp_token, get_temp_context_by_hash, hash_token, list_temp_tokens, migrate_temp_token, purchase_temp_membership, rotate_temp_token, update_temp_token
 from . import postgres
 
 
@@ -690,6 +691,31 @@ def deduct_user_points(user_id: str, amount: object) -> None:
         if not entry:
             raise KeyError(user_id)
         deduct_temp_points(str(entry.get("token_hash") or ""), max(1, int(entry.get("free_limit") or 1)), amount)
+
+
+def adjust_user_video_quota(user_id: str, amount: object) -> dict[str, int]:
+    try:
+        if isinstance(amount, bool):
+            raise ValueError
+        parsed = Decimal(str(amount).strip())
+        if not parsed.is_finite() or parsed != parsed.to_integral_value():
+            raise ValueError
+        change = int(parsed)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("视频额度数量必须是整数") from exc
+    if not change:
+        raise ValueError("视频额度数量不能为 0")
+    with _LOCK:
+        candidate = _read_user_entry("id", user_id)
+        if not candidate:
+            raise KeyError(user_id)
+        entry = candidate[1]
+        balance = adjust_temp_video_quota(
+            str(entry.get("token_hash") or ""),
+            max(1, int(entry.get("free_limit") or 1)),
+            change,
+        )
+    return {"changed": change, "free_remaining": max(0, int(balance.get("free_remaining") or 0))}
 
 
 def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str, Any]:

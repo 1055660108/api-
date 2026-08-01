@@ -12,6 +12,16 @@ class AdminUITests(unittest.TestCase):
         cls.html = (admin_directory / "index.html").read_text(encoding="utf-8")
         cls.javascript = (admin_directory / "app.js").read_text(encoding="utf-8")
 
+    def test_user_balance_modal_supports_points_and_video_quota(self) -> None:
+        self.assertIn('id="userBalanceModal"', self.html)
+        self.assertIn('data-user-balance-type="points"', self.html)
+        self.assertIn('data-user-balance-type="video_quota"', self.html)
+        self.assertIn('balance_type: userBalanceState.balanceType', self.javascript)
+        self.assertIn('data-user-quota-balance=', self.javascript)
+        self.assertIn('admin_video_quota_credit: "管理员充值视频额度"', self.javascript)
+        self.assertNotIn('window.prompt("请输入充值积分数量"', self.javascript)
+        self.assertNotIn('window.prompt(`请输入扣除积分数量', self.javascript)
+
     def test_settings_use_modals_and_read_only_account(self) -> None:
         self.assertIn('id="passwordModal"', self.html)
         self.assertIn('id="proxyModal"', self.html)

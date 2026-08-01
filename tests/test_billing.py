@@ -201,6 +201,28 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(balance["free_remaining"], 1)
         self.assertEqual(balance["points"], 50)
 
+    def test_admin_video_quota_adjustment_adds_and_deducts_atomically(self) -> None:
+        registered = users.register_user("quota_adjustment_user", "password123")
+        user_id = users.list_users(temp_access.list_temp_tokens())[0]["id"]
+        token_hash = temp_access.hash_token(registered["token"])
+
+        credited = users.adjust_user_video_quota(user_id, 3)
+        self.assertEqual(credited, {"changed": 3, "free_remaining": 4})
+        deducted = users.adjust_user_video_quota(user_id, -2)
+        self.assertEqual(deducted, {"changed": -2, "free_remaining": 2})
+        self.assertEqual(temp_access.get_temp_context_by_hash(token_hash).free_remaining, 2)
+
+    def test_admin_video_quota_adjustment_rejects_invalid_or_excess_amounts(self) -> None:
+        users.register_user("quota_validation_user", "password123")
+        user_id = users.list_users(temp_access.list_temp_tokens())[0]["id"]
+
+        with self.assertRaisesRegex(ValueError, "不能为 0"):
+            users.adjust_user_video_quota(user_id, 0)
+        with self.assertRaisesRegex(ValueError, "必须是整数"):
+            users.adjust_user_video_quota(user_id, 1.5)
+        with self.assertRaisesRegex(ValueError, "不足"):
+            users.adjust_user_video_quota(user_id, -2)
+
 
 if __name__ == "__main__":
     unittest.main()

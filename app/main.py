@@ -225,7 +225,7 @@ def _validate_video_url(value: str) -> str:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, set_user_remote_generation_limit, sync_user_membership_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, adjust_user_video_quota, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, set_user_remote_generation_limit, sync_user_membership_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
@@ -2463,7 +2463,28 @@ async def user_details(user_id: str):
 @app.post("/users/{user_id}/points", dependencies=[Depends(require_admin)])
 async def users_add_points(user_id: str, request: Request):
     payload = await _request_payload(request)
+    balance_type = str(payload.get("balance_type") or "points").strip().lower()
+    if balance_type not in {"points", "video_quota"}:
+        raise HTTPException(status_code=400, detail="充值类型无效")
     try:
+        if balance_type == "video_quota":
+            raw_amount = payload.get("amount")
+            amount = int(raw_amount)
+            if isinstance(raw_amount, bool) or amount <= 0 or isinstance(raw_amount, float) and not raw_amount.is_integer():
+                raise ValueError("视频额度充值数量必须是正整数")
+            credited = adjust_user_video_quota(user_id, amount)
+            user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
+            record_transaction(
+                user_id,
+                "admin_video_quota_credit",
+                0,
+                "管理员充值视频额度",
+                balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
+                video_quota_change=amount,
+                video_quota_balance=int(user.get("free_remaining") or 0),
+            )
+            await _record_activity_safe(user_id, "admin_video_quota_credit", "管理员充值视频额度", detail=f"增加 {amount} 次视频额度", actor="admin")
+            return {"ok": True, "balance_type": balance_type, **credited}
         credited = add_user_points(user_id, payload.get("amount"), list_temp_tokens())
         user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
         record_transaction(
@@ -2476,16 +2497,37 @@ async def users_add_points(user_id: str, request: Request):
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     await _record_activity_safe(user_id, "admin_credit", "管理员充值积分", detail=f"增加 {payload.get('amount')} 积分", actor="admin")
-    return {"ok": True, **credited}
+    return {"ok": True, "balance_type": balance_type, **credited}
 
 
 @app.post("/users/{user_id}/points/deduct", dependencies=[Depends(require_admin)])
 async def users_deduct_points(user_id: str, request: Request):
     payload = await _request_payload(request)
+    balance_type = str(payload.get("balance_type") or "points").strip().lower()
+    if balance_type not in {"points", "video_quota"}:
+        raise HTTPException(status_code=400, detail="扣除类型无效")
     try:
+        if balance_type == "video_quota":
+            raw_amount = payload.get("amount")
+            amount = int(raw_amount)
+            if isinstance(raw_amount, bool) or amount <= 0 or isinstance(raw_amount, float) and not raw_amount.is_integer():
+                raise ValueError("视频额度扣除数量必须是正整数")
+            deducted = adjust_user_video_quota(user_id, -amount)
+            user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
+            record_transaction(
+                user_id,
+                "admin_video_quota_deduct",
+                0,
+                "管理员扣除视频额度",
+                balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
+                video_quota_change=-amount,
+                video_quota_balance=int(user.get("free_remaining") or 0),
+            )
+            await _record_activity_safe(user_id, "admin_video_quota_deduct", "管理员扣除视频额度", detail=f"扣除 {amount} 次视频额度", actor="admin")
+            return {"ok": True, "balance_type": balance_type, **deducted}
         deduct_user_points(user_id, payload.get("amount"))
         user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
         record_transaction(
@@ -2498,10 +2540,10 @@ async def users_deduct_points(user_id: str, request: Request):
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     await _record_activity_safe(user_id, "admin_deduct", "管理员扣除积分", detail=f"扣除 {payload.get('amount')} 积分", actor="admin")
-    return {"ok": True}
+    return {"ok": True, "balance_type": balance_type}
 
 
 @app.patch("/users/{user_id}", dependencies=[Depends(require_admin)])

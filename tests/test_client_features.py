@@ -644,5 +644,40 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertIn("video_quota_consume", {item["kind"] for item in detail_payload["transactions"]["transactions"]})
 
 
+    def test_admin_can_credit_and_deduct_video_quota(self) -> None:
+        registered = self.register("admin_quota_user")
+        headers = {"X-API-Token": registered["token"]}
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "admin_quota_user")
+
+        credited = self.client.post(f"/users/{user_id}/points", json={"amount": 3, "balance_type": "video_quota"})
+        self.assertEqual(credited.status_code, 200, credited.text)
+        self.assertEqual(credited.json()["free_remaining"], 4)
+        deducted = self.client.post(f"/users/{user_id}/points/deduct", json={"amount": 2, "balance_type": "video_quota"})
+        self.assertEqual(deducted.status_code, 200, deducted.text)
+        self.assertEqual(deducted.json()["free_remaining"], 2)
+        self.assertEqual(self.client.get("/auth/access-state", headers=headers).json()["quota"]["free_remaining"], 2)
+
+        transactions = self.client.get("/points/transactions", headers=headers).json()["transactions"]
+        credit = next(item for item in transactions if item["kind"] == "admin_video_quota_credit")
+        deduction = next(item for item in transactions if item["kind"] == "admin_video_quota_deduct")
+        self.assertEqual((credit["video_quota_change"], credit["video_quota_balance"]), (3, 4))
+        self.assertEqual((deduction["video_quota_change"], deduction["video_quota_balance"]), (-2, 2))
+
+        excessive = self.client.post(f"/users/{user_id}/points/deduct", json={"amount": 3, "balance_type": "video_quota"})
+        self.assertEqual(excessive.status_code, 400)
+        self.assertIn("不足", excessive.json()["detail"])
+
+    def test_admin_balance_adjustment_defaults_to_points(self) -> None:
+        self.register("admin_points_compat_user")
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "admin_points_compat_user")
+        credited = self.client.post(f"/users/{user_id}/points", json={"amount": 2.5})
+        self.assertEqual(credited.status_code, 200, credited.text)
+        self.assertEqual(credited.json()["balance_type"], "points")
+        user = next(item for item in self.client.get("/users").json()["users"] if item["id"] == user_id)
+        self.assertEqual(user["points"], 2.5)
+
+
 if __name__ == "__main__":
     unittest.main()

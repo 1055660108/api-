@@ -845,6 +845,20 @@ async def _query_doubao_task_once(
         )
         mark_late_result_success(task_id) if late_watch else mark_success(task_id)
         return {"code": "2", "text": SUCCESS_TEXT, "url": url}
+    if state == "quota_insufficient":
+        reason = text or "豆包账号额度不足或已耗尽"
+        if account_id:
+            exhaust_account_quota(account_id, charge_id)
+            clear_account_current_task(account_id, task_id)
+            record_failed_account(task_id, account_id)
+        retry_limit = task_retry_limit()
+        retry_count = retry_submitted_task(task_id, reason, max_retries=retry_limit, delay_seconds=10)
+        if retry_count <= retry_limit:
+            clear_transient_result(task_id)
+            return {"code": "1", "text": reason, "url": ""}
+        meta = get_meta(task_id)
+        refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+        return {"code": "0", "text": "多个豆包账号额度均不足，请稍后重试", "url": ""}
     if state in {"failed", "login_invalid", "verification"}:
         if account_id:
             if state == "login_invalid":

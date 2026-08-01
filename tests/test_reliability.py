@@ -160,6 +160,55 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
         clear.assert_not_called()
 
+    def test_doubao_interface_quota_exhaustion_fills_account_and_requeues_with_another_account(self) -> None:
+        task = store.create_task("豆包额度检测", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        account = accounts.add_account("豆包额度账号", "session=doubao-quota", quota_limit=2, platform="doubao")
+        claimed = accounts.claim_account_for_worker("worker-doubao-quota", task["id"], platform="doubao")
+        store.mark_running(task["id"], "worker-doubao-quota")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "cookie_string": "session=doubao-quota",
+            "account_id": account["id"],
+            "account_quota_charge_id": claimed["quota_charge_id"],
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=0)
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+
+        quota_text = "今日视频生成额度已耗尽，无法生成该视频"
+        with patch("app.doubao_automation.fetch_doubao_generation_result", new=AsyncMock(return_value={"state": "quota_insufficient", "text": quota_text})):
+            outcome = asyncio.run(query.query_task(task["id"], background_poll=True))
+
+        stored_account = accounts.list_accounts(platform="doubao")[0]
+        stored_task = store.get_meta(task["id"])
+        self.assertEqual(outcome, {"code": "1", "text": quota_text, "url": ""})
+        self.assertEqual((stored_account["quota_used"], stored_account["quota_remaining"]), (2, 0))
+        self.assertEqual(stored_task["status"], store.STATUS_PENDING)
+        self.assertIn(account["id"], stored_task["failed_account_ids"])
+        self.assertIn("额度已耗尽", stored_task["attempt_history"][-1]["reason"])
+
+    def test_doubao_submission_quota_exhaustion_fills_account_before_switch(self) -> None:
+        task = store.create_task("豆包提交额度检测", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        account = accounts.add_account("豆包提交账号", "session=doubao-submit-quota", quota_limit=2, platform="doubao")
+        claimed = accounts.claim_account_for_worker("worker-doubao-submit", task["id"], platform="doubao")
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "doubao",
+            {
+                "retryable": True,
+                "account_fault": True,
+                "account_quota_insufficient": True,
+                "switch_account": True,
+            },
+        )
+
+        stored_account = accounts.list_accounts(platform="doubao")[0]
+        self.assertEqual((stored_account["quota_used"], stored_account["quota_remaining"]), (2, 0))
+        self.assertIn(account["id"], store.get_meta(task["id"])["failed_account_ids"])
+
     def test_doubao_client_refresh_cannot_bypass_next_poll_time(self) -> None:
         task = store.create_task("豆包前端刷新", "9:16", platform="doubao", model="Seedance 2.0 Mini")
         store.mark_running(task["id"], "worker-doubao")
@@ -780,7 +829,9 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIsNotNone(claimed)
         self.assertTrue(accounts.exhaust_account_quota(created["id"], claimed["quota_charge_id"]))
         exhausted = accounts.list_accounts()[0]
-        self.assertEqual(exhausted["quota_used"], 0)
+        self.assertEqual(exhausted["quota_used"], 2)
+        self.assertEqual(exhausted["quota_remaining"], 0)
+        self.assertEqual(accounts.reconcile_account_quotas()["repaired"], 0)
         self.assertIsNone(accounts.account_for_worker("worker-2"))
         self.assertFalse(accounts.refund_account_quota(created["id"], claimed["quota_charge_id"]))
 

@@ -1580,8 +1580,8 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
         return "服务暂时异常，请重试！" if terminal else "服务连接异常，正在重试！"
     text = re.sub(r"Dola|dola|豆包|千问|qianwen|doubao|平台", replacement, text, flags=re.IGNORECASE)
     text = re.sub(r"账号|账户|号池|换号|服务凭证", "服务", text, flags=re.IGNORECASE)
-    if re.search(r"额度不足|额度已用完|次数不足|次数已用完|余额不足|正在切换服务重试|正在切换账号重试|多个服务额度均不足", text):
-        return "生成异常请重试！"
+    if re.search(r"额度不足|额度已用完|额度用完了|额度已耗尽|额度耗尽了|次数不足|次数已用完|次数已耗尽|余额不足|正在切换服务重试|正在切换账号重试|多个服务额度均不足", text):
+        return "生成接口繁忙请稍后重试！" if terminal else "服务繁忙正在重试！"
     return text
 
 

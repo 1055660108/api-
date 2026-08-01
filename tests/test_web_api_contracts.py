@@ -93,6 +93,8 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text(ten_second_reason, "Seedance 2.0"), "生成接口繁忙请稍后重试！")
         self.assertEqual(main._client_safe_text(ten_second_reason, "Seedance 2.0", terminal=True), "生成接口繁忙请稍后重试！")
         self.assertEqual(main._client_safe_text("service frequent (risk check: service_frequent)", "Seedance 2.0"), "服务繁忙正在重试！")
+        self.assertEqual(main._client_safe_text("豆包账号额度已耗尽", "Seedance 2.0"), "服务繁忙正在重试！")
+        self.assertEqual(main._client_safe_text("豆包账号额度已耗尽", "Seedance 2.0", terminal=True), "生成接口繁忙请稍后重试！")
         masked_retry = main._client_task({
             "status": "pending",
             "model": "Seedance 2.0",

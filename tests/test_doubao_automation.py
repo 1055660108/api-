@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, doubao_video_url_score, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, parse_doubao_generation_result, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, doubao_video_url_score, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, parse_doubao_generation_result, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -168,6 +168,14 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(error, "doubao generation acknowledgement missing")
         self.assertEqual(category, "generation_ack_missing")
 
+    def test_quota_exhaustion_is_a_terminal_submission_signal(self) -> None:
+        for text in ("今日额度不足", "视频生成额度已用完", "当前剩余 0 次"):
+            self.assertTrue(is_doubao_account_quota_insufficient(text))
+        error, category = classify_doubao_submission({"ok": True, "quota_insufficient": True})
+        self.assertEqual((error, category), ("豆包账号额度不足或已耗尽", "quota_insufficient"))
+        self.assertIn("quota_insufficient: quotaInsufficient(text)", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("return quotaInsufficient(text)", DOUBAO_SUBMIT_SCRIPT)
+
     def test_direct_video_is_an_accepted_submission(self) -> None:
         error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})
 
@@ -193,6 +201,20 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result["state"], "completed")
         self.assertEqual(result["candidate"]["url"], url)
         self.assertEqual(result["candidate"]["source"], "single_chain")
+
+    def test_interface_result_parser_recognizes_quota_exhaustion(self) -> None:
+        body = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [{"message_index": 5, "tts_content": "今日视频生成额度已耗尽，无法生成该视频"}]
+                }
+            }
+        })
+
+        result = parse_doubao_generation_result(body)
+
+        self.assertEqual(result["state"], "quota_insufficient")
+        self.assertIn("额度已耗尽", result["text"])
 
     def test_unwatermarked_fallback_url_replaces_required_parameters(self) -> None:
         value = unwatermarked_fallback_url(

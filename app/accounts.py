@@ -1304,7 +1304,13 @@ def exhaust_account_quota(account_id: str, charge_id: str = "") -> bool:
                                 if str(charge.get("charge_id") or "") == str(charge_id) and str(charge.get("status") or "charged") == "charged":
                                     charge.update(status="refunded", refunded_at=utc_now(), refund_reason="quota_insufficient")
                                     break
-                            quota_used = _reconciled_quota_used(account)
+                            active_units = sum(
+                                max(1, int(item.get("units") or 1))
+                                for item in _quota_charges(account)
+                                if str(item.get("status") or "charged") in {"charged", "settled"}
+                            )
+                            account["quota_ledger_base"] = max(0, quota_limit - active_units)
+                            quota_used = max(quota_limit, _reconciled_quota_used(account))
                         else:
                             quota_used = max(quota_limit, int(account.get("quota_used") or 0))
                         account.update(quota_limit=quota_limit, quota_used=quota_used, quota_exhausted_date=local_today(), updated_at=utc_now())
@@ -1325,7 +1331,13 @@ def exhaust_account_quota(account_id: str, charge_id: str = "") -> bool:
                         if str(charge.get("charge_id") or "") == str(charge_id) and str(charge.get("status") or "charged") == "charged":
                             charge.update(status="refunded", refunded_at=utc_now(), refund_reason="quota_insufficient")
                             break
-                    account["quota_used"] = _reconciled_quota_used(account)
+                    active_units = sum(
+                        max(1, int(item.get("units") or 1))
+                        for item in _quota_charges(account)
+                        if str(item.get("status") or "charged") in {"charged", "settled"}
+                    )
+                    account["quota_ledger_base"] = max(0, quota_limit - active_units)
+                    account["quota_used"] = max(quota_limit, _reconciled_quota_used(account))
                 else:
                     account["quota_used"] = max(quota_limit, int(account.get("quota_used") or 0))
                 account["quota_exhausted_date"] = local_today()

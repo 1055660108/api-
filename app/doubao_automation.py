@@ -333,6 +333,28 @@ async def fetch_doubao_unwatermarked_url(
     return ""
 
 
+def is_doubao_account_quota_insufficient(text: str) -> bool:
+    value = re.sub(r"\s+", "", str(text or ""))
+    direct_markers = (
+        "额度不足",
+        "额度已用完",
+        "额度用完了",
+        "额度已耗尽",
+        "额度耗尽了",
+        "次数不足",
+        "次数已用完",
+        "次数已耗尽",
+        "余额不足",
+    )
+    if any(marker in value for marker in direct_markers):
+        return True
+    if re.search(r"(?:额度|次数|余额)(?:为|剩余)?0(?:个|次|点)?", value):
+        return True
+    if re.search(r"(?:剩余|还有)0(?:个)?(?:次|额度|视频生成额度)", value):
+        return True
+    return "视频生成额度" in value and "剩余" in value and "无法生成" in value
+
+
 def parse_doubao_generation_result(body: str) -> dict[str, Any]:
     body = str(body or "")
     if "710022002" in body or "当前服务访问频繁" in body or "服务访问频繁" in body:
@@ -355,6 +377,8 @@ def parse_doubao_generation_result(body: str) -> dict[str, Any]:
         )
         candidate = best_doubao_video_candidate(candidates)
         return {"state": "completed", "text": text, "candidate": candidate}
+    if is_doubao_account_quota_insufficient(text):
+        return {"state": "quota_insufficient", "text": text or "豆包账号额度不足或已耗尽"}
     if any(marker in text for marker in ("生成失败", "无法生成", "内容违规")):
         return {"state": "failed", "text": text or "豆包视频生成失败"}
     if any(marker in text for marker in ("扫码登录", "手机号登录", "登录豆包")):
@@ -507,6 +531,8 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
         return "doubao service frequent", "service_frequent"
     if result.get("slider_verification"):
         return "doubao verification required", "slider_verification"
+    if result.get("quota_insufficient"):
+        return "豆包账号额度不足或已耗尽", "quota_insufficient"
     if result.get("stream_error"):
         return "doubao submit rejected", "submit_rejected"
     if not result.get("ok"):
@@ -666,9 +692,17 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     const match = text.match(/本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟/i);
     return match ? match[0] : "";
   }
+  function quotaInsufficient(value) {
+    const text = searchableText(value).replace(/\s+/g, "");
+    return /(?:视频生成)?额度(?:不足|已用完|用完了|已耗尽|耗尽了|为0|剩余0)/.test(text)
+      || /(?:次数|余额)(?:不足|已用完|用完了|已耗尽|耗尽了|为0|剩余0)/.test(text)
+      || /(?:剩余|还有)0(?:个)?(?:次|额度|视频生成额度)/.test(text)
+      || /视频生成额度.*剩余.*无法生成/.test(text);
+  }
   function terminalSubmissionSignal(value) {
     const text = searchableText(value);
-    return text.includes("710022002")
+    return quotaInsufficient(text)
+      || text.includes("710022002")
       || text.includes("710022004")
       || text.includes("当前服务访问频繁")
       || text.includes("服务访问频繁")
@@ -955,6 +989,7 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     same_account_retry_limit: maxResends,
     resend_delay_ms: resendDelayMs,
     accepted: Boolean(detectedWaitMessage || videoUrl),
+    quota_insufficient: quotaInsufficient(text),
     service_frequent: text.includes("710022002") || text.includes("当前服务访问频繁") || text.includes("服务访问频繁"),
     slider_verification: text.includes("710022004") || text.includes('"type":"verify"') || text.includes('"verify_scene":"doubao_message_web"'),
     stream_error: text.includes("STREAM_ERROR"),
@@ -1451,6 +1486,15 @@ class DoubaoVideoAutomation:
                             "account_login_invalid": True,
                             "switch_account": True,
                         }
+                    if category == "quota_insufficient":
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": error,
+                            "account_fault": True,
+                            "account_quota_insufficient": True,
+                            "switch_account": True,
+                        }
                     if category == "generation_ack_missing":
                         return {
                             "success": False,
@@ -1553,6 +1597,15 @@ class DoubaoVideoAutomation:
                             candidate_key=str(candidate.get("key") or ""),
                             candidate_count=len(video_candidates),
                         )
+                    if is_doubao_account_quota_insufficient(text[-1500:]):
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": "豆包账号额度不足或已耗尽",
+                            "account_fault": True,
+                            "account_quota_insufficient": True,
+                            "switch_account": True,
+                        }
                     if any(marker in text[-1500:] for marker in ("生成失败", "无法生成", "内容违规")):
                         return {"success": False, "retryable": False, "reason": "doubao generation failed"}
                     await page.wait_for_timeout(DOUBAO_RESULT_POLL_MILLISECONDS)

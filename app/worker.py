@@ -60,7 +60,7 @@ RESULT_WATCH_DEADLINE_MINUTES = 20
 DOUBAO_RESULT_WATCH_DEADLINE_MINUTES = 30
 RESULT_LONG_WAIT_SECONDS = 8 * 60
 RESULT_LOW_RATE_SECONDS = 15 * 60
-RESULT_LATE_WATCH_UNTIL_SECONDS = 30 * 60
+RESULT_MAX_TOTAL_WATCH_SECONDS = 30 * 60
 RESULT_LATE_POLL_INTERVAL_SECONDS = 60
 RETRY_ACCOUNT_WAIT_MINUTES = 5
 
@@ -412,11 +412,17 @@ class WorkerManager:
             limit=RESULT_POLL_BATCH_SIZE,
             execution_phase="late_result_watch",
         )
-        late_ids = [
-            task_id
-            for task_id, meta in dola_late_rows + doubao_late_rows
-            if self._late_result_watch_active(meta)
-        ]
+        late_ids = []
+        for task_id, meta in dola_late_rows + doubao_late_rows:
+            if self._late_result_watch_active(meta):
+                late_ids.append(task_id)
+            else:
+                update_meta(
+                    task_id,
+                    late_result_watch_until="",
+                    execution_phase="failed",
+                    status_reason=str(meta.get("error") or "generation timeout"),
+                )
         await self._watch_unfinished_success_tasks(
             [task_id for task_id, _ in dola_submitted_rows + doubao_submitted_rows] + late_ids
         )
@@ -524,7 +530,7 @@ class WorkerManager:
                 submitted_at = self._parse_utc(str(meta.get("submitted_at") or meta.get("updated_at") or ""))
                 now = datetime.now(timezone.utc)
                 if late_watch:
-                    late_until = self._parse_utc(str(meta.get("late_result_watch_until") or ""))
+                    late_until = self._late_result_watch_deadline(meta)
                     if not late_until or now >= late_until:
                         update_meta(task_id, late_result_watch_until="", execution_phase="failed", status_reason=str(meta.get("error") or "generation timeout"))
                         return
@@ -540,15 +546,25 @@ class WorkerManager:
                     timeout_reason = "生成超过30分钟，仍未返回结果" if platform == "doubao" else "生成超过20分钟，仍未返回结果"
                     mark_failed(task_id, timeout_reason)
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
-                    late_until = now + timedelta(seconds=RESULT_LATE_WATCH_UNTIL_SECONDS)
-                    update_meta(
-                        task_id,
-                        late_result_watch_until=late_until.isoformat(),
-                        late_result_refunded_at=utc_now(),
-                        execution_phase="late_result_watch",
-                        status_reason=f"已退款，后台继续观察{'豆包' if platform == 'doubao' else 'Dola'}结果",
-                        next_result_poll_at=(now + timedelta(seconds=RESULT_LATE_POLL_INTERVAL_SECONDS)).isoformat(),
-                    )
+                    late_until = submitted_at + timedelta(seconds=RESULT_MAX_TOTAL_WATCH_SECONDS)
+                    if late_until > now:
+                        update_meta(
+                            task_id,
+                            late_result_watch_until=late_until.isoformat(),
+                            late_result_refunded_at=utc_now(),
+                            execution_phase="late_result_watch",
+                            status_reason=f"已退款，后台继续观察{'豆包' if platform == 'doubao' else 'Dola'}结果",
+                            next_result_poll_at=(now + timedelta(seconds=RESULT_LATE_POLL_INTERVAL_SECONDS)).isoformat(),
+                        )
+                    else:
+                        update_meta(
+                            task_id,
+                            late_result_watch_until="",
+                            late_result_refunded_at=utc_now(),
+                            execution_phase="failed",
+                            status_reason=timeout_reason,
+                            next_result_poll_at="",
+                        )
                     return
                 age_seconds = max(0.0, (now - submitted_at).total_seconds()) if submitted_at else 0.0
                 if age_seconds >= RESULT_LONG_WAIT_SECONDS and not meta.get("long_result_wait_marked_at"):
@@ -596,8 +612,22 @@ class WorkerManager:
     def _late_result_watch_active(self, meta: dict) -> bool:
         if str(meta.get("status") or "") != "failed":
             return False
-        until = self._parse_utc(str(meta.get("late_result_watch_until") or ""))
+        until = self._late_result_watch_deadline(meta)
         return bool(until and datetime.now(timezone.utc) < until)
+
+    def _late_result_watch_deadline(self, meta: dict) -> datetime | None:
+        stored_until = self._parse_utc(str(meta.get("late_result_watch_until") or ""))
+        if not stored_until:
+            return None
+        submitted_at = self._parse_utc(str(meta.get("submitted_at") or ""))
+        absolute_until = (
+            submitted_at + timedelta(seconds=RESULT_MAX_TOTAL_WATCH_SECONDS)
+            if submitted_at
+            else None
+        )
+        if absolute_until:
+            return min(stored_until, absolute_until)
+        return stored_until
 
     def _parse_utc(self, value: str) -> datetime | None:
         try:

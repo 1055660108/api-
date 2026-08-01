@@ -1906,6 +1906,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["execution_phase"], "late_result_watch")
         late_until = datetime.fromisoformat(meta["late_result_watch_until"])
         self.assertGreater(late_until, datetime.now(timezone.utc) + timedelta(minutes=8))
+        self.assertLess(late_until, datetime.now(timezone.utc) + timedelta(minutes=10))
 
     def test_doubao_interface_poll_respects_rate_limit_delay_and_keeps_account_claimed(self) -> None:
         task = store.create_task("豆包后台查询", "9:16", platform="doubao", model="Seedance 2.0 Mini")
@@ -1930,7 +1931,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertGreater(datetime.fromisoformat(meta["next_result_poll_at"]), before + timedelta(seconds=119))
         clear.assert_not_called()
 
-    def test_doubao_thirty_minute_timeout_refunds_account_and_enters_late_watch(self) -> None:
+    def test_doubao_thirty_minute_timeout_refunds_account_and_stops_polling(self) -> None:
         task = store.create_task("豆包超时查询", "9:16", platform="doubao", model="Seedance 2.0 Mini", owner_token_hash="owner")
         store.mark_running(task["id"], "worker-doubao")
         store.save_result(task["id"], extra={"account_id": "doubao-account", "account_quota_charge_id": "doubao-charge"})
@@ -1946,11 +1947,24 @@ class ReliabilityTests(unittest.TestCase):
         meta = store.get_meta(task["id"])
         self.assertEqual(meta["status"], store.STATUS_FAILED)
         self.assertEqual(meta["error"], "生成超过30分钟，仍未返回结果")
-        self.assertEqual(meta["execution_phase"], "late_result_watch")
+        self.assertEqual(meta["execution_phase"], "failed")
+        self.assertEqual(meta.get("late_result_watch_until"), "")
+        self.assertEqual(meta.get("next_result_poll_at"), "")
         refund_account.assert_called_once_with(task["id"], "doubao-account", "doubao-charge")
         clear.assert_called_once_with("doubao-account", task["id"])
         settle.assert_not_called()
         refund_owner.assert_called_once_with(task["id"], "owner")
+
+    def test_existing_late_watch_is_capped_at_thirty_minutes_from_submission(self) -> None:
+        manager = WorkerManager()
+        now = datetime.now(timezone.utc)
+        meta = {
+            "status": store.STATUS_FAILED,
+            "submitted_at": (now - timedelta(minutes=31)).isoformat(),
+            "late_result_watch_until": (now + timedelta(minutes=29)).isoformat(),
+        }
+
+        self.assertFalse(manager._late_result_watch_active(meta))
 
     def test_late_result_observation_can_recover_video_before_thirty_minutes(self) -> None:
         task = self.create_task("owner")

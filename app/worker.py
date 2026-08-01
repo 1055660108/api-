@@ -57,6 +57,7 @@ from .temp_access import temp_token_concurrency_limits, temp_token_remote_genera
 GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 2.0生成，预计等待 3~8 分钟。"
 RUNNING_WATCH_GRACE_SECONDS = 90
 RESULT_WATCH_DEADLINE_MINUTES = 20
+DOUBAO_RESULT_WATCH_DEADLINE_MINUTES = 30
 RESULT_LONG_WAIT_SECONDS = 8 * 60
 RESULT_LOW_RATE_SECONDS = 15 * 60
 RESULT_LATE_WATCH_UNTIL_SECONDS = 30 * 60
@@ -153,6 +154,8 @@ class WorkerManager:
         self._claim_lock = asyncio.Lock()
         self._dola_submit_lock = asyncio.Lock()
         self._last_dola_submit_at = 0.0
+        self._doubao_submit_lock = asyncio.Lock()
+        self._last_doubao_submit_at = 0.0
         self._image_submission_semaphore = asyncio.Semaphore(IMAGE_SUBMISSION_CONCURRENCY)
         self._image_submission_condition = asyncio.Condition()
         self._image_submission_active = 0
@@ -383,21 +386,40 @@ class WorkerManager:
 
     async def _watch_running_tasks_once(self) -> None:
         due_before = datetime.now(timezone.utc).isoformat()
-        submitted_rows = list_task_metas_by_statuses(
+        dola_submitted_rows = list_task_metas_by_statuses(
             {STATUS_SUBMITTED},
             platform="dola",
             due_before=due_before,
             limit=RESULT_POLL_BATCH_SIZE,
         )
-        late_rows = list_task_metas_by_statuses(
+        doubao_submitted_rows = list_task_metas_by_statuses(
+            {STATUS_SUBMITTED},
+            platform="doubao",
+            due_before=due_before,
+            limit=RESULT_POLL_BATCH_SIZE,
+        )
+        dola_late_rows = list_task_metas_by_statuses(
             {"failed"},
             platform="dola",
             due_before=due_before,
             limit=RESULT_POLL_BATCH_SIZE,
             execution_phase="late_result_watch",
         )
-        late_ids = [task_id for task_id, meta in late_rows if self._late_result_watch_active(meta)]
-        await self._watch_unfinished_success_tasks([task_id for task_id, _ in submitted_rows] + late_ids)
+        doubao_late_rows = list_task_metas_by_statuses(
+            {"failed"},
+            platform="doubao",
+            due_before=due_before,
+            limit=RESULT_POLL_BATCH_SIZE,
+            execution_phase="late_result_watch",
+        )
+        late_ids = [
+            task_id
+            for task_id, meta in dola_late_rows + doubao_late_rows
+            if self._late_result_watch_active(meta)
+        ]
+        await self._watch_unfinished_success_tasks(
+            [task_id for task_id, _ in dola_submitted_rows + doubao_submitted_rows] + late_ids
+        )
         loop_now = asyncio.get_running_loop().time()
         if loop_now - self._last_pending_retry_reconcile_at >= 15:
             self._last_pending_retry_reconcile_at = loop_now
@@ -493,7 +515,8 @@ class WorkerManager:
                         mark_late_result_success(task_id)
                     return
                 meta = get_meta(task_id)
-                if str(meta.get("platform") or "dola") != "dola":
+                platform = str(meta.get("platform") or "dola")
+                if platform not in {"dola", "doubao"}:
                     return
                 late_watch = self._late_result_watch_active(meta)
                 if str(meta.get("status") or "") != STATUS_SUBMITTED and not late_watch:
@@ -505,33 +528,38 @@ class WorkerManager:
                     if not late_until or now >= late_until:
                         update_meta(task_id, late_result_watch_until="", execution_phase="failed", status_reason=str(meta.get("error") or "generation timeout"))
                         return
-                elif submitted_at and now - submitted_at >= timedelta(minutes=RESULT_WATCH_DEADLINE_MINUTES):
+                deadline_minutes = DOUBAO_RESULT_WATCH_DEADLINE_MINUTES if platform == "doubao" else RESULT_WATCH_DEADLINE_MINUTES
+                if not late_watch and submitted_at and now - submitted_at >= timedelta(minutes=deadline_minutes):
                     account_id = str(result.get("account_id") or "")
                     if account_id:
-                        settle_account_quota(account_id, str(result.get("account_quota_charge_id") or ""))
+                        if platform == "doubao":
+                            refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+                        else:
+                            settle_account_quota(account_id, str(result.get("account_quota_charge_id") or ""))
                         clear_account_current_task(account_id, task_id)
-                    mark_failed(task_id, "生成超过20分钟，仍未返回结果")
+                    timeout_reason = "生成超过30分钟，仍未返回结果" if platform == "doubao" else "生成超过20分钟，仍未返回结果"
+                    mark_failed(task_id, timeout_reason)
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
-                    late_until = (submitted_at + timedelta(seconds=RESULT_LATE_WATCH_UNTIL_SECONDS)) if submitted_at else now + timedelta(seconds=RESULT_LATE_WATCH_UNTIL_SECONDS)
+                    late_until = now + timedelta(seconds=RESULT_LATE_WATCH_UNTIL_SECONDS)
                     update_meta(
                         task_id,
                         late_result_watch_until=late_until.isoformat(),
                         late_result_refunded_at=utc_now(),
                         execution_phase="late_result_watch",
-                        status_reason="已退款，后台继续观察Dola结果",
+                        status_reason=f"已退款，后台继续观察{'豆包' if platform == 'doubao' else 'Dola'}结果",
                         next_result_poll_at=(now + timedelta(seconds=RESULT_LATE_POLL_INTERVAL_SECONDS)).isoformat(),
                     )
                     return
                 age_seconds = max(0.0, (now - submitted_at).total_seconds()) if submitted_at else 0.0
                 if age_seconds >= RESULT_LONG_WAIT_SECONDS and not meta.get("long_result_wait_marked_at"):
-                    update_meta(task_id, long_result_wait_marked_at=utc_now(), execution_phase="waiting_result_long", status_reason="Dola生成时间较长，继续查询结果")
-                if age_seconds >= RESULT_LOW_RATE_SECONDS and not meta.get("late_account_released_at"):
+                    update_meta(task_id, long_result_wait_marked_at=utc_now(), execution_phase="waiting_result_long", status_reason=f"{'豆包' if platform == 'doubao' else 'Dola'}生成时间较长，继续查询结果")
+                if platform == "dola" and age_seconds >= RESULT_LOW_RATE_SECONDS and not meta.get("late_account_released_at"):
                     account_id = str(result.get("account_id") or "")
                     if account_id:
                         clear_account_current_task(account_id, task_id)
                     update_meta(task_id, late_account_released_at=utc_now(), execution_phase="waiting_result_low_rate", status_reason="Dola生成较慢，已释放账号并继续低频观察")
                 await self._pace_result_poll()
-                outcome = await query_task(task_id, late_watch=True) if late_watch else await query_task(task_id)
+                outcome = await query_task(task_id, late_watch=late_watch, background_poll=True)
                 if str(outcome.get("code") or "") == "2":
                     return
                 current = get_meta(task_id)
@@ -539,7 +567,13 @@ class WorkerManager:
                     return
                 miss_count = record_result_watch_miss(task_id)
                 jitter = secrets.randbelow(5001) / 1000
-                interval = RESULT_LATE_POLL_INTERVAL_SECONDS if late_watch or age_seconds >= RESULT_LOW_RATE_SECONDS else min(45, RESULT_POLL_BASE_INTERVAL_SECONDS + max(0, miss_count - 1) * 5)
+                if late_watch:
+                    interval = RESULT_LATE_POLL_INTERVAL_SECONDS
+                elif platform == "doubao":
+                    interval = 15 if age_seconds < 5 * 60 else 30 if age_seconds < 15 * 60 else 60
+                else:
+                    interval = RESULT_LATE_POLL_INTERVAL_SECONDS if age_seconds >= RESULT_LOW_RATE_SECONDS else min(45, RESULT_POLL_BASE_INTERVAL_SECONDS + max(0, miss_count - 1) * 5)
+                interval = max(interval, max(0, int(outcome.get("retry_after") or 0)))
                 update_meta(
                     task_id,
                     next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=interval + jitter)).isoformat(),
@@ -744,6 +778,16 @@ class WorkerManager:
                 await asyncio.sleep(delay)
             self._last_dola_submit_at = asyncio.get_running_loop().time()
 
+    async def _wait_for_doubao_submit_slot(self) -> None:
+        # Releasing the browser after submission must not create a burst of
+        # new Doubao generation requests.
+        async with self._doubao_submit_lock:
+            submit_interval = max(5.0, float(load_settings().dola_submit_interval_seconds))
+            delay = submit_interval - (asyncio.get_running_loop().time() - self._last_doubao_submit_at)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last_doubao_submit_at = asyncio.get_running_loop().time()
+
     async def _worker_loop(self, worker_id: str) -> None:
         while not self._stopping:
             async with self._claim_lock:
@@ -858,6 +902,7 @@ class WorkerManager:
                         account=account,
                         proxy_session=proxy_session,
                         browser_pool=self._dola_browser_pool,
+                        submission_pacer=self._wait_for_doubao_submit_slot,
                     )
                 elif platform == "qianwen":
                     proxy_session = DolaFetchAutomation(
@@ -904,7 +949,8 @@ class WorkerManager:
                 if outcome.get("success") and platform in {"dola", "doubao", "qianwen"} and account:
                     if not outcome.get("confirmation_pending"):
                         settle_account_quota(str(account.get("id") or ""), str(account.get("quota_charge_id") or ""))
-                    clear_account_current_task(str(account.get("id") or ""), task_id)
+                    if not outcome.get("keep_account_claimed"):
+                        clear_account_current_task(str(account.get("id") or ""), task_id)
                 if not outcome.get("success"):
                     retry_count = 0
                     if outcome.get("submitted"):

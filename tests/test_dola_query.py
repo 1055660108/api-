@@ -34,7 +34,7 @@ class DolaQueryTests(unittest.TestCase):
             first_entered = asyncio.Event()
             release_first = asyncio.Event()
 
-            async def fake_query(_task_id: str) -> dict[str, str]:
+            async def fake_query(_task_id: str, **_kwargs) -> dict[str, str]:
                 nonlocal active, max_active
                 active += 1
                 max_active = max(max_active, active)
@@ -714,6 +714,35 @@ class DolaQueryTests(unittest.TestCase):
         self.assertEqual(operation.await_args_list[1].args, ("http://new.example:18081",))
         refresh.assert_awaited_once()
         self.assertEqual(save_result.call_args.kwargs["extra"]["query_proxy_refresh_count"], 1)
+
+    def test_subscription_query_reacquires_the_same_node_after_worker_restart(self) -> None:
+        task_id = "0" * 32
+        result_data = {
+            "proxy_source": "subscription",
+            "proxy_server": "http://127.0.0.1:18080",
+            "proxy_node_id": "jp-node",
+        }
+        operation = AsyncMock(side_effect=[httpx.ProxyError("old local proxy stopped"), "recovered"])
+        settings = SimpleNamespace(
+            proxy_subscription_url="https://subscription.example/token",
+            proxy_api_timeout_seconds=20,
+            proxy_subscription_scheme="http",
+            proxy_subscription_refresh_seconds=900,
+            proxy_latency_threshold_ms=5000,
+        )
+        lease = {"server": "http://127.0.0.1:18081", "node_id": "jp-node", "mihomo_slot_id": "slot-new"}
+        with patch.object(query, "load_settings", return_value=settings), patch.object(
+            query, "acquire_dola_subscription_proxy", new=AsyncMock(return_value=lease)
+        ) as acquire, patch.object(
+            query, "release_dola_subscription_proxy", new=AsyncMock()
+        ) as release, patch.object(query, "save_result") as save_result:
+            response = asyncio.run(query._run_task_query(task_id, result_data, operation))
+
+        self.assertEqual(response, "recovered")
+        self.assertEqual(operation.await_args_list[1].args, ("http://127.0.0.1:18081",))
+        self.assertEqual(acquire.await_args.kwargs["selected_node"], "jp-node")
+        release.assert_awaited_once_with(lease)
+        self.assertEqual(save_result.call_args.kwargs["extra"]["query_proxy_refresh_reason"], "subscription_session_recovered")
 
     def test_confirmed_session_refreshes_api_proxy_after_twelve_minutes(self) -> None:
         task_id = "0" * 32

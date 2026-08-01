@@ -10,7 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app import accounts, automation, config, store, task_queue, temp_access
+import httpx
+
+from app import accounts, automation, config, query, store, task_queue, temp_access
 from app.automation import DolaFetchAutomation, dola_service_frequent_abnormal_outcome, is_infrastructure_failure
 from app.resilience import fair_owner_capacity_limits
 from app.worker import IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
@@ -74,6 +76,134 @@ class ReliabilityTests(unittest.TestCase):
         waits = asyncio.run(exercise())
         self.assertEqual(len(waits), 2)
         self.assertTrue(all(wait > 4.9 for wait in waits))
+
+    def test_doubao_submission_pacing_prevents_browser_release_bursts(self) -> None:
+        manager = WorkerManager()
+
+        async def exercise() -> list[float]:
+            manager._last_doubao_submit_at = asyncio.get_running_loop().time()
+            waits: list[float] = []
+
+            async def record_sleep(delay: float) -> None:
+                waits.append(delay)
+
+            with patch("app.worker.load_settings", return_value=SimpleNamespace(dola_submit_interval_seconds=2.0)), patch(
+                "app.worker.asyncio.sleep", new=AsyncMock(side_effect=record_sleep)
+            ):
+                await asyncio.gather(
+                    manager._wait_for_doubao_submit_slot(),
+                    manager._wait_for_doubao_submit_slot(),
+                )
+            return waits
+
+        waits = asyncio.run(exercise())
+
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(all(wait > 4.9 for wait in waits))
+
+    def test_doubao_interface_poll_completes_without_reopening_browser(self) -> None:
+        task = store.create_task("豆包接口查询", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "conversation_id": "12345678901234567",
+            "cookie_string": "session=value",
+            "doubao_web_id": "12345678901234567",
+            "doubao_region": "JP",
+            "account_id": "doubao-account",
+            "account_quota_charge_id": "doubao-charge",
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=20)
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+        candidate = {
+            "url": "https://media.example/doubao.mp4",
+            "source": "single_chain",
+            "key": "video_model.main_url",
+            "score": 360,
+        }
+
+        with patch("app.doubao_automation.fetch_doubao_generation_result", new=AsyncMock(return_value={"state": "completed", "text": "生成完成", "candidate": candidate})), patch(
+            "app.query.settle_account_quota"
+        ) as settle, patch("app.query.clear_account_current_task") as clear:
+            outcome = asyncio.run(query.query_task(task["id"], background_poll=True))
+
+        self.assertEqual(outcome["code"], "2")
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUCCESS)
+        self.assertEqual(store.load_result(task["id"])["decoded_main_url"], candidate["url"])
+        self.assertNotIn("cookie_string", store.load_result(task["id"]))
+        settle.assert_called_once_with("doubao-account", "doubao-charge")
+        clear.assert_called_once_with("doubao-account", task["id"])
+
+    def test_doubao_interface_rate_limit_only_delays_polling(self) -> None:
+        task = store.create_task("豆包限频查询", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "cookie_string": "session=value",
+            "account_id": "doubao-account",
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=20)
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+
+        with patch("app.doubao_automation.fetch_doubao_generation_result", new=AsyncMock(return_value={"state": "rate_limited", "text": "豆包当前服务访问频繁"})), patch(
+            "app.query.clear_account_current_task"
+        ) as clear:
+            outcome = asyncio.run(query.query_task(task["id"], background_poll=True))
+
+        self.assertEqual(outcome["retry_after"], 120)
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
+        clear.assert_not_called()
+
+    def test_doubao_client_refresh_cannot_bypass_next_poll_time(self) -> None:
+        task = store.create_task("豆包前端刷新", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "cookie_string": "session=value",
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=20)
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+        fetch = AsyncMock(return_value={"state": "generating", "text": "生成中"})
+
+        with patch("app.doubao_automation.fetch_doubao_generation_result", new=fetch):
+            first = asyncio.run(query.query_task(task["id"]))
+            second = asyncio.run(query.query_task(task["id"]))
+
+        self.assertEqual(first["code"], "1")
+        self.assertEqual(second["code"], "1")
+        fetch.assert_not_awaited()
+
+    def test_doubao_query_forbidden_delays_without_marking_account_invalid(self) -> None:
+        task = store.create_task("豆包查询风控", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "cookie_string": "session=value",
+            "account_id": "doubao-account",
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=20)
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+        request = httpx.Request("POST", "https://www.doubao.com/im/chain/single")
+        response = httpx.Response(403, request=request)
+        error = httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+        with patch("app.query._run_task_query", new=AsyncMock(side_effect=error)), patch(
+            "app.query.disable_account_for_login"
+        ) as disable, patch("app.query.clear_account_current_task") as clear:
+            outcome = asyncio.run(query.query_task(task["id"], background_poll=True))
+
+        self.assertEqual(outcome["retry_after"], 120)
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
+        disable.assert_not_called()
+        clear.assert_not_called()
 
     def test_global_submit_interval_migrates_existing_exit_interval(self) -> None:
         config.CONFIG_PATH.write_text(
@@ -1643,7 +1773,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(meta.get("late_account_released_at"))
         self.assertNotIn("result_timeout_retry_count", meta)
         self.assertNotIn("failed_account_ids", meta)
-        query.assert_awaited_once_with(task["id"])
+        query.assert_awaited_once_with(task["id"], late_watch=False, background_poll=True)
         clear_account.assert_called_once_with("account1", task["id"])
         settle_account.assert_not_called()
         refund_owner.assert_not_called()
@@ -1669,7 +1799,7 @@ class ReliabilityTests(unittest.TestCase):
         active = 0
         peak = 0
 
-        async def query_with_latency(task_id: str) -> dict:
+        async def query_with_latency(task_id: str, **_kwargs) -> dict:
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
@@ -1774,6 +1904,51 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta["execution_phase"], "late_result_watch")
         late_until = datetime.fromisoformat(meta["late_result_watch_until"])
         self.assertGreater(late_until, datetime.now(timezone.utc) + timedelta(minutes=8))
+
+    def test_doubao_interface_poll_respects_rate_limit_delay_and_keeps_account_claimed(self) -> None:
+        task = store.create_task("豆包后台查询", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={"account_id": "doubao-account", "account_quota_charge_id": "doubao-charge"})
+        store.mark_submitted(task["id"], result_poll_delay_seconds=20)
+        store.update_meta(
+            task["id"],
+            submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+            next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+        )
+        manager = WorkerManager()
+        before = datetime.now(timezone.utc)
+
+        with patch("app.worker.query_task", new=AsyncMock(return_value={"code": "1", "text": "生成中", "url": "", "retry_after": 120})), patch(
+            "app.worker.clear_account_current_task"
+        ) as clear:
+            asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
+
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_SUBMITTED)
+        self.assertGreater(datetime.fromisoformat(meta["next_result_poll_at"]), before + timedelta(seconds=119))
+        clear.assert_not_called()
+
+    def test_doubao_thirty_minute_timeout_refunds_account_and_enters_late_watch(self) -> None:
+        task = store.create_task("豆包超时查询", "9:16", platform="doubao", model="Seedance 2.0 Mini", owner_token_hash="owner")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={"account_id": "doubao-account", "account_quota_charge_id": "doubao-charge"})
+        store.mark_submitted(task["id"], result_poll_delay_seconds=20)
+        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=31)).isoformat())
+        manager = WorkerManager()
+
+        with patch("app.worker.refund_account_quota_once") as refund_account, patch(
+            "app.worker.clear_account_current_task"
+        ) as clear, patch("app.worker.settle_account_quota") as settle, patch("app.worker.refund_temp_quota_once") as refund_owner:
+            asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
+
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["error"], "生成超过30分钟，仍未返回结果")
+        self.assertEqual(meta["execution_phase"], "late_result_watch")
+        refund_account.assert_called_once_with(task["id"], "doubao-account", "doubao-charge")
+        clear.assert_called_once_with("doubao-account", task["id"])
+        settle.assert_not_called()
+        refund_owner.assert_called_once_with(task["id"], "owner")
 
     def test_late_result_observation_can_recover_video_before_thirty_minutes(self) -> None:
         task = self.create_task("owner")

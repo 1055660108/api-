@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, doubao_video_url_score
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, doubao_video_url_score, parse_doubao_generation_result
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -165,6 +167,94 @@ class DoubaoAutomationTests(unittest.TestCase):
         error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})
 
         self.assertEqual((error, category), ("", ""))
+
+    def test_submit_script_returns_interface_poll_identity(self) -> None:
+        for fragment in ("web_id: webId", "region,", "conversation_id: conversationId"):
+            self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
+
+    def test_interface_result_parser_extracts_completed_video(self) -> None:
+        url = "https://media.example/generated.mp4?mime_type=video_mp4"
+        encoded = base64.b64encode(url.encode()).decode()
+        body = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [{"message_index": 5, "tts_content": "生成完成", "video_model": {"main_url": encoded}}]
+                }
+            }
+        })
+
+        result = parse_doubao_generation_result(body)
+
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["candidate"]["url"], url)
+        self.assertEqual(result["candidate"]["source"], "single_chain")
+
+    def test_interface_result_parser_recognizes_rate_limit_without_failing_task(self) -> None:
+        result = parse_doubao_generation_result('{"code":710022002,"message":"当前服务访问频繁"}')
+
+        self.assertEqual(result, {"state": "rate_limited", "text": "豆包当前服务访问频繁"})
+
+    def test_confirmed_conversation_releases_browser_for_interface_polling(self) -> None:
+        body = SimpleNamespace(inner_text=AsyncMock(return_value="豆包已登录"))
+        page = SimpleNamespace(
+            url="https://www.doubao.com/chat/",
+            goto=AsyncMock(),
+            wait_for_timeout=AsyncMock(),
+            locator=Mock(return_value=body),
+            evaluate=AsyncMock(return_value={
+                "ok": True,
+                "status": 200,
+                "accepted": True,
+                "conversation_id": "12345678901234567",
+                "web_id": "22345678901234567",
+                "region": "JP",
+                "generation_wait_message_detected": True,
+                "generation_wait_message": "本次使用 Seedance 2.0 Mini 生成，预计等待 5 分钟",
+            }),
+        )
+        context = SimpleNamespace(pages=[page], add_init_script=AsyncMock())
+        lease = SimpleNamespace(browser=SimpleNamespace(), context=context, release=AsyncMock())
+
+        @asynccontextmanager
+        async def runtime():
+            yield SimpleNamespace()
+
+        pool = SimpleNamespace(
+            playwright_context=Mock(side_effect=runtime),
+            acquire_context=AsyncMock(return_value=lease),
+        )
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner.task_id = "doubao-task"
+        runner.prompt = "测试视频"
+        runner.ratio = "9:16"
+        runner.model = "Seedance 2.0 Mini"
+        runner.duration = 10
+        runner.account = {"id": "account-1", "name": "豆包账号", "quota_charge_id": "charge-1"}
+        runner.browser_pool = pool
+        runner.submission_pacer = AsyncMock()
+        runner.settings = SimpleNamespace(
+            browser_executable_path="",
+            headless=True,
+            doubao_submit_retry_limit=2,
+        )
+        runner._login_required = AsyncMock(return_value=False)
+        runner._refresh_cookies = AsyncMock(return_value=[{"name": "session", "value": "value"}])
+        runner._context_storage_state = Mock(return_value=None)
+
+        with patch("app.doubao_automation.task_exists", return_value=False), patch(
+            "app.doubao_automation.begin_task_submission", return_value=True
+        ), patch("app.doubao_automation.mark_submitted") as mark_submitted, patch(
+            "app.doubao_automation.save_result"
+        ) as save_result:
+            outcome = asyncio.run(runner._run_browser(None))
+
+        self.assertTrue(outcome["success"])
+        self.assertTrue(outcome["confirmation_pending"])
+        self.assertTrue(outcome["keep_account_claimed"])
+        runner.submission_pacer.assert_awaited_once()
+        mark_submitted.assert_called_once_with("doubao-task", result_poll_delay_seconds=20)
+        self.assertTrue(any(call.kwargs["extra"].get("doubao_result_mode") == "interface_poll" for call in save_result.call_args_list))
+        lease.release.assert_awaited_once()
 
     def test_context_storage_state_merges_saved_state_and_latest_account_cookies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

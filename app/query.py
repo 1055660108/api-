@@ -12,10 +12,10 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from .account_proxies import account_proxy_entries, account_proxy_url
-from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, mark_account_ten_second_limit, refund_account_quota, settle_account_quota
+from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, mark_account_slider_verification, mark_account_ten_second_limit, refund_account_quota, settle_account_quota
 from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
 from .config import load_settings
-from .proxy_manager import fetch_proxy_from_api
+from .proxy_manager import acquire_dola_subscription_proxy, fetch_proxy_from_api, release_dola_subscription_proxy
 from .store import AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_late_result_success, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_proxy_task, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, update_meta
 from .temp_access import refund_temp_quota_hash
 
@@ -632,7 +632,46 @@ async def _run_task_query(
     try:
         return await operation(proxy_server)
     except Exception as exc:
-        if str(result.get("proxy_source") or "").strip().lower() != "api" or not _query_proxy_can_refresh(exc):
+        source = str(result.get("proxy_source") or "").strip().lower()
+        if not _query_proxy_can_refresh(exc):
+            raise
+        if source == "subscription":
+            settings = load_settings()
+            preferred_node_id = str(result.get("proxy_node_id") or "").strip()
+            if not settings.proxy_subscription_url or not preferred_node_id:
+                raise
+            lease = await asyncio.wait_for(
+                acquire_dola_subscription_proxy(
+                    settings.proxy_subscription_url,
+                    timeout_seconds=settings.proxy_api_timeout_seconds,
+                    scheme=settings.proxy_subscription_scheme,
+                    refresh_seconds=settings.proxy_subscription_refresh_seconds,
+                    auto_select=False,
+                    selected_node=preferred_node_id,
+                    selected_countries=(),
+                    latency_threshold_ms=settings.proxy_latency_threshold_ms,
+                    random_select=False,
+                ),
+                timeout=20,
+            )
+            refreshed_server = str(lease.get("server") or "").strip()
+            if not refreshed_server:
+                await release_dola_subscription_proxy(lease)
+                raise
+            save_result(
+                task_id,
+                extra={
+                    "proxy_server": refreshed_server,
+                    "query_proxy_refresh_count": max(0, int(result.get("query_proxy_refresh_count") or 0)) + 1,
+                    "query_proxy_refreshed_at": datetime.now(timezone.utc).isoformat(),
+                    "query_proxy_refresh_reason": "subscription_session_recovered",
+                },
+            )
+            try:
+                return await operation(refreshed_server)
+            finally:
+                await release_dola_subscription_proxy(lease)
+        if source != "api":
             raise
         settings = load_settings()
         if not settings.proxy_api_url:
@@ -696,16 +735,147 @@ async def _refresh_confirmed_query_proxy_if_due(task_id: str, result: dict[str, 
     save_result(task_id, extra=extra)
 
 
-async def _query_task_once(task_id: str, *, late_watch: bool = False) -> dict[str, str]:
+async def _query_doubao_task_once(
+    task_id: str,
+    meta: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    late_watch: bool = False,
+) -> dict[str, Any]:
+    if str(result.get("doubao_result_mode") or "") != "interface_poll":
+        return {"code": "1", "text": "豆包正在浏览器中等待视频，请稍候...", "url": ""}
+    now = datetime.now(timezone.utc)
+    next_poll_at = parse_time(str(meta.get("next_result_poll_at") or ""))
+    if next_poll_at and now < next_poll_at:
+        return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": ""}
+    # Reserve the next poll window before network I/O so repeated client status
+    # refreshes cannot bypass the worker's global result-query limiter.
+    update_meta(task_id, next_result_poll_at=(now + timedelta(seconds=15)).isoformat())
+    conversation_id = str(result.get("doubao_conversation_id") or result.get("conversation_id") or "").strip()
+    cookie_header = str(result.get("cookie_string") or "").strip()
+    if not conversation_id or not cookie_header:
+        save_result(task_id, extra={"doubao_query_error": "missing conversation id or cookie"})
+        update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())
+        return {"code": "1", "text": "豆包正在确认生成会话，请稍候...", "url": "", "retry_after": 30}
+
+    from .doubao_automation import fetch_doubao_generation_result
+
+    try:
+        queried = await _run_task_query(
+            task_id,
+            result,
+            lambda proxy_server: fetch_doubao_generation_result(
+                cookie_header,
+                conversation_id,
+                web_id=str(result.get("doubao_web_id") or "111"),
+                region=str(result.get("doubao_region") or "JP"),
+                proxy_server=proxy_server,
+            ),
+        )
+    except httpx.HTTPStatusError as exc:
+        status = int(exc.response.status_code)
+        save_result(
+            task_id,
+            extra={
+                "doubao_query_error": f"HTTP {status}",
+                "doubao_query_error_category": "login_invalid" if status == 401 else "rate_limited" if status in {403, 429} else "http_error",
+            },
+        )
+        if status == 401:
+            account_id = str(result.get("account_id") or "")
+            if account_id:
+                disable_account_for_login(account_id, "豆包接口查询确认登录状态失效")
+                refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+                clear_account_current_task(account_id, task_id)
+            mark_failed(task_id, "豆包登录状态失效")
+            return {"code": "0", "text": "豆包登录状态失效", "url": ""}
+        retry_after = 120 if status in {403, 429} else 30
+        update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat())
+        return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": "", "retry_after": retry_after}
+    except Exception as exc:
+        save_result(
+            task_id,
+            extra={
+                "doubao_query_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "doubao_query_error_category": "transport_error",
+            },
+        )
+        update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())
+        return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": "", "retry_after": 30}
+
+    state = str(queried.get("state") or "generating")
+    text = str(queried.get("text") or "")[:1000]
+    save_result(
+        task_id,
+        extra={
+            "doubao_query_state": state,
+            "doubao_query_text": sanitize_query_diagnostic(text),
+            "doubao_query_error": "",
+            "doubao_query_error_category": "",
+            "doubao_last_interface_poll_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    account_id = str(result.get("account_id") or "")
+    charge_id = str(result.get("account_quota_charge_id") or "")
+    if state == "completed":
+        candidate = queried.get("candidate") if isinstance(queried.get("candidate"), dict) else {}
+        url = str(candidate.get("url") or "")
+        if not url:
+            update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())
+            return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": "", "retry_after": 30}
+        if account_id:
+            if not bool(result.get("account_quota_refunded")):
+                settle_account_quota(account_id, charge_id)
+            clear_account_current_task(account_id, task_id)
+        score = int(candidate.get("score") or 0)
+        save_result(
+            task_id,
+            extra={
+                "decoded_main_url": url,
+                "doubao_video_detection_source": str(candidate.get("source") or "single_chain"),
+                "doubao_selected_video_key": str(candidate.get("key") or "video_model.main_url"),
+                "doubao_video_url_score": score,
+                "doubao_watermark_status": "original" if score >= 240 else "fallback",
+                "doubao_result_mode": "interface_poll_completed",
+            },
+            remove={"cookie_string", "conversation_id"},
+        )
+        mark_late_result_success(task_id) if late_watch else mark_success(task_id)
+        return {"code": "2", "text": SUCCESS_TEXT, "url": url}
+    if state in {"failed", "login_invalid", "verification"}:
+        if account_id:
+            if state == "login_invalid":
+                disable_account_for_login(account_id, "豆包接口查询确认登录状态失效")
+            elif state == "verification":
+                mark_account_slider_verification(account_id)
+            refund_account_quota_once(task_id, account_id, charge_id)
+            clear_account_current_task(account_id, task_id)
+        reason = text or "豆包视频生成失败"
+        mark_failed(task_id, reason)
+        return {"code": "0", "text": reason, "url": ""}
+    if state == "rate_limited":
+        update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat())
+        return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": "", "retry_after": 120}
+    return {"code": "1", "text": text or "豆包正在生成视频，请稍候...", "url": ""}
+
+
+async def _query_task_once(
+    task_id: str,
+    *,
+    late_watch: bool = False,
+    background_poll: bool = False,
+) -> dict[str, Any]:
     expire_task_if_timeout(task_id)
     meta = get_meta(task_id)
-    if str(meta.get("platform") or "dola") == "doubao" and meta.get("status") == STATUS_SUBMITTED:
+    if str(meta.get("platform") or "dola") == "doubao" and (meta.get("status") == STATUS_SUBMITTED or late_watch):
         result = load_result(task_id)
         video_url = str(result.get("decoded_main_url") or "").strip()
         if video_url:
-            mark_success(task_id)
+            mark_late_result_success(task_id) if late_watch else mark_success(task_id)
             return {"code": "2", "text": SUCCESS_TEXT, "url": video_url}
-        return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": ""}
+        if not background_poll:
+            return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": ""}
+        return await _query_doubao_task_once(task_id, meta, result, late_watch=late_watch)
     retry_limit = task_retry_limit()
     late_watch_active = late_watch and meta.get("status") == STATUS_FAILED and bool(
         (late_until := parse_time(str(meta.get("late_result_watch_until") or "")))
@@ -1042,6 +1212,15 @@ async def _query_task_once(task_id: str, *, late_watch: bool = False) -> dict[st
     return {"code": "1", "text": GENERATING_TEXT, "url": ""}
 
 
-async def query_task(task_id: str, *, late_watch: bool = False) -> dict[str, str]:
+async def query_task(
+    task_id: str,
+    *,
+    late_watch: bool = False,
+    background_poll: bool = False,
+) -> dict[str, Any]:
     async with _query_lock(task_id):
-        return await _query_task_once(task_id, late_watch=True) if late_watch else await _query_task_once(task_id)
+        return await _query_task_once(
+            task_id,
+            late_watch=late_watch,
+            background_poll=background_poll,
+        )

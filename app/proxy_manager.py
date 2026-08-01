@@ -891,7 +891,10 @@ async def _acquire_task_mihomo_proxy(
                 slot for slot in _TASK_MIHOMO_SLOTS
                 if slot.subscription_url == subscription_url and slot.snapshot_digest == digest and not slot.retiring
             ]
-            can_launch = len(_TASK_MIHOMO_SLOTS) < TASK_MIHOMO_MAX_SLOTS and (auto_select or random_select or not matching_slots)
+            matching_allowed_slot = any(not allowed_node_ids or slot.node_id in allowed_node_ids for slot in matching_slots)
+            can_launch = len(_TASK_MIHOMO_SLOTS) < TASK_MIHOMO_MAX_SLOTS and (
+                auto_select or random_select or not matching_slots or not matching_allowed_slot
+            )
             chosen: ProxyNode | None = None
             choose_error: Exception | None = None
             if can_launch:

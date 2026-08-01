@@ -4,19 +4,22 @@ import asyncio
 import html
 import json
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
+from urllib.parse import urlencode
 
+import httpx
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
-from .query import decode_main_url, extract_main_url
+from .query import decode_main_url, extract_main_url, extract_tts_content
 from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
 from .profile_lock import account_profile_lock
 
 
 DOUBAO_URL = "https://www.doubao.com/chat/"
+DOUBAO_SINGLE_CHAIN_URL = "https://www.doubao.com/im/chain/single"
 VIDEO_URL_RE = re.compile(r'https?://[^"\\\s]+(?:mime_type=video_mp4|\.mp4(?:\?[^"\\\s]*)?)', re.IGNORECASE)
 REGION_RESTRICTION_MARKERS = (
     "doubao-region-ban",
@@ -32,6 +35,112 @@ DOUBAO_MODEL_CODES = {
 DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
 DOUBAO_RESULT_POLL_MILLISECONDS = 5000
 DOUBAO_ORIGINAL_VIDEO_SCORE = 240
+
+
+def _doubao_single_chain_url(web_id: str, region: str) -> str:
+    normalized_web_id = str(web_id or "111").strip() or "111"
+    normalized_region = str(region or "JP").strip().upper() or "JP"
+    query = urlencode({
+        "version_code": "20800",
+        "language": "zh",
+        "device_platform": "web",
+        "aid": "497858",
+        "real_aid": "497858",
+        "pkg_type": "release_version",
+        "device_id": normalized_web_id,
+        "pc_version": "3.29.10",
+        "web_id": normalized_web_id,
+        "tea_uuid": normalized_web_id,
+        "region": normalized_region,
+        "sys_region": normalized_region,
+        "samantha_web": "1",
+        "web_platform": "browser",
+        "use-olympus-account": "1",
+        "web_tab_id": normalized_web_id,
+    })
+    return f"{DOUBAO_SINGLE_CHAIN_URL}?{query}"
+
+
+def _doubao_single_chain_payload(conversation_id: str) -> dict[str, Any]:
+    return {
+        "cmd": 3100,
+        "uplink_body": {
+            "pull_singe_chain_uplink_body": {
+                "conversation_id": str(conversation_id or ""),
+                "anchor_index": 111,
+                "conversation_type": 3,
+                "direction": 1,
+                "limit": 20,
+                "ext": {},
+                "filter": {"index_list": []},
+                "evaluate_ab_params": "",
+                "evaluate_common_params": "",
+            }
+        },
+        "sequence_id": "111",
+        "channel": 2,
+        "version": "1",
+    }
+
+
+async def fetch_doubao_generation_result(
+    cookie_header: str,
+    conversation_id: str,
+    *,
+    web_id: str = "111",
+    region: str = "JP",
+    proxy_server: str = "",
+) -> dict[str, Any]:
+    timeout = httpx.Timeout(30.0, connect=15.0)
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json; encoding=utf-8",
+        "Cookie": str(cookie_header or ""),
+        "User-Agent": BROWSER_USER_AGENT,
+        "agw-js-conv": "str",
+    }
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=False,
+        trust_env=False,
+        proxy=str(proxy_server or "") or None,
+    ) as client:
+        response = await client.post(
+            _doubao_single_chain_url(web_id, region),
+            headers=headers,
+            json=_doubao_single_chain_payload(conversation_id),
+        )
+        response.raise_for_status()
+    return parse_doubao_generation_result(response.content.decode("utf-8-sig", errors="replace"))
+
+
+def parse_doubao_generation_result(body: str) -> dict[str, Any]:
+    body = str(body or "")
+    if "710022002" in body or "当前服务访问频繁" in body or "服务访问频繁" in body:
+        return {"state": "rate_limited", "text": "豆包当前服务访问频繁"}
+    if "710022004" in body or '"type":"verify"' in body or '"verify_scene":"doubao_message_web"' in body:
+        return {"state": "verification", "text": "豆包需要网页人机验证"}
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("doubao single chain returned invalid JSON") from exc
+    main_url = decode_main_url(extract_main_url(payload))
+    text = extract_tts_content(payload)
+    if main_url:
+        candidates: dict[str, dict[str, Any]] = {}
+        add_doubao_video_candidate(
+            candidates,
+            main_url,
+            key="video_model.main_url",
+            source="single_chain",
+        )
+        candidate = best_doubao_video_candidate(candidates)
+        return {"state": "completed", "text": text, "candidate": candidate}
+    if any(marker in text for marker in ("生成失败", "无法生成", "内容违规")):
+        return {"state": "failed", "text": text or "豆包视频生成失败"}
+    if any(marker in text for marker in ("扫码登录", "手机号登录", "登录豆包")):
+        return {"state": "login_invalid", "text": text or "豆包登录状态失效"}
+    return {"state": "generating", "text": text or "豆包正在生成视频"}
 
 
 def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
@@ -612,6 +721,8 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     response_preview: preview,
     conversation_id: conversationId,
     local_conversation_id: localConversationId,
+    web_id: webId,
+    region,
     video_url: videoUrl,
     confirmation_prompt_detected: confirmationPromptDetected,
     auto_confirmation_sent: autoConfirmationSent,
@@ -643,6 +754,7 @@ class DoubaoVideoAutomation:
         account: dict[str, Any] | None = None,
         proxy_session: Any | None = None,
         browser_pool: ReusableBrowserPool | None = None,
+        submission_pacer: Callable[[], Awaitable[None]] | None = None,
     ):
         self.task_id = task_id
         self.prompt = prompt
@@ -652,6 +764,7 @@ class DoubaoVideoAutomation:
         self.account = account or {}
         self.proxy_session = proxy_session
         self.browser_pool = browser_pool
+        self.submission_pacer = submission_pacer
         self.settings = load_settings()
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
@@ -684,14 +797,23 @@ class DoubaoVideoAutomation:
             return None
         return {"cookies": list(merged.values()), "origins": origins}
 
-    async def _refresh_cookies(self, context) -> None:
+    async def _refresh_cookies(self, context) -> list[dict[str, Any]]:
         account_id = str(self.account.get("id") or "")
         if not account_id:
-            return
+            return []
         cookies = await context.cookies(["https://www.doubao.com"])
         if cookies:
             update_account_cookies(account_id, cookies)
         await context.storage_state(path=str(self.state_path))
+        return [dict(item) for item in cookies if isinstance(item, dict)]
+
+    @staticmethod
+    def _cookie_header(cookies: list[dict[str, Any]]) -> str:
+        return "; ".join(
+            f"{str(item.get('name') or '')}={str(item.get('value') or '')}"
+            for item in cookies
+            if str(item.get("name") or "")
+        )
 
     async def run(self) -> dict[str, Any]:
         try:
@@ -913,6 +1035,7 @@ class DoubaoVideoAutomation:
                 "doubao_video_candidate_count": max(1, int(candidate_count)),
                 "doubao_watermark_status": "original" if int(score) >= DOUBAO_ORIGINAL_VIDEO_SCORE else "fallback",
             },
+            remove={"cookie_string", "conversation_id"},
         )
         mark_success(self.task_id)
         return {"success": True, "retryable": False, "reason": ""}
@@ -1033,6 +1156,8 @@ class DoubaoVideoAutomation:
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 self._set_phase("submitting_request", "正在提交豆包生成请求")
+                if self.submission_pacer is not None:
+                    await self.submission_pacer()
                 completion_result = await page.evaluate(
                     DOUBAO_SUBMIT_SCRIPT,
                     {
@@ -1114,7 +1239,8 @@ class DoubaoVideoAutomation:
                             "switch_account": True,
                         }
                     return {"success": False, "retryable": True, "reason": error}
-                mark_submitted(self.task_id)
+                conversation_id = str(completion_result.get("conversation_id") or "")
+                refreshed_cookies = await self._refresh_cookies(context)
                 save_result(
                     self.task_id,
                     extra={
@@ -1125,7 +1251,11 @@ class DoubaoVideoAutomation:
                         "account_quota_charge_id": str(self.account.get("quota_charge_id") or ""),
                         "doubao_page_url": page.url,
                         "doubao_submit_confirmed": bool(completion_result.get("accepted")),
-                        "doubao_conversation_id": str(completion_result.get("conversation_id") or ""),
+                        "conversation_id": conversation_id,
+                        "cookie_string": self._cookie_header(refreshed_cookies),
+                        "doubao_conversation_id": conversation_id,
+                        "doubao_web_id": str(completion_result.get("web_id") or "111")[:64],
+                        "doubao_region": str(completion_result.get("region") or "JP")[:16],
                         "doubao_confirmation_prompt_detected": bool(completion_result.get("confirmation_prompt_detected")),
                         "doubao_auto_confirmation_sent": bool(completion_result.get("auto_confirmation_sent")),
                         "doubao_generation_wait_message_detected": bool(completion_result.get("generation_wait_message_detected")),
@@ -1134,11 +1264,32 @@ class DoubaoVideoAutomation:
                         "doubao_same_account_attempt_count": int(completion_result.get("same_account_attempt_count") or 1),
                         "doubao_same_account_retry_limit": int(completion_result.get("same_account_retry_limit") or 0),
                         "doubao_resend_delay_ms": int(completion_result.get("resend_delay_ms") or 0),
+                        "doubao_result_mode": "interface_poll" if conversation_id else "browser_fallback",
                     },
                 )
-                conversation_id = str(completion_result.get("conversation_id") or "")
                 video_candidates: dict[str, dict[str, Any]] = {}
                 collect_doubao_video_candidates(completion_result, video_candidates, "submission", source="submission_response")
+                immediate_candidate = best_doubao_video_candidate(video_candidates)
+                if immediate_candidate and int(immediate_candidate.get("score") or 0) >= DOUBAO_ORIGINAL_VIDEO_SCORE:
+                    return await self._save_video_success(
+                        context,
+                        page,
+                        str(immediate_candidate.get("url") or ""),
+                        str(immediate_candidate.get("source") or "submission_response"),
+                        score=int(immediate_candidate.get("score") or 0),
+                        candidate_key=str(immediate_candidate.get("key") or ""),
+                        candidate_count=len(video_candidates),
+                    )
+                mark_submitted(self.task_id, result_poll_delay_seconds=20)
+                if conversation_id:
+                    self._set_phase("waiting_result", "豆包已释放浏览器，正在通过接口查询视频")
+                    return {
+                        "success": True,
+                        "retryable": False,
+                        "reason": "",
+                        "confirmation_pending": True,
+                        "keep_account_claimed": True,
+                    }
 
                 def capture_video_response(response) -> None:
                     url = self._response_video_url(response)
@@ -1147,12 +1298,6 @@ class DoubaoVideoAutomation:
                     create_tracked_task(capture_tasks, self._capture_video_candidates(response, video_candidates))
 
                 page.on("response", capture_video_response)
-                if conversation_id:
-                    try:
-                        await page.goto(f"https://www.doubao.com/chat/{conversation_id}", wait_until="domcontentloaded", timeout=90000)
-                        await page.wait_for_timeout(3000)
-                    except Exception as exc:
-                        save_result(self.task_id, extra={"doubao_conversation_open_error": str(exc)[:500]})
                 deadline = asyncio.get_running_loop().time() + DOUBAO_RESULT_WAIT_SECONDS
                 playback_triggered = False
                 single_chain_error = ""

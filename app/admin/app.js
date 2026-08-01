@@ -3991,6 +3991,12 @@ function closeWorkersModal() {
   els.workersModal.setAttribute("aria-hidden", "true");
 }
 
+function openSettingsModal(modal, focusTarget) {
+  modal?.classList.remove("hidden");
+  modal?.setAttribute("aria-hidden", "false");
+  window.setTimeout(() => focusTarget?.focus(), 0);
+}
+
 function closeSettingsModal(modal) {
   modal?.classList.add("hidden");
   modal?.setAttribute("aria-hidden", "true");
@@ -7200,11 +7206,6 @@ function bindEvents() {
   els.logoutConfirmModal?.addEventListener("click", (event) => {
     if (event.target === els.logoutConfirmModal) closeLogoutConfirmation();
   });
-  const openSettingsModal = (modal, focusTarget) => {
-    modal?.classList.remove("hidden");
-    modal?.setAttribute("aria-hidden", "false");
-    window.setTimeout(() => focusTarget?.focus(), 0);
-  };
   els.openPasswordModal?.addEventListener("click", () => {
     els.changeAdminUsername.value = state.adminUsername || els.adminUsername?.value || "";
     openSettingsModal(els.passwordModal, els.currentAdminPassword);

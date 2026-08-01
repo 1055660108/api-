@@ -16,6 +16,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="userBalanceModal"', self.html)
         self.assertIn('data-user-balance-type="points"', self.html)
         self.assertIn('data-user-balance-type="video_quota"', self.html)
+        self.assertIn("function openSettingsModal(modal, focusTarget)", self.javascript)
+        self.assertNotIn("const openSettingsModal =", self.javascript)
         self.assertIn('balance_type: userBalanceState.balanceType', self.javascript)
         self.assertIn('data-user-quota-balance=', self.javascript)
         self.assertIn('admin_video_quota_credit: "管理员充值视频额度"', self.javascript)

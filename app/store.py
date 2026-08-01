@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import re
 import secrets
 import shutil
@@ -17,6 +18,7 @@ from .platforms import DEFAULT_PLATFORM, normalize_model, normalize_platform
 from . import postgres
 
 
+LOGGER = logging.getLogger(__name__)
 TASK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 STATUS_PENDING = "pending"
 STATUS_RUNNING = "running"
@@ -93,6 +95,9 @@ TRANSIENT_RESULT_FIELDS = {
     "account_quota_charge_id",
     "account_quota_refunded",
 }
+
+REFERENCE_THUMBNAIL_MAX_BYTES = 8 * 1024
+REFERENCE_THUMBNAIL_MAX_SIDE = 160
 
 
 def task_retry_limit() -> int:
@@ -188,6 +193,10 @@ def task_dir(task_id: str) -> Path:
 
 def images_dir(task_id: str) -> Path:
     return task_dir(task_id) / "images"
+
+
+def reference_thumbnails_dir(task_id: str) -> Path:
+    return task_dir(task_id) / "reference_thumbnails"
 
 
 def ensure_task_directories(task_id: str) -> Path:
@@ -1066,14 +1075,24 @@ def mark_success(task_id: str) -> None:
     result = load_result(task_id)
     if not result.get("decoded_main_url"):
         return
-    update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED, STATUS_SUCCESS}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now())
+    updated = update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED, STATUS_SUCCESS}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now())
+    if updated is not None:
+        try:
+            compact_task_reference_images(task_id)
+        except Exception:
+            LOGGER.exception("failed to compact reference images for successful task %s", task_id)
 
 
 def mark_late_result_success(task_id: str) -> None:
     result = load_result(task_id)
     if not result.get("decoded_main_url"):
         return
-    update_meta_if(task_id, {STATUS_FAILED}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now(), late_result_watch_until="")
+    updated = update_meta_if(task_id, {STATUS_FAILED}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now(), late_result_watch_until="")
+    if updated is not None:
+        try:
+            compact_task_reference_images(task_id)
+        except Exception:
+            LOGGER.exception("failed to compact reference images for late successful task %s", task_id)
 
 
 def mark_submitted(task_id: str, result_poll_delay_seconds: int = 45) -> None:
@@ -1294,6 +1313,96 @@ def task_image_paths(task_id: str) -> list[Path]:
     if not root.exists():
         return []
     return sorted([p for p in root.iterdir() if p.is_file()])
+
+
+def task_reference_thumbnail_paths(task_id: str) -> list[Path]:
+    root = reference_thumbnails_dir(task_id)
+    if not root.exists():
+        return []
+    return sorted([path for path in root.iterdir() if path.is_file() and path.suffix.lower() == ".jpg"])
+
+
+def task_reference_display_paths(task_id: str) -> list[Path]:
+    meta = get_meta(task_id)
+    thumbnails = task_reference_thumbnail_paths(task_id)
+    expected = max(0, int(meta.get("image_count") or 0))
+    if str(meta.get("status") or "") == STATUS_SUCCESS and expected and len(thumbnails) >= expected:
+        return thumbnails[:expected]
+    return task_image_paths(task_id)
+
+
+def _write_reference_thumbnail(source: Path, target: Path) -> bool:
+    try:
+        import cv2
+
+        image = cv2.imread(str(source), cv2.IMREAD_COLOR)
+        if image is None or image.size == 0:
+            return False
+        height, width = image.shape[:2]
+        if height <= 0 or width <= 0:
+            return False
+        best: bytes | None = None
+        for max_side in (REFERENCE_THUMBNAIL_MAX_SIDE, 144, 128, 112, 96):
+            scale = min(1.0, max_side / max(height, width))
+            resized = image if scale == 1.0 else cv2.resize(
+                image,
+                (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+                interpolation=cv2.INTER_AREA,
+            )
+            for quality in (45, 35, 25, 20):
+                success, encoded = cv2.imencode(
+                    ".jpg",
+                    resized,
+                    [cv2.IMWRITE_JPEG_QUALITY, quality, cv2.IMWRITE_JPEG_OPTIMIZE, 1],
+                )
+                if not success:
+                    continue
+                candidate = encoded.tobytes()
+                if best is None or len(candidate) < len(best):
+                    best = candidate
+                if len(candidate) <= REFERENCE_THUMBNAIL_MAX_BYTES:
+                    best = candidate
+                    break
+            if best is not None and len(best) <= REFERENCE_THUMBNAIL_MAX_BYTES:
+                break
+        if best is None:
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
+        temporary.write_bytes(best)
+        temporary.replace(target)
+        return True
+    except Exception:
+        return False
+
+
+def compact_task_reference_images(task_id: str) -> list[Path]:
+    with task_lock(task_id):
+        originals = task_image_paths(task_id)
+        existing = task_reference_thumbnail_paths(task_id)
+        if not originals:
+            return existing
+        root = reference_thumbnails_dir(task_id)
+        for index, source in enumerate(originals, start=1):
+            target = root / f"{index:02d}.jpg"
+            if not target.is_file():
+                _write_reference_thumbnail(source, target)
+        thumbnails = task_reference_thumbnail_paths(task_id)
+        if len(thumbnails) < len(originals):
+            return thumbnails
+        for source in originals:
+            source.unlink(missing_ok=True)
+        try:
+            images_dir(task_id).rmdir()
+        except OSError:
+            pass
+        update_meta(
+            task_id,
+            reference_images_compacted_at=utc_now(),
+            reference_thumbnail_count=len(thumbnails),
+            reference_thumbnail_bytes=sum(path.stat().st_size for path in thumbnails),
+        )
+        return thumbnails
 
 
 def task_states(task_ids: Iterable[str], owner_token_hash: str = "") -> list[tuple[str, dict[str, Any], dict[str, Any]]]:

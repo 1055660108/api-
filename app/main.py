@@ -108,6 +108,7 @@ from .store import (
     set_task_hidden,
     set_task_images,
     task_image_paths,
+    task_reference_display_paths,
     task_states,
     request_task_cancel,
     set_task_submission_paused,
@@ -5302,7 +5303,7 @@ async def task_reference_image(
     try:
         validate_task_id(task_id)
         meta = await asyncio.to_thread(get_meta, task_id)
-        paths = await asyncio.to_thread(task_image_paths, task_id)
+        paths = await asyncio.to_thread(task_reference_display_paths, task_id)
     except (ValueError, FileNotFoundError):
         raise HTTPException(status_code=404, detail="task not found")
     if access.is_temp and str(meta.get("owner_token_hash") or "") != access.token_hash:
@@ -5317,16 +5318,19 @@ async def task_reference_image(
     media_type = media_types.get(path.suffix.lower())
     if not media_type:
         raise HTTPException(status_code=404, detail="reference image not found")
+    source_name = _reference_image_name(
+        (meta.get("reference_image_names") or [])[image_index - 1]
+        if isinstance(meta.get("reference_image_names"), list) and image_index <= len(meta.get("reference_image_names") or [])
+        else "",
+        image_index,
+        path.suffix,
+    )
+    if Path(source_name).suffix.lower() != path.suffix.lower():
+        source_name = f"{Path(source_name).stem or f'reference-{image_index}'}{path.suffix.lower()}"
     return FileResponse(
         path,
         media_type=media_type,
-        filename=_reference_image_name(
-            (meta.get("reference_image_names") or [])[image_index - 1]
-            if isinstance(meta.get("reference_image_names"), list) and image_index <= len(meta.get("reference_image_names") or [])
-            else "",
-            image_index,
-            path.suffix,
-        ),
+        filename=source_name,
         content_disposition_type="inline",
         headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
     )

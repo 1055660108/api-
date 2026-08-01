@@ -13,7 +13,9 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import cv2
 from fastapi.testclient import TestClient
+import numpy as np
 from openpyxl import Workbook
 
 from app import __version__, accounts, admin_audit, admin_auth, batch_jobs, client_auth, config, data_backup, invitation_codes, main, package_catalog, point_transactions, proxy_manager, registration_security, store, temp_access, users
@@ -1403,6 +1405,37 @@ class WebAPIContractTests(unittest.TestCase):
             self.client.get(f"/tasks/{task['id']}/references/2", headers={"X-API-Token": owner["token"]}).status_code,
             404,
         )
+
+    def test_successful_task_keeps_only_a_small_reference_thumbnail(self) -> None:
+        owner = self.register("thumbnail_owner")
+        owner_hash = temp_access.hash_token(owner["token"])
+        task = store.create_task("参考图缩略图任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        image = np.random.default_rng(42).integers(0, 256, size=(900, 1200, 3), dtype=np.uint8)
+        encoded_ok, encoded = cv2.imencode(".png", image)
+        self.assertTrue(encoded_ok)
+        reference = store.images_dir(task["id"]) / "01.png"
+        reference.write_bytes(encoded.tobytes())
+        store.set_task_images(task["id"], [reference], ["large-source.png"])
+        original_size = reference.stat().st_size
+
+        store.update_meta(task["id"], status=store.STATUS_RUNNING)
+        store.save_result(task["id"], extra={"decoded_main_url": "https://cdn.example/video.mp4"})
+        store.mark_success(task["id"])
+
+        thumbnails = store.task_reference_thumbnail_paths(task["id"])
+        self.assertFalse(reference.exists())
+        self.assertEqual(len(thumbnails), 1)
+        self.assertLessEqual(thumbnails[0].stat().st_size, store.REFERENCE_THUMBNAIL_MAX_BYTES)
+        self.assertLess(thumbnails[0].stat().st_size, original_size)
+        self.assertEqual(store.load_result(task["id"])["decoded_main_url"], "https://cdn.example/video.mp4")
+        response = self.client.get(
+            f"/tasks/{task['id']}/references/1",
+            headers={"X-API-Token": owner["token"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/jpeg")
+        self.assertEqual(response.content, thumbnails[0].read_bytes())
+        self.assertLessEqual(len(response.content), store.REFERENCE_THUMBNAIL_MAX_BYTES)
 
     def test_admin_can_download_and_restore_user_account_backup(self) -> None:
         self.register("backup_client")

@@ -92,6 +92,17 @@ class WebAPIContractTests(unittest.TestCase):
         ten_second_reason = "Currently generating videos longer than 10 seconds is not supported, do you want to continue generating for you?"
         self.assertEqual(main._client_safe_text(ten_second_reason, "Seedance 2.0"), "生成接口繁忙请稍后重试！")
         self.assertEqual(main._client_safe_text(ten_second_reason, "Seedance 2.0", terminal=True), "生成接口繁忙请稍后重试！")
+        self.assertEqual(main._client_safe_text("service frequent (risk check: service_frequent)", "Seedance 2.0"), "服务繁忙正在重试！")
+        masked_retry = main._client_task({
+            "status": "pending",
+            "model": "Seedance 2.0",
+            "retry_count": 1,
+            "error": "service frequent (risk check: service_frequent)",
+            "attempt_history": [{"reason": "service frequent (risk check: service_frequent)"}],
+        })
+        self.assertEqual(masked_retry["error"], "服务繁忙正在重试！")
+        self.assertEqual(masked_retry["status_reason"], "服务繁忙正在重试！")
+        self.assertNotIn("attempt_history", masked_retry)
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0"), "正在生成中，请稍等！")
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("reference image upload timed out", "Seedance 2.0"), "参考图上传超时，正在重试！")
@@ -111,6 +122,42 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(listed["status"], "failed")
         self.assertEqual(listed["error"], "生成失败，请重试！")
         self.assertEqual(result, {"code": "0", "text": "生成失败，请重试！", "url": ""})
+
+    def test_task_page_reports_today_success_failures_and_masked_reason_counts(self) -> None:
+        success = store.create_task("今日成功", "9:16", model="Seedance 2.0")
+        failed = store.create_task("今日失败", "9:16", model="Seedance 2.0")
+        store.mark_running(success["id"], "worker-today-success")
+        store.save_result(success["id"], extra={"decoded_main_url": "https://media.example/today.mp4"})
+        store.mark_success(success["id"])
+        store.mark_failed(failed["id"], "service frequent (risk check: service_frequent)")
+
+        payload = self.client.get(
+            "/tasks?page=1&page_size=20",
+            headers={"X-API-Token": self.admin_token},
+        ).json()
+
+        self.assertEqual(payload["stats"]["today_success"], 1)
+        self.assertEqual(payload["stats"]["today_failed"], 1)
+        self.assertEqual(payload["stats"]["failure_reasons"], [{"reason": "服务繁忙正在重试！", "count": 1}])
+
+    def test_user_details_report_today_success_and_failed_counts(self) -> None:
+        registered = self.register("today_user_summary")
+        owner_hash = temp_access.hash_token(registered["token"])
+        user = next(item for item in users.list_users(temp_access.list_temp_tokens()) if item.get("token") == registered["token"])
+        success = store.create_task("用户今日成功", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        failed = store.create_task("用户今日失败", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        store.mark_running(success["id"], "worker-user-today-success")
+        store.save_result(success["id"], extra={"decoded_main_url": "https://media.example/user-today.mp4"})
+        store.mark_success(success["id"])
+        store.mark_failed(failed["id"], "测试失败")
+
+        payload = self.client.get(
+            f"/users/{user['id']}/details",
+            headers={"X-API-Token": self.admin_token},
+        ).json()
+
+        self.assertEqual(payload["task_summary"]["today_success"], 1)
+        self.assertEqual(payload["task_summary"]["today_failed"], 1)
 
     def test_result_timeout_reason_is_visible_only_to_admin(self) -> None:
         registered = self.register("timeout_reason_client")

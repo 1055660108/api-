@@ -7,6 +7,7 @@ import secrets
 import shutil
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -1456,6 +1457,11 @@ def list_tasks_page(
     total_pages = max(1, (total + page_size - 1) // page_size)
     current_page = min(max(1, page), total_pages)
     start = (current_page - 1) * page_size
+    today_failed = [
+        item for item in tasks
+        if str(item.get("status") or "") == STATUS_FAILED and item.get("completed_today") is True
+    ]
+    failure_reasons = Counter(str(item.get("error") or "未知原因").strip() or "未知原因" for item in today_failed)
     return {
         "items": filtered[start:start + page_size],
         "total": total,
@@ -1469,6 +1475,12 @@ def list_tasks_page(
             "success": sum(str(item.get("status") or "") == STATUS_SUCCESS for item in tasks),
             "failed": sum(str(item.get("status") or "") in {STATUS_FAILED, STATUS_CANCELED} for item in tasks),
             "completed_today": sum(item.get("completed_today") is True for item in tasks),
+            "today_success": sum(str(item.get("status") or "") == STATUS_SUCCESS and item.get("completed_today") is True for item in tasks),
+            "today_failed": len(today_failed),
+            "failure_reasons": [
+                {"reason": reason, "count": count}
+                for reason, count in sorted(failure_reasons.items(), key=lambda item: (-item[1], item[0]))
+            ],
         },
     }
 

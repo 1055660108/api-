@@ -637,6 +637,8 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(details.status_code, 200)
         detail_payload = details.json()
         self.assertGreaterEqual(detail_payload["task_summary"]["total"], 4)
+        self.assertIn("today_success", detail_payload["task_summary"])
+        self.assertIn("today_failed", detail_payload["task_summary"])
         self.assertIn("admin_credit", {item["action"] for item in detail_payload["activities"]["activities"]})
         self.assertIn("task_submit", {item["action"] for item in detail_payload["activities"]["activities"]})
         self.assertIn("video_quota_consume", {item["kind"] for item in detail_payload["transactions"]["transactions"]})

@@ -334,6 +334,13 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn("重试 ${retryCount}", self.javascript)
         self.assertIn("生成异常请重试！", self.javascript)
         self.assertIn('return "生成接口繁忙请稍后重试！";', self.javascript)
+        self.assertIn('return "服务繁忙正在重试！";', self.javascript)
+        self.assertIn('history.some((item) => /service[ _-]*frequent', self.javascript)
+        self.assertIn('id="taskTodaySuccessCount"', self.html)
+        self.assertIn('id="taskTodayFailedCount"', self.html)
+        self.assertIn('id="taskFailureReasonBreakdown"', self.html)
+        self.assertIn('["今日成功", summary.today_success ?? 0]', self.javascript)
+        self.assertIn('["今日失败", summary.today_failed ?? 0]', self.javascript)
         self.assertNotIn('const rawStatus = String(task.status || "未知")', self.javascript)
 
     def test_generation_wait_copy_uses_current_range(self) -> None:

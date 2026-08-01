@@ -30,7 +30,7 @@ from .account_access import generate_key as generate_account_access_key, revoke_
 from .admin_audit import list_admin_actions, prune_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
-from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
+from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, migrate_ten_second_accounts_to_api, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
 from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
 from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
@@ -1126,6 +1126,7 @@ async def lifespan(app: FastAPI):
     if int(startup_config.get("account_quota_policy_version") or 0) < 1:
         sync_account_default_quotas(load_settings().account_default_quotas)
         update_config({"account_quota_policy_version": 1})
+    migrate_ten_second_accounts_to_api()
     purge_legacy_cards()
     running_marker = DATA_DIR / ".service-running"
     running_marker.parent.mkdir(parents=True, exist_ok=True)
@@ -1531,11 +1532,29 @@ def _refund_canceled_task(meta: dict[str, Any]) -> None:
     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
 
 
+def _frontend_safe_retry_text(value: str) -> str:
+    import re
+
+    text = str(value or "")
+    if re.search(r"service[ _-]*frequent|risk check:\s*service_frequent|710022002|当前服务访问频繁|服务访问频繁", text, flags=re.IGNORECASE):
+        return "服务繁忙正在重试！"
+    return text
+
+
+def _task_has_service_frequent(meta: dict[str, Any]) -> bool:
+    values = [str(meta.get("error") or ""), str(meta.get("status_reason") or "")]
+    values.extend(str(item.get("reason") or "") for item in meta.get("attempt_history") or [] if isinstance(item, dict))
+    return any(_frontend_safe_retry_text(value) != value for value in values)
+
+
 def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
     import re
 
     replacement = str(model or "当前模型")
-    text = str(value or "")
+    raw_text = str(value or "")
+    text = _frontend_safe_retry_text(raw_text)
+    if text != raw_text:
+        return text
     if re.search(r"generating videos longer than\s*10 seconds.*not supported|视频.{0,20}超过\s*10\s*秒.{0,20}不支持", text, flags=re.IGNORECASE):
         return "生成接口繁忙请稍后重试！"
     if re.search(r"游客模式|请登录后再试|登录后再试", text):
@@ -1566,8 +1585,25 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
     return text
 
 
+def _frontend_task_stats(stats: dict[str, Any], *, client: bool) -> dict[str, Any]:
+    safe = dict(stats or {})
+    combined: dict[str, int] = {}
+    for item in safe.get("failure_reasons") or []:
+        if not isinstance(item, dict):
+            continue
+        raw_reason = str(item.get("reason") or "未知原因")
+        reason = _client_safe_text(raw_reason, "当前模型", terminal=True) if client else _frontend_safe_retry_text(raw_reason)
+        combined[reason] = combined.get(reason, 0) + max(0, int(item.get("count") or 0))
+    safe["failure_reasons"] = [
+        {"reason": reason, "count": count}
+        for reason, count in sorted(combined.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return safe
+
+
 def _client_task(task: dict) -> dict:
     safe = dict(task)
+    service_frequent = _task_has_service_frequent(safe)
     model = str(safe.get("model") or "当前模型")
     terminal = str(safe.get("status") or "") in {"failed", "canceled"}
     for key in ("error", "status_reason"):
@@ -1576,8 +1612,8 @@ def _client_task(task: dict) -> dict:
     if str(safe.get("status") or "") == "pending" and (
         int(safe.get("retry_count") or 0) > 0 or int(safe.get("infrastructure_retry_count") or 0) > 0
     ):
-        safe["error"] = "正在重试中，请稍等！"
-        safe["status_reason"] = str(safe.get("status_reason") or "正在重试中，请稍等！")
+        safe["error"] = "服务繁忙正在重试！" if service_frequent else "正在重试中，请稍等！"
+        safe["status_reason"] = "服务繁忙正在重试！" if service_frequent else str(safe.get("status_reason") or "正在重试中，请稍等！")
     for key in ("failed_account_ids", "failed_proxy_node_ids", "proxy_retry_avoid_node_id", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "attempt_history", "last_attempt_error", "last_attempt_kind", "last_attempt_at", "reference_upload_cache_bypass", "reference_face_detection_completed", "reference_face_count", "reference_face_processing_errors", "portrait_protection_retry_count", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
         safe.pop(key, None)
     return safe
@@ -2418,6 +2454,8 @@ async def user_details(user_id: str):
         "success": sum(str(item.get("status") or "") == "success" for item in tasks),
         "failed": sum(str(item.get("status") or "") in {"failed", "canceled"} for item in tasks),
         "active": sum(str(item.get("status") or "") in {"pending", "running", "submitted"} for item in tasks),
+        "today_success": sum(str(item.get("status") or "") == "success" and item.get("completed_today") is True for item in tasks),
+        "today_failed": sum(str(item.get("status") or "") == "failed" and item.get("completed_today") is True for item in tasks),
     }
     return {"user": user, "transactions": transactions, "activities": activities, "task_summary": task_summary}
 
@@ -5001,7 +5039,7 @@ async def batch_prompt_status(
             int(meta.get("retry_count") or 0) > 0 or int(meta.get("infrastructure_retry_count") or 0) > 0
         ):
             code = "1"
-            text = "正在重试中，请稍等！"
+            text = "服务繁忙正在重试！" if _task_has_service_frequent(meta) else "正在重试中，请稍等！"
         else:
             code = "1"
             text = _client_safe_text(str(meta.get("status_reason") or meta.get("queue_reason") or meta.get("error") or ""), str(meta.get("model") or "当前模型"))
@@ -5053,7 +5091,7 @@ async def all_tasks(
             "page": result["page"],
             "page_size": result["page_size"],
             "total_pages": result["total_pages"],
-            "stats": result["stats"],
+            "stats": _frontend_task_stats(result["stats"], client=access.is_temp),
         }
 
 

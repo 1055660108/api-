@@ -1500,6 +1500,7 @@ def mark_account_ten_second_limit(account_id: str) -> dict[str, Any]:
 
     def apply(account: dict[str, Any]) -> dict[str, Any]:
         account.update(
+            account_source="api",
             ten_second_only=True,
             ten_second_marked_at=marked_at,
             updated_at=marked_at,
@@ -1522,6 +1523,29 @@ def mark_account_ten_second_limit(account_id: str) -> dict[str, Any]:
                 _write_data(data)
                 return result
     raise KeyError("account not found")
+
+
+def migrate_ten_second_accounts_to_api() -> int:
+    with _ACCOUNTS_LOCK:
+        def mutate(data: dict[str, Any]) -> int:
+            changed = 0
+            marked_at = utc_now()
+            for account in data.get("accounts") or []:
+                if not bool(account.get("ten_second_only")):
+                    continue
+                if str(account.get("account_source") or "admin").lower() == "api":
+                    continue
+                account.update(account_source="api", updated_at=marked_at)
+                changed += 1
+            return changed
+
+        if postgres.enabled():
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        changed = mutate(data)
+        if changed:
+            _write_data(data)
+        return changed
 
 
 def update_account_details(

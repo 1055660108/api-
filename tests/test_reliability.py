@@ -855,6 +855,7 @@ class ReliabilityTests(unittest.TestCase):
 
         self.assertTrue(marked["ten_second_only"])
         self.assertTrue(marked["ten_second_marked_at"])
+        self.assertEqual(marked["account_source"], "api")
         self.assertTrue(marked["enabled"])
         self.assertEqual(marked["account_status"], "normal")
         self.assertIsNone(accounts.account_for_worker("worker-ten-seconds"))
@@ -863,6 +864,20 @@ class ReliabilityTests(unittest.TestCase):
         restored = accounts.update_account_cookies(created["id"], accounts.parse_cookie_payload("session=ten-seconds-restored"))
         self.assertFalse(restored["ten_second_only"])
         self.assertEqual(accounts.account_for_worker("worker-ten-seconds-restored")["id"], created["id"])
+
+    def test_existing_ten_second_accounts_are_migrated_to_api_source(self) -> None:
+        created = accounts.add_account("Legacy ten seconds", "session=legacy-ten-seconds", account_source="admin")
+        data = json.loads(self.accounts_path.read_text(encoding="utf-8"))
+        data["accounts"][0]["ten_second_only"] = True
+        data["accounts"][0]["account_source"] = "admin"
+        self.accounts_path.write_text(json.dumps(data), encoding="utf-8")
+
+        self.assertEqual(accounts.migrate_ten_second_accounts_to_api(), 1)
+        migrated = accounts.list_accounts()[0]
+        self.assertEqual(migrated["id"], created["id"])
+        self.assertEqual(migrated["account_source"], "api")
+        self.assertTrue(migrated["ten_second_only"])
+        self.assertEqual(accounts.migrate_ten_second_accounts_to_api(), 0)
 
     def test_slider_and_abnormal_accounts_are_deleted_at_23_with_daily_statistics(self) -> None:
         task = self.create_task("slider-owner")

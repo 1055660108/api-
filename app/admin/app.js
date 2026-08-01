@@ -247,7 +247,9 @@ const els = {
   metricRunning: document.getElementById("metricRunning"),
   metricFinished: document.getElementById("metricFinished"),
   taskRunningCount: document.getElementById("taskRunningCount"),
-  taskTodayDoneCount: document.getElementById("taskTodayDoneCount"),
+  taskTodaySuccessCount: document.getElementById("taskTodaySuccessCount"),
+  taskTodayFailedCount: document.getElementById("taskTodayFailedCount"),
+  taskFailureReasonBreakdown: document.getElementById("taskFailureReasonBreakdown"),
   taskForm: document.getElementById("taskForm"),
   promptInput: document.getElementById("promptInput"),
   saveCurrentPrompt: document.getElementById("saveCurrentPrompt"),
@@ -1298,6 +1300,7 @@ function escapeHtml(value) {
 
 function clientSafeText(value, task = {}) {
   let text = String(value || "");
+  if (/service[ _-]*frequent|risk check:\s*service_frequent|710022002|当前服务访问频繁|服务访问频繁/i.test(text)) return "服务繁忙正在重试！";
   if (portal !== "client") return text;
   const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
   if (/generating videos longer than\s*10 seconds.*not supported|视频.{0,20}超过\s*10\s*秒.{0,20}不支持/i.test(text)) return "生成接口繁忙请稍后重试！";
@@ -2510,6 +2513,8 @@ async function openUserDetails(userId) {
       ["注册邀请码", user.invitation_code || "-"],
       ["任务总数", summary.total ?? 0],
       ["生成成功", summary.success ?? 0],
+      ["今日成功", summary.today_success ?? 0],
+      ["今日失败", summary.today_failed ?? 0],
       ["进行中", summary.active ?? 0],
     ].map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
     if (els.userTransactionsCount) els.userTransactionsCount.textContent = `${Number(data.transactions?.total || transactions.length)} 条`;
@@ -3000,7 +3005,8 @@ function updateDashboardMetrics() {
   let pending = 0;
   let running = 0;
   let finished = 0;
-  let todayDone = 0;
+  let todaySuccess = 0;
+  let todayFailed = 0;
 
   state.tasks.forEach((task) => {
     const status = getTaskStatus(task);
@@ -3010,7 +3016,7 @@ function updateDashboardMetrics() {
     }
     if (status.state === "success") {
       finished += 1;
-      if (task.completed_today === true) todayDone += 1;
+      if (task.completed_today === true) todaySuccess += 1;
       return;
     }
     if (status.state === "pending") {
@@ -3019,6 +3025,7 @@ function updateDashboardMetrics() {
     }
     if (status.state === "failed") {
       finished += 1;
+      if (String(task.status || "").toLowerCase() === "failed" && task.completed_today === true) todayFailed += 1;
     }
   });
 
@@ -3028,7 +3035,15 @@ function updateDashboardMetrics() {
   els.metricRunning.textContent = String(stats?.running ?? running);
   els.metricFinished.textContent = String(stats ? Number(stats.success || 0) + Number(stats.failed || 0) : finished);
   if (els.taskRunningCount) els.taskRunningCount.textContent = String(stats?.running ?? running);
-  if (els.taskTodayDoneCount) els.taskTodayDoneCount.textContent = String(stats?.completed_today ?? todayDone);
+  if (els.taskTodaySuccessCount) els.taskTodaySuccessCount.textContent = String(stats?.today_success ?? todaySuccess);
+  if (els.taskTodayFailedCount) els.taskTodayFailedCount.textContent = String(stats?.today_failed ?? todayFailed);
+  if (els.taskFailureReasonBreakdown) {
+    const reasons = Array.isArray(stats?.failure_reasons) ? stats.failure_reasons : [];
+    els.taskFailureReasonBreakdown.disabled = reasons.length === 0;
+    els.taskFailureReasonBreakdown.innerHTML = reasons.length
+      ? `<option value="">查看失败原因</option>${reasons.map((item) => `<option>${escapeHtml(item.reason || "未知原因")} · ${Number(item.count || 0)}</option>`).join("")}`
+      : '<option value="">暂无失败原因</option>';
+  }
 }
 
 function renderResourceMonitoring(monitoring = {}) {
@@ -4396,6 +4411,9 @@ function taskResultDetail(task, status = getTaskStatus(task)) {
   const primary = String(status?.text || task?.error || "").trim();
   if (portal === "client") return primary;
   const history = Array.isArray(task?.attempt_history) ? task.attempt_history : [];
+  if (primary === "服务繁忙正在重试！" || history.some((item) => /service[ _-]*frequent|risk check:\s*service_frequent|710022002|当前服务访问频繁|服务访问频繁/i.test(String(item?.reason || "")))) {
+    return "服务繁忙正在重试！";
+  }
   if (!history.length) return primary;
   const kindLabels = {
     execution_retry: "执行重试",

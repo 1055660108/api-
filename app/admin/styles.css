@@ -501,7 +501,7 @@ button:disabled {
 
 .user-details-summary {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border: 1px solid var(--line);
   border-radius: 6px;
   overflow: hidden;
@@ -1983,6 +1983,28 @@ textarea:focus {
   color: #075985;
   background: linear-gradient(135deg, #eef7ff, #ffffff);
   border-color: rgba(38, 98, 217, 0.18);
+}
+
+.task-stat-pill.failed {
+  color: #9f2f35;
+  background: #fff7f7;
+  border-color: rgba(176, 51, 57, 0.2);
+}
+
+.task-failure-reason-select {
+  width: 280px;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 6px 30px 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--text);
+}
+
+.task-failure-reason-select:disabled {
+  color: var(--muted);
+  background: #f7f9fa;
 }
 
 .task-stat-pill span {
@@ -5111,7 +5133,7 @@ body.announcement-locked {
 }
 
 #tasksView .task-stats-strip {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 #tasksView .task-filter-row {

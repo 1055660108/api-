@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.3" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.4" />
   </head>
   <body>
     <script>
@@ -511,9 +511,14 @@
                   <strong id="taskRunningCount">0</strong>
                 </div>
                 <div class="task-stat-pill success">
-                  <span>今日完成</span>
-                  <strong id="taskTodayDoneCount">0</strong>
+                  <span>今日成功</span>
+                  <strong id="taskTodaySuccessCount">0</strong>
                 </div>
+                <div class="task-stat-pill failed">
+                  <span>今日失败</span>
+                  <strong id="taskTodayFailedCount">0</strong>
+                </div>
+                <select id="taskFailureReasonBreakdown" class="task-failure-reason-select" aria-label="查看今日失败原因" disabled><option>暂无失败原因</option></select>
               </div>
               <div class="task-filter-row">
                 <label class="field search-field">
@@ -1381,6 +1386,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.3"></script>
+    <script src="/admin/assets/app.js?v=1.10.4"></script>
   </body>
 </html>

@@ -288,7 +288,7 @@ class PostgresTaskFilterQueryTests(unittest.TestCase):
                 if "SELECT id, meta" in query:
                     return Result(all_rows=[])
                 if "FILTER" in query:
-                    return Result(one=(0, 0, 0, 0, 0, 0))
+                    return Result(one=(0, 0, 0, 0, 0, 0, 0, 0))
                 return Result(one=(3,))
 
         class ConnectionContext:

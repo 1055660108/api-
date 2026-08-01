@@ -1015,11 +1015,21 @@ def query_task_page(
             "count(*) FILTER (WHERE meta->>'status' IN ('running', 'submitted')), "
             "count(*) FILTER (WHERE meta->>'status' = 'success'), "
             "count(*) FILTER (WHERE meta->>'status' IN ('failed', 'canceled')), "
-            "count(*) FILTER (WHERE COALESCE(meta->>'finished_at', '') >= %s AND COALESCE(meta->>'finished_at', '') < %s) "
+            "count(*) FILTER (WHERE COALESCE(meta->>'finished_at', '') >= %s AND COALESCE(meta->>'finished_at', '') < %s), "
+            "count(*) FILTER (WHERE meta->>'status' = 'success' AND COALESCE(meta->>'finished_at', '') >= %s AND COALESCE(meta->>'finished_at', '') < %s), "
+            "count(*) FILTER (WHERE meta->>'status' = 'failed' AND COALESCE(meta->>'finished_at', '') >= %s AND COALESCE(meta->>'finished_at', '') < %s) "
             f"FROM dola_tasks{scope_where}",
-            (start_utc, end_utc, *scope_params),
+            (start_utc, end_utc, start_utc, end_utc, start_utc, end_utc, *scope_params),
         ).fetchone()
-    stats_values = tuple(stats_row or (0, 0, 0, 0, 0, 0))
+        failure_rows = conn.execute(
+            "SELECT COALESCE(NULLIF(meta->>'error', ''), '未知原因') AS reason, count(*) "
+            "FROM dola_tasks WHERE meta->>'status' = 'failed' "
+            "AND COALESCE(meta->>'finished_at', '') >= %s AND COALESCE(meta->>'finished_at', '') < %s"
+            + (f" AND {' AND '.join(scope_conditions)}" if scope_conditions else "")
+            + " GROUP BY reason ORDER BY count(*) DESC, reason ASC",
+            (start_utc, end_utc, *scope_params),
+        ).fetchall()
+    stats_values = tuple(stats_row or (0, 0, 0, 0, 0, 0, 0, 0))
     return {
         "items": [(str(row[0]), dict(row[1])) for row in rows],
         "total": total,
@@ -1033,6 +1043,12 @@ def query_task_page(
             "success": int(stats_values[3]),
             "failed": int(stats_values[4]),
             "completed_today": int(stats_values[5]),
+            "today_success": int(stats_values[6]),
+            "today_failed": int(stats_values[7]),
+            "failure_reasons": [
+                {"reason": str(row[0] or "未知原因"), "count": int(row[1] or 0)}
+                for row in failure_rows
+            ],
         },
     }
 

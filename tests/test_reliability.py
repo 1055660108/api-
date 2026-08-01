@@ -899,7 +899,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
 
-    def test_ten_second_dola_account_stays_normal_but_is_not_scheduled(self) -> None:
+    def test_ten_second_dola_account_runs_short_tasks_but_not_fifteen_second_tasks(self) -> None:
         created = accounts.add_account("Ten seconds", "session=ten-seconds", quota_limit=2)
 
         marked = accounts.mark_account_ten_second_limit(created["id"])
@@ -909,7 +909,18 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(marked["account_source"], "api")
         self.assertTrue(marked["enabled"])
         self.assertEqual(marked["account_status"], "normal")
-        self.assertIsNone(accounts.account_for_worker("worker-ten-seconds"))
+        self.assertIsNone(accounts.account_for_worker("worker-unspecified"))
+        self.assertEqual(accounts.account_for_worker("worker-five-seconds", duration=5)["id"], created["id"])
+        self.assertEqual(accounts.account_for_worker("worker-ten-seconds", duration=10)["id"], created["id"])
+        self.assertIsNone(accounts.account_for_worker("worker-fifteen-seconds", duration=15))
+        claimed = accounts.claim_account_for_worker(
+            "worker-preferred-ten-seconds",
+            "task-preferred-ten-seconds",
+            preferred_id=created["id"],
+            duration=10,
+        )
+        self.assertEqual(claimed["id"], created["id"])
+        accounts.clear_account_current_task(created["id"], "task-preferred-ten-seconds")
         cleaned = accounts.cleanup_flagged_accounts(datetime(2030, 1, 1, 23, 0, tzinfo=accounts.LOCAL_TZ))
         self.assertEqual(cleaned["removed"], 0)
         restored = accounts.update_account_cookies(created["id"], accounts.parse_cookie_payload("session=ten-seconds-restored"))

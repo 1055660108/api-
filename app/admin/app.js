@@ -3749,16 +3749,18 @@ async function refreshAccounts(options = {}) {
 async function loadPreferredAccounts() {
   if (portal !== "admin" || !els.preferredAccountSelect) return null;
   const platform = state.platform || "dola";
+  const duration = Number(state.duration || 0);
   const previous = els.preferredAccountSelect.value;
-  const data = await apiFetch(`/accounts/available?platform=${encodeURIComponent(platform)}`);
-  if ((state.platform || "dola") !== platform) return null;
+  const data = await apiFetch(`/accounts/available?platform=${encodeURIComponent(platform)}&duration=${encodeURIComponent(duration)}`);
+  if ((state.platform || "dola") !== platform || Number(state.duration || 0) !== duration) return null;
   state.submitAccounts = Array.isArray(data.accounts) ? data.accounts : [];
   const options = [new Option("自动分配", "")];
   state.submitAccounts.forEach((account) => {
     const remaining = account.quota_remaining == null ? "额度不限" : `剩余 ${Number(account.quota_remaining || 0)}`;
     const suffix = String(account.id || "").slice(-4);
     const platformLabel = PLATFORM_LABELS[platform] || platform;
-    options.push(new Option(`${platformLabel} / ${account.name || "未命名账号"} / ${remaining} / ${suffix}`, account.id || ""));
+    const durationLabel = account.ten_second_only ? " / 仅5-10秒" : "";
+    options.push(new Option(`${platformLabel} / ${account.name || "未命名账号"}${durationLabel} / ${remaining} / ${suffix}`, account.id || ""));
   });
   els.preferredAccountSelect.replaceChildren(...options);
   if (state.submitAccounts.some((account) => account.id === previous)) els.preferredAccountSelect.value = previous;
@@ -7731,6 +7733,7 @@ function bindEvents() {
   els.durationSelect?.addEventListener("change", () => {
     state.duration = Number(els.durationSelect.value || 0);
     updateBillingPreview();
+    loadPreferredAccounts().catch((error) => toast(`可用账号读取失败：${error.message}`, "error"));
   });
   els.accountForm?.addEventListener("submit", importAccount);
   els.accountTaskSearch?.addEventListener("input", () => {

@@ -187,7 +187,8 @@ class AdminUITests(unittest.TestCase):
     def test_admin_submission_can_select_an_available_account(self) -> None:
         self.assertIn('id="preferredAccountSelect"', self.html)
         self.assertIn('class="composer-select admin-credential-field"', self.html)
-        self.assertIn('apiFetch(`/accounts/available?platform=${encodeURIComponent(platform)}`)', self.javascript)
+        self.assertIn('apiFetch(`/accounts/available?platform=${encodeURIComponent(platform)}&duration=${encodeURIComponent(duration)}`)', self.javascript)
+        self.assertIn('const durationLabel = account.ten_second_only ? " / 仅5-10秒" : ""', self.javascript)
         self.assertIn('loadPreferredAccounts().catch((error) => toast(`可用账号读取失败：${error.message}`', self.javascript)
         self.assertIn('const platformLabel = PLATFORM_LABELS[platform] || platform', self.javascript)
         self.assertIn('<option value="doubao">豆包</option>', self.html)

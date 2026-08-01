@@ -2098,6 +2098,8 @@ class WebAPIContractTests(unittest.TestCase):
         selected = accounts.add_account("Selected Dola", "session=selected", quota_limit=3)
         selected_doubao = accounts.add_account("Selected Doubao", "session=selected-doubao", quota_limit=3, platform="doubao")
         selected_qianwen = accounts.add_account("Selected Qianwen", "session=selected-qianwen", quota_limit=5, platform="qianwen")
+        ten_second = accounts.add_account("Ten-second Dola", "session=selected-ten-second", quota_limit=2)
+        accounts.mark_account_ten_second_limit(ten_second["id"])
         exhausted = accounts.add_account("Exhausted Dola", "session=exhausted", quota_limit=1)
         disabled = accounts.add_account("Disabled Dola", "session=disabled", enabled=False, quota_limit=3)
         accounts.exhaust_account_quota(exhausted["id"])
@@ -2108,6 +2110,13 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in available.json()["accounts"]], [selected["id"]])
         self.assertNotIn(exhausted["id"], available.text)
         self.assertNotIn(disabled["id"], available.text)
+
+        available_ten_seconds = self.client.get("/accounts/available?platform=dola&duration=10")
+        self.assertEqual(available_ten_seconds.status_code, 200, available_ten_seconds.text)
+        self.assertIn(ten_second["id"], [item["id"] for item in available_ten_seconds.json()["accounts"]])
+        self.assertTrue(next(item for item in available_ten_seconds.json()["accounts"] if item["id"] == ten_second["id"])["ten_second_only"])
+        available_fifteen_seconds = self.client.get("/accounts/available?platform=dola&duration=15")
+        self.assertNotIn(ten_second["id"], [item["id"] for item in available_fifteen_seconds.json()["accounts"]])
 
         submitted = self.client.post(
             "/tasks",
@@ -2123,6 +2132,32 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(submitted.status_code, 200, submitted.text)
         self.assertEqual(submitted.json()["preferred_account_id"], selected["id"])
         self.assertEqual(store.get_meta(submitted.json()["id"])["preferred_account_id"], selected["id"])
+
+        submitted_ten_seconds = self.client.post(
+            "/tasks",
+            data={
+                "prompt": "admin selected ten-second account task",
+                "ratio": "9:16",
+                "platform": "dola",
+                "model": "Seedance 2.0",
+                "duration": 10,
+                "preferred_account_id": ten_second["id"],
+            },
+        )
+        self.assertEqual(submitted_ten_seconds.status_code, 200, submitted_ten_seconds.text)
+
+        incompatible_duration = self.client.post(
+            "/tasks",
+            data={
+                "prompt": "admin selected incompatible account task",
+                "ratio": "9:16",
+                "platform": "dola",
+                "model": "Seedance 2.0",
+                "duration": 15,
+                "preferred_account_id": ten_second["id"],
+            },
+        )
+        self.assertEqual(incompatible_duration.status_code, 409)
 
         for platform, model, account in (
             ("doubao", "Seedance 2.0 Mini", selected_doubao),

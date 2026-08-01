@@ -625,6 +625,7 @@ def claim_available_account(
     mutator: Callable[[dict[str, Any]], T],
     preferred_id: str = "",
     quota_cost: int = 1,
+    duration: int = 0,
 ) -> T | None:
     from psycopg.types.json import Jsonb
 
@@ -643,7 +644,7 @@ def claim_available_account(
         f"({quota_limit} = 0 OR {quota_used} + %s <= {quota_limit})",
         "(COALESCE(payload->>'cooldown_until', '') = '' OR payload->>'cooldown_until' <= %s)",
     ]
-    if platform == "dola":
+    if platform == "dola" and (int(duration or 0) <= 0 or int(duration or 0) > 10):
         conditions.append("COALESCE(payload->>'ten_second_only', 'false') <> 'true'")
     params: list[Any] = [platform, today, quota_cost, now]
     if excluded:

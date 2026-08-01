@@ -7,7 +7,7 @@ import socket
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
+from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
@@ -876,6 +876,10 @@ class WorkerManager:
                 failed_account_ids = set(str(item) for item in meta.get("failed_account_ids") or [] if item)
                 platform = str(meta.get("platform") or "dola")
                 preferred_account_id = str(meta.get("preferred_account_id") or "").strip().lower()
+                duration = int(meta.get("duration") or 10)
+                if preferred_account_id and not account_supports_duration(preferred_account_id, platform, duration):
+                    update_meta(task_id, preferred_account_id="", queue_reason="", queue_category="")
+                    preferred_account_id = ""
                 if platform not in {"dola", "doubao", "qianwen"}:
                     mark_failed(task_id, "该平台网页自动化暂未接入")
                     continue
@@ -890,8 +894,9 @@ class WorkerManager:
                     quota_cost=account_quota_cost_units(
                         platform,
                         str(meta.get("model") or ""),
-                        int(meta.get("duration") or 10),
+                        duration,
                     ),
+                    duration=duration,
                 )
                 if not account:
                     if preferred_account_id:

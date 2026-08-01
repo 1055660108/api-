@@ -4006,7 +4006,7 @@ def _accounts_list_payload(
     return response
 
 
-def _available_generation_accounts(platform: str = DEFAULT_PLATFORM) -> list[dict[str, object]]:
+def _available_generation_accounts(platform: str = DEFAULT_PLATFORM, duration: int = 0) -> list[dict[str, object]]:
     target_platform = normalize_platform(platform)
     available: list[dict[str, object]] = []
     for account in _account_list_snapshot()["accounts"]:
@@ -4019,6 +4019,7 @@ def _available_generation_accounts(platform: str = DEFAULT_PLATFORM) -> list[dic
             or str(account.get("current_task_id") or "")
             or int(account.get("active_task_count") or 0) > 0
             or (quota_remaining is not None and int(quota_remaining) <= 0)
+            or (target_platform == "dola" and bool(account.get("ten_second_only")) and (int(duration or 0) <= 0 or int(duration or 0) > 10))
         ):
             continue
         available.append({
@@ -4028,6 +4029,7 @@ def _available_generation_accounts(platform: str = DEFAULT_PLATFORM) -> list[dic
             "quota_limit": max(0, int(account.get("quota_limit") or 0)),
             "quota_used": max(0, int(account.get("quota_used") or 0)),
             "quota_remaining": int(quota_remaining) if quota_remaining is not None else None,
+            "ten_second_only": bool(account.get("ten_second_only")),
         })
     available.sort(
         key=lambda item: (
@@ -4041,9 +4043,9 @@ def _available_generation_accounts(platform: str = DEFAULT_PLATFORM) -> list[dic
 
 
 @app.get("/accounts/available", dependencies=[Depends(require_admin)])
-async def available_generation_accounts(platform: str = Query(DEFAULT_PLATFORM)):
+async def available_generation_accounts(platform: str = Query(DEFAULT_PLATFORM), duration: int = Query(0, ge=0, le=60)):
     try:
-        accounts = await asyncio.to_thread(_available_generation_accounts, platform)
+        accounts = await asyncio.to_thread(_available_generation_accounts, platform, duration)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"accounts": accounts, "total": len(accounts)}
@@ -4806,7 +4808,7 @@ async def submit_task(
         if preferred_account_id:
             if not access.is_admin:
                 raise HTTPException(status_code=403, detail="only administrators can select a generation account")
-            selectable_accounts = await asyncio.to_thread(_available_generation_accounts, platform)
+            selectable_accounts = await asyncio.to_thread(_available_generation_accounts, platform, duration)
             if not any(str(item.get("id") or "") == preferred_account_id for item in selectable_accounts):
                 raise HTTPException(status_code=409, detail="selected account is no longer available")
         if platform == "qianwen" and task_type != "video":

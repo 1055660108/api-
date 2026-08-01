@@ -869,9 +869,27 @@ def set_account_cooldown(account_id: str, seconds: int, reason: str) -> None:
             return
 
 
-def account_for_worker(worker_id: str, exclude_ids: set[str] | None = None, platform: str = DEFAULT_PLATFORM) -> dict[str, Any] | None:
+def _account_supports_duration(account: dict[str, Any], platform: str, duration: int) -> bool:
+    return not (
+        normalize_platform(platform) == "dola"
+        and bool(account.get("ten_second_only"))
+        and (int(duration or 0) <= 0 or int(duration or 0) > 10)
+    )
+
+
+def account_supports_duration(account_id: str, platform: str, duration: int) -> bool:
+    normalized_id = str(account_id or "").strip().lower()
     with _ACCOUNTS_LOCK:
-        return _select_account(_read_data()["accounts"], exclude_ids, platform)
+        account = next(
+            (item for item in _read_data()["accounts"] if str(item.get("id") or "") == normalized_id),
+            None,
+        )
+    return bool(account and _account_supports_duration(account, platform, duration))
+
+
+def account_for_worker(worker_id: str, exclude_ids: set[str] | None = None, platform: str = DEFAULT_PLATFORM, duration: int = 0) -> dict[str, Any] | None:
+    with _ACCOUNTS_LOCK:
+        return _select_account(_read_data()["accounts"], exclude_ids, platform, duration=duration)
 
 
 def _select_account(
@@ -880,6 +898,7 @@ def _select_account(
     platform: str = DEFAULT_PLATFORM,
     preferred_id: str = "",
     quota_cost: int = 1,
+    duration: int = 0,
 ) -> dict[str, Any] | None:
     excluded = exclude_ids or set()
     target_platform = normalize_platform(platform)
@@ -901,7 +920,7 @@ def _select_account(
         if item.get("enabled", True)
         and str(item.get("account_status") or "normal") == "normal"
         and str(item.get("platform") or DEFAULT_PLATFORM) == target_platform
-        and not (target_platform == "dola" and bool(item.get("ten_second_only")))
+        and _account_supports_duration(item, target_platform, duration)
         and str(item.get("id") or "") not in excluded
         and (not preferred_id or str(item.get("id") or "") == preferred_id)
         and not str(item.get("current_task_id") or "")
@@ -940,13 +959,14 @@ def claim_account_for_worker(
     platform: str = DEFAULT_PLATFORM,
     preferred_id: str = "",
     quota_cost: int = 1,
+    duration: int = 0,
 ) -> dict[str, Any] | None:
     preferred_id = str(preferred_id or "").strip().lower()
     quota_cost = max(1, int(quota_cost or 1))
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(account: dict[str, Any]) -> dict[str, Any]:
-                selected = _select_account([account], platform=platform, preferred_id=preferred_id, quota_cost=quota_cost)
+                selected = _select_account([account], platform=platform, preferred_id=preferred_id, quota_cost=quota_cost, duration=duration)
                 if selected is None:
                     raise RuntimeError("selected account became unavailable")
                 now = utc_now()
@@ -959,10 +979,10 @@ def claim_account_for_worker(
                 return selected
 
             return postgres.claim_available_account(
-                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id, quota_cost
+                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id, quota_cost, duration
             )
         data = _read_data()
-        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id, quota_cost)
+        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id, quota_cost, duration)
         if not selected:
             return None
         now = utc_now()

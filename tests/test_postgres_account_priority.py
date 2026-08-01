@@ -37,6 +37,7 @@ class PostgresAccountPriorityTests(unittest.TestCase):
                 "2026-08-01T00:00:00+00:00",
                 lambda account: account,
                 quota_cost=2,
+                duration=10,
             )
 
         self.assertIsNone(result)
@@ -44,6 +45,21 @@ class PostgresAccountPriorityTests(unittest.TestCase):
         self.assertIn("= 'api' THEN 0 ELSE 1", connection.query)
         self.assertEqual(connection.query.count("%s"), len(connection.params))
         self.assertEqual(connection.params[:4], ("doubao", "2026-08-01", 2, "2026-08-01T00:00:00+00:00"))
+
+    def test_dola_ten_second_filter_only_applies_above_ten_seconds(self) -> None:
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        connection = _RecordingConnection()
+        with patch.object(postgres, "connection", fake_connection):
+            postgres.claim_available_account("dola", set(), "2026-08-01", "2026-08-01T00:00:00+00:00", lambda account: account, duration=10)
+        self.assertNotIn("ten_second_only", connection.query)
+
+        connection = _RecordingConnection()
+        with patch.object(postgres, "connection", fake_connection):
+            postgres.claim_available_account("dola", set(), "2026-08-01", "2026-08-01T00:00:00+00:00", lambda account: account, duration=15)
+        self.assertIn("COALESCE(payload->>'ten_second_only', 'false') <> 'true'", connection.query)
 
 
 if __name__ == "__main__":

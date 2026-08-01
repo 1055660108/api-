@@ -55,6 +55,7 @@ def record_transaction(
     video_quota_change: int = 0,
     video_quota_balance: int | None = None,
     transaction_id: str = "",
+    visible_to_client: bool = True,
 ) -> dict[str, Any]:
     user_id = str(user_id or "").strip()
     if not user_id:
@@ -72,6 +73,7 @@ def record_transaction(
         "title": str(title or "积分变动").strip()[:120],
         "detail": str(detail or "").strip()[:500],
         "reference_id": str(reference_id or "").strip()[:120],
+        "visible_to_client": bool(visible_to_client),
         "created_at": _now(),
     }
     with _LOCK:
@@ -88,12 +90,18 @@ def record_transaction(
     return dict(entry)
 
 
-def list_transactions(user_id: str, page: int = 1, page_size: int = 50) -> dict[str, Any]:
+def list_transactions(user_id: str, page: int = 1, page_size: int = 50, *, include_hidden: bool = True) -> dict[str, Any]:
     page_size = max(1, min(100, int(page_size)))
     if postgres.enabled():
-        return postgres.query_point_transactions(str(user_id or ""), page, page_size)
+        return postgres.query_point_transactions(str(user_id or ""), page, page_size, include_hidden=include_hidden)
     with _LOCK:
-        rows = [dict(item) for item in _read()["transactions"] if isinstance(item, dict) and str(item.get("user_id") or "") == str(user_id or "")]
+        rows = [
+            dict(item)
+            for item in _read()["transactions"]
+            if isinstance(item, dict)
+            and str(item.get("user_id") or "") == str(user_id or "")
+            and (include_hidden or item.get("visible_to_client", True) is not False)
+        ]
     rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     total = len(rows)
     total_pages = max(1, (total + page_size - 1) // page_size)

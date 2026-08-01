@@ -554,17 +554,18 @@ def insert_point_transaction(entry: dict[str, Any]) -> None:
         )
 
 
-def query_point_transactions(user_id: str, page: int, page_size: int) -> dict[str, Any]:
+def query_point_transactions(user_id: str, page: int, page_size: int, *, include_hidden: bool = True) -> dict[str, Any]:
+    visibility = "" if include_hidden else " AND COALESCE(payload->>'visible_to_client', 'true') = 'true'"
     with connection() as conn:
         total_row = conn.execute(
-            "SELECT count(*) FROM dola_point_transactions WHERE user_id = %s",
+            f"SELECT count(*) FROM dola_point_transactions WHERE user_id = %s{visibility}",
             (str(user_id),),
         ).fetchone()
         total = int(total_row[0] if total_row else 0)
         total_pages = max(1, (total + page_size - 1) // page_size)
         current_page = min(max(1, int(page)), total_pages)
         rows = conn.execute(
-            "SELECT payload FROM dola_point_transactions WHERE user_id = %s "
+            f"SELECT payload FROM dola_point_transactions WHERE user_id = %s{visibility} "
             "ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
             (str(user_id), page_size, (current_page - 1) * page_size),
         ).fetchall()

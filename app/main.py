@@ -1797,7 +1797,7 @@ async def points_redeem(request: Request, access: Annotated[AccessContext, Depen
 async def point_transactions(access: Annotated[AccessContext, Depends(require_temp)], page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100)):
     try:
         user = user_identity_by_token_hash(access.token_hash)
-        return list_transactions(str(user.get("id") or ""), page, page_size)
+        return list_transactions(str(user.get("id") or ""), page, page_size, include_hidden=False)
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在或已停用")
 
@@ -2507,6 +2507,7 @@ async def users_add_points(user_id: str, request: Request):
 async def users_deduct_points(user_id: str, request: Request):
     payload = await _request_payload(request)
     balance_type = str(payload.get("balance_type") or "points").strip().lower()
+    visible_to_client = str(payload.get("visible_to_client", "true")).strip().lower() in {"1", "true", "yes", "on"}
     if balance_type not in {"points", "video_quota"}:
         raise HTTPException(status_code=400, detail="扣除类型无效")
     try:
@@ -2525,9 +2526,11 @@ async def users_deduct_points(user_id: str, request: Request):
                 balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
                 video_quota_change=-amount,
                 video_quota_balance=int(user.get("free_remaining") or 0),
+                visible_to_client=visible_to_client,
             )
-            await _record_activity_safe(user_id, "admin_video_quota_deduct", "管理员扣除视频额度", detail=f"扣除 {amount} 次视频额度", actor="admin")
-            return {"ok": True, "balance_type": balance_type, **deducted}
+            visibility_detail = "用户端显示" if visible_to_client else "用户端隐藏"
+            await _record_activity_safe(user_id, "admin_video_quota_deduct", "管理员扣除视频额度", detail=f"扣除 {amount} 次视频额度 / {visibility_detail}", actor="admin")
+            return {"ok": True, "balance_type": balance_type, "visible_to_client": visible_to_client, **deducted}
         deduct_user_points(user_id, payload.get("amount"))
         user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
         record_transaction(
@@ -2537,13 +2540,15 @@ async def users_deduct_points(user_id: str, request: Request):
             "管理员扣除",
             balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
             video_quota_balance=int(user.get("free_remaining") or 0),
+            visible_to_client=visible_to_client,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    await _record_activity_safe(user_id, "admin_deduct", "管理员扣除积分", detail=f"扣除 {payload.get('amount')} 积分", actor="admin")
-    return {"ok": True, "balance_type": balance_type}
+    visibility_detail = "用户端显示" if visible_to_client else "用户端隐藏"
+    await _record_activity_safe(user_id, "admin_deduct", "管理员扣除积分", detail=f"扣除 {payload.get('amount')} 积分 / {visibility_detail}", actor="admin")
+    return {"ok": True, "balance_type": balance_type, "visible_to_client": visible_to_client}
 
 
 @app.patch("/users/{user_id}", dependencies=[Depends(require_admin)])

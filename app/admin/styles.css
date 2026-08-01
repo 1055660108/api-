@@ -2024,6 +2024,27 @@ textarea:focus {
   font-size: 16px;
 }
 
+.user-balance-content .checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f9fa;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.user-balance-content .checkbox-row input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 .task-stat-pill.failed {
   color: #9f2f35;
   background: #fff7f7;

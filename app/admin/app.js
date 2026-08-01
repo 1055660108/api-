@@ -196,6 +196,8 @@ const els = {
   userBalanceCurrent: document.getElementById("userBalanceCurrent"),
   userBalanceAmountLabel: document.getElementById("userBalanceAmountLabel"),
   userBalanceAmount: document.getElementById("userBalanceAmount"),
+  userBalanceVisibilityRow: document.getElementById("userBalanceVisibilityRow"),
+  userBalanceVisibleToClient: document.getElementById("userBalanceVisibleToClient"),
   closeUserBalanceModal: document.getElementById("closeUserBalanceModal"),
   cancelUserBalanceModal: document.getElementById("cancelUserBalanceModal"),
   submitUserBalance: document.getElementById("submitUserBalance"),
@@ -2507,6 +2509,7 @@ function renderUserBalanceModal() {
   els.userBalanceAmountLabel.textContent = quota ? "视频额度数量" : "积分数量";
   els.userBalanceAmount.min = quota ? "1" : "0.1";
   els.userBalanceAmount.step = quota ? "1" : "0.1";
+  els.userBalanceVisibilityRow?.classList.toggle("hidden", credit);
   els.userBalanceType.querySelectorAll("[data-user-balance-type]").forEach((button) => {
     const active = button.dataset.userBalanceType === userBalanceState.balanceType;
     button.classList.toggle("active", active);
@@ -2523,6 +2526,7 @@ function openUserBalance(button) {
   userBalanceState.points = Number(button.dataset.userPointsBalance || 0);
   userBalanceState.videoQuota = Number(button.dataset.userQuotaBalance || 0);
   els.userBalanceAmount.value = userBalanceState.action === "credit" ? "10" : "1";
+  if (els.userBalanceVisibleToClient) els.userBalanceVisibleToClient.checked = true;
   renderUserBalanceModal();
   openSettingsModal(els.userBalanceModal, els.userBalanceAmount);
 }
@@ -2549,7 +2553,11 @@ async function submitUserBalance(event) {
     const suffix = userBalanceState.action === "deduct" ? "/points/deduct" : "/points";
     await apiFetch(`/users/${encodeURIComponent(userBalanceState.userId)}${suffix}`, {
       method: "POST",
-      body: { amount, balance_type: userBalanceState.balanceType },
+      body: {
+        amount,
+        balance_type: userBalanceState.balanceType,
+        visible_to_client: userBalanceState.action === "credit" || Boolean(els.userBalanceVisibleToClient?.checked),
+      },
     });
     closeUserBalance();
     toast(`已${operation} ${amount} ${unit}`);

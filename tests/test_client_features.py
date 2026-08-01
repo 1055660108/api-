@@ -678,6 +678,28 @@ class ClientFeatureTests(unittest.TestCase):
         user = next(item for item in self.client.get("/users").json()["users"] if item["id"] == user_id)
         self.assertEqual(user["points"], 2.5)
 
+    def test_admin_can_hide_deduction_from_client_transactions(self) -> None:
+        registered = self.register("hidden_deduct_user")
+        headers = {"X-API-Token": registered["token"]}
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        user_id = next(item["id"] for item in self.client.get("/users").json()["users"] if item["username"] == "hidden_deduct_user")
+        self.assertEqual(self.client.post(f"/users/{user_id}/points", json={"amount": 5}).status_code, 200)
+
+        deducted = self.client.post(
+            f"/users/{user_id}/points/deduct",
+            json={"amount": 1, "balance_type": "points", "visible_to_client": False},
+        )
+        self.assertEqual(deducted.status_code, 200, deducted.text)
+        self.assertFalse(deducted.json()["visible_to_client"])
+
+        client_rows = self.client.get("/points/transactions", headers=headers).json()["transactions"]
+        self.assertIn("admin_credit", {item["kind"] for item in client_rows})
+        self.assertNotIn("admin_deduct", {item["kind"] for item in client_rows})
+
+        admin_rows = self.client.get(f"/users/{user_id}/details").json()["transactions"]["transactions"]
+        hidden = next(item for item in admin_rows if item["kind"] == "admin_deduct")
+        self.assertFalse(hidden["visible_to_client"])
+
 
 if __name__ == "__main__":
     unittest.main()

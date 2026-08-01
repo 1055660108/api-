@@ -149,6 +149,22 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["reference_id"], "task-idempotent")
 
+    def test_hidden_transaction_is_only_filtered_from_client_listing(self) -> None:
+        point_transactions.record_transaction("user-1", "admin_credit", 20, "visible credit")
+        point_transactions.record_transaction(
+            "user-1",
+            "admin_deduct",
+            -10,
+            "hidden deduction",
+            visible_to_client=False,
+        )
+
+        admin_rows = point_transactions.list_transactions("user-1")["transactions"]
+        client_rows = point_transactions.list_transactions("user-1", include_hidden=False)["transactions"]
+
+        self.assertEqual({item["kind"] for item in admin_rows}, {"admin_credit", "admin_deduct"})
+        self.assertEqual([item["kind"] for item in client_rows], ["admin_credit"])
+
     def test_free_quota_refund_records_video_quota_and_task_id(self) -> None:
         token = temp_access.create_temp_tokens(1, 1)[0]
         access = temp_access.get_temp_context(token["token"])

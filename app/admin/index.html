@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.8" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.9" />
   </head>
   <body>
     <script>
@@ -1344,6 +1344,7 @@
           <div class="segmented user-balance-type" id="userBalanceType" role="radiogroup" aria-label="余额类型"><button class="active" type="button" data-user-balance-type="points" role="radio" aria-checked="true">积分</button><button type="button" data-user-balance-type="video_quota" role="radio" aria-checked="false">视频额度</button></div>
           <div class="user-balance-current"><span>当前可用</span><strong id="userBalanceCurrent">0 积分</strong></div>
           <label class="field"><span id="userBalanceAmountLabel">积分数量</span><input id="userBalanceAmount" type="number" min="0.1" step="0.1" value="10" required /></label>
+          <label class="checkbox-row hidden" id="userBalanceVisibilityRow"><input id="userBalanceVisibleToClient" type="checkbox" checked /><span>在用户消费明细中显示</span></label>
         </div>
         <div class="modal-actions"><button class="secondary-button" id="cancelUserBalanceModal" type="button">取消</button><button class="primary-button" id="submitUserBalance" type="submit">确认</button></div>
       </form>
@@ -1397,6 +1398,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.8"></script>
+    <script src="/admin/assets/app.js?v=1.10.9"></script>
   </body>
 </html>

@@ -218,12 +218,13 @@ class MemoryPostgres:
         with self.lock:
             self.documents.setdefault("point_transactions", {"transactions": []})["transactions"].append(deepcopy(entry))
 
-    def query_point_transactions(self, user_id: str, page: int, page_size: int) -> dict:
+    def query_point_transactions(self, user_id: str, page: int, page_size: int, *, include_hidden: bool = True) -> dict:
         with self.lock:
             rows = [
                 deepcopy(item)
                 for item in self.documents.get("point_transactions", {}).get("transactions", [])
                 if str(item.get("user_id") or "") == str(user_id)
+                and (include_hidden or item.get("visible_to_client", True) is not False)
             ]
         rows.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")), reverse=True)
         total = len(rows)
@@ -428,6 +429,10 @@ class PostgresStorageCompatibilityTests(unittest.TestCase):
         self.assertEqual((first["total"], first["total_pages"]), (3, 2))
         self.assertEqual(len(first["transactions"]), 2)
         self.assertEqual(len(second["transactions"]), 1)
+        point_transactions.record_transaction("user-1", "hidden", -10, "hidden", visible_to_client=False)
+        client_rows = point_transactions.list_transactions("user-1", page=1, page_size=10, include_hidden=False)
+        self.assertEqual(client_rows["total"], 3)
+        self.assertNotIn("hidden", {item["kind"] for item in client_rows["transactions"]})
 
     def test_schema_migrates_accounts_and_indexes_result_polling(self) -> None:
         schema = postgres.SCHEMA_SQL

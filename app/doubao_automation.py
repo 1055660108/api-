@@ -1870,28 +1870,42 @@ class DoubaoVideoAutomation:
         if await self._login_required(page, body):
             return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
 
-        video_tab = page.get_by_role("tab", name="视频", exact=True)
-        try:
-            await video_tab.wait_for(state="visible", timeout=15000)
-        except Exception:
-            return {
-                "ok": False,
-                "status": 0,
-                "accepted": False,
-                "video_creation_ui_error": "doubao video creation tab unavailable",
-            }
-        await video_tab.click(force=True)
-        await page.wait_for_timeout(1200)
+        async def visible_model_button(timeout: int):
+            selector = page.locator("button:visible").filter(
+                has_text=re.compile(r"Seedance\s+\d", re.IGNORECASE)
+            ).first
+            try:
+                await selector.wait_for(state="visible", timeout=timeout)
+                return selector
+            except Exception:
+                return None
 
-        model_button = page.locator("button:visible").filter(has_text=re.compile(r"Seedance\s+\d", re.IGNORECASE)).first
-        try:
-            await model_button.wait_for(state="visible", timeout=10000)
-        except Exception:
+        model_button = await visible_model_button(2000)
+        if model_button is None:
+            video_entries = (
+                page.get_by_role("tab", name="视频", exact=True),
+                page.get_by_role("button", name="视频", exact=True),
+                page.get_by_role("button", name="视频生成", exact=True),
+                page.get_by_text("视频", exact=True),
+                page.get_by_text("视频生成", exact=True),
+            )
+            for entry in video_entries:
+                try:
+                    visible_entry = entry.last
+                    if await visible_entry.count() and await visible_entry.is_visible():
+                        await visible_entry.click(force=True)
+                        await page.wait_for_timeout(1200)
+                        model_button = await visible_model_button(3000)
+                        if model_button is not None:
+                            break
+                except Exception:
+                    continue
+        if model_button is None:
             return {
                 "ok": False,
                 "status": 0,
                 "accepted": False,
-                "video_creation_ui_error": "doubao video model selector unavailable",
+                "video_creation_ui_error": "doubao video creation entry unavailable",
             }
         await model_button.click(force=True)
         await page.wait_for_timeout(500)
@@ -1899,17 +1913,12 @@ class DoubaoVideoAutomation:
         try:
             await model_items.first.wait_for(state="visible", timeout=5000)
         except Exception:
-            return {
-                "ok": False,
-                "status": 0,
-                "accepted": False,
-                "video_creation_ui_error": "doubao video model menu unavailable",
-            }
+            model_items = page.get_by_text(self.model, exact=True)
         selected_model = ""
-        for index in range(await model_items.count()):
+        for index in range(await model_items.count() - 1, -1, -1):
             item = model_items.nth(index)
             label = re.sub(r"\s+", " ", (await item.inner_text()).strip())
-            if label == self.model or label.startswith(f"{self.model} "):
+            if await item.is_visible() and (label == self.model or label.startswith(f"{self.model} ")):
                 await item.click(force=True)
                 selected_model = self.model
                 break
@@ -2245,6 +2254,8 @@ class DoubaoVideoAutomation:
                         if not completion_result.get(identity_key) and direct_completion_result.get(identity_key):
                             completion_result[identity_key] = direct_completion_result[identity_key]
                 error, category = classify_doubao_submission(completion_result)
+                if category == "video_creation_ui_error":
+                    await self._record_diagnostic(page, "doubao_video_creation_ui_error")
                 if category == "service_frequent":
                     set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包当前服务访问频繁")
                 elif category == "submit_rejected":

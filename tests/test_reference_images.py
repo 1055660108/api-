@@ -12,6 +12,19 @@ from app import reference_images
 
 
 class ReferenceImageTests(unittest.TestCase):
+    def test_face_grid_uses_two_pixel_half_transparent_white_crosshatch(self) -> None:
+        region = np.zeros((120, 140, 3), dtype=np.uint8)
+        processed = reference_images._grid_region(region, "white-grid")
+
+        self.assertEqual(reference_images.GRID_ALPHA, 0.5)
+        self.assertEqual(reference_images.GRID_COLOR, (255, 255, 255))
+        self.assertEqual(reference_images.GRID_LINE_WIDTH, 2)
+        self.assertTrue(np.array_equal(processed[:, :, 0], processed[:, :, 1]))
+        self.assertTrue(np.array_equal(processed[:, :, 1], processed[:, :, 2]))
+        self.assertGreaterEqual(int(processed.max()), 127)
+        self.assertLessEqual(int(processed.max()), 128)
+        self.assertGreater(np.count_nonzero(processed), 0)
+
     def test_face_processing_keeps_original_and_reuses_internal_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

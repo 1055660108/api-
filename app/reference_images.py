@@ -14,8 +14,10 @@ from .store import get_meta, task_dir, task_image_paths, update_meta
 
 LOGGER = logging.getLogger(__name__)
 DETECTION_MAX_SIDE = 1600
-MANIFEST_VERSION = 2
-GRID_ALPHA = 0.4
+MANIFEST_VERSION = 3
+GRID_ALPHA = 0.5
+GRID_COLOR = (255, 255, 255)
+GRID_LINE_WIDTH = 2
 
 
 def _source_fingerprint(path: Path) -> str:
@@ -118,25 +120,28 @@ def _detect_faces(image: np.ndarray, *, retry: bool = False) -> list[tuple[int, 
 def _grid_region(region: np.ndarray, seed: str) -> np.ndarray:
     height, width = region.shape[:2]
     digest = hashlib.sha256(seed.encode("utf-8")).digest()
-    rng = np.random.default_rng(int.from_bytes(digest[:8], "big"))
     overlay = region.copy()
-    scale = max(1.0, min(height, width) / 640.0)
-    min_spacing = max(10, int(14 * scale))
-    max_spacing = max(min_spacing + 2, int(26 * scale))
+    spacing = max(18, int(round(min(height, width) / 20.0)))
+    phase = int.from_bytes(digest[:2], "big") % spacing
 
-    x = int(rng.integers(0, max(1, min_spacing)))
-    while x < width:
-        line_width = max(2, int(rng.integers(2, 5) * scale))
-        color = tuple(int(value) for value in rng.integers(20, 236, size=3))
-        cv2.line(overlay, (x, 0), (x, height - 1), color, line_width, cv2.LINE_AA)
-        x += int(rng.integers(min_spacing, max_spacing + 1))
-
-    y = int(rng.integers(0, max(1, min_spacing)))
-    while y < height:
-        line_width = max(2, int(rng.integers(2, 5) * scale))
-        color = tuple(int(value) for value in rng.integers(20, 236, size=3))
-        cv2.line(overlay, (0, y), (width - 1, y), color, line_width, cv2.LINE_AA)
-        y += int(rng.integers(min_spacing, max_spacing + 1))
+    for offset in range(-height + phase, width + spacing, spacing):
+        cv2.line(
+            overlay,
+            (offset, 0),
+            (offset + height, height),
+            GRID_COLOR,
+            GRID_LINE_WIDTH,
+            cv2.LINE_AA,
+        )
+    for offset in range(phase, width + height + spacing, spacing):
+        cv2.line(
+            overlay,
+            (offset, 0),
+            (offset - height, height),
+            GRID_COLOR,
+            GRID_LINE_WIDTH,
+            cv2.LINE_AA,
+        )
     return cv2.addWeighted(overlay, GRID_ALPHA, region, 1.0 - GRID_ALPHA, 0)
 
 

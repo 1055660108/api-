@@ -1342,6 +1342,17 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(len(history), 2)
         self.assertEqual([item["reason"] for item in history], ["相同远端失败", "相同远端失败"])
 
+    def test_empty_retry_reason_records_execution_phase(self) -> None:
+        task = self.create_task("owner")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        store.set_execution_phase(task["id"], "opening_generation_page", "正在打开生成页面")
+
+        self.assertEqual(store.record_retry(task["id"], ""), 1)
+
+        meta = store.get_meta(task["id"])
+        self.assertIn("opening_generation_page", meta["error"])
+        self.assertEqual(meta["last_attempt_error"], meta["error"])
+
     def test_supervisor_trims_idle_workers_without_canceling_active_workers(self) -> None:
         manager = WorkerManager()
         manager._workers = {"active-worker": object(), "idle-worker": object()}

@@ -67,6 +67,29 @@ class DolaQueryTests(unittest.TestCase):
             result = asyncio.run(query._query_task_once("0" * 32))
         self.assertEqual(result, {"code": "1", "text": "正在打开生成页面", "url": ""})
 
+    def test_failed_task_uses_last_attempt_diagnostic_before_generic_failure(self) -> None:
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query,
+            "get_meta",
+            return_value={
+                "status": query.STATUS_FAILED,
+                "error": "",
+                "retry_count": 3,
+                "last_attempt_error": "Page.goto: net::ERR_SSL_PROTOCOL_ERROR",
+            },
+        ):
+            result = asyncio.run(query._query_task_once("0" * 32))
+        self.assertEqual(result["text"], "Page.goto: net::ERR_SSL_PROTOCOL_ERROR")
+
+    def test_failed_task_without_saved_diagnostic_is_explicit(self) -> None:
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query,
+            "get_meta",
+            return_value={"status": query.STATUS_FAILED, "error": "", "retry_count": 0},
+        ):
+            result = asyncio.run(query._query_task_once("0" * 32))
+        self.assertEqual(result["text"], "任务失败，服务器未保存原始错误详情")
+
     def test_proxy_and_browser_transport_errors_are_infrastructure_failures(self) -> None:
         for reason in (
             "mihomo controller is not available",
@@ -79,6 +102,9 @@ class DolaQueryTests(unittest.TestCase):
         ):
             self.assertTrue(automation.is_infrastructure_failure(reason))
         self.assertFalse(automation.is_infrastructure_failure("你的输入可能包含违规内容请重试！"))
+
+    def test_empty_exception_uses_exception_type_as_diagnostic(self) -> None:
+        self.assertEqual(automation.exception_reason(TimeoutError()), "TimeoutError")
 
     def test_browser_fetch_and_ssl_failures_retire_the_active_proxy(self) -> None:
         for reason in (

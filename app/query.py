@@ -960,10 +960,15 @@ async def _query_task_once(
             return {"code": "0", "text": "浏览器超时", "url": ""}
         if meta.get("status") == STATUS_FAILED and str(meta.get("error") or "") == "region restricted":
             return {"code": "0", "text": "Dola 当前地区不可用", "url": ""}
+        failure_detail = str(
+            meta.get("error") or meta.get("last_attempt_error") or meta.get("infrastructure_error") or ""
+        ).strip()
+        if meta.get("status") == STATUS_FAILED and failure_detail:
+            return {"code": "0", "text": failure_detail, "url": ""}
         if meta.get("status") == STATUS_FAILED and int(meta.get("retry_count") or 0) > retry_limit:
             return {"code": "0", "text": "多次生成失败", "url": ""}
         if meta.get("status") == STATUS_FAILED:
-            return {"code": "0", "text": str(meta.get("error") or "失败"), "url": ""}
+            return {"code": "0", "text": "任务失败，服务器未保存原始错误详情", "url": ""}
         if meta.get("status") == "pending" and (
             int(meta.get("retry_count") or 0) > 0 or int(meta.get("infrastructure_retry_count") or 0) > 0
         ):

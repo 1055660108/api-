@@ -538,6 +538,14 @@ def _append_attempt_history(meta: dict[str, Any], reason: str, kind: str) -> Non
     meta["last_attempt_at"] = now
 
 
+def _normalized_failure_reason(meta: dict[str, Any], reason: str) -> str:
+    normalized = str(reason or "").strip()[:500]
+    if normalized:
+        return normalized
+    phase = str(meta.get("execution_phase") or meta.get("submit_phase") or "unknown").strip()[:80] or "unknown"
+    return f"任务执行失败但未返回错误详情（阶段：{phase}）"
+
+
 def set_execution_phase(task_id: str, phase: str, status_reason: str) -> bool:
     now = utc_now()
     updated = update_meta_if(
@@ -606,9 +614,10 @@ def mark_failed(task_id: str, reason: str = "") -> None:
         def mutate(meta: dict[str, Any]) -> bool:
             if str(meta.get("status") or "") not in {"initializing", STATUS_PENDING, STATUS_RUNNING, STATUS_SUBMITTED, STATUS_FAILED}:
                 return False
-            _append_attempt_history(meta, reason, "terminal")
+            normalized_reason = _normalized_failure_reason(meta, reason)
+            _append_attempt_history(meta, normalized_reason, "terminal")
             now = utc_now()
-            meta.update(status=STATUS_FAILED, worker_id="", finished_at=now, error=reason, execution_phase="failed", status_reason=reason, phase_updated_at=now, updated_at=now)
+            meta.update(status=STATUS_FAILED, worker_id="", finished_at=now, error=normalized_reason, execution_phase="failed", status_reason=normalized_reason, phase_updated_at=now, updated_at=now)
             return True
 
         if postgres.enabled():
@@ -753,7 +762,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                 if str(meta.get("status") or "") in {STATUS_SUCCESS, STATUS_SUBMITTED, STATUS_FAILED, STATUS_CANCELED}:
                     return max(0, int(meta.get("retry_count") or 0))
                 count = max(0, int(meta.get("retry_count") or 0)) + 1
-                normalized_reason = "浏览器超时" if str(reason or "") == "browser timeout" else "Dola 当前地区不可用" if str(reason or "") == "region restricted" else reason
+                normalized_reason = "浏览器超时" if str(reason or "") == "browser timeout" else "Dola 当前地区不可用" if str(reason or "") == "region restricted" else _normalized_failure_reason(meta, reason)
                 _append_attempt_history(meta, str(normalized_reason or ""), "execution_retry")
                 meta.update(retry_count=count, worker_id="", error=normalized_reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
@@ -773,6 +782,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
             reason = "浏览器超时"
         if str(reason or "") == "region restricted":
             reason = "Dola 当前地区不可用"
+        reason = _normalized_failure_reason(meta, reason)
         _append_attempt_history(meta, str(reason or ""), "execution_retry")
         meta.update(retry_count=count, worker_id="", error=reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
@@ -791,11 +801,12 @@ def record_infrastructure_retry(task_id: str, reason: str = "") -> int:
             if str(meta.get("status") or "") in {STATUS_SUCCESS, STATUS_SUBMITTED, STATUS_FAILED, STATUS_CANCELED}:
                 return max(0, int(meta.get("infrastructure_retry_count") or 0))
             count = max(0, int(meta.get("infrastructure_retry_count") or 0)) + 1
+            normalized_reason = _normalized_failure_reason(meta, reason)
             now = utc_now()
-            _append_attempt_history(meta, str(reason or ""), "infrastructure_retry")
+            _append_attempt_history(meta, normalized_reason, "infrastructure_retry")
             meta.update(
                 infrastructure_retry_count=count,
-                infrastructure_error=str(reason or "")[:500],
+                infrastructure_error=normalized_reason,
                 worker_id="",
                 error="",
                 execution_phase="retry_queued",

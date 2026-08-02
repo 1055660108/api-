@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
-from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, is_final_generation_failure, is_infrastructure_failure
+from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, exception_reason, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
 from .doubao_automation import DoubaoVideoAutomation
 from .qianwen_automation import QianwenVideoAutomation
@@ -1003,7 +1003,10 @@ class WorkerManager:
                         else:
                             clear_account_current_task(str(account.get("id") or ""), task_id)
                     if outcome.get("retryable"):
-                        reason = str(outcome.get("reason") or "")[:500]
+                        reason = str(outcome.get("reason") or "").strip()[:500]
+                        if not reason:
+                            phase = str(get_meta(task_id).get("execution_phase") or "unknown")
+                            reason = f"{platform} automation returned no failure detail (phase: {phase})"
                         deferred = defer_non_counting_retry(task_id, outcome)
                         if not deferred:
                             if outcome.get("infrastructure_fault"):
@@ -1038,7 +1041,7 @@ class WorkerManager:
                             refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
                 raise
             except Exception as exc:
-                reason = str(exc)[:500]
+                reason = exception_reason(exc)
                 infrastructure_fault = is_infrastructure_failure(reason)
                 if "platform" in locals() and platform != "dola":
                     if not infrastructure_fault:

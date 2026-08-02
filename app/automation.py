@@ -281,6 +281,11 @@ def is_infrastructure_failure(text: str) -> bool:
     return any(marker in normalized for marker in INFRASTRUCTURE_ERROR_MARKERS)
 
 
+def exception_reason(exc: BaseException) -> str:
+    detail = str(exc).strip()
+    return detail[:500] if detail else type(exc).__name__
+
+
 def is_proxy_transport_failure(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     return any(marker in normalized for marker in PROXY_TRANSPORT_ERROR_MARKERS)
@@ -1331,7 +1336,7 @@ class DolaFetchAutomation:
                 "defer_category": exc.queue_category,
             }
         except Exception as exc:
-            reason = str(exc)[:500]
+            reason = exception_reason(exc)
             execution_phase = ""
             if self._task_exists():
                 try:

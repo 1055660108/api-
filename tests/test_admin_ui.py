@@ -36,6 +36,24 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("data-model-duration-cost", self.javascript)
         self.assertIn("各时长积分", self.javascript)
 
+    def test_client_api_documentation_is_isolated_from_admin_endpoints(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('id="apiDocsNavItem"', self.html)
+        self.assertIn('id="api-docsView"', self.html)
+        self.assertIn('body[data-portal="admin"] #apiDocsNavItem', styles)
+        self.assertIn('body[data-portal="admin"] #api-docsView', styles)
+        section = self.html.split('<section class="view" id="api-docsView"', 1)[1].split('<section class="view" id="docsView"', 1)[0]
+        for endpoint in (
+            "/v1/models",
+            "/v1/videos",
+            "/v1/api/v3/contents/generations/tasks",
+            "/v1/chat/completions",
+            "/tasks/{TASK_ID}",
+        ):
+            self.assertIn(endpoint, section)
+        for admin_endpoint in ("/config/", "/users", "/accounts", "/admin/", "repository-update", "proxy-api"):
+            self.assertNotIn(admin_endpoint, section)
+
     def test_admin_only_settings_use_one_stable_scrollable_grid(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertEqual(self.html.count('id="invitationConfigPanel"'), 1)

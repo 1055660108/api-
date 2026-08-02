@@ -128,6 +128,8 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("生成超过20分钟，仍未返回结果", "Seedance 2.0", terminal=True), "生成失败，请重试！")
         self.assertEqual(main._client_safe_text("reference image upload timed out", "Seedance 2.0"), "参考图上传超时，正在重试！")
         self.assertEqual(main._client_safe_text("prepare_upload timed out", "Seedance 2.0", terminal=True), "参考图上传超时，请重试！")
+        self.assertEqual(main._client_safe_text("豆包连续要求进入视频创作页面", "Seedance 2.0"), "服务繁忙正在重试！")
+        self.assertEqual(main._client_safe_text("doubao generation acknowledgement missing", "Seedance 2.0", terminal=True), "生成接口繁忙请稍后重试！")
         self.assertEqual(main._client_safe_text("请选择勾选真人按钮并重试", "Seedance 2.0", terminal=True), "请选择勾选真人按钮并重试")
 
     def test_failed_region_task_never_displays_retrying_text(self) -> None:
@@ -1359,6 +1361,117 @@ class WebAPIContractTests(unittest.TestCase):
         after = temp_access.get_temp_context_by_hash(owner_hash)
         self.assertEqual(before.credit_units - after.credit_units, 6)
         self.assertEqual({item["id"] for item in store.list_tasks(owner_token_hash=owner_hash)}, {existing["id"], content["task_id"]})
+
+    def test_openai_video_task_endpoint_accepts_exact_compatible_path(self) -> None:
+        registered = self.register("video_api_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+
+        response = self.client.post(
+            "/v1/api/v3/contents/generations/tasks",
+            headers={"Authorization": f"Bearer {registered['token']}", "Idempotency-Key": "video-api-request-1"},
+            json={
+                "model": "dola:Seedance 2.0",
+                "content": [{"type": "text", "text": "城市夜景中的电影感运镜"}],
+                "ratio": "16:9",
+                "duration": 10,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "queued")
+        self.assertEqual(body["model"], "dola:Seedance 2.0")
+        self.assertEqual(body["content"], {})
+        meta = store.get_meta(body["id"])
+        self.assertEqual(meta["owner_token_hash"], owner_hash)
+        self.assertEqual(meta["prompt"], "城市夜景中的电影感运镜")
+        self.assertEqual(meta["ratio"], "16:9")
+        self.assertEqual(meta["duration"], 10)
+
+        status = self.client.get(
+            f"/v1/api/v3/contents/generations/tasks/{body['id']}",
+            headers={"Authorization": f"Bearer {registered['token']}"},
+        )
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertEqual(status.json()["id"], body["id"])
+        self.assertEqual(status.json()["status"], "queued")
+
+    def test_openai_video_endpoint_accepts_multipart_reference_image(self) -> None:
+        registered = self.register("video_image_api_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        image = np.full((12, 16, 3), 180, dtype=np.uint8)
+        encoded, buffer = cv2.imencode(".jpg", image)
+        self.assertTrue(encoded)
+
+        response = self.client.post(
+            "/v1/videos",
+            headers={"Authorization": f"Bearer {registered['token']}"},
+            data={"model": "dola:Seedance 2.0", "prompt": "让参考图自然运动", "ratio": "16:9", "duration": "10"},
+            files={"image": ("reference.jpg", buffer.tobytes(), "image/jpeg")},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        meta = store.get_meta(response.json()["id"])
+        self.assertEqual(meta["image_count"], 1)
+        self.assertEqual(meta["reference_image_names"], ["reference.jpg"])
+        self.assertTrue((store.images_dir(meta["id"]) / "01.jpg").is_file())
+
+    def test_openai_video_contract_preserves_error_shape_and_ownership(self) -> None:
+        first = self.register("video_owner_client")
+        second = self.register("video_other_client")
+        first_hash = temp_access.hash_token(first["token"])
+        temp_access.add_temp_credit_units(first_hash, 20)
+        headers = {"Authorization": f"Bearer {first['token']}", "Idempotency-Key": "shared-video-key"}
+        payload = {"model": "dola:Seedance 2.0", "prompt": "第一个任务", "ratio": "16:9", "duration": 10}
+        created = self.client.post("/v1/videos", headers=headers, json=payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        conflict = self.client.post("/v1/videos", headers=headers, json={**payload, "prompt": "不同任务"})
+        self.assertEqual(conflict.status_code, 409, conflict.text)
+        self.assertEqual(conflict.json()["error"]["code"], "idempotency_conflict")
+
+        hidden = self.client.get(
+            f"/v1/videos/{created.json()['id']}",
+            headers={"Authorization": f"Bearer {second['token']}"},
+        )
+        self.assertEqual(hidden.status_code, 404, hidden.text)
+        self.assertEqual(hidden.json()["error"]["code"], "not_found")
+
+        invalid_key = self.client.post(
+            "/v1/videos",
+            headers={"Authorization": f"Bearer {first['token']}", "Idempotency-Key": "bad key"},
+            json=payload,
+        )
+        self.assertEqual(invalid_key.status_code, 400, invalid_key.text)
+        self.assertIn("error", invalid_key.json())
+
+    def test_openai_video_data_url_allows_wrapped_base64(self) -> None:
+        filename, data = main._decode_video_data_image("data:image/png;base64,iVBO\nRw0KGgo=", 2)
+        self.assertEqual(filename, "reference-2.png")
+        self.assertTrue(data.startswith(b"\x89PNG"))
+
+    def test_openai_video_routes_and_missing_content_use_compatible_contract(self) -> None:
+        registered = self.register("video_route_client")
+        headers = {"Authorization": f"Bearer {registered['token']}"}
+        schema = self.client.get("/openapi.json").json()["paths"]
+        expected_routes = {
+            "/v1/videos",
+            "/v1/videos/{task_id}",
+            "/v1/videos/{task_id}/content",
+            "/v1/api/v3/contents/generations/tasks",
+            "/v1/api/v3/contents/generations/tasks/{task_id}",
+        }
+        self.assertTrue(expected_routes.issubset(schema))
+
+        missing = "0" * 32
+        content = self.client.get(f"/v1/videos/{missing}/content", headers=headers)
+        self.assertEqual(content.status_code, 404, content.text)
+        self.assertEqual(content.json()["error"]["code"], "not_found")
+        canceled = self.client.delete(f"/v1/videos/{missing}", headers=headers)
+        self.assertEqual(canceled.status_code, 404, canceled.text)
+        self.assertEqual(canceled.json()["error"]["code"], "not_found")
 
     def test_query_parameter_token_is_not_accepted(self) -> None:
         registered = self.register("query_token_client")

@@ -75,6 +75,8 @@ body[data-portal="admin"] #submitBalance,
 body[data-portal="admin"] .client-password-panel,
 body[data-portal="admin"] .client-email-panel,
 body[data-portal="admin"] .client-message-center,
+body[data-portal="admin"] #apiDocsNavItem,
+body[data-portal="admin"] #api-docsView,
 body[data-portal="client"] .admin-token-field,
 body[data-portal="client"] .admin-credential-field,
 body[data-portal="client"] .login-token-hint { display: none !important; }
@@ -4170,6 +4172,35 @@ body[data-portal="admin"] .client-billing-panel {
   justify-content: center;
   white-space: normal;
   text-align: center;
+}
+
+.docs-header h2,
+.docs-header p {
+  margin: 0;
+}
+
+.docs-header > div {
+  display: grid;
+  gap: 5px;
+}
+
+.docs-intro {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.client-api-docs-layout {
+  align-items: start;
+}
+
+.docs-tag {
+  color: #6f4d0b;
+  background: #fff6db;
+  border: 1px solid #ead6a0;
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .platform-proxy-workspace {

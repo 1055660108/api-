@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -180,13 +180,13 @@ class DoubaoAutomationTests(unittest.TestCase):
             "稍作|稍候|耐心",
             "generation_wait_message_detected: Boolean(detectedWaitMessage)",
             "accepted: Boolean(detectedWaitMessage || videoUrl)",
-            "sameAccountResendCount < maxResends",
+            "sameAccountResendCount >= maxResends",
             "setTimeout(resolve, resendDelayMs)",
             "const resendDelayMs = Math.max(5000, Number(retryDelayMs) || 15000)",
             "const maxResends = Math.max(0, Math.min(10",
-            "performAttempt(resendPayload, conversationId)",
+            "performAttempt(resendPayload, fallbackConversationId)",
             "const retryInstruction = generationInstruction(prompt, true)",
-            "conversationPayload(payload, conversationId, text, retryInstruction)",
+            "conversationPayload(payload, conversationId, latestAttemptText, retryInstruction)",
         ):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertNotIn('accepted: text.includes("SSE_REPLY_END")', DOUBAO_SUBMIT_SCRIPT)
@@ -222,6 +222,39 @@ class DoubaoAutomationTests(unittest.TestCase):
             with self.subTest(response=response_text):
                 self.assertEqual(extract_doubao_assistant_response_text(response), response_text)
                 self.assertEqual(detect_doubao_generation_acknowledgement(response), "")
+
+    def test_video_creation_page_refusal_is_detected_from_assistant_response_only(self) -> None:
+        responses = (
+            "无法直接生成，请进入视频创作页面。",
+            "我无法直接生成视频，请前往视频创作页面完成操作。",
+            "当前对话页面不支持直接触发视频生成，请进入创作页面。",
+        )
+        for response_text in responses:
+            assistant = json.dumps({"text": response_text}, ensure_ascii=False)
+            response = f"event: CHUNK_DELTA\ndata: {assistant}\n\n"
+            with self.subTest(response=response_text):
+                self.assertTrue(detect_doubao_video_creation_page_refusal(response))
+        user_only = json.dumps({"message": {"user_type": 1, "content": responses[0]}}, ensure_ascii=False)
+        self.assertEqual(detect_doubao_video_creation_page_refusal(f"event: FULL_MSG_NOTIFY\ndata: {user_only}\n\n"), "")
+
+    def test_video_creation_page_refusal_uses_one_new_conversation_then_switches_account(self) -> None:
+        error, category = classify_doubao_submission({
+            "ok": True,
+            "accepted": False,
+            "video_creation_page_refusal_repeated": True,
+        })
+
+        self.assertEqual((error, category), ("豆包连续要求进入视频创作页面", "video_creation_page_refusal"))
+        for fragment in (
+            "videoCreationPageRefusal(latestAttemptText)",
+            "videoCreationPageNewConversationResendCount >= 1",
+            'localConversationId = `local_${randomDigits(16)}`',
+            'history.pushState({}, "", `/chat/${localConversationId}`)',
+            'conversationPayload(payload, "", latestAttemptText, generationInstruction(prompt))',
+            'fallbackConversationId = ""',
+            "video_creation_page_refusal_repeated: videoCreationPageRefusalRepeated",
+        ):
+            self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
 
     def test_python_acknowledgement_fallback_prevents_generation_retry(self) -> None:
         message = "已为你调用Seedance 2.0 Fast模型，生成中，请耐心等待。"

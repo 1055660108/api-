@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 from concurrent.futures import Future
 import json
 import hmac
 import hashlib
 import logging
+import re
 import secrets
 import shutil
 import smtplib
@@ -174,6 +176,17 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
     if not any(first.startswith(magic) for magic in IMAGE_MAGIC[suffix]):
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="invalid image content")
+
+
+def _save_image_bytes(data: bytes, filename: str, target: Path) -> None:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_IMAGE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="unsupported image type")
+    if not data or len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413 if data else 400, detail="image is too large" if data else "image is empty")
+    if not any(data.startswith(magic) for magic in IMAGE_MAGIC[suffix]):
+        raise HTTPException(status_code=400, detail="invalid image content")
+    target.write_bytes(data)
 
 
 def _reference_image_name(value: object, index: int, suffix: str = "") -> str:
@@ -1577,6 +1590,8 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
         return "生成失败，请重试！" if terminal else "正在生成中，请稍等！"
     if re.search(r"reference image upload timed out|prepare_upload timed out", text, flags=re.IGNORECASE):
         return "参考图上传超时，请重试！" if terminal else "参考图上传超时，正在重试！"
+    if re.search(r"generation acknowledgement missing|连续要求进入视频创作页面|无法直接生成[^\n\r]{0,80}(?:创作|生成)页面", text, flags=re.IGNORECASE):
+        return "生成接口繁忙请稍后重试！" if terminal else "服务繁忙正在重试！"
     if "正在打开生成页面" in text:
         return "正在启动服务"
     text = text.replace("浏览器", "服务")
@@ -3364,6 +3379,375 @@ async def openai_models(_access: Annotated[AccessContext, Depends(require_openai
             if settings.platform_model_states.get(platform, {}).get(model, True) and settings.model_durations.get(platform, {}).get(model, []):
                 data.append({"id": f"{platform}:{model}", "object": "model", "created": 0, "owned_by": platform})
     return {"object": "list", "data": data}
+
+
+def _video_ratio_from_size(value: object) -> str:
+    normalized = str(value or "").strip().lower().replace("×", "x")
+    if "x" not in normalized:
+        return ""
+    try:
+        width, height = (int(part) for part in normalized.split("x", 1))
+    except (TypeError, ValueError):
+        return ""
+    if width <= 0 or height <= 0:
+        return ""
+    ratios = {
+        "9:16": 9 / 16,
+        "16:9": 16 / 9,
+        "1:1": 1.0,
+        "3:4": 3 / 4,
+        "4:3": 4 / 3,
+        "21:9": 21 / 9,
+    }
+    actual = width / height
+    return min(ratios, key=lambda ratio: abs(ratios[ratio] - actual))
+
+
+def _decode_video_data_image(value: str, index: int) -> tuple[str, bytes]:
+    match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\r\n]+)", str(value or "").strip(), flags=re.IGNORECASE)
+    if not match:
+        raise OpenAIAPIError(400, "Reference images must use multipart upload or a base64 data URL", "invalid_request_error", "content", "invalid_image")
+    suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[match.group(1).lower()]
+    try:
+        encoded = re.sub(r"\s+", "", match.group(2))
+        data = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise OpenAIAPIError(400, "Invalid reference image data", "invalid_request_error", "content", "invalid_image") from exc
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise OpenAIAPIError(413, "Reference image is too large", "invalid_request_error", "content", "image_too_large")
+    return f"reference-{index}{suffix}", data
+
+
+async def _parse_openai_video_request(request: Request) -> tuple[dict[str, object], list[tuple[str, bytes]]]:
+    content_type = str(request.headers.get("content-type") or "").lower()
+    images: list[tuple[str, bytes]] = []
+    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        payload: dict[str, object] = {}
+        for key, value in form.multi_items():
+            if hasattr(value, "filename") and hasattr(value, "read"):
+                filename = Path(str(value.filename or f"reference-{len(images) + 1}.png")).name
+                data = await value.read(MAX_UPLOAD_BYTES + 1)
+                await value.close()
+                if len(data) > MAX_UPLOAD_BYTES:
+                    raise OpenAIAPIError(413, "Reference image is too large", "invalid_request_error", key, "image_too_large")
+                images.append((filename, data))
+            else:
+                payload[str(key)] = str(value)
+    else:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise OpenAIAPIError(400, "A JSON or multipart body is required", "invalid_request_error", code="invalid_json") from exc
+        if not isinstance(payload, dict):
+            raise OpenAIAPIError(400, "Request body must be an object", "invalid_request_error", code="invalid_json")
+
+    content = payload.get("content")
+    text_parts: list[str] = []
+    image_values: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").lower()
+            if item_type in {"text", "input_text"} and str(item.get("text") or "").strip():
+                text_parts.append(str(item.get("text") or ""))
+            if item_type in {"image_url", "input_image", "image"}:
+                image_value = item.get("image_url") or item.get("image") or item.get("url")
+                if isinstance(image_value, dict):
+                    image_value = image_value.get("url")
+                if str(image_value or "").strip():
+                    image_values.append(str(image_value))
+    for key in ("image_url", "input_reference", "reference_image"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            value = value.get("url")
+        if isinstance(value, str) and value.strip():
+            image_values.append(value)
+    for image_value in image_values:
+        images.append(_decode_video_data_image(image_value, len(images) + 1))
+
+    prompt = str(payload.get("prompt") or "").strip() or "\n".join(part.strip() for part in text_parts if part.strip())
+    ratio = str(payload.get("ratio") or "").strip() or _video_ratio_from_size(payload.get("size") or payload.get("resolution")) or DEFAULT_RATIO
+    raw_duration = payload.get("duration") if payload.get("duration") is not None else payload.get("seconds")
+    try:
+        duration = int(raw_duration) if raw_duration not in {None, ""} else None
+    except (TypeError, ValueError) as exc:
+        raise OpenAIAPIError(400, "Invalid duration", "invalid_request_error", "duration", "invalid_value") from exc
+    normalized = {
+        "model": str(payload.get("model") or "").strip(),
+        "prompt": repair_text(prompt),
+        "ratio": ratio,
+        "duration": duration,
+        "reference_is_real_person": str(payload.get("reference_is_real_person") or "false").lower() in {"1", "true", "yes", "on"},
+    }
+    return normalized, images
+
+
+async def _create_compatible_video_task(
+    request: Request,
+    access: AccessContext,
+    payload: dict[str, object],
+    images: list[tuple[str, bytes]],
+    idempotency_key: str | None,
+) -> tuple[dict, bool]:
+    assert create_sem is not None
+    async with _owner_create_semaphore(access), create_sem:
+        try:
+            await asyncio.to_thread(_admit_task_creation)
+        except HTTPException as exc:
+            raise OpenAIAPIError(exc.status_code, "Service temporarily overloaded", "server_error", code="service_unavailable", headers=exc.headers)
+        prompt = str(payload.get("prompt") or "").strip()
+        model_id = str(payload.get("model") or "").strip()
+        ratio = str(payload.get("ratio") or DEFAULT_RATIO).strip()
+        if not prompt:
+            raise OpenAIAPIError(400, "A non-empty prompt is required", "invalid_request_error", "prompt", "missing_prompt")
+        if len(prompt.encode("utf-8")) > 8192:
+            raise OpenAIAPIError(400, "Prompt is too long", "invalid_request_error", "prompt", "string_too_long")
+        platform, separator, model = model_id.partition(":")
+        if not separator:
+            raise OpenAIAPIError(404, f"The model '{model_id}' does not exist", "invalid_request_error", "model", "model_not_found")
+        try:
+            platform, model = validate_task_platform_model(platform, model)
+        except (ValueError, HTTPException):
+            raise OpenAIAPIError(404, f"The model '{model_id}' does not exist or is disabled", "invalid_request_error", "model", "model_not_found")
+        if ratio not in VALID_RATIOS:
+            raise OpenAIAPIError(400, "Invalid ratio", "invalid_request_error", "ratio", "invalid_value")
+        try:
+            duration = validate_task_duration(platform, model, payload.get("duration"))
+        except HTTPException as exc:
+            raise OpenAIAPIError(400, str(exc.detail), "invalid_request_error", "duration", "invalid_value")
+        if len(images) > load_settings().max_image_count:
+            raise OpenAIAPIError(400, "Too many reference images", "invalid_request_error", "input_reference", "array_too_long")
+        for filename, data in images:
+            suffix = Path(filename).suffix.lower()
+            if suffix not in ALLOWED_IMAGE_SUFFIXES or not any(data.startswith(magic) for magic in IMAGE_MAGIC[suffix]):
+                raise OpenAIAPIError(400, "Invalid reference image", "invalid_request_error", "input_reference", "invalid_image")
+        try:
+            await _rate_limit(request, "openai-video-task", 30, 60, access.token_hash)
+            key = _idempotency_key(idempotency_key)
+        except HTTPException as exc:
+            error_type = "rate_limit_error" if exc.status_code == 429 else "invalid_request_error"
+            error_code = "rate_limit_exceeded" if exc.status_code == 429 else "invalid_request"
+            raise OpenAIAPIError(exc.status_code, str(exc.detail), error_type, code=error_code, headers=exc.headers) from exc
+        fingerprint = _request_fingerprint("openai-video", access.token_hash, {
+            "prompt": prompt,
+            "ratio": ratio,
+            "duration": duration,
+            "platform": platform,
+            "model": model,
+            "images": [{"name": name, "sha256": hashlib.sha256(data).hexdigest()} for name, data in images],
+        })
+        meta: dict | None = None
+        reserved_access = None
+        reservation: dict = {}
+        try:
+            if key:
+                meta, created = await _storage_call(
+                    find_or_create_task,
+                    prompt,
+                    ratio,
+                    access.token_hash if access.is_temp else "",
+                    platform,
+                    model,
+                    "video",
+                    key,
+                    fingerprint,
+                    "openai-video",
+                    duration,
+                )
+            else:
+                meta = await _storage_call(
+                    create_task,
+                    prompt,
+                    ratio,
+                    owner_token_hash=access.token_hash if access.is_temp else "",
+                    platform=platform,
+                    model=model,
+                    task_type="video",
+                    enqueue=False,
+                    duration=duration,
+                )
+                created = True
+            resumed_initializing = not created and str(meta.get("status") or "") == "initializing"
+            if not created and not resumed_initializing:
+                return meta, False
+            queued_for_concurrency = access.is_temp and await _storage_call(active_task_count_for_owner, access.token_hash) >= access.concurrency
+            base_cost_units = model_cost_units(platform, model, "video", duration)
+            discount_units = await _storage_call(task_discount_units_by_token_hash, access.token_hash, platform, model) if access.is_temp else 0
+            cost_units = max(1, base_cost_units - discount_units)
+            user_id = await _storage_call(_transaction_user_id, access)
+            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            reservation = await _storage_call(get_temp_reservation, access.token_hash, str(meta["id"])) if access.is_temp else {}
+            if user_id and reservation:
+                charged_units = int(reservation.get("units") or 0)
+                free_used = bool(reservation.get("free"))
+                await _storage_call(
+                    record_transaction,
+                    user_id,
+                    "video_quota_consume" if free_used else "consume",
+                    0 if free_used else -charged_units,
+                    "视频额度任务消费" if free_used else "视频任务消费",
+                    balance_units=reserved_access.credit_units,
+                    video_quota_change=-1 if free_used else 0,
+                    video_quota_balance=reserved_access.free_remaining,
+                    reference_id=str(meta["id"]),
+                    detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
+                    transaction_id=f"task-{str(meta['id'])[:27]}",
+                )
+            saved_paths: list[Path] = []
+            saved_names: list[str] = []
+            for index, (filename, data) in enumerate(images, start=1):
+                suffix = Path(filename).suffix.lower()
+                target = images_dir(str(meta["id"])) / f"{index:02d}{suffix}"
+                await asyncio.to_thread(_save_image_bytes, data, filename, target)
+                saved_paths.append(target)
+                saved_names.append(_reference_image_name(filename, index, suffix))
+            await _storage_call(set_task_images, str(meta["id"]), saved_paths, saved_names)
+            await _storage_call(
+                update_meta,
+                str(meta["id"]),
+                reference_is_real_person=bool(payload.get("reference_is_real_person")),
+                openai_video_queued_for_concurrency=bool(queued_for_concurrency),
+            )
+            await _storage_call(finalize_task_creation, str(meta["id"]))
+            if user_id:
+                await _record_activity_safe(
+                    user_id,
+                    "task_submit",
+                    "通过 API 提交视频生成任务",
+                    reference_id=str(meta["id"]),
+                    detail=f"{model} / {ratio}",
+                )
+            meta = await _storage_call(get_meta, str(meta["id"]))
+            meta["queued_for_concurrency"] = bool(queued_for_concurrency)
+            return meta, True
+        except ValueError as exc:
+            raise OpenAIAPIError(409, str(exc), "invalid_request_error", "Idempotency-Key", "idempotency_conflict") from exc
+        except OpenAIAPIError:
+            if meta:
+                await _storage_call(refund_temp_quota_hash, access.token_hash, str(meta["id"]), attempts=2)
+                await _storage_call(delete_task, str(meta["id"]), attempts=2)
+            raise
+        except QuotaExceeded:
+            if meta:
+                await _storage_call(delete_task, str(meta["id"]), attempts=2)
+            raise OpenAIAPIError(429, "You exceeded your current quota", "insufficient_quota", code="insufficient_quota")
+        except HTTPException as exc:
+            if meta:
+                await _storage_call(refund_temp_quota_hash, access.token_hash, str(meta["id"]), attempts=2)
+                await _storage_call(delete_task, str(meta["id"]), attempts=2)
+            raise OpenAIAPIError(exc.status_code, str(exc.detail), "invalid_request_error", code="invalid_request")
+        except Exception as exc:
+            if meta:
+                await _storage_call(refund_temp_quota_hash, access.token_hash, str(meta["id"]), attempts=2)
+                await _storage_call(delete_task, str(meta["id"]), attempts=2)
+            logger.exception("OpenAI-compatible video task creation failed (error_type=%s)", type(exc).__name__)
+            raise OpenAIAPIError(500, "Failed to create video task", "server_error", code="internal_error") from exc
+
+
+def _external_base_url(request: Request) -> str:
+    scheme = str(request.headers.get("x-forwarded-proto") or request.url.scheme).split(",", 1)[0].strip()
+    host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc).split(",", 1)[0].strip()
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _compatible_video_response(request: Request, meta: dict, *, vendor: bool = False, result: dict | None = None) -> dict:
+    task_id = str(meta.get("id") or "")
+    internal_status = str(meta.get("status") or "pending")
+    if vendor:
+        status = {"pending": "queued", "running": "running", "submitted": "running", "success": "succeeded", "failed": "failed", "canceled": "cancelled"}.get(internal_status, "queued")
+    else:
+        status = {"pending": "queued", "running": "in_progress", "submitted": "in_progress", "success": "completed", "failed": "failed", "canceled": "cancelled"}.get(internal_status, "queued")
+    base_url = _external_base_url(request)
+    video_url = f"{base_url}/tasks/{task_id}/video" if internal_status == "success" else ""
+    created_at = str(meta.get("created_at") or "")
+    payload = {
+        "id": task_id,
+        "object": "video",
+        "model": f"{meta.get('platform') or 'dola'}:{meta.get('model') or ''}",
+        "status": status,
+        "created_at": created_at,
+        "progress": 100 if internal_status == "success" else 0,
+        "ratio": str(meta.get("ratio") or DEFAULT_RATIO),
+        "seconds": int(meta.get("duration") or 10),
+        "video_url": video_url,
+        "result_endpoint": f"{base_url}/v1/videos/{task_id}",
+        "content_endpoint": f"{base_url}/v1/videos/{task_id}/content",
+        "queued_for_concurrency": bool(meta.get("openai_video_queued_for_concurrency")),
+    }
+    if vendor:
+        payload["content"] = {"video_url": video_url} if video_url else {}
+    if internal_status == "failed":
+        detail = str((result or {}).get("text") or meta.get("error") or "Video generation failed")
+        payload["error"] = {"message": detail, "code": "generation_failed"}
+    return payload
+
+
+@app.post("/v1/videos")
+@app.post("/v1/videos/generations")
+@app.post("/v1/video/generations")
+@app.post("/api/v3/contents/generations/tasks")
+@app.post("/v1/api/v3/contents/generations/tasks")
+async def openai_video_create(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_openai_token)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+):
+    payload, images = await _parse_openai_video_request(request)
+    meta, _created = await _create_compatible_video_task(request, access, payload, images, idempotency_key)
+    return _compatible_video_response(request, meta, vendor="/api/v3/" in request.url.path)
+
+
+@app.get("/v1/videos/{task_id}")
+@app.get("/v1/videos/generations/{task_id}")
+@app.get("/v1/video/generations/{task_id}")
+@app.get("/api/v3/contents/generations/tasks/{task_id}")
+@app.get("/v1/api/v3/contents/generations/tasks/{task_id}")
+async def openai_video_status(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_openai_token)],
+    task_id: str,
+):
+    try:
+        validate_task_id(task_id)
+        meta = await _storage_call(get_meta, task_id)
+    except (ValueError, FileNotFoundError):
+        raise OpenAIAPIError(404, "Video task not found", "invalid_request_error", "id", "not_found")
+    if access.is_temp and str(meta.get("owner_token_hash") or "") != access.token_hash:
+        raise OpenAIAPIError(404, "Video task not found", "invalid_request_error", "id", "not_found")
+    result = await query_task(task_id)
+    meta = await _storage_call(get_meta, task_id)
+    return _compatible_video_response(request, meta, vendor="/api/v3/" in request.url.path, result=result)
+
+
+@app.get("/v1/videos/{task_id}/content")
+async def openai_video_content(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_openai_token)],
+    task_id: str,
+):
+    try:
+        return await task_video(request, access, task_id)
+    except HTTPException as exc:
+        code = "not_found" if exc.status_code == 404 else "video_unavailable"
+        raise OpenAIAPIError(exc.status_code, str(exc.detail), "invalid_request_error", "id", code, headers=exc.headers) from exc
+
+
+@app.delete("/v1/videos/{task_id}")
+@app.delete("/api/v3/contents/generations/tasks/{task_id}")
+@app.delete("/v1/api/v3/contents/generations/tasks/{task_id}")
+async def openai_video_cancel(
+    access: Annotated[AccessContext, Depends(require_openai_token)],
+    task_id: str,
+):
+    try:
+        return await remove_task(access, task_id)
+    except HTTPException as exc:
+        code = "not_found" if exc.status_code == 404 else "invalid_request"
+        raise OpenAIAPIError(exc.status_code, str(exc.detail), "invalid_request_error", "id", code, headers=exc.headers) from exc
 
 
 @app.post("/v1/chat/completions")

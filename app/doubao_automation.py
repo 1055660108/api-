@@ -730,6 +730,8 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
         return "doubao verification required", "slider_verification"
     if result.get("quota_insufficient"):
         return "豆包账号额度不足或已耗尽", "quota_insufficient"
+    if result.get("video_creation_page_refusal_repeated"):
+        return "豆包连续要求进入视频创作页面", "video_creation_page_refusal"
     if result.get("stream_error"):
         return "doubao submit rejected", "submit_rejected"
     if not result.get("ok"):
@@ -796,6 +798,19 @@ def detect_doubao_generation_acknowledgement(value: str) -> str:
         if match:
             return match.group(0)
     return ""
+
+
+def detect_doubao_video_creation_page_refusal(value: str) -> str:
+    raw = str(value or "")
+    assistant_text = extract_doubao_assistant_response_text(raw)
+    searchable = assistant_text or ("" if re.search(r"(?m)^event:", raw) else raw)
+    match = re.search(
+        r"(?:无法|不能|不支持)[^\n\r]{0,50}(?:直接)?[^\n\r]{0,30}(?:生成|触发)"
+        r"[^\n\r]{0,80}(?:进入|前往|打开)[^\n\r]{0,40}(?:视频)?(?:创作|生成)?页面",
+        searchable,
+        re.IGNORECASE,
+    )
+    return match.group(0) if match else ""
 
 
 def normalize_doubao_submission_acknowledgement(result: dict[str, Any]) -> dict[str, Any]:
@@ -999,6 +1014,13 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) 
     }
     return "";
   }
+  function videoCreationPageRefusal(value) {
+    const rawText = searchableText(value);
+    const assistantText = assistantResponseText(rawText);
+    const text = assistantText || (/^event:/m.test(rawText) ? "" : rawText);
+    const match = text.match(/(?:无法|不能|不支持)[^\n\r]{0,50}(?:直接)?[^\n\r]{0,30}(?:生成|触发)[^\n\r]{0,80}(?:进入|前往|打开)[^\n\r]{0,40}(?:视频)?(?:创作|生成)?页面/i);
+    return match ? match[0] : "";
+  }
   function quotaInsufficient(value) {
     const text = searchableText(value).replace(/\s+/g, "");
     return /(?:视频生成)?额度(?:不足|已用完|用完了|已耗尽|耗尽了|为0|剩余0)/.test(text)
@@ -1033,7 +1055,7 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) 
     return Math.max(...matches.map(item => Number(item[1])).filter(Number.isFinite));
   }
 
-  const localConversationId = `local_${randomDigits(16)}`;
+  let localConversationId = `local_${randomDigits(16)}`;
   const uniqueKey = uuid();
   const webId = (storageFind(/web_id|tea_uuid|device_id/i).match(/\d{15,24}/) || [])[0]
     || `${Date.now()}${randomDigits(6)}`;
@@ -1310,24 +1332,46 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) 
   let detectedWaitMessage = generationWaitMessage(text);
   let sameAccountResendCount = 0;
   let sameAccountAttemptCount = 1;
+  let videoCreationPageRefusalCount = videoCreationPageRefusal(attempt.text) ? 1 : 0;
+  let videoCreationPageNewConversationResendCount = 0;
+  let videoCreationPageRefusalRepeated = false;
+  let latestAttemptText = attempt.text;
   while (
     response.ok
     && !detectedWaitMessage
     && !videoUrl
-    && !terminalSubmissionSignal(text)
-    && sameAccountResendCount < maxResends
+    && !terminalSubmissionSignal(latestAttemptText)
   ) {
+    const creationPageRefusal = videoCreationPageRefusal(latestAttemptText);
+    if (creationPageRefusal && videoCreationPageNewConversationResendCount >= 1) {
+      videoCreationPageRefusalRepeated = true;
+      break;
+    }
+    if (!creationPageRefusal && sameAccountResendCount >= maxResends) break;
     await new Promise(resolve => setTimeout(resolve, resendDelayMs));
-    const resendPayload = conversationPayload(payload, conversationId, text, retryInstruction);
-    attempt = await performAttempt(resendPayload, conversationId);
+    let resendPayload;
+    let fallbackConversationId = conversationId;
+    if (creationPageRefusal) {
+      localConversationId = `local_${randomDigits(16)}`;
+      history.pushState({}, "", `/chat/${localConversationId}`);
+      resendPayload = conversationPayload(payload, "", latestAttemptText, generationInstruction(prompt));
+      fallbackConversationId = "";
+      conversationId = "";
+      videoCreationPageNewConversationResendCount += 1;
+    } else {
+      resendPayload = conversationPayload(payload, conversationId, latestAttemptText, retryInstruction);
+    }
+    attempt = await performAttempt(resendPayload, fallbackConversationId);
     response = attempt.response;
     text = `${text}\n${attempt.text}`;
+    latestAttemptText = attempt.text;
     timedOut = timedOut || attempt.timedOut;
-    conversationId = attempt.conversationId || conversationId;
+    conversationId = attempt.conversationId || fallbackConversationId;
     videoUrl = attempt.videoUrl || videoUrl;
     confirmationPromptDetected = confirmationPromptDetected || attempt.confirmationPromptDetected;
     autoConfirmationSent = autoConfirmationSent || attempt.autoConfirmationSent;
     detectedWaitMessage = generationWaitMessage(attempt.text) || generationWaitMessage(text);
+    if (videoCreationPageRefusal(attempt.text)) videoCreationPageRefusalCount += 1;
     sameAccountResendCount += 1;
     sameAccountAttemptCount += 1;
   }
@@ -1350,6 +1394,9 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) 
     same_account_attempt_count: sameAccountAttemptCount,
     same_account_retry_limit: maxResends,
     resend_delay_ms: resendDelayMs,
+    video_creation_page_refusal_count: videoCreationPageRefusalCount,
+    video_creation_page_new_conversation_resend_count: videoCreationPageNewConversationResendCount,
+    video_creation_page_refusal_repeated: videoCreationPageRefusalRepeated,
     submitted_with_images: Boolean(attachments && attachments.length),
     accepted: Boolean(detectedWaitMessage || videoUrl),
     quota_insufficient: quotaInsufficient(text),
@@ -1915,6 +1962,9 @@ class DoubaoVideoAutomation:
                         "doubao_same_account_attempt_count": int(completion_result.get("same_account_attempt_count") or 1),
                         "doubao_same_account_retry_limit": int(completion_result.get("same_account_retry_limit") or 0),
                         "doubao_resend_delay_ms": int(completion_result.get("resend_delay_ms") or 0),
+                        "doubao_video_creation_page_refusal_count": int(completion_result.get("video_creation_page_refusal_count") or 0),
+                        "doubao_video_creation_page_new_conversation_resend_count": int(completion_result.get("video_creation_page_new_conversation_resend_count") or 0),
+                        "doubao_video_creation_page_refusal_repeated": bool(completion_result.get("video_creation_page_refusal_repeated")),
                     })
                     if category == "service_frequent":
                         if self.proxy_session is not None:
@@ -1962,6 +2012,14 @@ class DoubaoVideoAutomation:
                             "account_fault": True,
                             "switch_account": True,
                         }
+                    if category == "video_creation_page_refusal":
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": error,
+                            "account_fault": True,
+                            "switch_account": True,
+                        }
                     return {"success": False, "retryable": True, "reason": error}
                 conversation_id = str(completion_result.get("conversation_id") or "")
                 refreshed_cookies = await self._refresh_cookies(context)
@@ -1990,6 +2048,9 @@ class DoubaoVideoAutomation:
                         "doubao_same_account_attempt_count": int(completion_result.get("same_account_attempt_count") or 1),
                         "doubao_same_account_retry_limit": int(completion_result.get("same_account_retry_limit") or 0),
                         "doubao_resend_delay_ms": int(completion_result.get("resend_delay_ms") or 0),
+                        "doubao_video_creation_page_refusal_count": int(completion_result.get("video_creation_page_refusal_count") or 0),
+                        "doubao_video_creation_page_new_conversation_resend_count": int(completion_result.get("video_creation_page_new_conversation_resend_count") or 0),
+                        "doubao_video_creation_page_refusal_repeated": bool(completion_result.get("video_creation_page_refusal_repeated")),
                         "doubao_result_mode": "interface_poll" if conversation_id else "browser_fallback",
                     },
                 )

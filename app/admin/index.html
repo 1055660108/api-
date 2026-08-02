@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.24" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.25" />
   </head>
   <body>
     <script>
@@ -124,6 +124,10 @@
           <button class="nav-item" type="button" data-view="tasks">
             <i class="nav-icon" data-lucide="list-video" aria-hidden="true"></i>
             <span>任务管理</span>
+          </button>
+          <button class="nav-item" type="button" data-view="api-docs" id="apiDocsNavItem">
+            <i class="nav-icon" data-lucide="braces" aria-hidden="true"></i>
+            <span>API 文档</span>
           </button>
           <button class="nav-item" type="button" data-view="proxy-nodes" id="proxyNodesNavItem">
             <i class="nav-icon" data-lucide="network" aria-hidden="true"></i>
@@ -757,6 +761,79 @@
             </div>
             <div class="pager table-bottom-pager account-bottom-pager"><span id="accountPageTotal">本页 0 条</span><button class="icon-button" id="prevAccountPage" type="button">上一页</button><button class="icon-button" id="nextAccountPage" type="button">下一页</button><select id="accountPageSize" aria-label="账号每页数量"><option value="10">每页 10 条</option><option value="20" selected>每页 20 条</option><option value="50">每页 50 条</option><option value="100">每页 100 条</option></select></div>
           </section>
+        </section>
+
+        <section class="view" id="api-docsView" data-title="API 文档">
+          <div class="docs-layout client-api-docs-layout">
+            <section class="panel docs-panel">
+              <div class="docs-header">
+                <div>
+                  <h2>OpenAI 兼容接口</h2>
+                  <p class="docs-intro">将服务地址填入兼容 OpenAI 协议的客户端，使用当前用户 API 密钥调用。</p>
+                </div>
+                <span class="docs-chip">Authorization: Bearer API_KEY</span>
+              </div>
+              <div class="api-list">
+                <article class="api-item">
+                  <div><span class="method get">GET</span><code>/v1/models</code></div>
+                  <p>获取当前已开启并且可用的模型。提交任务时直接使用返回的模型 <code>id</code>。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -H "Authorization: Bearer API_KEY" https://SERVER/v1/models</code></div>
+                  <div class="api-example"><span>响应示例</span><code>{"object":"list","data":[{"id":"dola:Seedance 2.0","object":"model","owned_by":"dola"}]}</code></div>
+                </article>
+                <article class="api-item">
+                  <div><span class="method post">POST</span><code>/v1/videos</code></div>
+                  <p>创建视频任务。<code>model</code> 必须使用模型列表返回的完整 ID；<code>ratio</code> 支持 9:16、16:9、1:1、3:4、4:3、21:9；时长是否可用以所选模型为准。</p>
+                  <div class="api-example"><span>JSON 请求示例</span><code>curl -X POST https://SERVER/v1/videos -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -H "Idempotency-Key: REQUEST_ID" -d '{"model":"dola:Seedance 2.0","prompt":"城市夜景中的电影感运镜","ratio":"16:9","duration":10}'</code></div>
+                  <div class="api-example"><span>响应示例</span><code>{"id":"TASK_ID","object":"video","status":"queued","model":"dola:Seedance 2.0","result_endpoint":"https://SERVER/v1/videos/TASK_ID"}</code></div>
+                </article>
+                <article class="api-item">
+                  <div><span class="method post">POST</span><code>/v1/api/v3/contents/generations/tasks</code></div>
+                  <p>兼容内容生成任务协议。可使用 <code>prompt</code>，也可使用由文本和 Base64 图片组成的 <code>content</code> 数组。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/api/v3/contents/generations/tasks -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -d '{"model":"dola:Seedance 2.0","content":[{"type":"text","text":"海边日落延时摄影"}],"ratio":"16:9","duration":10}'</code></div>
+                </article>
+                <article class="api-item">
+                  <div><span class="method post">POST</span><code>/v1/videos</code><span class="docs-tag">参考图</span></div>
+                  <p>参考图任务使用 <code>multipart/form-data</code>，一个或多个图片字段均会作为参考图接收。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/videos -H "Authorization: Bearer API_KEY" -F "model=dola:Seedance 2.0" -F "prompt=让画面中的场景自然运动" -F "ratio=16:9" -F "duration=10" -F "image=@reference.jpg"</code></div>
+                </article>
+              </div>
+            </section>
+
+            <section class="panel docs-panel">
+              <div class="docs-header"><h2>查询与结果</h2><span class="docs-chip">TASK_ID</span></div>
+              <div class="api-list">
+                <article class="api-item">
+                  <div><span class="method get">GET</span><code>/v1/videos/{TASK_ID}</code></div>
+                  <p>轮询任务状态。状态依次为 <code>queued</code>、<code>in_progress</code>、<code>completed</code>，失败时为 <code>failed</code>。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -H "Authorization: Bearer API_KEY" https://SERVER/v1/videos/TASK_ID</code></div>
+                  <div class="api-example"><span>完成响应</span><code>{"id":"TASK_ID","status":"completed","progress":100,"video_url":"https://SERVER/tasks/TASK_ID/video","content_endpoint":"https://SERVER/v1/videos/TASK_ID/content"}</code></div>
+                </article>
+                <article class="api-item">
+                  <div><span class="method get">GET</span><code>/v1/api/v3/contents/generations/tasks/{TASK_ID}</code></div>
+                  <p>内容生成协议对应的状态查询地址，完成时状态为 <code>succeeded</code>，视频地址位于 <code>content.video_url</code>。</p>
+                </article>
+                <article class="api-item">
+                  <div><span class="method get">GET</span><code>/v1/videos/{TASK_ID}/content</code></div>
+                  <p>读取生成完成的视频内容，支持浏览器和播放器的 Range 请求。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -L -H "Authorization: Bearer API_KEY" https://SERVER/v1/videos/TASK_ID/content -o result.mp4</code></div>
+                </article>
+                <article class="api-item">
+                  <div><span class="method delete">DELETE</span><code>/v1/videos/{TASK_ID}</code></div>
+                  <p>取消尚可取消的任务，或移除已结束任务。</p>
+                </article>
+                <article class="api-item">
+                  <div><span class="method get">GET</span><code>/tasks/{TASK_ID}</code></div>
+                  <p>查询用户任务的原生结果。此接口同样接受 Bearer API 密钥。</p>
+                  <div class="api-example"><span>响应示例</span><code>{"code":"2","text":"","url":"https://example.com/video.mp4"}</code></div>
+                </article>
+                <article class="api-item">
+                  <div><span class="method post">POST</span><code>/v1/chat/completions</code></div>
+                  <p>兼容旧版聊天补全调用。将提示词放在 <code>messages</code> 中，响应消息内容为任务信息。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/chat/completions -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -d '{"model":"dola:Seedance 2.0","messages":[{"role":"user","content":"雨后的未来城市"}],"ratio":"16:9","duration":10}'</code></div>
+                </article>
+              </div>
+            </section>
+          </div>
         </section>
 
         <section class="view" id="docsView" data-title="接口说明">
@@ -1402,6 +1479,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.24"></script>
+    <script src="/admin/assets/app.js?v=1.10.25"></script>
   </body>
 </html>

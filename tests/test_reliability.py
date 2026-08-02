@@ -134,6 +134,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUCCESS)
         self.assertEqual(store.load_result(task["id"])["decoded_main_url"], candidate["url"])
         self.assertEqual(store.load_result(task["id"])["doubao_watermark_status"], "watermarked_fallback")
+        self.assertEqual(store.load_result(task["id"])["doubao_result_source"], "single_chain")
         self.assertNotIn("cookie_string", store.load_result(task["id"]))
         settle.assert_called_once_with("doubao-account", "doubao-charge")
         clear.assert_called_once_with("doubao-account", task["id"])
@@ -159,6 +160,41 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(outcome["retry_after"], 120)
         self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
         clear.assert_not_called()
+
+    def test_doubao_web_video_cache_still_queries_unwatermarked_interface_result(self) -> None:
+        task = store.create_task("豆包网页缓存升级", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "conversation_id": "12345678901234567",
+            "cookie_string": "session=value",
+            "decoded_main_url": "https://media.example/page-watermarked.mp4",
+            "doubao_video_detection_source": "video_current_src",
+            "doubao_result_source": "video_current_src",
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=0)
+        store.mark_success(task["id"])
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+        candidate = {
+            "url": "https://media.example/fallback-original.mp4",
+            "source": "fallback_unwatermarked",
+            "key": "video_model.fallback_api",
+            "score": 900,
+            "watermark_status": "original",
+        }
+        fetch = AsyncMock(return_value={"state": "completed", "text": "生成完成", "candidate": candidate})
+
+        with patch("app.doubao_automation.fetch_doubao_generation_result", new=fetch):
+            outcome = asyncio.run(query.query_task(task["id"]))
+
+        self.assertEqual(outcome["url"], candidate["url"])
+        stored = store.load_result(task["id"])
+        self.assertEqual(stored["decoded_main_url"], candidate["url"])
+        self.assertEqual(stored["doubao_result_source"], "fallback_unwatermarked")
+        self.assertEqual(stored["doubao_watermark_status"], "original")
+        fetch.assert_awaited_once()
 
     def test_doubao_interface_quota_exhaustion_fills_account_and_requeues_with_another_account(self) -> None:
         task = store.create_task("豆包额度检测", "9:16", platform="doubao", model="Seedance 2.0 Mini")

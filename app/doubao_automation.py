@@ -39,6 +39,12 @@ DOUBAO_MODEL_CODES = {
 DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
 DOUBAO_RESULT_POLL_MILLISECONDS = 5000
 DOUBAO_ORIGINAL_VIDEO_SCORE = 240
+DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
+    "video_current_src",
+    "source_src",
+    "download_link",
+    "media_response",
+}
 QAAB_SALT = bytes.fromhex(
     "4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524"
     "f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58"
@@ -113,16 +119,14 @@ async def fetch_doubao_generation_result(
         trust_env=False,
         proxy=str(proxy_server or "") or None,
     ) as client:
-        response = await client.post(
-            _doubao_single_chain_url(web_id, region),
-            headers=headers,
-            json=_doubao_single_chain_payload(conversation_id),
+        parsed, payload = await fetch_doubao_single_chain(
+            client,
+            headers,
+            conversation_id,
+            web_id=web_id,
+            region=region,
         )
-        response.raise_for_status()
-        body = response.content.decode("utf-8-sig", errors="replace")
-        parsed = parse_doubao_generation_result(body)
         try:
-            payload = json.loads(body)
             unwatermarked_url = await fetch_doubao_unwatermarked_url(
                 client,
                 cookie_header,
@@ -151,6 +155,29 @@ async def fetch_doubao_generation_result(
             if isinstance(candidate, dict):
                 candidate["watermark_status"] = "watermarked_fallback"
         return parsed
+
+
+async def fetch_doubao_single_chain(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    conversation_id: str,
+    *,
+    web_id: str = "111",
+    region: str = "JP",
+) -> tuple[dict[str, Any], Any]:
+    response = await client.post(
+        _doubao_single_chain_url(web_id, region),
+        headers=headers,
+        json=_doubao_single_chain_payload(conversation_id),
+    )
+    response.raise_for_status()
+    body = response.content.decode("utf-8-sig", errors="replace")
+    parsed = parse_doubao_generation_result(body)
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        payload = {}
+    return parsed, payload
 
 
 def unwatermarked_fallback_url(url: str) -> str:
@@ -432,6 +459,15 @@ def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
     if any(marker in field or marker in value for marker in ("preview", "thumbnail", "poster", "cover", "sample")):
         score -= 180
     return score
+
+
+def doubao_video_candidate_is_acceptable(candidate: dict[str, Any] | None, *, allow_web_fallback: bool = False) -> bool:
+    if not candidate:
+        return False
+    if int(candidate.get("score") or 0) >= DOUBAO_ORIGINAL_VIDEO_SCORE:
+        return True
+    source = str(candidate.get("source") or "").strip().lower()
+    return bool(allow_web_fallback and source in DOUBAO_WEB_DIRECT_RESULT_SOURCES)
 
 
 def add_doubao_video_candidate(
@@ -1286,6 +1322,7 @@ class DoubaoVideoAutomation:
                 "decoded_main_url": url,
                 "doubao_page_url": page.url,
                 "doubao_video_detection_source": source,
+                "doubao_result_source": source,
                 "doubao_selected_video_key": candidate_key,
                 "doubao_video_url_score": int(score),
                 "doubao_video_candidate_count": max(1, int(candidate_count)),
@@ -1534,8 +1571,18 @@ class DoubaoVideoAutomation:
                 )
                 video_candidates: dict[str, dict[str, Any]] = {}
                 collect_doubao_video_candidates(completion_result, video_candidates, "submission", source="submission_response")
+                if conversation_id:
+                    mark_submitted(self.task_id, result_poll_delay_seconds=20)
+                    self._set_phase("waiting_result", "豆包已释放浏览器，正在通过接口查询视频")
+                    return {
+                        "success": True,
+                        "retryable": False,
+                        "reason": "",
+                        "confirmation_pending": True,
+                        "keep_account_claimed": True,
+                    }
                 immediate_candidate = best_doubao_video_candidate(video_candidates)
-                if immediate_candidate and int(immediate_candidate.get("score") or 0) >= DOUBAO_ORIGINAL_VIDEO_SCORE:
+                if doubao_video_candidate_is_acceptable(immediate_candidate):
                     return await self._save_video_success(
                         context,
                         page,
@@ -1546,15 +1593,6 @@ class DoubaoVideoAutomation:
                         candidate_count=len(video_candidates),
                     )
                 mark_submitted(self.task_id, result_poll_delay_seconds=20)
-                if conversation_id:
-                    self._set_phase("waiting_result", "豆包已释放浏览器，正在通过接口查询视频")
-                    return {
-                        "success": True,
-                        "retryable": False,
-                        "reason": "",
-                        "confirmation_pending": True,
-                        "keep_account_claimed": True,
-                    }
 
                 def capture_video_response(response) -> None:
                     url = self._response_video_url(response)
@@ -1587,7 +1625,7 @@ class DoubaoVideoAutomation:
                                 add_doubao_video_candidate(video_candidates, url, key=f"dom.{source}", source=source)
                     candidate = best_doubao_video_candidate(video_candidates)
                     candidate_score = int(candidate.get("score") or 0)
-                    if candidate and candidate_score >= DOUBAO_ORIGINAL_VIDEO_SCORE:
+                    if doubao_video_candidate_is_acceptable(candidate):
                         return await self._save_video_success(
                             context,
                             page,
@@ -1610,7 +1648,7 @@ class DoubaoVideoAutomation:
                         return {"success": False, "retryable": False, "reason": "doubao generation failed"}
                     await page.wait_for_timeout(DOUBAO_RESULT_POLL_MILLISECONDS)
                 candidate = best_doubao_video_candidate(video_candidates)
-                if candidate and int(candidate.get("score") or 0) >= DOUBAO_ORIGINAL_VIDEO_SCORE:
+                if doubao_video_candidate_is_acceptable(candidate, allow_web_fallback=True):
                     return await self._save_video_success(
                         context,
                         page,

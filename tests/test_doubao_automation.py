@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, doubao_video_url_score, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, parse_doubao_generation_result, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, parse_doubao_generation_result, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -400,6 +400,7 @@ class DoubaoAutomationTests(unittest.TestCase):
                 "region": "JP",
                 "generation_wait_message_detected": True,
                 "generation_wait_message": "本次使用 Seedance 2.0 Mini 生成，预计等待 5 分钟",
+                "main_url": "https://media.example/browser-watermarked.mp4",
             }),
         )
         context = SimpleNamespace(pages=[page], add_init_script=AsyncMock())
@@ -430,6 +431,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner._login_required = AsyncMock(return_value=False)
         runner._refresh_cookies = AsyncMock(return_value=[{"name": "session", "value": "value"}])
         runner._context_storage_state = Mock(return_value=None)
+        runner._save_video_success = AsyncMock()
 
         with patch("app.doubao_automation.task_exists", return_value=False), patch(
             "app.doubao_automation.begin_task_submission", return_value=True
@@ -444,6 +446,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner.submission_pacer.assert_awaited_once()
         mark_submitted.assert_called_once_with("doubao-task", result_poll_delay_seconds=20)
         self.assertTrue(any(call.kwargs["extra"].get("doubao_result_mode") == "interface_poll" for call in save_result.call_args_list))
+        runner._save_video_success.assert_not_awaited()
         lease.release.assert_awaited_once()
 
     def test_context_storage_state_merges_saved_state_and_latest_account_cookies(self) -> None:
@@ -619,6 +622,16 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(url, "https://media.example/result.mp4")
         self.assertEqual(source, "video_current_src")
 
+    def test_web_video_candidate_is_only_accepted_as_final_fallback(self) -> None:
+        candidate = {
+            "url": "https://media.example/page-watermarked.mp4",
+            "source": "video_current_src",
+            "score": 30,
+        }
+
+        self.assertFalse(doubao_video_candidate_is_acceptable(candidate))
+        self.assertTrue(doubao_video_candidate_is_acceptable(candidate, allow_web_fallback=True))
+
     def test_completed_video_poster_activates_player_wrapper(self) -> None:
         poster = SimpleNamespace(click=AsyncMock())
         posters = SimpleNamespace(count=AsyncMock(return_value=1), last=poster)
@@ -657,6 +670,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner._refresh_cookies.assert_awaited_once_with(context)
         self.assertEqual(save.call_args.kwargs["extra"]["decoded_main_url"], "https://media.example/result.mp4")
         self.assertEqual(save.call_args.kwargs["extra"]["doubao_video_detection_source"], "video_current_src")
+        self.assertEqual(save.call_args.kwargs["extra"]["doubao_result_source"], "video_current_src")
         self.assertEqual(save.call_args.kwargs["extra"]["doubao_watermark_status"], "fallback")
         mark_success.assert_called_once_with("doubao-task")
 

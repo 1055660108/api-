@@ -60,6 +60,19 @@ REFERENCE_IMAGE_INVALID_TEXT = "参考图异常，请重试！"
 REFERENCE_REAL_PERSON_REQUIRED_TEXT = "请选择勾选真人按钮并重试"
 PORTRAIT_PROTECTION_RETRY_TEXT = "参考图触发肖像保护，正在更换账号重试"
 TEN_SECOND_LIMIT_TEXT = "Currently generating videos longer than 10 seconds is not supported, do you want to continue generating for you?"
+DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
+    "video_current_src",
+    "source_src",
+    "download_link",
+    "media_response",
+}
+
+
+def _doubao_cached_web_video_url(result: dict[str, Any]) -> str:
+    source = str(result.get("doubao_result_source") or result.get("doubao_video_detection_source") or "").strip().lower()
+    if source not in DOUBAO_WEB_DIRECT_RESULT_SOURCES:
+        return ""
+    return str(result.get("decoded_main_url") or "").strip()
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -742,11 +755,14 @@ async def _query_doubao_task_once(
     *,
     late_watch: bool = False,
 ) -> dict[str, Any]:
-    if str(result.get("doubao_result_mode") or "") != "interface_poll":
+    cached_web_url = _doubao_cached_web_video_url(result)
+    if str(result.get("doubao_result_mode") or "") != "interface_poll" and not cached_web_url:
         return {"code": "1", "text": "豆包正在浏览器中等待视频，请稍候...", "url": ""}
     now = datetime.now(timezone.utc)
     next_poll_at = parse_time(str(meta.get("next_result_poll_at") or ""))
     if next_poll_at and now < next_poll_at:
+        if cached_web_url:
+            return {"code": "2", "text": SUCCESS_TEXT, "url": cached_web_url}
         return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": ""}
     # Reserve the next poll window before network I/O so repeated client status
     # refreshes cannot bypass the worker's global result-query limiter.
@@ -755,6 +771,8 @@ async def _query_doubao_task_once(
     cookie_header = str(result.get("cookie_string") or "").strip()
     if not conversation_id or not cookie_header:
         save_result(task_id, extra={"doubao_query_error": "missing conversation id or cookie"})
+        if cached_web_url:
+            return {"code": "2", "text": SUCCESS_TEXT, "url": cached_web_url}
         update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())
         return {"code": "1", "text": "豆包正在确认生成会话，请稍候...", "url": "", "retry_after": 30}
 
@@ -781,6 +799,8 @@ async def _query_doubao_task_once(
                 "doubao_query_error_category": "login_invalid" if status == 401 else "rate_limited" if status in {403, 429} else "http_error",
             },
         )
+        if cached_web_url:
+            return {"code": "2", "text": SUCCESS_TEXT, "url": cached_web_url}
         if status == 401:
             account_id = str(result.get("account_id") or "")
             if account_id:
@@ -800,6 +820,8 @@ async def _query_doubao_task_once(
                 "doubao_query_error_category": "transport_error",
             },
         )
+        if cached_web_url:
+            return {"code": "2", "text": SUCCESS_TEXT, "url": cached_web_url}
         update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())
         return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": "", "retry_after": 30}
 
@@ -828,6 +850,7 @@ async def _query_doubao_task_once(
                 settle_account_quota(account_id, charge_id)
             clear_account_current_task(account_id, task_id)
         score = int(candidate.get("score") or 0)
+        result_source = str(candidate.get("source") or "single_chain")
         watermark_status = str(candidate.get("watermark_status") or "").strip()
         if not watermark_status:
             watermark_status = "original" if score >= 240 else "watermarked_fallback"
@@ -835,7 +858,8 @@ async def _query_doubao_task_once(
             task_id,
             extra={
                 "decoded_main_url": url,
-                "doubao_video_detection_source": str(candidate.get("source") or "single_chain"),
+                "doubao_video_detection_source": result_source,
+                "doubao_result_source": result_source,
                 "doubao_selected_video_key": str(candidate.get("key") or "video_model.main_url"),
                 "doubao_video_url_score": score,
                 "doubao_watermark_status": watermark_status,
@@ -845,6 +869,16 @@ async def _query_doubao_task_once(
         )
         mark_late_result_success(task_id) if late_watch else mark_success(task_id)
         return {"code": "2", "text": SUCCESS_TEXT, "url": url}
+    if cached_web_url:
+        save_result(
+            task_id,
+            extra={
+                "doubao_result_source": str(result.get("doubao_result_source") or result.get("doubao_video_detection_source") or "video_current_src"),
+                "doubao_unwatermarked_query_attempted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        mark_late_result_success(task_id) if late_watch else mark_success(task_id)
+        return {"code": "2", "text": SUCCESS_TEXT, "url": cached_web_url}
     if state == "quota_insufficient":
         reason = text or "豆包账号额度不足或已耗尽"
         if account_id:
@@ -884,15 +918,22 @@ async def _query_task_once(
 ) -> dict[str, Any]:
     expire_task_if_timeout(task_id)
     meta = get_meta(task_id)
-    if str(meta.get("platform") or "dola") == "doubao" and (meta.get("status") == STATUS_SUBMITTED or late_watch):
+    if str(meta.get("platform") or "dola") == "doubao":
         result = load_result(task_id)
-        video_url = str(result.get("decoded_main_url") or "").strip()
-        if video_url:
-            mark_late_result_success(task_id) if late_watch else mark_success(task_id)
-            return {"code": "2", "text": SUCCESS_TEXT, "url": video_url}
-        if not background_poll:
-            return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": ""}
-        return await _query_doubao_task_once(task_id, meta, result, late_watch=late_watch)
+        cached_web_url = _doubao_cached_web_video_url(result)
+        can_upgrade_web_cache = bool(
+            cached_web_url
+            and str(result.get("doubao_conversation_id") or result.get("conversation_id") or "").strip()
+            and str(result.get("cookie_string") or "").strip()
+        )
+        if meta.get("status") in {STATUS_SUBMITTED, STATUS_SUCCESS} or late_watch or can_upgrade_web_cache:
+            video_url = str(result.get("decoded_main_url") or "").strip()
+            if video_url and not can_upgrade_web_cache:
+                mark_late_result_success(task_id) if late_watch else mark_success(task_id)
+                return {"code": "2", "text": SUCCESS_TEXT, "url": video_url}
+            if not background_poll and not can_upgrade_web_cache:
+                return {"code": "1", "text": "豆包正在生成视频，请稍候...", "url": ""}
+            return await _query_doubao_task_once(task_id, meta, result, late_watch=late_watch)
     retry_limit = task_retry_limit()
     late_watch_active = late_watch and meta.get("status") == STATUS_FAILED and bool(
         (late_until := parse_time(str(meta.get("late_result_watch_until") or "")))

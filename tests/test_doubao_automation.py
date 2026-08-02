@@ -154,6 +154,9 @@ class DoubaoAutomationTests(unittest.TestCase):
         for fragment in (
             "本次使用",
             "预计等待",
+            "视频(?:任务)?已(?:成功)?提交",
+            "正在(?:渲染)?生成",
+            "稍作|稍候|耐心",
             "generation_wait_message_detected: Boolean(detectedWaitMessage)",
             "accepted: Boolean(detectedWaitMessage || videoUrl)",
             "sameAccountResendCount < maxResends",

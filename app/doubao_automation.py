@@ -725,8 +725,17 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
   }
   function generationWaitMessage(value) {
     const text = searchableText(value);
-    const match = text.match(/本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟/i);
-    return match ? match[0] : "";
+    const patterns = [
+      /本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟/i,
+      /视频(?:任务)?已(?:成功)?提交[^\n\r]{0,80}(?:正在|等待)[^\n\r]{0,50}(?:生成|渲染)/i,
+      /视频[^\n\r]{0,12}正在[^\n\r]{0,20}(?:生成|渲染)(?:中|处理)[^\n\r]{0,40}(?:等待|稍作|稍候|耐心)/i,
+      /正在(?:渲染)?生成(?:中|处理)[^\n\r]{0,40}(?:等待|稍作|稍候|耐心)/i
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return match[0];
+    }
+    return "";
   }
   function quotaInsufficient(value) {
     const text = searchableText(value).replace(/\s+/g, "");

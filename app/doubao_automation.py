@@ -39,6 +39,11 @@ DOUBAO_MODEL_CODES = {
 DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
 DOUBAO_RESULT_POLL_MILLISECONDS = 5000
 DOUBAO_ORIGINAL_VIDEO_SCORE = 240
+DOUBAO_UNWATERMARKED_RESULT_SOURCES = {
+    "fallback_unwatermarked",
+    "single_chain_explicit_unwatermarked",
+    "network_explicit_unwatermarked",
+}
 DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
     "video_current_src",
     "source_src",
@@ -127,33 +132,50 @@ async def fetch_doubao_generation_result(
             region=region,
         )
         try:
-            unwatermarked_url = await fetch_doubao_unwatermarked_url(
-                client,
-                cookie_header,
-                payload,
-            )
-        except Exception:
-            unwatermarked_url = ""
+            unwatermarked = await fetch_doubao_unwatermarked_result(client, cookie_header, payload)
+        except Exception as exc:
+            unwatermarked = {
+                "url": "",
+                "source": "",
+                "key": "",
+                "status": "unwatermarked_query_error",
+                "attempts": 0,
+                "errors": [type(exc).__name__],
+            }
+        unwatermarked_url = str(unwatermarked.get("url") or "")
         if unwatermarked_url:
+            source = str(unwatermarked.get("source") or "fallback_unwatermarked")
+            key = str(unwatermarked.get("key") or "video_model.fallback_api")
             return {
                 "state": "completed",
                 "text": str(parsed.get("text") or ""),
                 "candidate": {
                     "url": unwatermarked_url,
-                    "key": "video_model.fallback_api",
-                    "source": "fallback_unwatermarked",
+                    "key": key,
+                    "source": source,
                     "score": doubao_video_url_score(
                         unwatermarked_url,
-                        "video_model.fallback_api.unwatermarked",
-                        "fallback_unwatermarked",
+                        key,
+                        source,
                     ),
                     "watermark_status": "original",
                 },
+                "unwatermarked_status": "completed",
+                "unwatermarked_attempts": int(unwatermarked.get("attempts") or 0),
+                "unwatermarked_errors": list(unwatermarked.get("errors") or [])[:10],
             }
         if parsed.get("state") == "completed":
-            candidate = parsed.get("candidate")
-            if isinstance(candidate, dict):
-                candidate["watermark_status"] = "watermarked_fallback"
+            return {
+                "state": "awaiting_unwatermarked",
+                "text": str(parsed.get("text") or "视频已生成，正在获取无水印地址"),
+                "watermarked_candidate": dict(parsed.get("candidate") or {}),
+                "unwatermarked_status": str(unwatermarked.get("status") or "fallback_unavailable"),
+                "unwatermarked_attempts": int(unwatermarked.get("attempts") or 0),
+                "unwatermarked_errors": list(unwatermarked.get("errors") or [])[:10],
+            }
+        parsed["unwatermarked_status"] = str(unwatermarked.get("status") or "")
+        parsed["unwatermarked_attempts"] = int(unwatermarked.get("attempts") or 0)
+        parsed["unwatermarked_errors"] = list(unwatermarked.get("errors") or [])[:10]
         return parsed
 
 
@@ -236,9 +258,7 @@ def decode_qaab_url(token: str, key_seed: str) -> str:
     return ""
 
 
-def extract_doubao_fallback_apis(data: Any) -> list[str]:
-    found: list[str] = []
-
+def _latest_doubao_message(data: Any) -> dict[str, Any]:
     body = data.get("downlink_body", {}) if isinstance(data, dict) else {}
     chain = body.get("pull_singe_chain_downlink_body", {}) if isinstance(body, dict) else {}
     messages = chain.get("messages", []) if isinstance(chain, dict) else []
@@ -252,28 +272,117 @@ def extract_doubao_fallback_apis(data: Any) -> list[str]:
                 continue
         return 0, position
 
-    latest_message = max(
+    return max(
         enumerate(messages),
         key=lambda pair: order_key(pair[1], pair[0]),
         default=(-1, {}),
     )[1]
 
+
+def extract_doubao_fallback_apis(data: Any) -> list[str]:
+    found: list[str] = []
+    latest_message = _latest_doubao_message(data)
+
+    def add_fallback(value: Any) -> None:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized.startswith(("http://", "https://")) and normalized not in found:
+                found.append(normalized)
+            return
+        if isinstance(value, dict):
+            for child in value.values():
+                add_fallback(child)
+        elif isinstance(value, list):
+            for child in value:
+                add_fallback(child)
+
     def walk(value: Any, depth: int = 0) -> None:
         if depth > 12:
             return
         if isinstance(value, dict):
-            fallback_api = value.get("fallback_api")
-            if (
-                isinstance(fallback_api, str)
-                and fallback_api.startswith(("http://", "https://"))
-                and fallback_api not in found
-            ):
-                found.append(fallback_api)
+            add_fallback(value.get("fallback_api"))
             for child in value.values():
                 walk(child, depth + 1)
         elif isinstance(value, list):
             for child in value:
                 walk(child, depth + 1)
+        elif isinstance(value, str) and value.strip().startswith(("{", "[")):
+            try:
+                walk(json.loads(value), depth + 1)
+            except (TypeError, ValueError):
+                pass
+
+    walk(latest_message)
+    return found
+
+
+def _explicit_unwatermarked_field(path: str) -> bool:
+    normalized = str(path or "").lower()
+    if any(marker in normalized for marker in ("cover", "poster", "thumbnail", "image", "avatar")):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "unwatermarked",
+            "no_watermark",
+            "without_watermark",
+            "watermark_free",
+            "original_url",
+            "original_download_url",
+            "origin_url",
+        )
+    )
+
+
+def _url_has_watermark_marker(url: str) -> bool:
+    value = str(url or "").lower()
+    return any(
+        marker in value
+        for marker in (
+            "watermark=1",
+            "watermark%3d1",
+            "wm=1",
+            "video_gen_watermark",
+            "logo_type=watermark",
+        )
+    )
+
+
+def extract_doubao_explicit_unwatermarked_urls(data: Any) -> list[dict[str, str]]:
+    latest_message = _latest_doubao_message(data)
+    key_seed = _find_deep_string(latest_message, "key_seed") or _find_deep_string(data, "key_seed")
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def walk(value: Any, path: str = "", depth: int = 0) -> None:
+        if depth > 12:
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                walk(child, child_path, depth + 1)
+            return
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]", depth + 1)
+            return
+        if not isinstance(value, str):
+            return
+        if value.strip().startswith(("{", "[")):
+            try:
+                walk(json.loads(value), path, depth + 1)
+            except (TypeError, ValueError):
+                pass
+            return
+        if not _explicit_unwatermarked_field(path):
+            return
+        decoded = value.strip() if value.strip().startswith(("http://", "https://")) else (
+            decode_qaab_url(value, key_seed) or decode_main_url(value)
+        )
+        if not decoded or decoded in seen or _url_has_watermark_marker(decoded):
+            return
+        seen.add(decoded)
+        found.append({"url": decoded, "key": path})
 
     walk(latest_message)
     return found
@@ -295,6 +404,11 @@ def _find_deep_string(value: Any, key: str, depth: int = 0) -> str:
             found = _find_deep_string(child, key, depth + 1)
             if found:
                 return found
+    elif isinstance(value, str) and value.strip().startswith(("{", "[")):
+        try:
+            return _find_deep_string(json.loads(value), key, depth + 1)
+        except (TypeError, ValueError):
+            return ""
     return ""
 
 
@@ -314,8 +428,7 @@ def fallback_payload_video_url(payload: Any) -> str:
     data = video_info.get("data") if isinstance(video_info.get("data"), dict) else video_info
     video_list = data.get("video_list") if isinstance(data, dict) else None
     entries = list(video_list.values()) if isinstance(video_list, dict) else [data]
-    best_token = ""
-    best_score = -1
+    candidates: list[tuple[int, str]] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -326,16 +439,23 @@ def fallback_payload_video_url(payload: Any) -> str:
             _quality_number(entry.get("vwidth") or entry.get("width"))
             * _quality_number(entry.get("vheight") or entry.get("height"))
         )
-        if score > best_score:
-            best_score, best_token = score, token
-    return decode_qaab_url(best_token, _find_deep_string(payload, "key_seed")) or decode_main_url(best_token)
+        candidates.append((score, token))
+    key_seed = _find_deep_string(payload, "key_seed")
+    for _, token in sorted(candidates, key=lambda item: item[0], reverse=True):
+        decoded = decode_qaab_url(token, key_seed) or decode_main_url(token)
+        if decoded and not _url_has_watermark_marker(decoded):
+            return decoded
+    return ""
 
 
-async def fetch_doubao_unwatermarked_url(
+async def fetch_doubao_unwatermarked_result(
     client: httpx.AsyncClient,
     cookie_header: str,
     data: Any,
-) -> str:
+) -> dict[str, Any]:
+    fallback_apis = extract_doubao_fallback_apis(data)
+    errors: list[str] = []
+    attempts = 0
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Cookie": str(cookie_header or ""),
@@ -343,7 +463,8 @@ async def fetch_doubao_unwatermarked_url(
         "Referer": DOUBAO_URL,
         "User-Agent": BROWSER_USER_AGENT,
     }
-    for fallback_api in extract_doubao_fallback_apis(data):
+    for fallback_api in fallback_apis:
+        attempts += 1
         try:
             response = await client.get(
                 unwatermarked_fallback_url(fallback_api),
@@ -354,10 +475,43 @@ async def fetch_doubao_unwatermarked_url(
             payload = json.loads(response.content.decode("utf-8-sig"))
             url = fallback_payload_video_url(payload)
             if url:
-                return url
-        except (httpx.HTTPError, TypeError, ValueError, UnicodeDecodeError):
-            continue
-    return ""
+                return {
+                    "url": url,
+                    "source": "fallback_unwatermarked",
+                    "key": "video_model.fallback_api",
+                    "status": "completed",
+                    "attempts": attempts,
+                    "errors": errors,
+                }
+            errors.append("fallback_decode_failed")
+        except httpx.HTTPStatusError as exc:
+            errors.append(f"fallback_http_{int(exc.response.status_code)}")
+        except httpx.HTTPError:
+            errors.append("fallback_transport_error")
+        except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            errors.append("fallback_invalid_response")
+
+    explicit_candidates = extract_doubao_explicit_unwatermarked_urls(data)
+    if explicit_candidates:
+        selected = explicit_candidates[0]
+        return {
+            "url": selected["url"],
+            "source": "single_chain_explicit_unwatermarked",
+            "key": selected["key"],
+            "status": "completed",
+            "attempts": attempts,
+            "errors": errors,
+        }
+    status = "fallback_api_missing" if not fallback_apis else "fallback_unavailable"
+    return {"url": "", "source": "", "key": "", "status": status, "attempts": attempts, "errors": errors}
+
+
+async def fetch_doubao_unwatermarked_url(
+    client: httpx.AsyncClient,
+    cookie_header: str,
+    data: Any,
+) -> str:
+    return str((await fetch_doubao_unwatermarked_result(client, cookie_header, data)).get("url") or "")
 
 
 def is_doubao_account_quota_insufficient(text: str) -> bool:
@@ -461,13 +615,18 @@ def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
     return score
 
 
-def doubao_video_candidate_is_acceptable(candidate: dict[str, Any] | None, *, allow_web_fallback: bool = False) -> bool:
+def doubao_video_candidate_is_acceptable(candidate: dict[str, Any] | None) -> bool:
     if not candidate:
         return False
-    if int(candidate.get("score") or 0) >= DOUBAO_ORIGINAL_VIDEO_SCORE:
-        return True
     source = str(candidate.get("source") or "").strip().lower()
-    return bool(allow_web_fallback and source in DOUBAO_WEB_DIRECT_RESULT_SOURCES)
+    key = str(candidate.get("key") or "").strip().lower()
+    url = str(candidate.get("url") or "").strip()
+    watermark_status = str(candidate.get("watermark_status") or "").strip().lower()
+    if not url or _url_has_watermark_marker(url) or (watermark_status and watermark_status != "original"):
+        return False
+    if source in DOUBAO_UNWATERMARKED_RESULT_SOURCES:
+        return True
+    return _explicit_unwatermarked_field(key)
 
 
 def add_doubao_video_candidate(
@@ -1334,18 +1493,30 @@ class DoubaoVideoAutomation:
         candidate_key: str = "",
         candidate_count: int = 1,
     ) -> dict[str, Any]:
+        candidate = {"url": url, "source": source, "key": candidate_key, "score": int(score)}
+        if not doubao_video_candidate_is_acceptable(candidate):
+            save_result(
+                self.task_id,
+                extra={
+                    "doubao_rejected_fallback_source": source,
+                    "doubao_rejected_fallback_key": candidate_key,
+                    "doubao_rejected_fallback_score": int(score),
+                },
+            )
+            return {"success": False, "retryable": False, "reason": "doubao unwatermarked result unavailable"}
+        result_source = source if source in DOUBAO_UNWATERMARKED_RESULT_SOURCES else "network_explicit_unwatermarked"
         await self._refresh_cookies(context)
         save_result(
             self.task_id,
             extra={
                 "decoded_main_url": url,
                 "doubao_page_url": page.url,
-                "doubao_video_detection_source": source,
-                "doubao_result_source": source,
+                "doubao_video_detection_source": result_source,
+                "doubao_result_source": result_source,
                 "doubao_selected_video_key": candidate_key,
                 "doubao_video_url_score": int(score),
                 "doubao_video_candidate_count": max(1, int(candidate_count)),
-                "doubao_watermark_status": "original" if int(score) >= DOUBAO_ORIGINAL_VIDEO_SCORE else "fallback",
+                "doubao_watermark_status": "original",
             },
             remove={"cookie_string", "conversation_id"},
         )
@@ -1667,7 +1838,7 @@ class DoubaoVideoAutomation:
                         return {"success": False, "retryable": False, "reason": "doubao generation failed"}
                     await page.wait_for_timeout(DOUBAO_RESULT_POLL_MILLISECONDS)
                 candidate = best_doubao_video_candidate(video_candidates)
-                if doubao_video_candidate_is_acceptable(candidate, allow_web_fallback=True):
+                if doubao_video_candidate_is_acceptable(candidate):
                     return await self._save_video_success(
                         context,
                         page,

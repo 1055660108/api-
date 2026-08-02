@@ -291,6 +291,21 @@ class DoubaoAutomationTests(unittest.TestCase):
 
         self.assertEqual(fallback_payload_video_url(payload), high)
 
+    def test_fallback_payload_uses_lower_quality_backup_when_best_token_cannot_decode(self) -> None:
+        backup = "https://media.example/backup-original.mp4"
+        payload = {
+            "video_info": {
+                "data": {
+                    "video_list": {
+                        "video_1": {"main_url": "invalid-token", "width": 1920, "height": 1080},
+                        "video_2": {"main_url": base64.b64encode(backup.encode()).decode(), "width": 1280, "height": 720},
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(fallback_payload_video_url(payload), backup)
+
     def test_interface_fetch_prefers_unwatermarked_fallback_response(self) -> None:
         watermarked = "https://media.example/watermarked.mp4?lr=video_gen_watermark_dyn"
         original = "https://media.example/original.mp4"
@@ -355,7 +370,101 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(query["logo_type"], ["unwatermarked"])
         self.assertEqual(query["codec_type"], ["8"])
 
-    def test_interface_fetch_marks_single_chain_as_watermarked_fallback(self) -> None:
+    def test_interface_fetch_tries_all_unwatermarked_fallback_apis(self) -> None:
+        original = "https://media.example/second-fallback-original.mp4"
+        single_body = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [{
+                        "message_index": 5,
+                        "video_model": json.dumps({
+                            "main_url": base64.b64encode(b"https://media.example/watermarked.mp4").decode(),
+                            "fallback_api": ["https://video.example/first?id=1", "https://video.example/second?id=2"],
+                        }),
+                    }]
+                }
+            }
+        }).encode()
+        fallback_body = json.dumps({
+            "video_info": {"data": {"video_list": {"video_1": {"main_url": base64.b64encode(original.encode()).decode()}}}}
+        }).encode()
+
+        class Response:
+            def __init__(self, content: bytes):
+                self.content = content
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class Client:
+            def __init__(self):
+                self.urls = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return Response(single_body)
+
+            async def get(self, url, **_kwargs):
+                self.urls.append(url)
+                return Response(b"not-json" if len(self.urls) == 1 else fallback_body)
+
+        client = Client()
+        with patch("app.doubao_automation.httpx.AsyncClient", return_value=client):
+            result = asyncio.run(fetch_doubao_generation_result("session=value", "123456789"))
+
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["candidate"]["url"], original)
+        self.assertEqual(result["unwatermarked_attempts"], 2)
+        self.assertEqual(result["unwatermarked_errors"], ["fallback_invalid_response"])
+        self.assertEqual(len(client.urls), 2)
+
+    def test_interface_fetch_uses_explicit_unwatermarked_backup_field(self) -> None:
+        watermarked = "https://media.example/watermarked.mp4"
+        original = "https://media.example/explicit-original.mp4"
+        body = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [{
+                        "message_index": 5,
+                        "video_model": {
+                            "main_url": base64.b64encode(watermarked.encode()).decode(),
+                            "original_download_url": base64.b64encode(original.encode()).decode(),
+                        },
+                    }]
+                }
+            }
+        }).encode()
+
+        class Response:
+            content = body
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return Response()
+
+        with patch("app.doubao_automation.httpx.AsyncClient", return_value=Client()):
+            result = asyncio.run(fetch_doubao_generation_result("session=value", "123456789"))
+
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["candidate"]["url"], original)
+        self.assertEqual(result["candidate"]["source"], "single_chain_explicit_unwatermarked")
+        self.assertEqual(result["candidate"]["watermark_status"], "original")
+
+    def test_interface_fetch_keeps_polling_when_only_watermarked_single_chain_exists(self) -> None:
         url = "https://media.example/watermarked.mp4?lr=video_gen_watermark_dyn"
         body = json.dumps({
             "downlink_body": {
@@ -384,8 +493,10 @@ class DoubaoAutomationTests(unittest.TestCase):
         with patch("app.doubao_automation.httpx.AsyncClient", return_value=Client()):
             result = asyncio.run(fetch_doubao_generation_result("session=value", "123456789"))
 
-        self.assertEqual(result["candidate"]["url"], url)
-        self.assertEqual(result["candidate"]["watermark_status"], "watermarked_fallback")
+        self.assertEqual(result["state"], "awaiting_unwatermarked")
+        self.assertEqual(result["watermarked_candidate"]["url"], url)
+        self.assertEqual(result["unwatermarked_status"], "fallback_api_missing")
+        self.assertNotIn("candidate", result)
 
     def test_interface_result_parser_recognizes_rate_limit_without_failing_task(self) -> None:
         result = parse_doubao_generation_result('{"code":710022002,"message":"当前服务访问频繁"}')
@@ -630,7 +741,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(url, "https://media.example/result.mp4")
         self.assertEqual(source, "video_current_src")
 
-    def test_web_video_candidate_is_only_accepted_as_final_fallback(self) -> None:
+    def test_web_video_candidate_is_never_accepted_as_success(self) -> None:
         candidate = {
             "url": "https://media.example/page-watermarked.mp4",
             "source": "video_current_src",
@@ -638,7 +749,6 @@ class DoubaoAutomationTests(unittest.TestCase):
         }
 
         self.assertFalse(doubao_video_candidate_is_acceptable(candidate))
-        self.assertTrue(doubao_video_candidate_is_acceptable(candidate, allow_web_fallback=True))
 
     def test_completed_video_poster_activates_player_wrapper(self) -> None:
         poster = SimpleNamespace(click=AsyncMock())
@@ -670,16 +780,18 @@ class DoubaoAutomationTests(unittest.TestCase):
                     context,
                     page,
                     "https://media.example/result.mp4",
-                    "video_current_src",
+                    "fallback_unwatermarked",
+                    score=900,
+                    candidate_key="video_model.fallback_api",
                 )
             )
 
         self.assertTrue(outcome["success"])
         runner._refresh_cookies.assert_awaited_once_with(context)
         self.assertEqual(save.call_args.kwargs["extra"]["decoded_main_url"], "https://media.example/result.mp4")
-        self.assertEqual(save.call_args.kwargs["extra"]["doubao_video_detection_source"], "video_current_src")
-        self.assertEqual(save.call_args.kwargs["extra"]["doubao_result_source"], "video_current_src")
-        self.assertEqual(save.call_args.kwargs["extra"]["doubao_watermark_status"], "fallback")
+        self.assertEqual(save.call_args.kwargs["extra"]["doubao_video_detection_source"], "fallback_unwatermarked")
+        self.assertEqual(save.call_args.kwargs["extra"]["doubao_result_source"], "fallback_unwatermarked")
+        self.assertEqual(save.call_args.kwargs["extra"]["doubao_watermark_status"], "original")
         mark_success.assert_called_once_with("doubao-task")
 
 

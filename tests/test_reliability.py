@@ -101,7 +101,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(len(waits), 2)
         self.assertTrue(all(wait > 4.9 for wait in waits))
 
-    def test_doubao_interface_poll_completes_without_reopening_browser(self) -> None:
+    def test_doubao_interface_poll_rejects_watermarked_result_and_keeps_credentials(self) -> None:
         task = store.create_task("豆包接口查询", "9:16", platform="doubao", model="Seedance 2.0 Mini")
         store.mark_running(task["id"], "worker-doubao")
         store.save_result(task["id"], extra={
@@ -130,14 +130,68 @@ class ReliabilityTests(unittest.TestCase):
         ) as settle, patch("app.query.clear_account_current_task") as clear:
             outcome = asyncio.run(query.query_task(task["id"], background_poll=True))
 
-        self.assertEqual(outcome["code"], "2")
-        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUCCESS)
-        self.assertEqual(store.load_result(task["id"])["decoded_main_url"], candidate["url"])
-        self.assertEqual(store.load_result(task["id"])["doubao_watermark_status"], "watermarked_fallback")
-        self.assertEqual(store.load_result(task["id"])["doubao_result_source"], "single_chain")
-        self.assertNotIn("cookie_string", store.load_result(task["id"]))
-        settle.assert_called_once_with("doubao-account", "doubao-charge")
-        clear.assert_called_once_with("doubao-account", task["id"])
+        self.assertEqual(outcome["code"], "1")
+        self.assertEqual(outcome["retry_after"], 30)
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
+        stored = store.load_result(task["id"])
+        self.assertNotIn("decoded_main_url", stored)
+        self.assertEqual(stored["doubao_watermark_status"], "watermarked_fallback")
+        self.assertEqual(stored["cookie_string"], "session=value")
+        self.assertEqual(stored["conversation_id"], "12345678901234567")
+        settle.assert_not_called()
+        clear.assert_not_called()
+
+    def test_doubao_interface_waits_for_unwatermarked_backup_until_timeout(self) -> None:
+        task = store.create_task("豆包等待无水印", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "conversation_id": "12345678901234567",
+            "cookie_string": "session=value",
+            "account_id": "doubao-account",
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=0)
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+        queried = {
+            "state": "awaiting_unwatermarked",
+            "text": "视频生成完成",
+            "unwatermarked_status": "fallback_unavailable",
+            "unwatermarked_attempts": 2,
+            "unwatermarked_errors": ["fallback_http_503", "fallback_decode_failed"],
+        }
+
+        with patch("app.doubao_automation.fetch_doubao_generation_result", new=AsyncMock(return_value=queried)):
+            outcome = asyncio.run(query.query_task(task["id"], background_poll=True))
+
+        self.assertEqual(outcome["code"], "1")
+        self.assertEqual(outcome["retry_after"], 30)
+        meta = store.get_meta(task["id"])
+        result = store.load_result(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_SUBMITTED)
+        self.assertEqual(meta["execution_phase"], "waiting_unwatermarked_result")
+        self.assertEqual(result["doubao_unwatermarked_status"], "fallback_unavailable")
+        self.assertEqual(result["doubao_unwatermarked_attempts"], 2)
+        self.assertEqual(result["doubao_unwatermarked_errors"], ["fallback_http_503", "fallback_decode_failed"])
+        self.assertEqual(result["cookie_string"], "session=value")
+        self.assertEqual(result["conversation_id"], "12345678901234567")
+
+    def test_doubao_web_cache_without_query_credentials_is_not_returned(self) -> None:
+        task = store.create_task("豆包旧网页水印缓存", "9:16", platform="doubao", model="Seedance 2.0 Mini")
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "decoded_main_url": "https://media.example/page-watermarked.mp4",
+            "doubao_result_source": "video_current_src",
+            "doubao_watermark_status": "fallback",
+        })
+        store.mark_success(task["id"])
+
+        outcome = asyncio.run(query.query_task(task["id"]))
+
+        self.assertEqual(outcome["code"], "1")
+        self.assertEqual(outcome["url"], "")
+        self.assertIn("无水印", outcome["text"])
 
     def test_doubao_interface_rate_limit_only_delays_polling(self) -> None:
         task = store.create_task("豆包限频查询", "9:16", platform="doubao", model="Seedance 2.0 Mini")

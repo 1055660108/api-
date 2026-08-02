@@ -80,6 +80,23 @@ class WebAPIContractTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_doubao_video_url_is_exposed_only_for_verified_unwatermarked_sources(self) -> None:
+        meta = {"platform": "doubao"}
+        watermarked = {
+            "decoded_main_url": "https://media.example/watermarked.mp4",
+            "doubao_result_source": "single_chain",
+            "doubao_watermark_status": "watermarked_fallback",
+        }
+        original = {
+            "decoded_main_url": "https://media.example/original.mp4",
+            "doubao_result_source": "fallback_unwatermarked",
+            "doubao_watermark_status": "original",
+        }
+
+        self.assertEqual(main._task_video_url(meta, watermarked), "")
+        self.assertEqual(main._task_video_url(meta, original), original["decoded_main_url"])
+        self.assertEqual(main._task_video_url({"platform": "dola"}, {"decoded_main_url": original["decoded_main_url"]}), original["decoded_main_url"])
+
     def test_region_restriction_is_hidden_for_all_client_task_states(self) -> None:
         for reason in ("Dola 当前地区不可用", "region restricted", "country restricted"):
             self.assertEqual(main._client_safe_text(reason, "Seedance 2.0"), "正在重试中，请稍等！")

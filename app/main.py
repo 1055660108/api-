@@ -223,6 +223,16 @@ def _validate_video_url(value: str) -> str:
     if hostname in {"localhost", "0.0.0.0", "127.0.0.1", "::1"} or hostname.endswith(".local"):
         raise HTTPException(status_code=400, detail="invalid video host")
     return url
+
+
+def _task_video_url(meta: dict[str, Any], result: dict[str, Any]) -> str:
+    url = str(result.get("decoded_main_url") or "").strip()
+    if not url or str(meta.get("platform") or "dola").strip().lower() != "doubao":
+        return url
+    source = str(result.get("doubao_result_source") or result.get("doubao_video_detection_source") or "").strip().lower()
+    watermark_status = str(result.get("doubao_watermark_status") or "").strip().lower()
+    allowed_sources = {"fallback_unwatermarked", "single_chain_explicit_unwatermarked", "network_explicit_unwatermarked"}
+    return url if source in allowed_sources and watermark_status == "original" else ""
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
@@ -1010,7 +1020,7 @@ async def _reconcile_persistent_batch_jobs(jobs: list[dict[str, object]]) -> Non
         task_id: {
             "status": str(meta.get("status") or ""),
             "error": str(meta.get("error") or ""),
-            "video_url": str(result.get("decoded_main_url") or ""),
+            "video_url": _task_video_url(meta, result),
         }
         for task_id, meta, result in states
     }
@@ -4747,7 +4757,7 @@ async def persistent_batch_job_status(
                     str(meta.get("model") or "当前模型"),
                     terminal=str(meta.get("status") or "") in {"failed", "canceled"},
                 ),
-                "video_url": str(result.get("decoded_main_url") or ""),
+                "video_url": _task_video_url(meta, result),
             }
             for task_id, meta, result in states
         }
@@ -5142,7 +5152,7 @@ async def batch_prompt_status(
     states = []
     for task_id, meta, result in rows:
         status = str(meta.get("status") or "")
-        url = str(result.get("decoded_main_url") or "")
+        url = _task_video_url(meta, result)
         if url:
             code = "2"
             text = "视频生成成功"
@@ -5290,7 +5300,7 @@ async def task_video(
         raise HTTPException(status_code=404, detail="task not found")
     if access.is_temp and str(meta.get("owner_token_hash") or "") != access.token_hash:
         raise HTTPException(status_code=404, detail="task not found")
-    url = _validate_video_url(str(result.get("decoded_main_url") or ""))
+    url = _validate_video_url(_task_video_url(meta, result))
     headers = {
         "Accept": "video/*,*/*;q=0.8",
         "Accept-Encoding": "identity",

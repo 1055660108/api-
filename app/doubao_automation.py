@@ -737,6 +737,83 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
     return "", ""
 
 
+DOUBAO_GENERATION_ACK_PATTERNS = (
+    re.compile(
+        r"本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*"
+        r"(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟",
+        re.IGNORECASE,
+    ),
+    re.compile(r"视频(?:任务)?已(?:成功)?提交[^\n\r]{0,80}(?:正在|等待)[^\n\r]{0,50}(?:生成|渲染)", re.IGNORECASE),
+    re.compile(r"视频[^\n\r]{0,20}正在[^\n\r]{0,12}(?:生成|渲染)(?:中|处理(?:中)?)", re.IGNORECASE),
+    re.compile(
+        r"正在(?:渲染)?生成(?:中|处理(?:中)?)?[^\n\r]{0,40}"
+        r"(?:等待|稍作|稍候|耐心|加载完成)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:视频)?(?:生成|渲染)中[，,。；;\s]*(?:请)?(?:耐心)?(?:等待|稍作等待|稍候)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"已(?:成功)?提交[^\n\r]{0,40}(?:正在)?(?:生成|渲染)(?:中|处理(?:中)?)?", re.IGNORECASE),
+)
+
+
+def extract_doubao_assistant_response_text(value: str) -> str:
+    chunks: list[str] = []
+    reply_briefs: list[str] = []
+    for block in re.split(r"\r?\n\r?\n", str(value or "")):
+        event = ""
+        data_lines: list[str] = []
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+        if event not in {"CHUNK_DELTA", "SSE_REPLY_END"} or not data_lines:
+            continue
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except (TypeError, ValueError):
+            continue
+        if event == "CHUNK_DELTA" and isinstance(payload, dict) and isinstance(payload.get("text"), str):
+            chunks.append(payload["text"])
+        elif event == "SSE_REPLY_END" and isinstance(payload, dict):
+            finish = payload.get("msg_finish_attr")
+            if isinstance(finish, dict) and isinstance(finish.get("brief"), str):
+                reply_briefs.append(finish["brief"])
+    parts = ["".join(chunks).strip(), *[item.strip() for item in reply_briefs]]
+    return "\n".join(item for item in parts if item)
+
+
+def detect_doubao_generation_acknowledgement(value: str) -> str:
+    raw = str(value or "")
+    assistant_text = extract_doubao_assistant_response_text(raw)
+    searchable = assistant_text or raw
+    for pattern in DOUBAO_GENERATION_ACK_PATTERNS:
+        match = pattern.search(searchable)
+        if match:
+            return match.group(0)
+    return ""
+
+
+def normalize_doubao_submission_acknowledgement(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict) or result.get("accepted") or not result.get("ok"):
+        return result
+    acknowledgement = detect_doubao_generation_acknowledgement(
+        "\n".join(
+            str(result.get(key) or "")
+            for key in ("initial_response_preview", "response_preview")
+        )
+    )
+    if not acknowledgement:
+        return result
+    result["accepted"] = True
+    result["generation_wait_message_detected"] = True
+    result["generation_wait_message"] = acknowledgement
+    result["generation_ack_source"] = "python_response_fallback"
+    return result
+
+
 DOUBAO_SINGLE_CHAIN_SCRIPT = r"""
 async ({conversationId}) => {
   function cookieValue(name) {
@@ -882,13 +959,37 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     const asksInEnglish = /(?:would you like|do you want|shall i|should i).{0,80}(?:create|generate|proceed)/i.test(text);
     return mentionsVideo && (asksInChinese || asksInEnglish);
   }
+  function assistantResponseText(value) {
+    const chunks = [];
+    const briefs = [];
+    for (const block of String(value || "").split(/\r?\n\r?\n/)) {
+      let event = "";
+      const dataLines = [];
+      for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+      }
+      if (!dataLines.length || !["CHUNK_DELTA", "SSE_REPLY_END"].includes(event)) continue;
+      try {
+        const payload = JSON.parse(dataLines.join("\n"));
+        if (event === "CHUNK_DELTA" && typeof payload.text === "string") chunks.push(payload.text);
+        if (event === "SSE_REPLY_END" && typeof payload.msg_finish_attr?.brief === "string") {
+          briefs.push(payload.msg_finish_attr.brief);
+        }
+      } catch (_) {}
+    }
+    return [chunks.join("").trim(), ...briefs.map(item => item.trim())].filter(Boolean).join("\n");
+  }
   function generationWaitMessage(value) {
-    const text = searchableText(value);
+    const rawText = searchableText(value);
+    const text = assistantResponseText(rawText) || rawText;
     const patterns = [
       /本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟/i,
       /视频(?:任务)?已(?:成功)?提交[^\n\r]{0,80}(?:正在|等待)[^\n\r]{0,50}(?:生成|渲染)/i,
-      /视频[^\n\r]{0,12}正在[^\n\r]{0,20}(?:生成|渲染)(?:中|处理)[^\n\r]{0,40}(?:等待|稍作|稍候|耐心)/i,
-      /正在(?:渲染)?生成(?:中|处理)[^\n\r]{0,40}(?:等待|稍作|稍候|耐心)/i
+      /视频[^\n\r]{0,20}正在[^\n\r]{0,12}(?:生成|渲染)(?:中|处理(?:中)?)/i,
+      /正在(?:渲染)?生成(?:中|处理(?:中)?)?[^\n\r]{0,40}(?:等待|稍作|稍候|耐心|加载完成)/i,
+      /(?:视频)?(?:生成|渲染)中[，,。；;\s]*(?:请)?(?:耐心)?(?:等待|稍作等待|稍候)/i,
+      /已(?:成功)?提交[^\n\r]{0,40}(?:正在)?(?:生成|渲染)(?:中|处理(?:中)?)?/i
     ];
     for (const pattern of patterns) {
       const match = text.match(pattern);
@@ -1656,6 +1757,7 @@ class DoubaoVideoAutomation:
                     release_task_submission(self.task_id)
                     return {"success": False, "retryable": True, "reason": "doubao submission returned an invalid response"}
 
+                completion_result = normalize_doubao_submission_acknowledgement(completion_result)
                 error, category = classify_doubao_submission(completion_result)
                 if category == "service_frequent":
                     set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包当前服务访问频繁")
@@ -1679,6 +1781,7 @@ class DoubaoVideoAutomation:
                         "doubao_initial_response_preview": str(completion_result.get("initial_response_preview") or "")[:6000],
                         "doubao_generation_wait_message_detected": bool(completion_result.get("generation_wait_message_detected")),
                         "doubao_generation_wait_message": str(completion_result.get("generation_wait_message") or "")[:1000],
+                        "doubao_generation_ack_source": str(completion_result.get("generation_ack_source") or "javascript_response")[:100],
                         "doubao_same_account_resend_count": int(completion_result.get("same_account_resend_count") or 0),
                         "doubao_same_account_attempt_count": int(completion_result.get("same_account_attempt_count") or 1),
                         "doubao_same_account_retry_limit": int(completion_result.get("same_account_retry_limit") or 0),
@@ -1752,6 +1855,7 @@ class DoubaoVideoAutomation:
                         "doubao_auto_confirmation_sent": bool(completion_result.get("auto_confirmation_sent")),
                         "doubao_generation_wait_message_detected": bool(completion_result.get("generation_wait_message_detected")),
                         "doubao_generation_wait_message": str(completion_result.get("generation_wait_message") or "")[:1000],
+                        "doubao_generation_ack_source": str(completion_result.get("generation_ack_source") or "javascript_response")[:100],
                         "doubao_same_account_resend_count": int(completion_result.get("same_account_resend_count") or 0),
                         "doubao_same_account_attempt_count": int(completion_result.get("same_account_attempt_count") or 1),
                         "doubao_same_account_retry_limit": int(completion_result.get("same_account_retry_limit") or 0),

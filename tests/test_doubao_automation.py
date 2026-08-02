@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, parse_doubao_generation_result, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -152,10 +152,12 @@ class DoubaoAutomationTests(unittest.TestCase):
 
     def test_submit_script_waits_for_generation_ack_before_accepting(self) -> None:
         for fragment in (
+            "assistantResponseText(rawText)",
             "本次使用",
             "预计等待",
             "视频(?:任务)?已(?:成功)?提交",
             "正在(?:渲染)?生成",
+            "(?:视频)?(?:生成|渲染)中",
             "稍作|稍候|耐心",
             "generation_wait_message_detected: Boolean(detectedWaitMessage)",
             "accepted: Boolean(detectedWaitMessage || videoUrl)",
@@ -169,6 +171,55 @@ class DoubaoAutomationTests(unittest.TestCase):
         ):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertNotIn('accepted: text.includes("SSE_REPLY_END")', DOUBAO_SUBMIT_SCRIPT)
+
+    def test_generation_acknowledgement_recognizes_all_captured_doubao_messages(self) -> None:
+        messages = (
+            "本次使用 **Seedance 2.0 Fast** 生成，预计等待 5 分钟",
+            "视频正在生成处理中，请稍作等待。",
+            "已提交，正在渲染生成中，请耐心等待生成完成。",
+            "提示词原样提交，正在渲染生成，请等待加载完成。",
+            "已为你调用Seedance 2.0 Fast模型，视频正在生成处理中。",
+            "已为你调用Seedance 2.0 Fast模型，生成中，请耐心等待。",
+        )
+        for message in messages:
+            chunk = json.dumps({"text": message}, ensure_ascii=False)
+            finish = json.dumps({"msg_finish_attr": {"brief": message}}, ensure_ascii=False)
+            response = f"event: CHUNK_DELTA\ndata: {chunk}\n\nevent: SSE_REPLY_END\ndata: {finish}\n\n"
+            with self.subTest(message=message):
+                self.assertIn(message, extract_doubao_assistant_response_text(response))
+                self.assertTrue(detect_doubao_generation_acknowledgement(response))
+
+    def test_generation_acknowledgement_rejects_instructions_and_refusals(self) -> None:
+        responses = (
+            "当前对话页面不支持直接触发视频生成，请进入创作页面。",
+            "我无法直接触发视频生成指令，请粘贴提示词后提交生成。",
+            "这是一段可直接用于AI视频生成的分镜描述。",
+            "需要我再调整光影强弱或者横竖屏版本吗？",
+        )
+        for response_text in responses:
+            user_notice = json.dumps({"message": {"user_type": 1, "content": "视频正在生成处理中"}}, ensure_ascii=False)
+            assistant = json.dumps({"text": response_text}, ensure_ascii=False)
+            response = f"event: FULL_MSG_NOTIFY\ndata: {user_notice}\n\nevent: CHUNK_DELTA\ndata: {assistant}\n\n"
+            with self.subTest(response=response_text):
+                self.assertEqual(extract_doubao_assistant_response_text(response), response_text)
+                self.assertEqual(detect_doubao_generation_acknowledgement(response), "")
+
+    def test_python_acknowledgement_fallback_prevents_generation_retry(self) -> None:
+        message = "已为你调用Seedance 2.0 Fast模型，生成中，请耐心等待。"
+        response = "event: CHUNK_DELTA\ndata: " + json.dumps({"text": message}, ensure_ascii=False) + "\n\n"
+        result = normalize_doubao_submission_acknowledgement({
+            "ok": True,
+            "accepted": False,
+            "conversation_id": "38436620180658434",
+            "initial_response_preview": response,
+            "response_preview": response,
+        })
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["generation_wait_message_detected"])
+        self.assertIn("生成中", result["generation_wait_message"])
+        self.assertEqual(result["generation_ack_source"], "python_response_fallback")
+        self.assertEqual(classify_doubao_submission(result), ("", ""))
 
     def test_missing_generation_acknowledgement_requests_account_switch(self) -> None:
         error, category = classify_doubao_submission({"ok": True, "accepted": False})
@@ -504,6 +555,12 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result, {"state": "rate_limited", "text": "豆包当前服务访问频繁"})
 
     def test_confirmed_conversation_releases_browser_for_interface_polling(self) -> None:
+        acknowledgement = "已为你调用Seedance 2.0 Fast模型，生成中，请耐心等待。"
+        acknowledgement_response = (
+            "event: CHUNK_DELTA\ndata: "
+            + json.dumps({"text": acknowledgement}, ensure_ascii=False)
+            + "\n\n"
+        )
         body = SimpleNamespace(inner_text=AsyncMock(return_value="豆包已登录"))
         page = SimpleNamespace(
             url="https://www.doubao.com/chat/",
@@ -513,12 +570,14 @@ class DoubaoAutomationTests(unittest.TestCase):
             evaluate=AsyncMock(return_value={
                 "ok": True,
                 "status": 200,
-                "accepted": True,
+                "accepted": False,
                 "conversation_id": "12345678901234567",
                 "web_id": "22345678901234567",
                 "region": "JP",
-                "generation_wait_message_detected": True,
-                "generation_wait_message": "本次使用 Seedance 2.0 Mini 生成，预计等待 5 分钟",
+                "generation_wait_message_detected": False,
+                "generation_wait_message": "",
+                "initial_response_preview": acknowledgement_response,
+                "response_preview": acknowledgement_response,
                 "main_url": "https://media.example/browser-watermarked.mp4",
             }),
         )
@@ -565,6 +624,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner.submission_pacer.assert_awaited_once()
         mark_submitted.assert_called_once_with("doubao-task", result_poll_delay_seconds=20)
         self.assertTrue(any(call.kwargs["extra"].get("doubao_result_mode") == "interface_poll" for call in save_result.call_args_list))
+        self.assertTrue(any(call.kwargs["extra"].get("doubao_generation_ack_source") == "python_response_fallback" for call in save_result.call_args_list))
         runner._save_video_success.assert_not_awaited()
         lease.release.assert_awaited_once()
 

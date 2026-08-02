@@ -19,7 +19,7 @@ from .automation import DolaFetchAutomation, PREPARE_UPLOAD_SCRIPT, PREPARE_UPLO
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
-from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists
+from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists, update_meta
 from .profile_lock import account_profile_lock
 
 
@@ -52,6 +52,7 @@ DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
     "media_response",
 }
 DOUBAO_PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "5", "resource_type": 2}
+DOUBAO_SUBMISSION_MARKER = "视频生成已提交"
 QAAB_SALT = bytes.fromhex(
     "4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524"
     "f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58"
@@ -566,7 +567,9 @@ def parse_doubao_generation_result(body: str) -> dict[str, Any]:
         return {"state": "failed", "text": text or "豆包视频生成失败"}
     if any(marker in text for marker in ("扫码登录", "手机号登录", "登录豆包")):
         return {"state": "login_invalid", "text": text or "豆包登录状态失效"}
-    return {"state": "generating", "text": text or "豆包正在生成视频"}
+    if doubao_payload_has_submission_marker(payload):
+        return {"state": "generating", "text": text or DOUBAO_SUBMISSION_MARKER}
+    return {"state": "submission_unconfirmed", "text": text or "豆包未返回视频生成提交回执"}
 
 
 def doubao_video_url_score(url: str, key: str = "", source: str = "") -> int:
@@ -731,7 +734,7 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
     if result.get("quota_insufficient"):
         return "豆包账号额度不足或已耗尽", "quota_insufficient"
     if result.get("video_creation_page_refusal_repeated"):
-        return "豆包连续要求进入视频创作页面", "video_creation_page_refusal"
+        return "豆包新会话仍未返回视频生成提交回执", "generation_ack_missing_after_new_conversation"
     if result.get("stream_error"):
         return "doubao submit rejected", "submit_rejected"
     if not result.get("ok"):
@@ -739,27 +742,6 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
     if not result.get("accepted"):
         return "doubao generation acknowledgement missing", "generation_ack_missing"
     return "", ""
-
-
-DOUBAO_GENERATION_ACK_PATTERNS = (
-    re.compile(
-        r"本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*"
-        r"(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟",
-        re.IGNORECASE,
-    ),
-    re.compile(r"视频(?:任务)?已(?:成功)?提交[^\n\r]{0,80}(?:正在|等待)[^\n\r]{0,50}(?:生成|渲染)", re.IGNORECASE),
-    re.compile(r"视频[^\n\r]{0,20}正在[^\n\r]{0,12}(?:生成|渲染)(?:中|处理(?:中)?)", re.IGNORECASE),
-    re.compile(
-        r"正在(?:渲染)?生成(?:中|处理(?:中)?)?[^\n\r]{0,40}"
-        r"(?:等待|稍作|稍候|耐心|加载完成)",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?:视频)?(?:生成|渲染)中[，,。；;\s]*(?:请)?(?:耐心)?(?:等待|稍作等待|稍候)",
-        re.IGNORECASE,
-    ),
-    re.compile(r"已(?:成功)?提交[^\n\r]{0,40}(?:正在)?(?:生成|渲染)(?:中|处理(?:中)?)?", re.IGNORECASE),
-)
 
 
 def extract_doubao_assistant_response_text(value: str) -> str:
@@ -789,14 +771,43 @@ def extract_doubao_assistant_response_text(value: str) -> str:
     return "\n".join(item for item in parts if item)
 
 
+def doubao_payload_has_submission_marker(value: Any) -> bool:
+    if isinstance(value, dict):
+        if str(value.get("role") or "").lower() == "user" or str(value.get("user_type") or "") == "1":
+            return False
+        return any(doubao_payload_has_submission_marker(child) for child in value.values())
+    if isinstance(value, list):
+        return any(doubao_payload_has_submission_marker(child) for child in value)
+    if isinstance(value, str):
+        if DOUBAO_SUBMISSION_MARKER in value:
+            return True
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                return doubao_payload_has_submission_marker(json.loads(stripped))
+            except (TypeError, ValueError):
+                return False
+    return False
+
+
 def detect_doubao_generation_acknowledgement(value: str) -> str:
     raw = str(value or "")
-    assistant_text = extract_doubao_assistant_response_text(raw)
-    searchable = assistant_text or raw
-    for pattern in DOUBAO_GENERATION_ACK_PATTERNS:
-        match = pattern.search(searchable)
-        if match:
-            return match.group(0)
+    try:
+        if doubao_payload_has_submission_marker(json.loads(raw)):
+            return DOUBAO_SUBMISSION_MARKER
+    except (TypeError, ValueError):
+        pass
+    for line in raw.splitlines():
+        data = line[5:].strip() if line.startswith("data:") else ""
+        if not data or not data.startswith(("{", "[")):
+            continue
+        try:
+            if doubao_payload_has_submission_marker(json.loads(data)):
+                return DOUBAO_SUBMISSION_MARKER
+        except (TypeError, ValueError):
+            continue
+    if not re.search(r"(?m)^event:", raw) and DOUBAO_SUBMISSION_MARKER in raw:
+        return DOUBAO_SUBMISSION_MARKER
     return ""
 
 
@@ -907,7 +918,7 @@ async ({conversationId}) => {
 
 
 DOUBAO_SUBMIT_SCRIPT = r"""
-async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) => {
+async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, freshConversationRetryUsed}) => {
   function uuid() {
     return crypto.randomUUID ? crypto.randomUUID() :
       "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
@@ -999,20 +1010,15 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) 
   }
   function generationWaitMessage(value) {
     const rawText = searchableText(value);
-    const text = assistantResponseText(rawText) || rawText;
-    const patterns = [
-      /本次使用\s*[^，,。\n\r]{1,100}?(?:模型)?\s*生成\s*[，,]\s*预计等待\s*(?:\d+(?:\s*[~～\-至到]\s*\d+)?|[一二三四五六七八九十几]+)\s*分钟/i,
-      /视频(?:任务)?已(?:成功)?提交[^\n\r]{0,80}(?:正在|等待)[^\n\r]{0,50}(?:生成|渲染)/i,
-      /视频[^\n\r]{0,20}正在[^\n\r]{0,12}(?:生成|渲染)(?:中|处理(?:中)?)/i,
-      /正在(?:渲染)?生成(?:中|处理(?:中)?)?[^\n\r]{0,40}(?:等待|稍作|稍候|耐心|加载完成)/i,
-      /(?:视频)?(?:生成|渲染)中[，,。；;\s]*(?:请)?(?:耐心)?(?:等待|稍作等待|稍候)/i,
-      /已(?:成功)?提交[^\n\r]{0,40}(?:正在)?(?:生成|渲染)(?:中|处理(?:中)?)?/i
-    ];
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match) return match[0];
-    }
-    return "";
+    return rawText.includes("视频生成已提交") ? "视频生成已提交" : "";
+  }
+  function textOnlySubmissionClaim(value) {
+    const rawText = searchableText(value);
+    const assistantText = assistantResponseText(rawText);
+    const text = assistantText || (/^event:/m.test(rawText) ? "" : rawText);
+    if (!text || text.includes("视频生成已提交")) return "";
+    const match = text.match(/(?:已[^\n\r]{0,20}提交|正在[^\n\r]{0,20}(?:生成|渲染)|(?:生成|渲染)(?:中|处理(?:中)?)|预计等待)/i);
+    return match ? match[0] : "";
   }
   function videoCreationPageRefusal(value) {
     const rawText = searchableText(value);
@@ -1333,7 +1339,7 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) 
   let sameAccountResendCount = 0;
   let sameAccountAttemptCount = 1;
   let videoCreationPageRefusalCount = videoCreationPageRefusal(attempt.text) ? 1 : 0;
-  let videoCreationPageNewConversationResendCount = 0;
+  let videoCreationPageNewConversationResendCount = freshConversationRetryUsed ? 1 : 0;
   let videoCreationPageRefusalRepeated = false;
   let latestAttemptText = attempt.text;
   while (
@@ -1343,15 +1349,16 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) 
     && !terminalSubmissionSignal(latestAttemptText)
   ) {
     const creationPageRefusal = videoCreationPageRefusal(latestAttemptText);
-    if (creationPageRefusal && videoCreationPageNewConversationResendCount >= 1) {
+    const unverifiedTextClaim = textOnlySubmissionClaim(latestAttemptText);
+    if ((creationPageRefusal || unverifiedTextClaim) && videoCreationPageNewConversationResendCount >= 1) {
       videoCreationPageRefusalRepeated = true;
       break;
     }
-    if (!creationPageRefusal && sameAccountResendCount >= maxResends) break;
+    if (!creationPageRefusal && !unverifiedTextClaim && sameAccountResendCount >= maxResends) break;
     await new Promise(resolve => setTimeout(resolve, resendDelayMs));
     let resendPayload;
     let fallbackConversationId = conversationId;
-    if (creationPageRefusal) {
+    if (creationPageRefusal || unverifiedTextClaim) {
       localConversationId = `local_${randomDigits(16)}`;
       history.pushState({}, "", `/chat/${localConversationId}`);
       resendPayload = conversationPayload(payload, "", latestAttemptText, generationInstruction(prompt));
@@ -1896,6 +1903,9 @@ class DoubaoVideoAutomation:
                 if not model_code:
                     return {"success": False, "retryable": False, "reason": "doubao model unavailable"}
                 image_count = int(get_meta(self.task_id).get("image_count") or 0) if task_exists(self.task_id) else 0
+                fresh_conversation_retry_used = bool(
+                    get_meta(self.task_id).get("doubao_fresh_conversation_retry_used")
+                ) if task_exists(self.task_id) else False
                 self._set_phase(
                     "preparing_references",
                     "正在准备豆包参考图" if image_count > 0 else "正在准备豆包生成请求",
@@ -1927,6 +1937,7 @@ class DoubaoVideoAutomation:
                         "attachments": attachments,
                         "retryLimit": self.settings.doubao_submit_retry_limit,
                         "retryDelayMs": 15000,
+                        "freshConversationRetryUsed": fresh_conversation_retry_used,
                     },
                 )
                 if not isinstance(completion_result, dict):
@@ -2012,7 +2023,8 @@ class DoubaoVideoAutomation:
                             "account_fault": True,
                             "switch_account": True,
                         }
-                    if category == "video_creation_page_refusal":
+                    if category == "generation_ack_missing_after_new_conversation":
+                        update_meta(self.task_id, doubao_fresh_conversation_retry_used=False)
                         return {
                             "success": False,
                             "retryable": True,

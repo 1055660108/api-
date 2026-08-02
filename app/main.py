@@ -1590,7 +1590,7 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
         return "生成失败，请重试！" if terminal else "正在生成中，请稍等！"
     if re.search(r"reference image upload timed out|prepare_upload timed out", text, flags=re.IGNORECASE):
         return "参考图上传超时，请重试！" if terminal else "参考图上传超时，正在重试！"
-    if re.search(r"generation acknowledgement missing|连续要求进入视频创作页面|无法直接生成[^\n\r]{0,80}(?:创作|生成)页面", text, flags=re.IGNORECASE):
+    if re.search(r"generation acknowledgement missing|未返回视频生成提交回执|连续要求进入视频创作页面|无法直接生成[^\n\r]{0,80}(?:创作|生成)页面", text, flags=re.IGNORECASE):
         return "生成接口繁忙请稍后重试！" if terminal else "服务繁忙正在重试！"
     if "正在打开生成页面" in text:
         return "正在启动服务"

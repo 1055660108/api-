@@ -24,6 +24,35 @@ def single_chain(conversation_id: str, messages: list[dict]) -> dict:
 
 
 class DolaQueryTests(unittest.TestCase):
+    def test_doubao_text_only_submission_retries_same_account_in_fresh_conversation(self) -> None:
+        task_id = "d" * 32
+        meta = {"status": "submitted", "owner_token_hash": "owner"}
+        result = {
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "38436556507164930",
+            "cookie_string": "session=value",
+            "account_id": "account-1",
+            "account_quota_charge_id": "charge-1",
+        }
+        queried = {"state": "submission_unconfirmed", "text": "已提交，正在渲染处理中"}
+
+        with patch.object(query, "_run_task_query", new=AsyncMock(return_value=queried)), patch.object(
+            query, "save_result"
+        ), patch.object(query, "update_meta") as update_meta, patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(query, "refund_account_quota_once") as refund_account, patch.object(
+            query, "retry_submitted_task", return_value=1
+        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result:
+            response = asyncio.run(query._query_doubao_task_once(task_id, meta, result))
+
+        self.assertEqual(response["code"], "1")
+        self.assertIn("提交回执", response["text"])
+        clear_account.assert_called_once_with("account-1", task_id)
+        refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
+        self.assertTrue(any(call.kwargs.get("preferred_account_id") == "account-1" and call.kwargs.get("doubao_fresh_conversation_retry_used") is True for call in update_meta.call_args_list))
+        retry_task.assert_called_once_with(task_id, "豆包未返回视频生成提交回执", max_retries=query.task_retry_limit(), delay_seconds=10)
+        clear_result.assert_called_once_with(task_id)
+
     def test_query_lock_serializes_waiters_and_releases_registry_entry(self) -> None:
         task_id = "f" * 32
 

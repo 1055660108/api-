@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -171,13 +171,9 @@ class DoubaoAutomationTests(unittest.TestCase):
 
     def test_submit_script_waits_for_generation_ack_before_accepting(self) -> None:
         for fragment in (
-            "assistantResponseText(rawText)",
-            "本次使用",
-            "预计等待",
-            "视频(?:任务)?已(?:成功)?提交",
-            "正在(?:渲染)?生成",
-            "(?:视频)?(?:生成|渲染)中",
-            "稍作|稍候|耐心",
+            'rawText.includes("视频生成已提交")',
+            "textOnlySubmissionClaim(latestAttemptText)",
+            "freshConversationRetryUsed",
             "generation_wait_message_detected: Boolean(detectedWaitMessage)",
             "accepted: Boolean(detectedWaitMessage || videoUrl)",
             "sameAccountResendCount >= maxResends",
@@ -191,8 +187,8 @@ class DoubaoAutomationTests(unittest.TestCase):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertNotIn('accepted: text.includes("SSE_REPLY_END")', DOUBAO_SUBMIT_SCRIPT)
 
-    def test_generation_acknowledgement_recognizes_all_captured_doubao_messages(self) -> None:
-        messages = (
+    def test_generation_acknowledgement_requires_structured_submission_marker(self) -> None:
+        false_messages = (
             "本次使用 **Seedance 2.0 Fast** 生成，预计等待 5 分钟",
             "视频正在生成处理中，请稍作等待。",
             "已提交，正在渲染生成中，请耐心等待生成完成。",
@@ -200,13 +196,18 @@ class DoubaoAutomationTests(unittest.TestCase):
             "已为你调用Seedance 2.0 Fast模型，视频正在生成处理中。",
             "已为你调用Seedance 2.0 Fast模型，生成中，请耐心等待。",
         )
-        for message in messages:
+        for message in false_messages:
             chunk = json.dumps({"text": message}, ensure_ascii=False)
             finish = json.dumps({"msg_finish_attr": {"brief": message}}, ensure_ascii=False)
             response = f"event: CHUNK_DELTA\ndata: {chunk}\n\nevent: SSE_REPLY_END\ndata: {finish}\n\n"
             with self.subTest(message=message):
                 self.assertIn(message, extract_doubao_assistant_response_text(response))
-                self.assertTrue(detect_doubao_generation_acknowledgement(response))
+                self.assertEqual(detect_doubao_generation_acknowledgement(response), "")
+        marker_payload = {"message": {"user_type": 2, "content_block": [{"text": DOUBAO_SUBMISSION_MARKER}]}}
+        marker_response = f"event: FULL_MSG_NOTIFY\ndata: {json.dumps(marker_payload, ensure_ascii=False)}\n\n"
+        self.assertEqual(detect_doubao_generation_acknowledgement(marker_response), DOUBAO_SUBMISSION_MARKER)
+        self.assertTrue(doubao_payload_has_submission_marker(marker_payload))
+        self.assertFalse(doubao_payload_has_submission_marker({"message": {"user_type": 1, "text": DOUBAO_SUBMISSION_MARKER}}))
 
     def test_generation_acknowledgement_rejects_instructions_and_refusals(self) -> None:
         responses = (
@@ -244,7 +245,7 @@ class DoubaoAutomationTests(unittest.TestCase):
             "video_creation_page_refusal_repeated": True,
         })
 
-        self.assertEqual((error, category), ("豆包连续要求进入视频创作页面", "video_creation_page_refusal"))
+        self.assertEqual((error, category), ("豆包新会话仍未返回视频生成提交回执", "generation_ack_missing_after_new_conversation"))
         for fragment in (
             "videoCreationPageRefusal(latestAttemptText)",
             "videoCreationPageNewConversationResendCount >= 1",
@@ -257,7 +258,7 @@ class DoubaoAutomationTests(unittest.TestCase):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
 
     def test_python_acknowledgement_fallback_prevents_generation_retry(self) -> None:
-        message = "已为你调用Seedance 2.0 Fast模型，生成中，请耐心等待。"
+        message = DOUBAO_SUBMISSION_MARKER
         response = "event: CHUNK_DELTA\ndata: " + json.dumps({"text": message}, ensure_ascii=False) + "\n\n"
         result = normalize_doubao_submission_acknowledgement({
             "ok": True,
@@ -269,7 +270,7 @@ class DoubaoAutomationTests(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertTrue(result["generation_wait_message_detected"])
-        self.assertIn("生成中", result["generation_wait_message"])
+        self.assertEqual(result["generation_wait_message"], DOUBAO_SUBMISSION_MARKER)
         self.assertEqual(result["generation_ack_source"], "python_response_fallback")
         self.assertEqual(classify_doubao_submission(result), ("", ""))
 
@@ -326,6 +327,30 @@ class DoubaoAutomationTests(unittest.TestCase):
 
         self.assertEqual(result["state"], "quota_insufficient")
         self.assertIn("额度已耗尽", result["text"])
+
+    def test_interface_result_parser_requires_real_submission_marker(self) -> None:
+        text_only = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [{"message_index": 5, "user_type": 2, "tts_content": "已提交，正在渲染处理中"}]
+                }
+            }
+        }, ensure_ascii=False)
+        structured = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [{
+                        "message_index": 5,
+                        "user_type": 2,
+                        "tts_content": "预计等待 5 分钟",
+                        "content_block": [{"text": DOUBAO_SUBMISSION_MARKER}],
+                    }]
+                }
+            }
+        }, ensure_ascii=False)
+
+        self.assertEqual(parse_doubao_generation_result(text_only)["state"], "submission_unconfirmed")
+        self.assertEqual(parse_doubao_generation_result(structured)["state"], "generating")
 
     def test_unwatermarked_fallback_url_replaces_required_parameters(self) -> None:
         value = unwatermarked_fallback_url(
@@ -607,7 +632,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result, {"state": "rate_limited", "text": "豆包当前服务访问频繁"})
 
     def test_confirmed_conversation_releases_browser_for_interface_polling(self) -> None:
-        acknowledgement = "已为你调用Seedance 2.0 Fast模型，生成中，请耐心等待。"
+        acknowledgement = DOUBAO_SUBMISSION_MARKER
         acknowledgement_response = (
             "event: CHUNK_DELTA\ndata: "
             + json.dumps({"text": acknowledgement}, ensure_ascii=False)

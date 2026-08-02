@@ -902,6 +902,24 @@ async def _query_doubao_task_once(
             next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(),
         )
         return {"code": "1", "text": "豆包视频已生成，正在获取无水印地址，请稍候...", "url": "", "retry_after": 30}
+    if state == "submission_unconfirmed":
+        reason = "豆包未返回视频生成提交回执"
+        fresh_retry_used = bool(meta.get("doubao_fresh_conversation_retry_used"))
+        if account_id:
+            clear_account_current_task(account_id, task_id)
+            refund_account_quota_once(task_id, account_id, charge_id)
+            if fresh_retry_used:
+                record_failed_account(task_id, account_id)
+                update_meta(task_id, preferred_account_id="", doubao_fresh_conversation_retry_used=False)
+            else:
+                update_meta(task_id, preferred_account_id=account_id, doubao_fresh_conversation_retry_used=True)
+        retry_limit = task_retry_limit()
+        retry_count = retry_submitted_task(task_id, reason, max_retries=retry_limit, delay_seconds=10)
+        if retry_count <= retry_limit:
+            clear_transient_result(task_id)
+            return {"code": "1", "text": reason, "url": "", "retry_after": 10}
+        refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+        return {"code": "0", "text": reason, "url": ""}
     if state == "quota_insufficient":
         reason = text or "豆包账号额度不足或已耗尽"
         if account_id:

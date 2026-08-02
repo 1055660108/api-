@@ -19,11 +19,13 @@ from .automation import DolaFetchAutomation, PREPARE_UPLOAD_SCRIPT, PREPARE_UPLO
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
+from .reference_images import prepare_task_reference_images
 from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists, update_meta
 from .profile_lock import account_profile_lock
 
 
 DOUBAO_URL = "https://www.doubao.com/chat/"
+DOUBAO_VIDEO_CREATION_URL = "https://www.doubao.com/chat/create-image"
 DOUBAO_SINGLE_CHAIN_URL = "https://www.doubao.com/im/chain/single"
 VIDEO_URL_RE = re.compile(r'https?://[^"\\\s]+(?:mime_type=video_mp4|\.mp4(?:\?[^"\\\s]*)?)', re.IGNORECASE)
 REGION_RESTRICTION_MARKERS = (
@@ -53,6 +55,11 @@ DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
 }
 DOUBAO_PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "5", "resource_type": 2}
 DOUBAO_SUBMISSION_MARKER = "视频生成已提交"
+DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS = 75
+DOUBAO_CONVERSATION_ID_RE = re.compile(
+    r'(?:"|\\")?(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:"|\\")?\s*[:=]\s*(?:"|\\")?(\d{15,24})',
+    re.IGNORECASE,
+)
 QAAB_SALT = bytes.fromhex(
     "4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524"
     "f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58"
@@ -81,6 +88,20 @@ def _doubao_single_chain_url(web_id: str, region: str) -> str:
         "web_tab_id": normalized_web_id,
     })
     return f"{DOUBAO_SINGLE_CHAIN_URL}?{query}"
+
+
+def extract_doubao_conversation_id(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        try:
+            value = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            value = str(value or "")
+    text = str(value or "")
+    match = DOUBAO_CONVERSATION_ID_RE.search(text)
+    if match:
+        return match.group(1)
+    route = re.search(r"/chat/(\d{15,24})(?:[/?#]|$)", text)
+    return route.group(1) if route else ""
 
 
 def _doubao_single_chain_payload(conversation_id: str) -> dict[str, Any]:
@@ -727,6 +748,10 @@ def best_doubao_video_candidate(candidates: dict[str, dict[str, Any]]) -> dict[s
 
 
 def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
+    if result.get("region_restricted"):
+        return "doubao region restricted", "region_restricted"
+    if result.get("login_invalid"):
+        return "doubao account not logged in", "login_invalid"
     if result.get("service_frequent"):
         return "doubao service frequent", "service_frequent"
     if result.get("slider_verification"):
@@ -734,7 +759,9 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
     if result.get("quota_insufficient"):
         return "豆包账号额度不足或已耗尽", "quota_insufficient"
     if result.get("video_creation_page_refusal_repeated"):
-        return "豆包新会话仍未返回视频生成提交回执", "generation_ack_missing_after_new_conversation"
+        return "豆包要求改用视频创作页面", "generation_ack_missing"
+    if result.get("video_creation_ui_error"):
+        return str(result.get("video_creation_ui_error") or "doubao video creation page unavailable"), "video_creation_ui_error"
     if result.get("stream_error"):
         return "doubao submit rejected", "submit_rejected"
     if not result.get("ok"):
@@ -817,11 +844,26 @@ def detect_doubao_video_creation_page_refusal(value: str) -> str:
     searchable = assistant_text or ("" if re.search(r"(?m)^event:", raw) else raw)
     match = re.search(
         r"(?:无法|不能|不支持)[^\n\r]{0,50}(?:直接)?[^\n\r]{0,30}(?:生成|触发)"
-        r"[^\n\r]{0,80}(?:进入|前往|打开)[^\n\r]{0,40}(?:视频)?(?:创作|生成)?页面",
+        r"[^\n\r]{0,120}(?:(?:进入|前往|打开)[^\n\r]{0,40}(?:视频)?(?:创作|生成)?(?:页面|入口)|"
+        r"(?:豆包)?视频(?:AI)?创作(?:功能页|页面|入口)[^\n\r]{0,30}(?:提交|生成)?)",
         searchable,
         re.IGNORECASE,
     )
     return match.group(0) if match else ""
+
+
+def should_use_doubao_video_creation_page(result: dict[str, Any]) -> bool:
+    if not isinstance(result, dict) or result.get("accepted") or not result.get("ok"):
+        return False
+    terminal_keys = (
+        "service_frequent",
+        "slider_verification",
+        "quota_insufficient",
+        "stream_error",
+        "region_restricted",
+        "login_invalid",
+    )
+    return not any(bool(result.get(key)) for key in terminal_keys)
 
 
 def normalize_doubao_submission_acknowledgement(result: dict[str, Any]) -> dict[str, Any]:
@@ -1024,7 +1066,7 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, f
     const rawText = searchableText(value);
     const assistantText = assistantResponseText(rawText);
     const text = assistantText || (/^event:/m.test(rawText) ? "" : rawText);
-    const match = text.match(/(?:无法|不能|不支持)[^\n\r]{0,50}(?:直接)?[^\n\r]{0,30}(?:生成|触发)[^\n\r]{0,80}(?:进入|前往|打开)[^\n\r]{0,40}(?:视频)?(?:创作|生成)?页面/i);
+    const match = text.match(/(?:无法|不能|不支持)[^\n\r]{0,50}(?:直接)?[^\n\r]{0,30}(?:生成|触发)[^\n\r]{0,120}(?:(?:进入|前往|打开)[^\n\r]{0,40}(?:视频)?(?:创作|生成)?(?:页面|入口)|(?:豆包)?视频(?:AI)?创作(?:功能页|页面|入口)[^\n\r]{0,30}(?:提交|生成)?)/i);
     return match ? match[0] : "";
   }
   function quotaInsufficient(value) {
@@ -1350,24 +1392,15 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, f
   ) {
     const creationPageRefusal = videoCreationPageRefusal(latestAttemptText);
     const unverifiedTextClaim = textOnlySubmissionClaim(latestAttemptText);
-    if ((creationPageRefusal || unverifiedTextClaim) && videoCreationPageNewConversationResendCount >= 1) {
-      videoCreationPageRefusalRepeated = true;
+    if (creationPageRefusal || unverifiedTextClaim) {
+      videoCreationPageRefusalRepeated = creationPageRefusal;
       break;
     }
-    if (!creationPageRefusal && !unverifiedTextClaim && sameAccountResendCount >= maxResends) break;
+    if (sameAccountResendCount >= maxResends) break;
     await new Promise(resolve => setTimeout(resolve, resendDelayMs));
     let resendPayload;
     let fallbackConversationId = conversationId;
-    if (creationPageRefusal || unverifiedTextClaim) {
-      localConversationId = `local_${randomDigits(16)}`;
-      history.pushState({}, "", `/chat/${localConversationId}`);
-      resendPayload = conversationPayload(payload, "", latestAttemptText, generationInstruction(prompt));
-      fallbackConversationId = "";
-      conversationId = "";
-      videoCreationPageNewConversationResendCount += 1;
-    } else {
-      resendPayload = conversationPayload(payload, conversationId, latestAttemptText, retryInstruction);
-    }
+    resendPayload = conversationPayload(payload, conversationId, latestAttemptText, retryInstruction);
     attempt = await performAttempt(resendPayload, fallbackConversationId);
     response = attempt.response;
     text = `${text}\n${attempt.text}`;
@@ -1827,6 +1860,233 @@ class DoubaoVideoAutomation:
             return True
         return any(marker in body[:2000] for marker in ("扫码登录", "手机号登录", "登录豆包"))
 
+    async def _submit_via_video_creation_page(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
+        self._set_phase("opening_video_creation_page", "正在进入豆包视频创作页面")
+        await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
+        await page.wait_for_timeout(5000)
+        body = await page.locator("body").inner_text()
+        if self._is_region_restricted(str(page.url), body):
+            return {"ok": False, "status": 0, "accepted": False, "region_restricted": True}
+        if await self._login_required(page, body):
+            return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
+
+        video_tab = page.get_by_role("tab", name="视频", exact=True)
+        if not await video_tab.count():
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": "doubao video creation tab unavailable",
+            }
+        await video_tab.click(force=True)
+        await page.wait_for_timeout(1200)
+
+        model_button = page.locator("button:visible").filter(has_text=re.compile(r"Seedance\s+\d", re.IGNORECASE)).first
+        if not await model_button.count():
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": "doubao video model selector unavailable",
+            }
+        await model_button.click(force=True)
+        await page.wait_for_timeout(300)
+        model_items = page.locator('[role="menuitem"]:visible')
+        selected_model = ""
+        for index in range(await model_items.count()):
+            item = model_items.nth(index)
+            label = re.sub(r"\s+", " ", (await item.inner_text()).strip())
+            if label == self.model or label.startswith(f"{self.model} "):
+                await item.click(force=True)
+                selected_model = self.model
+                break
+        if not selected_model:
+            await page.keyboard.press("Escape")
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": f"doubao video model unavailable: {self.model}",
+            }
+
+        ratio_label = "自动" if not self.ratio or self.ratio == "auto" else self.ratio
+        duration_label = f"{self.duration}s"
+
+        async def open_video_settings():
+            selector = page.locator("button:visible").filter(has_text=re.compile(r"\b\d+s\b", re.IGNORECASE)).first
+            if not await selector.count():
+                raise RuntimeError("doubao video ratio and duration selector unavailable")
+            await selector.click(force=True)
+            await page.wait_for_timeout(250)
+            menu = page.locator('[role="menu"]:visible').last
+            if not await menu.count():
+                raise RuntimeError("doubao video ratio and duration menu unavailable")
+            return selector, menu
+
+        try:
+            _, settings_menu = await open_video_settings()
+            ratio_option = settings_menu.get_by_role("button", name=ratio_label, exact=True)
+            if not await ratio_option.count():
+                raise RuntimeError(f"doubao video ratio unavailable: {ratio_label}")
+            await ratio_option.click(force=True)
+            await page.wait_for_timeout(350)
+
+            settings_button, settings_menu = await open_video_settings()
+            duration_option = settings_menu.get_by_role("button", name=duration_label, exact=True)
+            if not await duration_option.count():
+                raise RuntimeError(f"doubao video duration unavailable: {duration_label}")
+            await duration_option.click(force=True)
+            await page.wait_for_timeout(500)
+            selected_settings = re.sub(r"\s+", " ", (await settings_button.inner_text()).strip())
+        except RuntimeError as exc:
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": str(exc),
+            }
+
+        if ratio_label not in selected_settings or duration_label not in selected_settings:
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": f"doubao video settings mismatch: {selected_settings}",
+            }
+
+        submitted_with_images = False
+        if image_count > 0:
+            paths = await asyncio.to_thread(prepare_task_reference_images, self.task_id)
+            file_input = page.locator('input[type="file"][multiple]')
+            if not paths or not await file_input.count():
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video reference input unavailable",
+                }
+            self._set_phase("uploading_video_creation_references", "正在向豆包视频创作页添加参考图")
+            await file_input.last.set_input_files([str(path) for path in paths])
+            await page.wait_for_timeout(5000)
+            upload_body = await page.locator("body").inner_text()
+            if any(marker in upload_body[-2000:] for marker in ("上传失败", "图片上传失败", "参考图上传失败")):
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video reference upload failed",
+                }
+            submitted_with_images = True
+
+        evidence: dict[str, Any] = {"conversation_id": "", "response_preview": "", "network_marker": False}
+        capture_tasks: set[asyncio.Task[Any]] = set()
+        capture_enabled = False
+
+        def remember_evidence(value: Any) -> None:
+            text = str(value or "")
+            conversation_id = extract_doubao_conversation_id(text)
+            if conversation_id:
+                evidence["conversation_id"] = conversation_id
+            if DOUBAO_SUBMISSION_MARKER in text:
+                evidence["network_marker"] = True
+            if text and any(marker in text for marker in (DOUBAO_SUBMISSION_MARKER, "conversation_id", "conversationId")):
+                evidence["response_preview"] = text[-6000:]
+
+        async def capture_submission_response(response) -> None:
+            if not capture_enabled:
+                return
+            try:
+                request = response.request
+                if request.resource_type not in {"xhr", "fetch"}:
+                    return
+                remember_evidence(request.post_data or "")
+                remember_evidence(response.url)
+                content_length = int(response.headers.get("content-length") or 0)
+                if content_length > 2 * 1024 * 1024:
+                    return
+                response_body = await response.text()
+            except Exception:
+                return
+            remember_evidence(response_body[:2 * 1024 * 1024])
+
+        def capture_submission(response) -> None:
+            create_tracked_task(capture_tasks, capture_submission_response(response))
+
+        page.on("response", capture_submission)
+        try:
+            editor = page.locator('[contenteditable="true"][role="textbox"]:visible').last
+            if not await editor.count():
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video prompt input unavailable",
+                }
+            self._set_phase("submitting_video_creation_page", "正在通过豆包视频创作页提交任务")
+            await editor.fill(self.prompt)
+            capture_enabled = True
+            await editor.press("Enter")
+
+            deadline = asyncio.get_running_loop().time() + DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS
+            marker_visible = False
+            last_body = ""
+            while asyncio.get_running_loop().time() < deadline:
+                await page.wait_for_timeout(500)
+                last_body = await page.locator("body").inner_text()
+                if self._is_region_restricted(str(page.url), last_body):
+                    return {"ok": False, "status": 0, "accepted": False, "region_restricted": True}
+                if await self._login_required(page, last_body):
+                    return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
+                if "710022002" in last_body or "当前服务访问频繁" in last_body or "服务访问频繁" in last_body:
+                    return {"ok": True, "status": 200, "accepted": False, "service_frequent": True}
+                if is_doubao_account_quota_insufficient(last_body[-2500:]):
+                    return {"ok": True, "status": 200, "accepted": False, "quota_insufficient": True}
+                marker_visible = DOUBAO_SUBMISSION_MARKER in last_body
+                remember_evidence(page.url)
+                if marker_visible and evidence.get("conversation_id"):
+                    break
+
+            conversation_id = str(evidence.get("conversation_id") or "")
+            if not marker_visible:
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "accepted": False,
+                    "response_preview": last_body[-6000:],
+                    "video_creation_page_used": True,
+                    "submitted_with_images": submitted_with_images,
+                }
+            if not conversation_id:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video creation conversation id missing",
+                    "generation_wait_message_detected": True,
+                    "generation_wait_message": DOUBAO_SUBMISSION_MARKER,
+                }
+            return {
+                "ok": True,
+                "status": 200,
+                "accepted": True,
+                "conversation_id": conversation_id,
+                "generation_wait_message_detected": True,
+                "generation_wait_message": DOUBAO_SUBMISSION_MARKER,
+                "generation_ack_source": "video_creation_page_dom",
+                "response_preview": str(evidence.get("response_preview") or last_body[-6000:]),
+                "video_creation_page_used": True,
+                "video_creation_selected_model": selected_model,
+                "video_creation_selected_ratio": ratio_label,
+                "video_creation_selected_duration": self.duration,
+                "submitted_with_images": submitted_with_images,
+            }
+        finally:
+            try:
+                page.remove_listener("response", capture_submission)
+            except Exception:
+                pass
+            await cancel_tracked_tasks(capture_tasks)
+
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:
         runtime = self.browser_pool.playwright_context() if self.browser_pool is not None else async_playwright()
         async with runtime as playwright:
@@ -1945,6 +2205,27 @@ class DoubaoVideoAutomation:
                     return {"success": False, "retryable": True, "reason": "doubao submission returned an invalid response"}
 
                 completion_result = normalize_doubao_submission_acknowledgement(completion_result)
+                if should_use_doubao_video_creation_page(completion_result):
+                    direct_completion_result = dict(completion_result)
+                    try:
+                        completion_result = await self._submit_via_video_creation_page(page, image_count=image_count)
+                    except Exception as exc:
+                        completion_result = {
+                            "ok": False,
+                            "status": 0,
+                            "accepted": False,
+                            "video_creation_ui_error": f"doubao video creation page failed: {str(exc)[:300]}",
+                        }
+                    completion_result["video_creation_page_used"] = True
+                    completion_result["direct_submission_response_preview"] = str(
+                        direct_completion_result.get("response_preview") or ""
+                    )[:6000]
+                    completion_result["direct_initial_response_preview"] = str(
+                        direct_completion_result.get("initial_response_preview") or ""
+                    )[:6000]
+                    for identity_key in ("web_id", "region"):
+                        if not completion_result.get(identity_key) and direct_completion_result.get(identity_key):
+                            completion_result[identity_key] = direct_completion_result[identity_key]
                 error, category = classify_doubao_submission(completion_result)
                 if category == "service_frequent":
                     set_account_cooldown(str(self.account.get("id") or ""), 1800, "豆包当前服务访问频繁")
@@ -1976,6 +2257,9 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_page_refusal_count": int(completion_result.get("video_creation_page_refusal_count") or 0),
                         "doubao_video_creation_page_new_conversation_resend_count": int(completion_result.get("video_creation_page_new_conversation_resend_count") or 0),
                         "doubao_video_creation_page_refusal_repeated": bool(completion_result.get("video_creation_page_refusal_repeated")),
+                        "doubao_video_creation_page_used": bool(completion_result.get("video_creation_page_used")),
+                        "doubao_video_creation_ui_error": str(completion_result.get("video_creation_ui_error") or "")[:500],
+                        "doubao_direct_submission_response_preview": str(completion_result.get("direct_submission_response_preview") or "")[:6000],
                     })
                     if category == "service_frequent":
                         if self.proxy_session is not None:
@@ -2006,6 +2290,15 @@ class DoubaoVideoAutomation:
                             "account_login_invalid": True,
                             "switch_account": True,
                         }
+                    if category == "region_restricted":
+                        if self.proxy_session is not None:
+                            self.proxy_session.mark_browser_proxy_unavailable(reason="doubao_region_restricted")
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": error,
+                            "infrastructure_fault": True,
+                        }
                     if category == "quota_insufficient":
                         return {
                             "success": False,
@@ -2031,6 +2324,13 @@ class DoubaoVideoAutomation:
                             "reason": error,
                             "account_fault": True,
                             "switch_account": True,
+                        }
+                    if category == "video_creation_ui_error":
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": error,
+                            "infrastructure_fault": True,
                         }
                     return {"success": False, "retryable": True, "reason": error}
                 conversation_id = str(completion_result.get("conversation_id") or "")
@@ -2063,6 +2363,11 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_page_refusal_count": int(completion_result.get("video_creation_page_refusal_count") or 0),
                         "doubao_video_creation_page_new_conversation_resend_count": int(completion_result.get("video_creation_page_new_conversation_resend_count") or 0),
                         "doubao_video_creation_page_refusal_repeated": bool(completion_result.get("video_creation_page_refusal_repeated")),
+                        "doubao_video_creation_page_used": bool(completion_result.get("video_creation_page_used")),
+                        "doubao_video_creation_selected_model": str(completion_result.get("video_creation_selected_model") or "")[:100],
+                        "doubao_video_creation_selected_ratio": str(completion_result.get("video_creation_selected_ratio") or "")[:20],
+                        "doubao_video_creation_selected_duration": int(completion_result.get("video_creation_selected_duration") or 0),
+                        "doubao_direct_submission_response_preview": str(completion_result.get("direct_submission_response_preview") or "")[:6000],
                         "doubao_result_mode": "interface_poll" if conversation_id else "browser_fallback",
                     },
                 )

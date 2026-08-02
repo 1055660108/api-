@@ -378,7 +378,12 @@ class BrowserRuntimeTests(unittest.TestCase):
         self.assertIn('DOUBAO_PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "5", "resource_type": 2}', doubao)
         self.assertIn('"attachments": attachments', doubao)
         self.assertNotIn("_open_video_generation", doubao)
-        self.assertNotIn('editor.press("Enter")', doubao)
+        self.assertIn('editor.press("Enter")', doubao)
+        self.assertIn("should_use_doubao_video_creation_page(completion_result)", doubao)
+        self.assertLess(
+            doubao.index("normalize_doubao_submission_acknowledgement(completion_result)"),
+            doubao.index("should_use_doubao_video_creation_page(completion_result)"),
+        )
         self.assertNotIn('get_by_role("button", name="比例")', doubao)
         self.assertNotIn('name=re.compile(r"Mini|Fast|Pro|Seedance', doubao)
         self.assertGreaterEqual((root / "worker.py").read_text(encoding="utf-8").count("browser_pool=self._dola_browser_pool"), 2)

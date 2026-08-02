@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -229,6 +229,7 @@ class DoubaoAutomationTests(unittest.TestCase):
             "无法直接生成，请进入视频创作页面。",
             "我无法直接生成视频，请前往视频创作页面完成操作。",
             "当前对话页面不支持直接触发视频生成，请进入创作页面。",
+            "当前无法直接渲染生成视频文件，你可以复制完整参数，在豆包视频创作入口提交生成。",
         )
         for response_text in responses:
             assistant = json.dumps({"text": response_text}, ensure_ascii=False)
@@ -238,24 +239,34 @@ class DoubaoAutomationTests(unittest.TestCase):
         user_only = json.dumps({"message": {"user_type": 1, "content": responses[0]}}, ensure_ascii=False)
         self.assertEqual(detect_doubao_video_creation_page_refusal(f"event: FULL_MSG_NOTIFY\ndata: {user_only}\n\n"), "")
 
-    def test_video_creation_page_refusal_uses_one_new_conversation_then_switches_account(self) -> None:
+    def test_video_creation_page_refusal_switches_to_real_creation_page(self) -> None:
         error, category = classify_doubao_submission({
             "ok": True,
             "accepted": False,
             "video_creation_page_refusal_repeated": True,
         })
 
-        self.assertEqual((error, category), ("豆包新会话仍未返回视频生成提交回执", "generation_ack_missing_after_new_conversation"))
+        self.assertEqual((error, category), ("豆包要求改用视频创作页面", "generation_ack_missing"))
         for fragment in (
             "videoCreationPageRefusal(latestAttemptText)",
-            "videoCreationPageNewConversationResendCount >= 1",
-            'localConversationId = `local_${randomDigits(16)}`',
-            'history.pushState({}, "", `/chat/${localConversationId}`)',
-            'conversationPayload(payload, "", latestAttemptText, generationInstruction(prompt))',
-            'fallbackConversationId = ""',
+            "if (creationPageRefusal || unverifiedTextClaim)",
             "video_creation_page_refusal_repeated: videoCreationPageRefusalRepeated",
         ):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
+        self.assertNotIn('conversationPayload(payload, "", latestAttemptText, generationInstruction(prompt))', DOUBAO_SUBMIT_SCRIPT)
+        self.assertTrue(should_use_doubao_video_creation_page({"ok": True, "accepted": False}))
+        self.assertFalse(should_use_doubao_video_creation_page({"ok": True, "accepted": True}))
+        self.assertFalse(should_use_doubao_video_creation_page({"ok": True, "accepted": False, "service_frequent": True}))
+
+    def test_conversation_id_is_extracted_from_ui_network_and_route(self) -> None:
+        self.assertEqual(
+            extract_doubao_conversation_id('{"conversation_id":"38436620180658434"}'),
+            "38436620180658434",
+        )
+        self.assertEqual(
+            extract_doubao_conversation_id("https://www.doubao.com/chat/38436620180658434"),
+            "38436620180658434",
+        )
 
     def test_python_acknowledgement_fallback_prevents_generation_retry(self) -> None:
         message = DOUBAO_SUBMISSION_MARKER
@@ -705,6 +716,82 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertTrue(any(call.kwargs["extra"].get("doubao_result_mode") == "interface_poll" for call in save_result.call_args_list))
         self.assertTrue(any(call.kwargs["extra"].get("doubao_generation_ack_source") == "python_response_fallback" for call in save_result.call_args_list))
         runner._save_video_success.assert_not_awaited()
+        lease.release.assert_awaited_once()
+
+    def test_missing_direct_ack_uses_creation_page_then_releases_browser(self) -> None:
+        body = SimpleNamespace(inner_text=AsyncMock(return_value="豆包已登录"))
+        page = SimpleNamespace(
+            url="https://www.doubao.com/chat/",
+            goto=AsyncMock(),
+            wait_for_timeout=AsyncMock(),
+            locator=Mock(return_value=body),
+            evaluate=AsyncMock(return_value={
+                "ok": True,
+                "status": 200,
+                "accepted": False,
+                "conversation_id": "",
+                "web_id": "22345678901234567",
+                "region": "JP",
+                "response_preview": "请进入豆包视频创作入口提交生成",
+            }),
+        )
+        context = SimpleNamespace(pages=[page], add_init_script=AsyncMock())
+        lease = SimpleNamespace(browser=SimpleNamespace(), context=context, release=AsyncMock())
+
+        @asynccontextmanager
+        async def runtime():
+            yield SimpleNamespace()
+
+        pool = SimpleNamespace(
+            playwright_context=Mock(side_effect=runtime),
+            acquire_context=AsyncMock(return_value=lease),
+        )
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner.task_id = "doubao-task"
+        runner.prompt = "测试视频"
+        runner.ratio = "16:9"
+        runner.model = "Seedance 2.0 Fast"
+        runner.duration = 10
+        runner.account = {"id": "account-1", "name": "豆包账号", "quota_charge_id": "charge-1"}
+        runner.browser_pool = pool
+        runner.submission_pacer = AsyncMock()
+        runner.settings = SimpleNamespace(
+            browser_executable_path="",
+            headless=True,
+            doubao_submit_retry_limit=2,
+        )
+        runner._login_required = AsyncMock(return_value=False)
+        runner._refresh_cookies = AsyncMock(return_value=[{"name": "session", "value": "value"}])
+        runner._context_storage_state = Mock(return_value=None)
+        runner._submit_via_video_creation_page = AsyncMock(return_value={
+            "ok": True,
+            "status": 200,
+            "accepted": True,
+            "conversation_id": "38436620180658434",
+            "generation_wait_message_detected": True,
+            "generation_wait_message": DOUBAO_SUBMISSION_MARKER,
+            "generation_ack_source": "video_creation_page_dom",
+            "video_creation_page_used": True,
+            "video_creation_selected_model": "Seedance 2.0 Fast",
+            "video_creation_selected_ratio": "16:9",
+            "video_creation_selected_duration": 10,
+        })
+
+        with patch("app.doubao_automation.task_exists", return_value=False), patch(
+            "app.doubao_automation.begin_task_submission", return_value=True
+        ), patch("app.doubao_automation.mark_submitted") as mark_submitted, patch(
+            "app.doubao_automation.save_result"
+        ) as save_result:
+            outcome = asyncio.run(runner._run_browser(None))
+
+        self.assertTrue(outcome["success"])
+        self.assertTrue(outcome["confirmation_pending"])
+        runner._submit_via_video_creation_page.assert_awaited_once_with(page, image_count=0)
+        mark_submitted.assert_called_once_with("doubao-task", result_poll_delay_seconds=20)
+        saved = [call.kwargs["extra"] for call in save_result.call_args_list]
+        self.assertTrue(any(item.get("doubao_video_creation_page_used") for item in saved))
+        self.assertTrue(any(item.get("doubao_result_mode") == "interface_poll" for item in saved))
+        self.assertTrue(any(item.get("doubao_generation_ack_source") == "video_creation_page_dom" for item in saved))
         lease.release.assert_awaited_once()
 
     def test_context_storage_state_merges_saved_state_and_latest_account_cookies(self) -> None:

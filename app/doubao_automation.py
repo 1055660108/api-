@@ -746,6 +746,16 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
       || text.includes('"type":"verify"')
       || text.includes('"verify_scene":"doubao_message_web"');
   }
+  function modelDisplayName(value) {
+    if (value === "seedance_v2.0_mini") return "Seedance 2.0 Mini";
+    if (value === "seedance_v2.0") return "Seedance 2.0 Fast";
+    return String(value || "Seedance");
+  }
+  function generationInstruction(promptText, followUp = false) {
+    const ratioText = ratio && ratio !== "auto" ? `${ratio} 比例` : "自动比例";
+    const prefix = followUp ? "需要。请立即" : "请直接";
+    return `${prefix}调用豆包视频生成能力，使用 ${modelDisplayName(model)} 模型生成 ${seconds} 秒、${ratioText}的视频。不要只回复文字，不要改写或讲解提示词。视频提示词：${promptText}`;
+  }
   function lastMessageIndex(value) {
     const matches = [...String(value || "").matchAll(/"(?:message_index|messageIndex)"\s*:\s*(\d+)/g)];
     if (!matches.length) return null;
@@ -803,7 +813,7 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
       content_block: [{
         block_type: 10000,
         content: {
-          text_block: {text: `生成视频：${prompt}，${seconds}s`, icon_url: "", icon_url_dark: "", summary: ""},
+          text_block: {text: generationInstruction(prompt), icon_url: "", icon_url_dark: "", summary: ""},
           pc_event_block: ""
         },
         block_id: uuid(),
@@ -946,7 +956,7 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     const confirmationPromptDetected = asksForVideoConfirmation(text);
     let autoConfirmationSent = false;
     if (response.ok && conversationId && confirmationPromptDetected) {
-      const confirmationPayload = conversationPayload(body, conversationId, text, "需要");
+      const confirmationPayload = conversationPayload(body, conversationId, text, generationInstruction(prompt, true));
       submission = await submitPayload(confirmationPayload);
       response = submission.response;
       text = `${text}\n${submission.text}`;
@@ -969,7 +979,7 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
 
   const maxResends = Math.max(0, Math.min(10, Number.parseInt(retryLimit, 10) || 0));
   const resendDelayMs = Math.max(5000, Number(retryDelayMs) || 15000);
-  const promptText = payload.messages[0].content_block[0].content.text_block.text;
+  const retryInstruction = generationInstruction(prompt, true);
   let attempt = await performAttempt(payload, "");
   let response = attempt.response;
   let text = attempt.text;
@@ -992,7 +1002,7 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     && sameAccountResendCount < maxResends
   ) {
     await new Promise(resolve => setTimeout(resolve, resendDelayMs));
-    const resendPayload = conversationPayload(payload, conversationId, text, promptText);
+    const resendPayload = conversationPayload(payload, conversationId, text, retryInstruction);
     attempt = await performAttempt(resendPayload, conversationId);
     response = attempt.response;
     text = `${text}\n${attempt.text}`;

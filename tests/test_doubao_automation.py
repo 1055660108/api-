@@ -136,7 +136,7 @@ class DoubaoAutomationTests(unittest.TestCase):
             'text.includes("710022004")',
             'text.includes("SSE_REPLY_END")',
             "asksForVideoConfirmation(text)",
-            'conversationPayload(body, conversationId, text, "需要")',
+            "generationInstruction(prompt, true)",
             "body.option.need_create_conversation = !conversationId",
             "body.client_meta.conversation_id = conversationId",
             "auto_confirmation_sent: autoConfirmationSent",
@@ -144,6 +144,9 @@ class DoubaoAutomationTests(unittest.TestCase):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertIn("would you like|do you want|shall i|should i", DOUBAO_SUBMIT_SCRIPT)
         self.assertIn("是否|请问", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("调用豆包视频生成能力", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("不要只回复文字，不要改写或讲解提示词", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("modelDisplayName(model)", DOUBAO_SUBMIT_SCRIPT)
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Mini"], "seedance_v2.0_mini")
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Fast"], "seedance_v2.0")
 
@@ -158,6 +161,8 @@ class DoubaoAutomationTests(unittest.TestCase):
             "const resendDelayMs = Math.max(5000, Number(retryDelayMs) || 15000)",
             "const maxResends = Math.max(0, Math.min(10",
             "performAttempt(resendPayload, conversationId)",
+            "const retryInstruction = generationInstruction(prompt, true)",
+            "conversationPayload(payload, conversationId, text, retryInstruction)",
         ):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertNotIn('accepted: text.includes("SSE_REPLY_END")', DOUBAO_SUBMIT_SCRIPT)

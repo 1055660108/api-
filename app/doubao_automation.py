@@ -1871,7 +1871,9 @@ class DoubaoVideoAutomation:
             return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
 
         video_tab = page.get_by_role("tab", name="视频", exact=True)
-        if not await video_tab.count():
+        try:
+            await video_tab.wait_for(state="visible", timeout=15000)
+        except Exception:
             return {
                 "ok": False,
                 "status": 0,
@@ -1882,7 +1884,9 @@ class DoubaoVideoAutomation:
         await page.wait_for_timeout(1200)
 
         model_button = page.locator("button:visible").filter(has_text=re.compile(r"Seedance\s+\d", re.IGNORECASE)).first
-        if not await model_button.count():
+        try:
+            await model_button.wait_for(state="visible", timeout=10000)
+        except Exception:
             return {
                 "ok": False,
                 "status": 0,
@@ -1890,8 +1894,17 @@ class DoubaoVideoAutomation:
                 "video_creation_ui_error": "doubao video model selector unavailable",
             }
         await model_button.click(force=True)
-        await page.wait_for_timeout(300)
+        await page.wait_for_timeout(500)
         model_items = page.locator('[role="menuitem"]:visible')
+        try:
+            await model_items.first.wait_for(state="visible", timeout=5000)
+        except Exception:
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": "doubao video model menu unavailable",
+            }
         selected_model = ""
         for index in range(await model_items.count()):
             item = model_items.nth(index)
@@ -1912,32 +1925,37 @@ class DoubaoVideoAutomation:
         ratio_label = "自动" if not self.ratio or self.ratio == "auto" else self.ratio
         duration_label = f"{self.duration}s"
 
-        async def open_video_settings():
-            selector = page.locator("button:visible").filter(has_text=re.compile(r"\b\d+s\b", re.IGNORECASE)).first
-            if not await selector.count():
-                raise RuntimeError("doubao video ratio and duration selector unavailable")
+        async def video_settings_button():
+            selector = page.locator("button:visible").filter(
+                has_text=re.compile(r"(?:自动|\d+:\d+)\s*[·•]\s*\d+s", re.IGNORECASE)
+            ).first
+            try:
+                await selector.wait_for(state="visible", timeout=10000)
+            except Exception as exc:
+                raise RuntimeError("doubao video ratio and duration selector unavailable") from exc
+            return selector
+
+        async def select_video_setting(label: str) -> None:
+            selector = await video_settings_button()
             await selector.click(force=True)
-            await page.wait_for_timeout(250)
-            menu = page.locator('[role="menu"]:visible').last
-            if not await menu.count():
-                raise RuntimeError("doubao video ratio and duration menu unavailable")
-            return selector, menu
+            option = page.locator("button:visible").filter(
+                has_text=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE)
+            ).last
+            try:
+                await option.wait_for(state="visible", timeout=5000)
+            except Exception as exc:
+                raise RuntimeError(f"doubao video setting unavailable: {label}") from exc
+            await option.click(force=True)
+            await page.wait_for_timeout(500)
 
         try:
-            _, settings_menu = await open_video_settings()
-            ratio_option = settings_menu.get_by_role("button", name=ratio_label, exact=True)
-            if not await ratio_option.count():
-                raise RuntimeError(f"doubao video ratio unavailable: {ratio_label}")
-            await ratio_option.click(force=True)
-            await page.wait_for_timeout(350)
-
-            settings_button, settings_menu = await open_video_settings()
-            duration_option = settings_menu.get_by_role("button", name=duration_label, exact=True)
-            if not await duration_option.count():
-                raise RuntimeError(f"doubao video duration unavailable: {duration_label}")
-            await duration_option.click(force=True)
-            await page.wait_for_timeout(500)
+            await select_video_setting(ratio_label)
+            settings_button = await video_settings_button()
             selected_settings = re.sub(r"\s+", " ", (await settings_button.inner_text()).strip())
+            if duration_label not in selected_settings:
+                await select_video_setting(duration_label)
+                settings_button = await video_settings_button()
+                selected_settings = re.sub(r"\s+", " ", (await settings_button.inner_text()).strip())
         except RuntimeError as exc:
             return {
                 "ok": False,

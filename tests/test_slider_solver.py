@@ -116,6 +116,62 @@ class SliderAutomationRecoveryTests(unittest.TestCase):
         runner._resolve_slider_if_present.assert_awaited_once()
         runner._set_phase.assert_called_once_with("retrying_after_slider", "滑块验证已完成，正在重新提交")
 
+    def test_submission_slider_recovery_can_reload_to_surface_hidden_challenge(self) -> None:
+        runner = self.runner()
+        runner.slider_enabled = True
+        slider_page = SimpleNamespace()
+        runner.slider_solver = SimpleNamespace(
+            settings=SimpleNamespace(iframe_selector="iframe[src*='bdcaptcha.html']"),
+            solve=AsyncMock(return_value=SliderSolveResult(status="success", attempts=1)),
+        )
+        runner._save_result = Mock()
+        page = SimpleNamespace(reload=AsyncMock(), wait_for_timeout=AsyncMock())
+        context = SimpleNamespace()
+
+        with patch("app.automation.find_slider_page", new=AsyncMock(side_effect=[None, slider_page])):
+            result = asyncio.run(
+                automation.DolaFetchAutomation._resolve_slider_if_present(
+                    runner,
+                    page,
+                    context,
+                    phase="submission_response",
+                    wait_seconds=0,
+                    reload_if_missing=True,
+                )
+            )
+
+        self.assertEqual(result.status, "success")
+        page.reload.assert_awaited_once_with(wait_until="domcontentloaded", timeout=30000)
+        runner.slider_solver.solve.assert_awaited_once_with(slider_page)
+
+    def test_missing_submission_slider_records_diagnostic_after_reload(self) -> None:
+        runner = self.runner()
+        runner.slider_enabled = True
+        runner.slider_solver = SimpleNamespace(
+            settings=SimpleNamespace(iframe_selector="iframe[src*='bdcaptcha.html']"),
+        )
+        runner._save_result = Mock()
+        page = SimpleNamespace(reload=AsyncMock(), wait_for_timeout=AsyncMock())
+
+        with patch("app.automation.find_slider_page", new=AsyncMock(return_value=None)), patch(
+            "app.automation.asyncio.get_running_loop"
+        ) as get_loop:
+            get_loop.return_value.time.side_effect = [0.0, 0.0, 0.0, 5.0]
+            result = asyncio.run(
+                automation.DolaFetchAutomation._resolve_slider_if_present(
+                    runner,
+                    page,
+                    SimpleNamespace(),
+                    phase="submission_response",
+                    wait_seconds=0,
+                    reload_if_missing=True,
+                )
+            )
+
+        self.assertEqual(result.status, "not_present")
+        saved = runner._save_result.call_args.kwargs["extra"]
+        self.assertEqual(saved["slider_last_status"], "not_present")
+
     def test_submission_does_not_retry_when_slider_is_not_visible(self) -> None:
         runner = self.runner()
         runner._resolve_slider_if_present.return_value = SliderSolveResult(status="not_present", attempts=0)

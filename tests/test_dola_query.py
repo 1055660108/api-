@@ -80,6 +80,18 @@ class DolaQueryTests(unittest.TestCase):
             self.assertTrue(automation.is_infrastructure_failure(reason))
         self.assertFalse(automation.is_infrastructure_failure("你的输入可能包含违规内容请重试！"))
 
+    def test_browser_fetch_and_ssl_failures_retire_the_active_proxy(self) -> None:
+        for reason in (
+            "Page.evaluate: TypeError: Failed to fetch",
+            "Page.goto: net::ERR_SSL_PROTOCOL_ERROR at https://www.dola.com/chat/create-image",
+        ):
+            self.assertTrue(automation.is_proxy_transport_failure(reason))
+
+    def test_reference_upload_phase_identifies_browser_fetch_failures(self) -> None:
+        for phase in ("preparing_references", "waiting_image_upload_slot", "uploading_reference_1", "waiting_reference_2"):
+            self.assertTrue(automation.is_reference_upload_phase(phase))
+        self.assertFalse(automation.is_reference_upload_phase("opening_generation_page"))
+
     def test_query_does_not_fall_back_to_recent_conversation(self) -> None:
         with patch.object(query, "expire_task_if_timeout"), patch.object(
             query, "get_meta", return_value={"status": query.STATUS_SUBMITTED}

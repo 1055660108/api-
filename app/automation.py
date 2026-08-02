@@ -205,6 +205,7 @@ def _environment_float(name: str, default: float, *, minimum: float, maximum: fl
 
 PROXY_TRANSPORT_ERROR_MARKERS = (
     "mihomo ",
+    "failed to fetch",
     "proxy connection",
     "proxy node",
     "proxy subscription",
@@ -217,6 +218,7 @@ PROXY_TRANSPORT_ERROR_MARKERS = (
     "ssl:",
     "tlsv1_alert",
     "tls handshake",
+    "net::err_ssl",
     "net::err_proxy",
     "net::err_connection",
     "net::err_timed_out",
@@ -287,6 +289,14 @@ def is_proxy_transport_failure(text: str) -> bool:
 def is_reference_upload_failure(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     return any(marker in normalized for marker in REFERENCE_UPLOAD_ERROR_MARKERS)
+
+
+def is_reference_upload_phase(phase: str) -> bool:
+    normalized = str(phase or "").strip().lower()
+    return normalized == "preparing_references" or normalized == "waiting_image_upload_slot" or normalized.startswith((
+        "uploading_reference_",
+        "waiting_reference_",
+    ))
 
 
 def reference_image_cache_key(path: Path) -> str:
@@ -964,18 +974,39 @@ class DolaFetchAutomation:
         *,
         phase: str,
         wait_seconds: float = 0.0,
+        reload_if_missing: bool = False,
     ) -> SliderSolveResult:
         if not self.slider_enabled:
             return SliderSolveResult(status="not_present", attempts=0)
 
-        deadline = asyncio.get_running_loop().time() + max(0.0, wait_seconds)
-        target_page: Page | None = None
-        while True:
-            target_page = await find_slider_page([context], self.slider_solver.settings.iframe_selector)
-            if target_page is not None or asyncio.get_running_loop().time() >= deadline:
-                break
-            await page.wait_for_timeout(100)
+        async def locate_slider(seconds: float) -> Page | None:
+            deadline = asyncio.get_running_loop().time() + max(0.0, seconds)
+            while True:
+                target = await find_slider_page([context], self.slider_solver.settings.iframe_selector)
+                if target is not None or asyncio.get_running_loop().time() >= deadline:
+                    return target
+                await page.wait_for_timeout(100)
+
+        target_page = await locate_slider(wait_seconds)
+        reload_error = ""
+        if target_page is None and reload_if_missing:
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=30000)
+            except Exception as exc:
+                reload_error = f"{type(exc).__name__}: {exc}"[:300]
+            target_page = await locate_slider(max(5.0, wait_seconds))
         if target_page is None:
+            if wait_seconds > 0 or reload_if_missing:
+                self._save_result(
+                    extra={
+                        "slider_last_phase": phase,
+                        "slider_last_status": "not_present",
+                        "slider_last_attempts": 0,
+                        "slider_last_confidence": None,
+                        "slider_last_error": reload_error,
+                        "slider_last_checked_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
             return SliderSolveResult(status="not_present", attempts=0)
 
         self._set_phase("resolving_slider_verification", "正在完成滑块验证")
@@ -1038,6 +1069,7 @@ class DolaFetchAutomation:
                 context,
                 phase="submission_response",
                 wait_seconds=5.0,
+                reload_if_missing=True,
             )
             value["_slider_result"] = slider_result
             if slider_result.status != "success" or attempt >= SLIDER_RECOVERY_SUBMIT_ATTEMPTS:
@@ -1300,7 +1332,13 @@ class DolaFetchAutomation:
             }
         except Exception as exc:
             reason = str(exc)[:500]
-            reference_upload_failure = is_reference_upload_failure(reason)
+            execution_phase = ""
+            if self._task_exists():
+                try:
+                    execution_phase = str(get_meta(self.task_id).get("execution_phase") or "")
+                except FileNotFoundError:
+                    pass
+            reference_upload_failure = is_reference_upload_failure(reason) or is_reference_upload_phase(execution_phase)
             infrastructure_fault = is_infrastructure_failure(reason) or reference_upload_failure
             upper_reason = reason.upper()
             gateway_status = next((status for status in (502, 503, 504) if f"HTTP {status}" in upper_reason), 0)

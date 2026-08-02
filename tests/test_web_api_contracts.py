@@ -1437,6 +1437,27 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(response.content, thumbnails[0].read_bytes())
         self.assertLessEqual(len(response.content), store.REFERENCE_THUMBNAIL_MAX_BYTES)
 
+    def test_failed_task_keeps_original_reference_for_retry(self) -> None:
+        owner = self.register("failed_reference_owner")
+        owner_hash = temp_access.hash_token(owner["token"])
+        task = store.create_task("失败参考图保留任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        original = b"\x89PNG\r\n\x1a\noriginal-reference-for-retry"
+        reference = store.images_dir(task["id"]) / "01.png"
+        reference.write_bytes(original)
+        store.set_task_images(task["id"], [reference], ["retry-source.png"])
+
+        store.mark_failed(task["id"], "参考图上传失败")
+
+        self.assertTrue(reference.exists())
+        self.assertEqual(store.task_reference_thumbnail_paths(task["id"]), [])
+        self.assertEqual(store.task_reference_display_paths(task["id"]), [reference])
+        response = self.client.get(
+            f"/tasks/{task['id']}/references/1",
+            headers={"X-API-Token": owner["token"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, original)
+
     def test_admin_can_download_and_restore_user_account_backup(self) -> None:
         self.register("backup_client")
         self.login_admin()

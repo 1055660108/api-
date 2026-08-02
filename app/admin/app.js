@@ -778,7 +778,7 @@ const state = {
   maxEffectiveWorkers: 1,
   browserPoolProcesses: 8,
   browserContextsPerProcess: 3,
-  submissionConcurrency: 36,
+  submissionConcurrency: 45,
   billingPriority: "video_first",
   version: "",
   selectedVideoIds: new Set(),
@@ -3221,7 +3221,7 @@ async function refreshHealth() {
   const effectiveWorkers = Number(data.components?.resources?.effective_workers ?? configuredWorkers);
   state.configuredWorkers = configuredWorkers || 1;
   state.maxEffectiveWorkers = Number(data.components?.resources?.capacity_limit ?? configuredWorkers ?? 1);
-  state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 12);
+  state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 15);
   state.browserContextsPerProcess = Number(data.components?.browser?.contexts_per_process || 3);
   state.submissionConcurrency = Number(data.components?.browser?.submission_capacity || effectiveWorkers || 32);
   renderResourceMonitoring(data.components?.monitoring || {});
@@ -4141,7 +4141,7 @@ async function saveWorkersConfig() {
     });
     state.configuredWorkers = Number(data.browser_workers ?? submissionConcurrency);
     state.maxEffectiveWorkers = Number(data.max_effective_workers ?? data.capacity_limit ?? submissionConcurrency);
-    state.browserPoolProcesses = Number(data.browser_pool_processes || 8);
+    state.browserPoolProcesses = Number(data.browser_pool_processes || 15);
     state.browserContextsPerProcess = Number(data.browser_contexts_per_process || 3);
     state.submissionConcurrency = Number(data.submission_concurrency || 32);
     els.metricWorkers.textContent = String(state.submissionConcurrency);

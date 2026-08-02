@@ -1672,7 +1672,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(events, ["slot-enter", "network-upload", "slot-exit"])
         automation.clear_reference_attachment_cache()
 
-    def test_worker_image_upload_slot_enforces_eight_active_uploads(self) -> None:
+    def test_worker_image_upload_slot_enforces_configured_active_uploads(self) -> None:
         manager = WorkerManager()
         entered = 0
         maximum = 0
@@ -1865,20 +1865,20 @@ class ReliabilityTests(unittest.TestCase):
 
     def test_worker_has_independent_image_submission_limit(self) -> None:
         manager = WorkerManager()
-        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 8)
-        self.assertEqual(manager._image_submission_semaphore._value, 8)
+        self.assertEqual(IMAGE_SUBMISSION_CONCURRENCY, 10)
+        self.assertEqual(manager._image_submission_semaphore._value, 10)
         self.assertEqual(manager._image_submission_reservations, {})
         snapshot = manager.health_snapshot()
-        self.assertEqual(snapshot["image_upload_concurrency"], 8)
+        self.assertEqual(snapshot["image_upload_concurrency"], 10)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
         self.assertEqual(snapshot["image_submission_claimed"], 0)
         self.assertEqual(snapshot["image_submission_claim_limit"], IMAGE_PREPARATION_CONCURRENCY)
         self.assertEqual(snapshot["image_preparation_claimed"], 0)
-        self.assertEqual(snapshot["image_preparation_claim_limit"], 8)
-        self.assertEqual(snapshot["browser_pool"]["process_limit"], 12)
+        self.assertEqual(snapshot["image_preparation_claim_limit"], 10)
+        self.assertEqual(snapshot["browser_pool"]["process_limit"], 15)
         self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 3)
-        self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 36)
-        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 12)
+        self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 45)
+        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 15)
         self.assertEqual(snapshot["api_proxy_pool"]["refresh_concurrency_limit"], 2)
 
     def test_reference_preparation_releases_before_submission_and_only_once(self) -> None:
@@ -1916,10 +1916,10 @@ class ReliabilityTests(unittest.TestCase):
             with patch("app.worker.temp_token_concurrency_limits", return_value={"owner-a": 20, "owner-b": 20, "owner-c": 20}), patch(
                 "app.worker.list_task_metas_by_statuses", return_value=rows
             ):
-                self.assertEqual(manager._owner_concurrency_limits(), {"owner-a": 12, "owner-b": 12, "owner-c": 12})
+                self.assertEqual(manager._owner_concurrency_limits(), {"owner-a": 15, "owner-b": 15, "owner-c": 15})
                 self.assertEqual(
                     {owner: manager._image_owner_limit(owner) for owner in ("owner-a", "owner-b", "owner-c")},
-                    {"owner-a": 3, "owner-b": 3, "owner-c": 2},
+                    {"owner-a": 4, "owner-b": 3, "owner-c": 3},
                 )
 
         asyncio.run(calculate())

@@ -77,7 +77,7 @@ def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int
         return default
 
 
-TASK_MIHOMO_MAX_SLOTS = _bounded_env_int("DOLA_MIHOMO_EXIT_SLOTS", 12, 1, 12)
+TASK_MIHOMO_MAX_SLOTS = _bounded_env_int("DOLA_MIHOMO_EXIT_SLOTS", 15, 1, 15)
 # Account isolation is a runtime invariant: stale deployment env files must not
 # restore the old four-context sharing behavior after an update.
 TASK_MIHOMO_CONTEXTS_PER_EXIT = _bounded_env_int("DOLA_MIHOMO_CONTEXTS_PER_EXIT", 1, 1, 1)

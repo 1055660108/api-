@@ -5682,7 +5682,6 @@ body[data-portal="client"][data-view="points"] .commerce-header {
 .ledger-task-id { width: 100%; max-width: 100%; overflow: visible; color: #344054; font-size: 12px; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
 
 .announcement-modal-panel { width: min(100%, 560px); padding: 0; overflow: hidden; border-radius: 8px; }
-.announcement-modal-accent { height: 4px; background: var(--brand); }
 .announcement-modal-panel .modal-header { padding: 22px 24px 18px; border-bottom: 1px solid var(--line); }
 .announcement-modal-panel .modal-header h2 { margin-top: 6px; font-size: 22px; }
 .announcement-modal-content { max-height: 52vh; min-height: 130px; padding: 22px 24px; font-size: 14px; line-height: 1.8; }

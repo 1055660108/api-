@@ -621,6 +621,7 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn("Dola 网络出口", self.html)
 
     def test_message_center_replaces_settings_feedback_entry(self) -> None:
+        styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('id="messagesNavItem"', self.html)
         self.assertIn('id="messagesView"', self.html)
         self.assertIn('id="clientFeedbackList"', self.html)
@@ -631,6 +632,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('apiFetch("/notifications")', self.javascript)
         self.assertIn('apiFetch("/admin/notification-recipients")', self.javascript)
         self.assertIn("saveFeedbackRecord", self.javascript)
+        self.assertNotIn("announcement-modal-accent", self.html)
+        self.assertNotIn(".announcement-modal-accent", styles)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
         for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipTaskDiscount", "membershipDetailsButton", "membershipDetailsModal", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState", "billingPriorityControl", "billingPriorityState"):

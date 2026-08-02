@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.11" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.12" />
   </head>
   <body>
     <script>
@@ -1152,7 +1152,7 @@
       </section>
     </div>
     <div class="modal-backdrop hidden" id="announcementModal" aria-hidden="true">
-      <section class="modal-panel announcement-modal-panel" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle"><div class="announcement-modal-accent" aria-hidden="true"></div><div class="modal-header"><div><h2 id="announcementModalTitle"></h2></div><button class="modal-close" id="closeAnnouncementModal" type="button" aria-label="关闭">×</button></div><div class="announcement-modal-content" id="announcementModalContent"></div><div class="announcement-modal-footer"><span>HS 服务通知</span><button class="primary-button" id="confirmAnnouncementModal" type="button">确认</button></div></section>
+      <section class="modal-panel announcement-modal-panel" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle"><div class="modal-header"><div><h2 id="announcementModalTitle"></h2></div><button class="modal-close" id="closeAnnouncementModal" type="button" aria-label="关闭">×</button></div><div class="announcement-modal-content" id="announcementModalContent"></div><div class="announcement-modal-footer"><span>HS 服务通知</span><button class="primary-button" id="confirmAnnouncementModal" type="button">确认</button></div></section>
     </div>
     <div class="modal-backdrop hidden" id="pointCardModal" aria-hidden="true">
       <form class="modal-panel point-card-modal-panel" id="pointCardForm" role="dialog" aria-modal="true" aria-labelledby="pointCardModalTitle"><div class="modal-header"><h2 id="pointCardModalTitle">生成兑换码</h2><button class="modal-close" id="closePointCardModal" type="button" aria-label="关闭">×</button></div><div class="compact-form-grid"><label class="field"><span>每张积分</span><input id="pointCardPoints" type="number" min="0.1" step="0.1" value="10" required /></label><label class="field"><span>生成数量</span><input id="pointCardCount" type="number" min="1" max="200" step="1" value="1" required /></label><label class="field field-wide"><span>备注</span><input id="pointCardNote" maxlength="120" placeholder="批次用途" /></label></div><div class="generated-codes hidden" id="generatedPointCards"><div><strong>本次生成</strong><button class="secondary-button" id="copyGeneratedPointCards" type="button">复制全部</button></div><pre id="generatedPointCardCodes"></pre></div><div class="modal-actions"><button class="secondary-button" id="cancelPointCardModal" type="button">取消</button><button class="primary-button" id="generatePointCards" type="submit">生成兑换码</button></div></form>
@@ -1398,6 +1398,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.11"></script>
+    <script src="/admin/assets/app.js?v=1.10.12"></script>
   </body>
 </html>

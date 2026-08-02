@@ -714,6 +714,7 @@ class WebAPIContractTests(unittest.TestCase):
         owner_hash = temp_access.hash_token(registered["token"])
         temp_access.add_temp_credit_units(owner_hash, 20)
         temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        users.set_user_model_discounts(users.user_identity_by_token_hash(owner_hash)["id"], {"dola": {"Seedance 2.0": 0.4}})
         headers = {"X-API-Token": registered["token"]}
         manifest = {
             "ratio": "16:9",
@@ -729,7 +730,9 @@ class WebAPIContractTests(unittest.TestCase):
             job_id = response.json()["job"]["id"]
             claim = batch_jobs.claim_next_row(owner_hash)
             self.assertIsNotNone(claim)
+            before = temp_access.get_temp_context_by_hash(owner_hash)
             task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
+            after = temp_access.get_temp_context_by_hash(owner_hash)
             batch_jobs.finish_row_creation(job_id, 1, task_id)
             job = batch_jobs.public_job(batch_jobs.get_job(job_id, owner_hash))
         self.assertEqual(job["rows"][0]["task_id"], task_id)
@@ -739,6 +742,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(len(store.list_tasks(owner_token_hash=owner_hash)), 1)
         reservation = temp_access.get_temp_reservation(owner_hash, task_id)
         self.assertEqual(reservation["status"], "reserved")
+        self.assertEqual(before.credit_units - after.credit_units, 6)
 
     def test_persistent_batch_status_reconciles_failed_task(self) -> None:
         registered = self.register("batch_failed_sync")
@@ -1075,6 +1079,7 @@ class WebAPIContractTests(unittest.TestCase):
         owner_hash = temp_access.hash_token(registered["token"])
         temp_access.add_temp_credit_units(owner_hash, 20)
         temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        users.set_user_model_discounts(users.user_identity_by_token_hash(owner_hash)["id"], {"dola": {"Seedance 2.0": 0.4}})
         headers = {"X-API-Token": registered["token"]}
         source_ids = []
         for status in ("failed", "success"):
@@ -1090,6 +1095,7 @@ class WebAPIContractTests(unittest.TestCase):
             source_ids.append(source["id"])
 
         retry_ids = []
+        before_retries = temp_access.get_temp_context_by_hash(owner_hash)
         for source_id, expected_reference_name in zip(source_ids, ["failed-reference.png", "success-reference.png"], strict=True):
             response = self.client.post(f"/tasks/{source_id}/retry", headers=headers)
             self.assertEqual(response.status_code, 200, response.text)
@@ -1104,6 +1110,8 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(store.task_image_paths(retry_id)[0].read_bytes(), b"reference-image")
 
         self.assertEqual(len(set(retry_ids)), 2)
+        after_retries = temp_access.get_temp_context_by_hash(owner_hash)
+        self.assertEqual(before_retries.credit_units - after_retries.credit_units, 12)
         active = store.create_task("active task", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
         self.assertEqual(self.client.post(f"/tasks/{active['id']}/retry", headers=headers).status_code, 409)
 
@@ -1224,6 +1232,7 @@ class WebAPIContractTests(unittest.TestCase):
         existing = store.create_task("正在生成的任务", "9:16", owner_token_hash=owner_hash)
         self.assertTrue(store.mark_running(existing["id"], "worker-existing"))
         store.mark_submitted(existing["id"])
+        before = temp_access.get_temp_context_by_hash(owner_hash)
         response = self.client.post(
             "/tasks",
             headers={"X-API-Token": registered["token"]},
@@ -1314,9 +1323,13 @@ class WebAPIContractTests(unittest.TestCase):
     def test_openai_concurrency_overflow_returns_a_pending_queued_task(self) -> None:
         registered = self.register("limited_openai_client")
         owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        temp_access.set_temp_billing_priority(owner_hash, "points_first")
+        users.set_user_model_discounts(users.user_identity_by_token_hash(owner_hash)["id"], {"dola": {"Seedance 2.0": 0.4}})
         existing = store.create_task("正在生成的任务", "9:16", owner_token_hash=owner_hash)
         self.assertTrue(store.mark_running(existing["id"], "worker-existing"))
         store.mark_submitted(existing["id"])
+        before = temp_access.get_temp_context_by_hash(owner_hash)
         response = self.client.post(
             "/v1/chat/completions",
             headers={"Authorization": f"Bearer {registered['token']}"},
@@ -1326,6 +1339,8 @@ class WebAPIContractTests(unittest.TestCase):
         content = json.loads(response.json()["choices"][0]["message"]["content"])
         self.assertEqual(content["status"], "pending")
         self.assertTrue(content["queued_for_concurrency"])
+        after = temp_access.get_temp_context_by_hash(owner_hash)
+        self.assertEqual(before.credit_units - after.credit_units, 6)
         self.assertEqual({item["id"] for item in store.list_tasks(owner_token_hash=owner_hash)}, {existing["id"], content["task_id"]})
 
     def test_query_parameter_token_is_not_accepted(self) -> None:

@@ -860,6 +860,79 @@ def membership_task_discount_units_by_token_hash(token_hash: str) -> int:
             return 0
 
 
+def _normalized_model_discounts(value: object) -> dict[str, dict[str, int | float]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, int | float]] = {}
+    for raw_platform, raw_models in value.items():
+        platform = str(raw_platform or "").strip().lower()
+        if not platform or not isinstance(raw_models, dict):
+            continue
+        models: dict[str, int | float] = {}
+        for raw_model, raw_discount in raw_models.items():
+            model = str(raw_model or "").strip()
+            if not model:
+                continue
+            try:
+                units = nonnegative_points_to_units(raw_discount)
+            except ValueError:
+                continue
+            if units > 0:
+                models[model] = units_to_points(units)
+        if models:
+            normalized[platform] = models
+    return normalized
+
+
+def user_model_discounts_by_token_hash(token_hash: str) -> dict[str, dict[str, int | float]]:
+    with _LOCK:
+        candidate = _read_user_entry("token_hash", token_hash)
+        if not candidate:
+            return {}
+        return _normalized_model_discounts(candidate[1].get("model_discount_points"))
+
+
+def user_model_discount_units_by_token_hash(token_hash: str, platform: str, model: str) -> int:
+    discounts = user_model_discounts_by_token_hash(token_hash)
+    platform_discounts = discounts.get(str(platform or "").strip().lower(), {})
+    normalized_model = str(model or "").strip().casefold()
+    for configured_model, discount in platform_discounts.items():
+        if configured_model.casefold() != normalized_model:
+            continue
+        try:
+            return nonnegative_points_to_units(discount)
+        except ValueError:
+            return 0
+    return 0
+
+
+def task_discount_units_by_token_hash(token_hash: str, platform: str, model: str) -> int:
+    return (
+        membership_task_discount_units_by_token_hash(token_hash)
+        + user_model_discount_units_by_token_hash(token_hash, platform, model)
+    )
+
+
+def set_user_model_discounts(user_id: str, discounts: object) -> dict[str, dict[str, int | float]]:
+    normalized = _normalized_model_discounts(discounts)
+    with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> dict[str, dict[str, int | float]]:
+                entry["model_discount_points"] = normalized
+                entry["updated_at"] = _now()
+                return normalized
+
+            return postgres.mutate_user("id", user_id, mutate)
+        data = _read()
+        entry = next((item for item in data["users"].values() if str(item.get("id") or "") == str(user_id or "")), None)
+        if not isinstance(entry, dict):
+            raise KeyError(user_id)
+        entry["model_discount_points"] = normalized
+        entry["updated_at"] = _now()
+        _write(data)
+        return normalized
+
+
 def rotate_user_token_by_hash(token_hash: str) -> dict[str, Any]:
     with _LOCK:
         if postgres.enabled():

@@ -563,6 +563,57 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertEqual(second.json()["billing"]["points_used"], 0.7)
 
+    def test_admin_can_set_single_user_model_discounts(self) -> None:
+        first = self.register("model_discount_a")
+        second = self.register("model_discount_b")
+        first_headers = {"X-API-Token": first["token"]}
+        second_headers = {"X-API-Token": second["token"]}
+        self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        listed = self.client.get("/users").json()["users"]
+        first_id = next(item["id"] for item in listed if item["username"] == "model_discount_a")
+        second_id = next(item["id"] for item in listed if item["username"] == "model_discount_b")
+
+        updated = self.client.put(
+            f"/users/{first_id}/model-discounts",
+            json={"discounts": {"dola": {"Seedance 2.0": 0.4}, "doubao": {"Seedance 2.0 Fast": 0.2}}},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["discounts"]["dola"]["Seedance 2.0"], 0.4)
+        details = self.client.get(f"/users/{first_id}/details").json()
+        self.assertEqual(details["model_discounts"]["doubao"]["Seedance 2.0 Fast"], 0.2)
+        dola_model = next(item for platform in details["model_discount_catalog"] if platform["id"] == "dola" for item in platform["models"] if item["name"] == "Seedance 2.0")
+        self.assertEqual(dola_model["discount"], 0.4)
+        self.assertEqual(self.client.get("/auth/access-state", headers=first_headers).json()["model_discounts"]["dola"]["Seedance 2.0"], 0.4)
+        self.assertEqual(users.task_discount_units_by_token_hash(temp_access.hash_token(first["token"]), "dola", "Seedance 2.0"), 4)
+        self.assertEqual(users.task_discount_units_by_token_hash(temp_access.hash_token(second["token"]), "dola", "Seedance 2.0"), 0)
+
+        self.assertEqual(self.client.post(f"/users/{first_id}/points", json={"amount": 10}).status_code, 200)
+        self.assertEqual(self.client.post(f"/users/{second_id}/points", json={"amount": 10}).status_code, 200)
+        with patch.object(main, "active_task_count_for_owner", return_value=0), patch.object(main, "create_sem", asyncio.Semaphore(1)):
+            self.client.post("/tasks", headers=first_headers, data={"prompt": "专属减免免费任务", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video", "duration": 10})
+            first_paid = self.client.post("/tasks", headers=first_headers, data={"prompt": "专属减免付费任务", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video", "duration": 10})
+            self.client.post("/tasks", headers=second_headers, data={"prompt": "普通用户免费任务", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video", "duration": 10})
+            second_paid = self.client.post("/tasks", headers=second_headers, data={"prompt": "普通用户付费任务", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video", "duration": 10})
+        self.assertEqual(first_paid.status_code, 200, first_paid.text)
+        self.assertEqual(second_paid.status_code, 200, second_paid.text)
+        self.assertEqual(first_paid.json()["billing"]["points_used"], 0.6)
+        self.assertEqual(second_paid.json()["billing"]["points_used"], 1)
+
+        membership = self.client.post("/admin/memberships", json={"name": "叠加减免会员", "points_cost": 1, "duration_days": 30, "concurrency": 1, "task_discount_points": 0.3})
+        self.assertEqual(membership.status_code, 201, membership.text)
+        self.assertEqual(self.client.post(f"/memberships/{membership.json()['package']['id']}/purchase", headers=first_headers).status_code, 200)
+        with patch.object(main, "active_task_count_for_owner", return_value=0), patch.object(main, "create_sem", asyncio.Semaphore(1)):
+            stacked = self.client.post("/tasks", headers=first_headers, data={"prompt": "会员与专属减免叠加", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "task_type": "video", "duration": 10})
+        self.assertEqual(stacked.status_code, 200, stacked.text)
+        self.assertEqual(stacked.json()["billing"]["points_used"], 0.3)
+
+        invalid = self.client.put(f"/users/{first_id}/model-discounts", json={"discounts": {"dola": {"missing-model": 1}}})
+        self.assertEqual(invalid.status_code, 400)
+
+        cleared = self.client.put(f"/users/{first_id}/model-discounts", json={"discounts": {"dola": {"Seedance 2.0": 0}}})
+        self.assertEqual(cleared.status_code, 200)
+        self.assertEqual(cleared.json()["discounts"], {})
+
     def test_user_search_prefers_exact_username_email_or_id(self) -> None:
         first = self.register("search_user")
         self.register("search_user_extra")

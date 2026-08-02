@@ -182,6 +182,8 @@ const els = {
   userDetailsTitle: document.getElementById("userDetailsTitle"),
   userDetailsSubtitle: document.getElementById("userDetailsSubtitle"),
   userDetailsSummary: document.getElementById("userDetailsSummary"),
+  userModelDiscountList: document.getElementById("userModelDiscountList"),
+  saveUserModelDiscounts: document.getElementById("saveUserModelDiscounts"),
   userDetailsTransactions: document.getElementById("userDetailsTransactions"),
   userDetailsActivities: document.getElementById("userDetailsActivities"),
   userTransactionsCount: document.getElementById("userTransactionsCount"),
@@ -796,6 +798,8 @@ const state = {
   memberships: [],
   membership: null,
   membershipHoldings: [],
+  modelDiscounts: {},
+  userDetailsUserId: "",
   activeAnnouncement: null,
   pointCards: [],
   selectedPointCardIds: new Set(),
@@ -1683,11 +1687,14 @@ function updateBillingPreview() {
   const selectedPlatform = state.platforms.find((item) => item.id === state.platform);
   const modelCost = Number(selectedPlatform?.model_duration_costs?.[state.model]?.[String(state.duration)] ?? selectedPlatform?.model_costs?.[state.model] ?? 1);
   const membershipDiscount = Math.max(0, Number(state.membership?.task_discount_points || 0));
-  const discountedCost = Math.max(0.1, Math.round((modelCost - membershipDiscount) * 10) / 10);
+  const modelDiscount = Math.max(0, Number(state.modelDiscounts?.[state.platform]?.[state.model] || 0));
+  const discountedCost = Math.max(0.1, Math.round((modelCost - membershipDiscount - modelDiscount) * 10) / 10);
   const usePoints = state.billingPriority === "points_first" && state.points >= discountedCost;
   if (els.submitCostText) {
     els.submitCostText.textContent = state.membership?.name
       ? `${state.membership.name} · 减免后需 ${discountedCost} 积分`
+      : modelDiscount > 0
+        ? `专属减免后需 ${discountedCost} 积分`
       : usePoints || state.freeRemaining <= 0
         ? `本次消耗 ${discountedCost} 积分`
         : "本次使用 1 次视频额度";
@@ -1703,6 +1710,7 @@ function applyAccessScope(data = {}) {
   if (data.task_retention_days != null) state.taskRetentionDays = Number(data.task_retention_days || 7);
   if (data.user_name) state.userName = String(data.user_name);
   if (data.billing_priority) state.billingPriority = String(data.billing_priority) === "points_first" ? "points_first" : "video_first";
+  if (data.model_discounts && typeof data.model_discounts === "object") state.modelDiscounts = data.model_discounts;
   if (!state.userName) state.userName = "当前用户";
   if (data.token_concurrency != null || (isClient && data.browser_workers != null)) {
     const previousConcurrency = state.concurrency;
@@ -1871,6 +1879,7 @@ async function logout() {
   state.membership = null;
   state.memberships = [];
   state.membershipHoldings = [];
+  state.modelDiscounts = {};
   state.apiToken = "";
   state.authenticated = false;
   clearBatchReferenceImages();
@@ -2572,15 +2581,57 @@ async function submitUserBalance(event) {
 function closeUserDetails() {
   els.userDetailsModal?.classList.add("hidden");
   els.userDetailsModal?.setAttribute("aria-hidden", "true");
+  state.userDetailsUserId = "";
+}
+
+function renderUserModelDiscounts(catalog = []) {
+  if (!els.userModelDiscountList) return;
+  const platforms = Array.isArray(catalog) ? catalog : [];
+  els.userModelDiscountList.innerHTML = platforms.length ? platforms.map((platform) => {
+    const models = Array.isArray(platform.models) ? platform.models : [];
+    return `<section class="user-model-discount-group"><h4>${escapeHtml(platform.label || PLATFORM_LABELS[platform.id] || platform.id)}</h4><div>${models.map((model) => {
+      const prices = Object.entries(model.duration_costs || {}).map(([duration, price]) => `${duration}秒 ${price}积分`).join(" / ");
+      return `<label class="user-model-discount-row"><span><strong>${escapeHtml(model.name)}</strong><small>${escapeHtml(prices || "按模型价格计费")}${model.enabled === false ? " · 当前停用" : ""}</small></span><span class="user-model-discount-input"><input type="number" min="0" step="0.1" value="${escapeHtml(model.discount || 0)}" data-user-model-discount data-platform="${escapeHtml(platform.id)}" data-model="${escapeHtml(model.name)}" aria-label="${escapeHtml(model.name)} 每条视频减免积分"><em>积分/条</em></span></label>`;
+    }).join("")}</div></section>`;
+  }).join("") : '<div class="empty-state">暂无可配置模型</div>';
+}
+
+async function saveUserModelDiscounts() {
+  if (!state.userDetailsUserId || !els.userModelDiscountList) return;
+  const discounts = {};
+  for (const input of els.userModelDiscountList.querySelectorAll("[data-user-model-discount]")) {
+    const value = Number(input.value || 0);
+    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value * 10)) {
+      input.focus();
+      return toast("减免积分必须大于等于 0，且最多保留 1 位小数", "error");
+    }
+    const platform = String(input.dataset.platform || "");
+    const model = String(input.dataset.model || "");
+    if (!platform || !model) continue;
+    discounts[platform] ||= {};
+    discounts[platform][model] = value;
+  }
+  setBusy(els.saveUserModelDiscounts, true, "保存中");
+  try {
+    await apiFetch(`/users/${encodeURIComponent(state.userDetailsUserId)}/model-discounts`, { method: "PUT", body: { discounts } });
+    toast("单模型积分减免已保存");
+    await openUserDetails(state.userDetailsUserId);
+  } catch (error) {
+    toast(`保存失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.saveUserModelDiscounts, false);
+  }
 }
 
 async function openUserDetails(userId) {
   if (!els.userDetailsModal) return;
+  state.userDetailsUserId = String(userId || "");
   els.userDetailsModal.classList.remove("hidden");
   els.userDetailsModal.setAttribute("aria-hidden", "false");
   els.userDetailsTitle.textContent = "用户详情";
   els.userDetailsSubtitle.textContent = "正在读取账号记录";
   els.userDetailsSummary.innerHTML = '<div class="empty-state">正在加载...</div>';
+  if (els.userModelDiscountList) els.userModelDiscountList.innerHTML = '<div class="empty-state">正在加载...</div>';
   els.userDetailsTransactions.innerHTML = '<div class="empty-state">正在加载...</div>';
   els.userDetailsActivities.innerHTML = '<div class="empty-state">正在加载...</div>';
   try {
@@ -2603,6 +2654,7 @@ async function openUserDetails(userId) {
       ["今日失败", summary.today_failed ?? 0],
       ["进行中", summary.active ?? 0],
     ].map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+    renderUserModelDiscounts(data.model_discount_catalog);
     if (els.userTransactionsCount) els.userTransactionsCount.textContent = `${Number(data.transactions?.total || transactions.length)} 条`;
     if (els.userActivitiesCount) els.userActivitiesCount.textContent = `${Number(data.activities?.total || activities.length)} 条`;
     els.userDetailsTransactions.innerHTML = transactions.length ? transactions.map((item) => {
@@ -7182,6 +7234,7 @@ function bindEvents() {
   els.userBalanceModal?.addEventListener("click", (event) => { if (event.target === els.userBalanceModal) closeUserBalance(); });
   els.closeUserDetailsModal?.addEventListener("click", closeUserDetails);
   els.cancelUserDetailsModal?.addEventListener("click", closeUserDetails);
+  els.saveUserModelDiscounts?.addEventListener("click", saveUserModelDiscounts);
   els.userDetailsModal?.addEventListener("click", (event) => {
     if (event.target === els.userDetailsModal) closeUserDetails();
   });

@@ -32,7 +32,7 @@ from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, migrate_ten_second_accounts_to_api, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
-from .billing import model_cost_points, model_cost_units, points_to_units, units_to_points
+from .billing import model_cost_points, model_cost_units, nonnegative_points_to_units, points_to_units, units_to_points
 from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
 from .batch_jobs import (
     cancel_job as cancel_persistent_batch_job,
@@ -226,7 +226,7 @@ def _validate_video_url(value: str) -> str:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, adjust_user_video_quota, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, membership_task_discount_units_by_token_hash, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, set_user_remote_generation_limit, sync_user_membership_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, adjust_user_video_quota, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, set_user_model_discounts, set_user_remote_generation_limit, sync_user_membership_by_token_hash, task_discount_units_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_model_discounts_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
@@ -935,7 +935,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
             if not created and not resumed_initializing:
                 return str(meta["id"])
             base_cost_units = model_cost_units(platform, model, "video", duration)
-            discount_units = await _storage_call(membership_task_discount_units_by_token_hash, owner_hash)
+            discount_units = await _storage_call(task_discount_units_by_token_hash, owner_hash, platform, model)
             cost_units = max(1, base_cost_units - discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
             reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
@@ -1500,6 +1500,7 @@ def _client_access_payload(access: AccessContext) -> dict:
         "remote_generation_limit": access.remote_generation_limit,
         "task_retention_days": access.task_retention_days,
         "billing_priority": access.billing_priority,
+        "model_discounts": user_model_discounts_by_token_hash(access.token_hash),
         "user_name": user_name,
     }
 
@@ -2450,6 +2451,25 @@ async def user_details(user_id: str):
     activities = await asyncio.to_thread(list_activity, user_id, 1, 100)
     owner_hash = hash_token(str(user.get("token") or "")) if user.get("token") else ""
     tasks = await asyncio.to_thread(list_tasks, owner_hash) if owner_hash else []
+    model_discounts = await asyncio.to_thread(user_model_discounts_by_token_hash, owner_hash) if owner_hash else {}
+    settings = load_settings()
+    model_discount_catalog = []
+    for platform in PLATFORM_LABELS:
+        models = []
+        platform_discounts = model_discounts.get(platform, {})
+        for model in settings.platform_models.get(platform, []):
+            discount = next((value for name, value in platform_discounts.items() if name.casefold() == model.casefold()), 0)
+            models.append({
+                "name": model,
+                "enabled": settings.platform_model_states.get(platform, {}).get(model, True),
+                "discount": discount,
+                "duration_costs": {
+                    str(duration): model_cost_points(platform, model, duration=duration)
+                    for duration in PLATFORM_VIDEO_DURATIONS[platform]
+                },
+            })
+        if models:
+            model_discount_catalog.append({"id": platform, "label": PLATFORM_LABELS.get(platform, platform), "models": models})
     task_summary = {
         "total": len(tasks),
         "success": sum(str(item.get("status") or "") == "success" for item in tasks),
@@ -2458,7 +2478,55 @@ async def user_details(user_id: str):
         "today_success": sum(str(item.get("status") or "") == "success" and item.get("completed_today") is True for item in tasks),
         "today_failed": sum(str(item.get("status") or "") == "failed" and item.get("completed_today") is True for item in tasks),
     }
-    return {"user": user, "transactions": transactions, "activities": activities, "task_summary": task_summary}
+    return {
+        "user": user,
+        "transactions": transactions,
+        "activities": activities,
+        "task_summary": task_summary,
+        "model_discounts": model_discounts,
+        "model_discount_catalog": model_discount_catalog,
+    }
+
+
+@app.put("/users/{user_id}/model-discounts", dependencies=[Depends(require_admin)])
+async def users_set_model_discounts(user_id: str, request: Request):
+    payload = await _request_payload(request)
+    raw_discounts = payload.get("discounts")
+    if not isinstance(raw_discounts, dict):
+        raise HTTPException(status_code=400, detail="模型减免配置格式无效")
+    settings = load_settings()
+    normalized: dict[str, dict[str, int | float]] = {}
+    try:
+        for raw_platform, raw_models in raw_discounts.items():
+            platform = str(raw_platform or "").strip().lower()
+            if platform not in PLATFORM_LABELS or not isinstance(raw_models, dict):
+                raise ValueError("模型减免平台无效")
+            configured_models = settings.platform_models.get(platform, [])
+            canonical_models = {item.casefold(): item for item in configured_models}
+            platform_values: dict[str, int | float] = {}
+            for raw_model, raw_discount in raw_models.items():
+                model = canonical_models.get(str(raw_model or "").strip().casefold())
+                if not model:
+                    raise ValueError(f"{PLATFORM_LABELS.get(platform, platform)} 模型不存在")
+                units = nonnegative_points_to_units(raw_discount)
+                if units > 0:
+                    platform_values[model] = units_to_points(units)
+            if platform_values:
+                normalized[platform] = platform_values
+        saved = await asyncio.to_thread(set_user_model_discounts, user_id, normalized)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    configured_count = sum(len(models) for models in saved.values())
+    await _record_activity_safe(
+        user_id,
+        "admin_model_discount",
+        "管理员调整单模型积分减免",
+        detail=f"已设置 {configured_count} 个模型的单条视频积分减免",
+        actor="admin",
+    )
+    return {"ok": True, "discounts": saved}
 
 
 @app.post("/users/{user_id}/points", dependencies=[Depends(require_admin)])
@@ -3343,7 +3411,7 @@ async def openai_chat_completions(
             access = get_temp_context_by_hash(access.token_hash) or access
             queued_for_concurrency = active_task_count_for_owner(access.token_hash) >= access.concurrency
         base_cost_units = model_cost_units(platform, model, task_type, duration)
-        discount_units = membership_task_discount_units_by_token_hash(access.token_hash) if access.is_temp else 0
+        discount_units = task_discount_units_by_token_hash(access.token_hash, platform, model) if access.is_temp else 0
         cost_units = max(1, base_cost_units - discount_units)
         user_id = _transaction_user_id(access)
         reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
@@ -4903,7 +4971,7 @@ async def submit_task(
             if access.is_temp:
                 queued_for_concurrency = await _storage_call(active_task_count_for_owner, access.token_hash) >= access.concurrency
             base_cost_units = model_cost_units(platform, model, task_type, duration)
-            discount_units = await _storage_call(membership_task_discount_units_by_token_hash, access.token_hash) if access.is_temp else 0
+            discount_units = await _storage_call(task_discount_units_by_token_hash, access.token_hash, platform, model) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
             reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
@@ -5390,7 +5458,7 @@ async def _create_manual_retry_task(
         )
         if retry_access.is_temp:
             base_cost_units = model_cost_units(platform, model, task_type, duration)
-            discount_units = await asyncio.to_thread(membership_task_discount_units_by_token_hash, owner_hash)
+            discount_units = await asyncio.to_thread(task_discount_units_by_token_hash, owner_hash, platform, model)
             cost_units = max(1, base_cost_units - discount_units)
             user_id = _transaction_user_id(retry_access)
             reserved_access = await asyncio.to_thread(reserve_temp_quota, retry_access, str(retry_meta["id"]), cost_units, user_id=user_id)

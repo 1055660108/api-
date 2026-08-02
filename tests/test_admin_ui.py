@@ -280,9 +280,18 @@ class AdminUITests(unittest.TestCase):
 
     def test_submit_cost_shows_active_membership_discount_and_queue_state(self) -> None:
         self.assertIn('`${state.membership.name} · 减免后需 ${discountedCost} 积分`', self.javascript)
-        self.assertIn('Math.max(0.1, Math.round((modelCost - membershipDiscount) * 10) / 10)', self.javascript)
+        self.assertIn('state.modelDiscounts?.[state.platform]?.[state.model]', self.javascript)
+        self.assertIn('Math.max(0.1, Math.round((modelCost - membershipDiscount - modelDiscount) * 10) / 10)', self.javascript)
+        self.assertIn('`专属减免后需 ${discountedCost} 积分`', self.javascript)
         self.assertIn('data.queued_for_concurrency', self.javascript)
         self.assertIn('空出并发后自动执行', self.javascript)
+
+    def test_user_details_can_edit_per_model_discounts(self) -> None:
+        self.assertIn('id="userModelDiscountList"', self.html)
+        self.assertIn('id="saveUserModelDiscounts"', self.html)
+        self.assertIn('data-user-model-discount', self.javascript)
+        self.assertIn('/model-discounts`, { method: "PUT", body: { discounts } }', self.javascript)
+        self.assertIn('renderUserModelDiscounts(data.model_discount_catalog)', self.javascript)
 
     def test_task_and_account_tables_use_server_pagination(self) -> None:
         self.assertIn('const data = await apiFetch(`/tasks?${params}`)', self.javascript)

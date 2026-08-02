@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -140,6 +140,11 @@ class DoubaoAutomationTests(unittest.TestCase):
             "body.option.need_create_conversation = !conversationId",
             "body.client_meta.conversation_id = conversationId",
             "auto_confirmation_sent: autoConfirmationSent",
+            "attachments: attachments.map(item =>",
+            "block_type: 10052",
+            "submitted_with_images: Boolean(attachments && attachments.length)",
+            'ability_param: JSON.stringify({ratio: ratio || "auto", model, duration: seconds})',
+            "if (conversationId) body.messages = [textMessage]",
         ):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertIn("would you like|do you want|shall i|should i", DOUBAO_SUBMIT_SCRIPT)
@@ -149,6 +154,20 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("modelDisplayName(model)", DOUBAO_SUBMIT_SCRIPT)
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Mini"], "seedance_v2.0_mini")
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Fast"], "seedance_v2.0")
+
+    def test_reference_upload_uses_captured_doubao_scene(self) -> None:
+        page = SimpleNamespace(evaluate=AsyncMock(return_value={
+            "ok": True,
+            "status": 200,
+            "json": {"code": 0, "data": {"service_id": "doubao-imagex"}},
+        }))
+        uploader = DoubaoReferenceImageUploader.__new__(DoubaoReferenceImageUploader)
+
+        result = asyncio.run(uploader._prepare_image_upload(page))
+
+        self.assertEqual(DOUBAO_PREPARE_UPLOAD_BODY, {"tenant_id": "5", "scene_id": "5", "resource_type": 2})
+        self.assertEqual(result, {"service_id": "doubao-imagex"})
+        self.assertEqual(page.evaluate.await_args.args[1], {"body": DOUBAO_PREPARE_UPLOAD_BODY})
 
     def test_submit_script_waits_for_generation_ack_before_accepting(self) -> None:
         for fragment in (
@@ -622,6 +641,8 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertTrue(outcome["confirmation_pending"])
         self.assertTrue(outcome["keep_account_claimed"])
         runner.submission_pacer.assert_awaited_once()
+        self.assertEqual(page.evaluate.await_args.args[1]["attachments"], [])
+        self.assertEqual(page.evaluate.await_args.args[1]["ratio"], "9:16")
         mark_submitted.assert_called_once_with("doubao-task", result_poll_delay_seconds=20)
         self.assertTrue(any(call.kwargs["extra"].get("doubao_result_mode") == "interface_poll" for call in save_result.call_args_list))
         self.assertTrue(any(call.kwargs["extra"].get("doubao_generation_ack_source") == "python_response_fallback" for call in save_result.call_args_list))

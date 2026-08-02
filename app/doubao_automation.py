@@ -6,7 +6,7 @@ import hashlib
 import html
 import json
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncContextManager, Awaitable, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
+from .automation import DolaFetchAutomation, PREPARE_UPLOAD_SCRIPT, PREPARE_UPLOAD_TIMEOUT_SECONDS, ReferenceUploadCapacityError, is_reference_upload_failure, is_reference_upload_phase
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
@@ -50,6 +51,7 @@ DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
     "download_link",
     "media_response",
 }
+DOUBAO_PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "5", "resource_type": 2}
 QAAB_SALT = bytes.fromhex(
     "4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524"
     "f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58"
@@ -890,7 +892,7 @@ async ({conversationId}) => {
 
 
 DOUBAO_SUBMIT_SCRIPT = r"""
-async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
+async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs}) => {
   function uuid() {
     return crypto.randomUUID ? crypto.randomUUID() :
       "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
@@ -1069,20 +1071,35 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
   }
 
   const seconds = Math.max(1, Number(duration) || 10);
-  const payload = {
-    client_meta: {
-      local_conversation_id: localConversationId,
-      conversation_id: "",
-      bot_id: "7338286299411103781",
-      last_section_id: "",
-      last_message_index: null
-    },
-    messages: [{
+  const messages = [];
+  if (attachments && attachments.length) {
+    messages.push({
       local_message_id: uuid(),
       content_block: [{
-        block_type: 10000,
+        block_type: 10052,
         content: {
-          text_block: {text: generationInstruction(prompt), icon_url: "", icon_url_dark: "", summary: ""},
+          attachment_block: {
+            attachments: attachments.map(item => ({
+              type: 1,
+              identifier: item.identifier || uuid(),
+              image: {
+                name: item.name || "image.png",
+                uri: item.uri,
+                image_ori: {
+                  url: "",
+                  width: Number(item.width || 0),
+                  height: Number(item.height || 0),
+                  format: "",
+                  url_formats: {}
+                }
+              },
+              parse_state: 0,
+              review_state: 1,
+              upload_status: 1,
+              progress: 100,
+              src: ""
+            }))
+          },
           pc_event_block: ""
         },
         block_id: uuid(),
@@ -1091,7 +1108,32 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
         append_fields: []
       }],
       message_status: 0
+    });
+  }
+  messages.push({
+    local_message_id: uuid(),
+    content_block: [{
+      block_type: 10000,
+      content: {
+        text_block: {text: generationInstruction(prompt), icon_url: "", icon_url_dark: "", summary: ""},
+        pc_event_block: ""
+      },
+      block_id: uuid(),
+      parent_id: "",
+      meta_info: [],
+      append_fields: []
     }],
+    message_status: 0
+  });
+  const payload = {
+    client_meta: {
+      local_conversation_id: localConversationId,
+      conversation_id: "",
+      bot_id: "7338286299411103781",
+      last_section_id: "",
+      last_message_index: null
+    },
+    messages,
     option: {
       send_message_scene: "",
       create_time_ms: Date.now(),
@@ -1204,9 +1246,14 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     body.client_meta.conversation_id = conversationId || "";
     body.client_meta.last_section_id = extract([/"(?:section_id|sectionId)"\s*:\s*"?(\d{15,24})"?/], responseText);
     body.client_meta.last_message_index = lastMessageIndex(responseText);
-    body.messages[0].local_message_id = uuid();
-    body.messages[0].content_block[0].block_id = uuid();
-    body.messages[0].content_block[0].content.text_block.text = messageText;
+    const textMessage = body.messages.find(message =>
+      (message.content_block || []).some(block => Number(block.block_type) === 10000)
+    );
+    if (!textMessage) throw new Error("doubao text message block missing");
+    textMessage.local_message_id = uuid();
+    textMessage.content_block[0].block_id = uuid();
+    textMessage.content_block[0].content.text_block.text = messageText;
+    if (conversationId) body.messages = [textMessage];
     body.option.create_time_ms = Date.now();
     body.option.unique_key = uuid();
     body.option.need_create_conversation = !conversationId;
@@ -1303,6 +1350,7 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
     same_account_attempt_count: sameAccountAttemptCount,
     same_account_retry_limit: maxResends,
     resend_delay_ms: resendDelayMs,
+    submitted_with_images: Boolean(attachments && attachments.length),
     accepted: Boolean(detectedWaitMessage || videoUrl),
     quota_insufficient: quotaInsufficient(text),
     service_frequent: text.includes("710022002") || text.includes("当前服务访问频繁") || text.includes("服务访问频繁"),
@@ -1312,6 +1360,28 @@ async ({prompt, ratio, model, duration, retryLimit, retryDelayMs}) => {
   };
 }
 """
+
+
+class DoubaoReferenceImageUploader(DolaFetchAutomation):
+    async def _prepare_image_upload(self, page: Page) -> dict[str, Any]:
+        try:
+            result = await asyncio.wait_for(
+                page.evaluate(PREPARE_UPLOAD_SCRIPT, {"body": DOUBAO_PREPARE_UPLOAD_BODY}),
+                timeout=PREPARE_UPLOAD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("prepare_upload timed out") from exc
+        if not isinstance(result, dict):
+            raise RuntimeError("prepare_upload returned invalid response")
+        if not result.get("ok"):
+            raise RuntimeError(f"prepare_upload failed with HTTP {result.get('status')}: {str(result.get('text') or '')[:500]}")
+        data = result.get("json")
+        if not isinstance(data, dict) or data.get("code") != 0:
+            raise RuntimeError(f"prepare_upload returned unexpected body: {str(result.get('text') or data)[:500]}")
+        upload_config = data.get("data")
+        if not isinstance(upload_config, dict):
+            raise RuntimeError("prepare_upload did not return upload config")
+        return upload_config
 
 
 class DoubaoVideoAutomation:
@@ -1326,6 +1396,8 @@ class DoubaoVideoAutomation:
         proxy_session: Any | None = None,
         browser_pool: ReusableBrowserPool | None = None,
         submission_pacer: Callable[[], Awaitable[None]] | None = None,
+        image_upload_slot: Callable[[], AsyncContextManager[None]] | None = None,
+        image_preparation_done: Callable[[], None] | None = None,
     ):
         self.task_id = task_id
         self.prompt = prompt
@@ -1336,9 +1408,17 @@ class DoubaoVideoAutomation:
         self.proxy_session = proxy_session
         self.browser_pool = browser_pool
         self.submission_pacer = submission_pacer
+        self.image_upload_slot = image_upload_slot
+        self.image_preparation_done = image_preparation_done
         self.settings = load_settings()
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
+
+    def _finish_image_preparation(self) -> None:
+        callback = getattr(self, "image_preparation_done", None)
+        self.image_preparation_done = None
+        if callback is not None:
+            callback()
 
     def _context_storage_state(self) -> dict[str, Any] | None:
         saved: dict[str, Any] = {}
@@ -1398,6 +1478,17 @@ class DoubaoVideoAutomation:
             if task_exists(self.task_id) and not submitted:
                 mark_pending(self.task_id, "doubao browser timeout")
             return {"success": False, "retryable": not submitted, "reason": "doubao browser timeout"}
+        except ReferenceUploadCapacityError as exc:
+            return {
+                "success": False,
+                "retryable": True,
+                "reason": str(exc),
+                "infrastructure_fault": True,
+                "defer_only": True,
+                "retry_after": exc.retry_after,
+                "defer_reason": "参考图上传繁忙，任务已自动排队",
+                "defer_category": "image_upload_limit",
+            }
         except Exception as exc:
             if all(hasattr(exc, name) for name in ("retry_after", "queue_reason", "queue_category")):
                 return {
@@ -1411,13 +1502,25 @@ class DoubaoVideoAutomation:
                     "defer_category": str(exc.queue_category),
                 }
             reason = str(exc)[:500]
+            execution_phase = ""
+            if task_exists(self.task_id):
+                try:
+                    execution_phase = str(get_meta(self.task_id).get("execution_phase") or "")
+                except FileNotFoundError:
+                    pass
+            reference_upload_failure = is_reference_upload_failure(reason) or is_reference_upload_phase(execution_phase)
+            if reference_upload_failure and task_exists(self.task_id):
+                save_result(self.task_id, extra={
+                    "doubao_submit_error_category": "reference_upload",
+                    "doubao_reference_upload_error": reason,
+                })
             if task_exists(self.task_id):
                 mark_pending(self.task_id, reason)
             return {
                 "success": False,
                 "retryable": True,
                 "reason": reason,
-                "infrastructure_fault": self.proxy_session is not None,
+                "infrastructure_fault": self.proxy_session is not None or reference_upload_failure,
             }
 
     async def _run_once(self) -> dict[str, Any]:
@@ -1441,8 +1544,16 @@ class DoubaoVideoAutomation:
             if task_exists(self.task_id) and is_task_canceled(self.task_id):
                 return {"success": False, "retryable": False, "reason": "用户取消生成"}
             return await self._run_browser(proxy_config)
-        except Exception:
-            if proxy_acquired:
+        except Exception as exc:
+            reference_upload_failure = False
+            if task_exists(self.task_id):
+                try:
+                    reference_upload_failure = is_reference_upload_failure(str(exc)) or is_reference_upload_phase(
+                        str(get_meta(self.task_id).get("execution_phase") or "")
+                    )
+                except FileNotFoundError:
+                    pass
+            if proxy_acquired and not reference_upload_failure and not isinstance(exc, ReferenceUploadCapacityError):
                 self.proxy_session.mark_browser_proxy_unavailable(reason="doubao_browser_failure")
             raise
         finally:
@@ -1671,6 +1782,7 @@ class DoubaoVideoAutomation:
             page = None
             capture_video_response = None
             capture_tasks: set[asyncio.Task[Any]] = set()
+            reference_uploader: DoubaoReferenceImageUploader | None = None
             try:
                 self._set_phase("starting_browser", "正在启动豆包生成环境")
                 executable_path = resolve_browser_executable(self.settings.browser_executable_path)
@@ -1736,6 +1848,22 @@ class DoubaoVideoAutomation:
                 model_code = DOUBAO_MODEL_CODES.get(self.model)
                 if not model_code:
                     return {"success": False, "retryable": False, "reason": "doubao model unavailable"}
+                image_count = int(get_meta(self.task_id).get("image_count") or 0) if task_exists(self.task_id) else 0
+                self._set_phase(
+                    "preparing_references",
+                    "正在准备豆包参考图" if image_count > 0 else "正在准备豆包生成请求",
+                )
+                reference_uploader = DoubaoReferenceImageUploader(
+                    self.task_id,
+                    self.prompt,
+                    self.ratio,
+                    self.duration,
+                    account=self.account,
+                    image_upload_slot=getattr(self, "image_upload_slot", None),
+                    proxy_platform="doubao",
+                )
+                attachments = await reference_uploader._upload_images_if_needed(page)
+                self._finish_image_preparation()
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
@@ -1749,6 +1877,7 @@ class DoubaoVideoAutomation:
                         "ratio": self.ratio or "auto",
                         "model": model_code,
                         "duration": self.duration,
+                        "attachments": attachments,
                         "retryLimit": self.settings.doubao_submit_retry_limit,
                         "retryDelayMs": 15000,
                     },
@@ -1846,6 +1975,7 @@ class DoubaoVideoAutomation:
                         "account_quota_charge_id": str(self.account.get("quota_charge_id") or ""),
                         "doubao_page_url": page.url,
                         "doubao_submit_confirmed": bool(completion_result.get("accepted")),
+                        "doubao_submitted_with_images": bool(completion_result.get("submitted_with_images")),
                         "conversation_id": conversation_id,
                         "cookie_string": self._cookie_header(refreshed_cookies),
                         "doubao_conversation_id": conversation_id,
@@ -1966,6 +2096,7 @@ class DoubaoVideoAutomation:
                 )
                 return {"success": False, "retryable": False, "reason": "doubao original video result timeout"}
             finally:
+                self._finish_image_preparation()
                 if page is not None and capture_video_response is not None:
                     try:
                         page.remove_listener("response", capture_video_response)

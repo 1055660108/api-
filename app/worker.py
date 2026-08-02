@@ -685,7 +685,8 @@ class WorkerManager:
         if now - self._image_owner_limits_refreshed_at >= 1.0 or normalized_owner not in self._image_owner_limits:
             contenders = {
                 str(meta.get("owner_token_hash") or "")
-                for _, meta in list_task_metas_by_statuses({"pending", "running"}, platform="dola")
+                for platform in ("dola", "doubao")
+                for _, meta in list_task_metas_by_statuses({"pending", "running"}, platform=platform)
                 if int(meta.get("image_count") or 0) > 0 and str(meta.get("owner_token_hash") or "")
             }
             contenders.add(normalized_owner)
@@ -837,7 +838,7 @@ class WorkerManager:
                         break
                     claimed_meta = get_meta(candidate_id)
                     candidate_platform = str(claimed_meta.get("platform") or "dola")
-                    is_image_submission = candidate_platform == "dola" and int(claimed_meta.get("image_count") or 0) > 0
+                    is_image_submission = candidate_platform in {"dola", "doubao"} and int(claimed_meta.get("image_count") or 0) > 0
                     candidate_owner = str(claimed_meta.get("owner_token_hash") or "")
                     if is_image_submission:
                         prepare_owner_limit = self._image_prepare_owner_limit(candidate_owner)
@@ -941,6 +942,12 @@ class WorkerManager:
                         proxy_session=proxy_session,
                         browser_pool=self._dola_browser_pool,
                         submission_pacer=self._wait_for_doubao_submit_slot,
+                        image_upload_slot=(
+                            lambda current_task_id=task_id, current_owner=candidate_owner: self._image_upload_slot(current_task_id, current_owner)
+                        ) if is_image_submission else None,
+                        image_preparation_done=(
+                            lambda current_task_id=task_id: self._release_image_preparation(current_task_id)
+                        ) if is_image_submission else None,
                     )
                 elif platform == "qianwen":
                     proxy_session = DolaFetchAutomation(

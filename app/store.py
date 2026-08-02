@@ -1408,6 +1408,7 @@ def compact_task_reference_images(task_id: str) -> list[Path]:
             return thumbnails
         for source in originals:
             source.unlink(missing_ok=True)
+        shutil.rmtree(task_dir(task_id) / "processed_references", ignore_errors=True)
         try:
             images_dir(task_id).rmdir()
         except OSError:

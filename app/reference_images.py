@@ -18,6 +18,9 @@ MANIFEST_VERSION = 3
 GRID_ALPHA = 0.5
 GRID_COLOR = (255, 255, 255)
 GRID_LINE_WIDTH = 2
+REFERENCE_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
+REFERENCE_UPLOAD_MAX_SIDE = 3072
+REFERENCE_UPLOAD_JPEG_QUALITIES = (92, 88, 84, 80, 76, 72, 68, 64)
 
 
 def _source_fingerprint(path: Path) -> str:
@@ -52,6 +55,93 @@ def _load_image(path: Path) -> np.ndarray | None:
     except OSError:
         return None
     return cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+
+
+def _encode_upload_copy(image: np.ndarray) -> bytes | None:
+    height, width = image.shape[:2]
+    if height <= 0 or width <= 0:
+        return None
+    best: bytes | None = None
+    initial_side = min(REFERENCE_UPLOAD_MAX_SIDE, max(height, width))
+    target_sides = list(dict.fromkeys((initial_side, 2560, 2048, 1600, 1280, 1024, 768)))
+    for max_side in target_sides:
+        if max_side > initial_side:
+            continue
+        scale = min(1.0, max_side / float(max(height, width)))
+        prepared = image if scale == 1.0 else cv2.resize(
+            image,
+            (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+        for quality in REFERENCE_UPLOAD_JPEG_QUALITIES:
+            success, encoded = cv2.imencode(
+                ".jpg",
+                prepared,
+                [cv2.IMWRITE_JPEG_QUALITY, quality, cv2.IMWRITE_JPEG_OPTIMIZE, 1],
+            )
+            if not success:
+                continue
+            candidate = encoded.tobytes()
+            if best is None or len(candidate) < len(best):
+                best = candidate
+            if len(candidate) <= REFERENCE_UPLOAD_MAX_BYTES:
+                return candidate
+    return best
+
+
+def _prepare_upload_sized_images(task_id: str, paths: list[Path]) -> list[Path]:
+    if not paths:
+        return []
+    upload_dir = task_dir(task_id) / "processed_references" / "upload_ready"
+    prepared: list[Path] = []
+    optimized_count = 0
+    original_bytes = 0
+    prepared_bytes = 0
+    errors: list[str] = []
+    for source in paths:
+        try:
+            source_size = source.stat().st_size
+        except OSError:
+            prepared.append(source)
+            errors.append(source.name)
+            continue
+        original_bytes += source_size
+        if source_size <= REFERENCE_UPLOAD_MAX_BYTES:
+            prepared.append(source)
+            prepared_bytes += source_size
+            continue
+        fingerprint = _source_fingerprint(source)
+        target = upload_dir / f"{fingerprint}.jpg"
+        if target.is_file() and 0 < target.stat().st_size <= REFERENCE_UPLOAD_MAX_BYTES:
+            prepared.append(target)
+            prepared_bytes += target.stat().st_size
+            optimized_count += 1
+            continue
+        image = _load_image(source)
+        encoded = _encode_upload_copy(image) if image is not None else None
+        if not encoded:
+            prepared.append(source)
+            prepared_bytes += source_size
+            errors.append(source.name)
+            continue
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_bytes(encoded)
+        temporary.replace(target)
+        prepared.append(target)
+        prepared_bytes += len(encoded)
+        optimized_count += 1
+    try:
+        update_meta(
+            task_id,
+            reference_upload_optimized_count=optimized_count,
+            reference_upload_original_bytes=original_bytes,
+            reference_upload_prepared_bytes=prepared_bytes,
+            reference_upload_optimization_errors=errors,
+        )
+    except (FileNotFoundError, OSError):
+        LOGGER.warning("could not persist reference upload optimization metadata for task %s", task_id)
+    return prepared
 
 
 def _overlap_ratio(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> float:
@@ -196,7 +286,7 @@ def prepare_task_reference_images(task_id: str, retry_face_detection: bool | Non
             )
         except (FileNotFoundError, OSError):
             LOGGER.warning("could not persist disabled reference face metadata for task %s", task_id)
-        return originals
+        return _prepare_upload_sized_images(task_id, originals)
 
     internal_dir = task_dir(task_id) / "processed_references"
     internal_dir.mkdir(parents=True, exist_ok=True)
@@ -264,4 +354,4 @@ def prepare_task_reference_images(task_id: str, retry_face_detection: bool | Non
         )
     except (FileNotFoundError, OSError):
         LOGGER.warning("could not persist reference face metadata for task %s", task_id)
-    return prepared
+    return _prepare_upload_sized_images(task_id, prepared)

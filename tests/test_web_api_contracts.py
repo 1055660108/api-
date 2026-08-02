@@ -1448,6 +1448,9 @@ class WebAPIContractTests(unittest.TestCase):
         reference = store.images_dir(task["id"]) / "01.png"
         reference.write_bytes(encoded.tobytes())
         store.set_task_images(task["id"], [reference], ["large-source.png"])
+        processed = store.task_dir(task["id"]) / "processed_references" / "upload_ready" / "cached.jpg"
+        processed.parent.mkdir(parents=True)
+        processed.write_bytes(b"temporary-upload-copy")
         original_size = reference.stat().st_size
 
         store.update_meta(task["id"], status=store.STATUS_RUNNING)
@@ -1456,6 +1459,7 @@ class WebAPIContractTests(unittest.TestCase):
 
         thumbnails = store.task_reference_thumbnail_paths(task["id"])
         self.assertFalse(reference.exists())
+        self.assertFalse(processed.parent.parent.exists())
         self.assertEqual(len(thumbnails), 1)
         self.assertLessEqual(thumbnails[0].stat().st_size, store.REFERENCE_THUMBNAIL_MAX_BYTES)
         self.assertLess(thumbnails[0].stat().st_size, original_size)

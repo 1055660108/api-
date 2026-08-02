@@ -242,6 +242,7 @@ try:
 except (TypeError, ValueError):
     PREPARE_UPLOAD_TIMEOUT_SECONDS = 60.0
 REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS = 120.0
+REFERENCE_IMAGE_UPLOAD_TRANSPORT_ATTEMPTS = 3
 REFERENCE_CACHE_WAIT_TIMEOUT_SECONDS = 130.0
 API_PROXY_CANDIDATE_LIMIT = 3
 API_PROXY_FETCH_LIMIT = 6
@@ -1351,7 +1352,8 @@ class DolaFetchAutomation:
                 self._record_active_gateway_failure(gateway_status)
             if reference_upload_failure:
                 reference_transport_failure = "timed out" in reason.lower() or is_proxy_transport_failure(reason)
-                if self.active_proxy_source == "api" and reference_transport_failure:
+                direct_upload_failure = "direct image upload transport failure" in reason.lower()
+                if self.active_proxy_source == "api" and reference_transport_failure and not direct_upload_failure:
                     self._mark_active_proxy_unavailable(reason="reference_upload_timeout")
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
@@ -2079,13 +2081,42 @@ class DolaFetchAutomation:
         }
 
     async def _upload_one_image_with_timeout(self, page: Page, image_path: Path) -> dict[str, Any]:
-        try:
-            return await asyncio.wait_for(
-                self._upload_one_image_by_fetch(page, image_path),
-                timeout=REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError("reference image upload timed out") from exc
+        last_transport_error: httpx.TransportError | None = None
+        attempts = max(1, int(REFERENCE_IMAGE_UPLOAD_TRANSPORT_ATTEMPTS))
+        for attempt in range(1, attempts + 1):
+            try:
+                uploaded = await asyncio.wait_for(
+                    self._upload_one_image_by_fetch(page, image_path),
+                    timeout=REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS,
+                )
+                if attempt > 1:
+                    self._save_result(extra={
+                        "reference_upload_transport_recovered": True,
+                        "reference_upload_transport_attempts": attempt,
+                        "reference_upload_transport_error": "",
+                    })
+                return uploaded
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("reference image upload timed out") from exc
+            except httpx.TransportError as exc:
+                last_transport_error = exc
+                error_name = type(exc).__name__
+                self._save_result(extra={
+                    "reference_upload_transport_attempts": attempt,
+                    "reference_upload_transport_error": error_name,
+                    "reference_upload_input_bytes": image_path.stat().st_size if image_path.is_file() else 0,
+                })
+                if attempt >= attempts:
+                    break
+                self._set_phase(
+                    "uploading_reference_retry",
+                    f"参考图上传连接恢复中（{attempt}/{attempts}）",
+                )
+                await asyncio.sleep(min(5.0, 1.5 * attempt))
+        error_name = type(last_transport_error).__name__ if last_transport_error is not None else "TransportError"
+        raise RuntimeError(
+            f"direct image upload transport failure after {attempts} attempts: {error_name}"
+        ) from last_transport_error
 
     async def _upload_images_if_needed(self, page: Page) -> list[dict[str, Any]]:
         if not self._task_exists():

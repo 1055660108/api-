@@ -51,8 +51,9 @@ class ReferenceImageTests(unittest.TestCase):
             self.assertEqual(first[0].parent.name, "processed_references")
             self.assertNotEqual(first[0].read_bytes(), original)
             self.assertEqual(detect.call_count, 1)
-            self.assertEqual(update_meta.call_count, 2)
-            self.assertEqual(update_meta.call_args.kwargs["reference_face_count"], 1)
+            face_updates = [call for call in update_meta.call_args_list if "reference_face_count" in call.kwargs]
+            self.assertEqual(len(face_updates), 2)
+            self.assertEqual(face_updates[-1].kwargs["reference_face_count"], 1)
 
     def test_image_without_detected_face_is_uploaded_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -93,7 +94,8 @@ class ReferenceImageTests(unittest.TestCase):
             self.assertEqual(prepared[0].parent.name, "processed_references")
             self.assertNotEqual(prepared[0].read_bytes(), original)
             self.assertTrue(detect.call_args.kwargs["retry"])
-            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "face-grid-retry")
+            grid_update = next(call for call in update_meta.call_args_list if "reference_grid_mode" in call.kwargs)
+            self.assertEqual(grid_update.kwargs["reference_grid_mode"], "face-grid-retry")
 
     def test_retry_without_detected_face_still_uses_original(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -113,7 +115,8 @@ class ReferenceImageTests(unittest.TestCase):
                 prepared = reference_images.prepare_task_reference_images("0" * 32, retry_face_detection=True)
 
             self.assertEqual(prepared, [source])
-            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "original-retry")
+            grid_update = next(call for call in update_meta.call_args_list if "reference_grid_mode" in call.kwargs)
+            self.assertEqual(grid_update.kwargs["reference_grid_mode"], "original-retry")
 
     def test_unchecked_reference_skips_face_detection_and_processing_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -134,8 +137,38 @@ class ReferenceImageTests(unittest.TestCase):
             self.assertFalse((root / "processed_references").exists())
             load_image.assert_not_called()
             detect_faces.assert_not_called()
-            self.assertEqual(update_meta.call_args.kwargs["reference_grid_mode"], "disabled")
-            self.assertFalse(update_meta.call_args.kwargs["reference_face_detection_completed"])
+            grid_update = next(call for call in update_meta.call_args_list if "reference_grid_mode" in call.kwargs)
+            self.assertEqual(grid_update.kwargs["reference_grid_mode"], "disabled")
+            self.assertFalse(grid_update.kwargs["reference_face_detection_completed"])
+
+    def test_large_unchecked_reference_uses_small_upload_copy_and_keeps_original(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "01.png"
+            image = np.random.default_rng(42).integers(0, 256, size=(1200, 1600, 3), dtype=np.uint8)
+            success, encoded = cv2.imencode(".png", image)
+            self.assertTrue(success)
+            original = encoded.tobytes()
+            self.assertGreater(len(original), reference_images.REFERENCE_UPLOAD_MAX_BYTES)
+            source.write_bytes(original)
+
+            with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
+                reference_images, "task_dir", return_value=root
+            ), patch.object(
+                reference_images, "get_meta", return_value={"reference_is_real_person": False}
+            ), patch.object(reference_images, "update_meta") as update_meta:
+                first = reference_images.prepare_task_reference_images("0" * 32)
+                second = reference_images.prepare_task_reference_images("0" * 32)
+
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(first, second)
+            self.assertEqual(first[0].parent.name, "upload_ready")
+            self.assertLessEqual(first[0].stat().st_size, reference_images.REFERENCE_UPLOAD_MAX_BYTES)
+            self.assertEqual(update_meta.call_args.kwargs["reference_upload_optimized_count"], 1)
+            self.assertLess(
+                update_meta.call_args.kwargs["reference_upload_prepared_bytes"],
+                update_meta.call_args.kwargs["reference_upload_original_bytes"],
+            )
 
     def test_face_grid_does_not_modify_pixels_outside_face_region(self) -> None:
         image = np.full((180, 220, 3), 160, dtype=np.uint8)

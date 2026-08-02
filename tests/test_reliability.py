@@ -1765,6 +1765,42 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(automation._REFERENCE_UPLOADS_IN_FLIGHT, {})
         automation.clear_reference_attachment_cache()
 
+    def test_reference_upload_retries_transport_error_inside_current_browser(self) -> None:
+        task = self.create_task("owner-upload-transport-retry")
+        image = store.images_dir(task["id"]) / "01.png"
+        image.write_bytes(b"small-reference")
+        store.set_task_images(task["id"], [image])
+        request = httpx.Request("POST", "https://upload.example/upload/v1/image")
+        upload = AsyncMock(side_effect=[
+            httpx.WriteTimeout("write stalled", request=request),
+            {"uri": "tos/recovered", "name": "01.png"},
+        ])
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16", account={"id": "dola-retry"})
+        runner._upload_one_image_by_fetch = upload
+
+        with patch("app.automation.asyncio.sleep", new=AsyncMock()):
+            result = asyncio.run(runner._upload_one_image_with_timeout(object(), image))
+
+        self.assertEqual(result["uri"], "tos/recovered")
+        self.assertEqual(upload.await_count, 2)
+        stored = store.load_result(task["id"])
+        self.assertTrue(stored["reference_upload_transport_recovered"])
+        self.assertEqual(stored["reference_upload_transport_attempts"], 2)
+
+    def test_direct_upload_transport_failure_does_not_retire_browser_api_proxy(self) -> None:
+        task = self.create_task("owner-direct-upload-failure")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner.active_proxy_source = "api"
+        runner._run_once = AsyncMock(
+            side_effect=RuntimeError("direct image upload transport failure after 3 attempts: WriteTimeout")
+        )
+        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+            outcome = asyncio.run(runner.run())
+
+        self.assertTrue(outcome["retryable"])
+        self.assertTrue(outcome["infrastructure_fault"])
+        mark_proxy.assert_not_called()
+
     def test_prepare_upload_timeout_is_reported_as_reference_upload_failure(self) -> None:
         async def hanging_evaluate(*_args):
             await asyncio.Event().wait()

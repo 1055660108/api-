@@ -2086,6 +2086,19 @@ class ReliabilityTests(unittest.TestCase):
         refund_owner.assert_called_once_with(task["id"], "owner")
         query.assert_not_awaited()
 
+    def test_late_result_watch_does_not_replace_terminal_failure_reason(self) -> None:
+        task = self.create_task("owner")
+        store.mark_running(task["id"], "worker-1")
+        store.mark_submitted(task["id"])
+        store.mark_failed(task["id"], "生成超过20分钟，仍未返回结果")
+
+        store.record_result_watch_miss(task["id"])
+
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["error"], "生成超过20分钟，仍未返回结果")
+        self.assertEqual(meta["result_watch_miss_count"], 1)
+
     def test_retry_wait_without_available_account_eventually_fails_and_refunds(self) -> None:
         task = self.create_task("owner")
         store.mark_running(task["id"], "worker-2")

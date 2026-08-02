@@ -1313,8 +1313,8 @@ function escapeHtml(value) {
 
 function clientSafeText(value, task = {}) {
   let text = String(value || "");
-  if (/service[ _-]*frequent|risk check:\s*service_frequent|710022002|当前服务访问频繁|服务访问频繁/i.test(text)) return "服务繁忙正在重试！";
   if (portal !== "client") return text;
+  if (/service[ _-]*frequent|risk check:\s*service_frequent|710022002|当前服务访问频繁|服务访问频繁/i.test(text)) return "服务繁忙正在重试！";
   const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
   if (/generating videos longer than\s*10 seconds.*not supported|视频.{0,20}超过\s*10\s*秒.{0,20}不支持/i.test(text)) return "生成接口繁忙请稍后重试！";
   if (/游客模式|请登录后再试|登录后再试/.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
@@ -4505,15 +4505,13 @@ function taskResultDetail(task, status = getTaskStatus(task)) {
   const primary = String(status?.text || task?.error || "").trim();
   if (portal === "client") return primary;
   const history = Array.isArray(task?.attempt_history) ? task.attempt_history : [];
-  if (primary === "服务繁忙正在重试！" || history.some((item) => /service[ _-]*frequent|risk check:\s*service_frequent|710022002|当前服务访问频繁|服务访问频繁/i.test(String(item?.reason || "")))) {
-    return "服务繁忙正在重试！";
-  }
   if (!history.length) return primary;
   const kindLabels = {
     execution_retry: "执行重试",
     infrastructure_retry: "节点重试",
     result_retry: "结果重试",
     result_timeout: "结果超时",
+    proxy_refresh: "代理重试",
     terminal: "最终失败",
   };
   const attempts = history.map((item, index) => {

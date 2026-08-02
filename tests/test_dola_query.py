@@ -291,6 +291,7 @@ class DolaQueryTests(unittest.TestCase):
     def test_missing_reference_image_request_is_detected(self) -> None:
         self.assertTrue(query.is_missing_reference_image_request("请上传您提到的星澜参考图一。"))
         self.assertTrue(query.is_missing_reference_image_request("请上传星澜的参考图哦~"))
+        self.assertTrue(query.is_missing_reference_image_request("请上传您的彩铅分镜图，我将为您生成符合要求的视频。"))
         self.assertFalse(query.is_missing_reference_image_request("参考图中的人物缓慢转身"))
 
     def test_supplied_reference_image_retries_with_another_account_when_not_recognized(self) -> None:

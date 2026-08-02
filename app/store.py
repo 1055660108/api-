@@ -1061,13 +1061,18 @@ def record_result_watch_miss(task_id: str, reason: str = "生成结果未完成"
     if postgres.enabled():
         def mutate(meta: dict[str, Any]) -> int:
             count = max(0, int(meta.get("result_watch_miss_count") or 0)) + 1
-            meta.update(result_watch_miss_count=count, error=reason, updated_at=utc_now())
+            meta.update(result_watch_miss_count=count, updated_at=utc_now())
+            if str(meta.get("status") or "") not in {STATUS_SUCCESS, STATUS_FAILED, STATUS_CANCELED}:
+                meta["error"] = reason
             return count
 
         return postgres.mutate_task_part(task_id, "meta", mutate)
     meta = get_meta(task_id)
     count = max(0, int(meta.get("result_watch_miss_count") or 0)) + 1
-    update_meta(task_id, result_watch_miss_count=count, error=reason)
+    updates: dict[str, Any] = {"result_watch_miss_count": count}
+    if str(meta.get("status") or "") not in {STATUS_SUCCESS, STATUS_FAILED, STATUS_CANCELED}:
+        updates["error"] = reason
+    update_meta(task_id, **updates)
     return count
 
 

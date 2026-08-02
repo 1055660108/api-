@@ -148,7 +148,7 @@ def is_account_quota_insufficient(text: str) -> bool:
 
 def is_missing_reference_image_request(text: str) -> bool:
     value = re.sub(r"\s+", "", repair_text(str(text or "")))
-    return "请上传" in value and any(marker in value for marker in ("参考图", "参考图片", "图片", "图像"))
+    return "请上传" in value and any(marker in value for marker in ("参考图", "参考图片", "分镜图", "图片", "图像"))
 
 
 def is_portrait_protection_rejection(text: str) -> bool:

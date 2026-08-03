@@ -1425,6 +1425,7 @@ class OpenAIChatRequest(BaseModel):
     ratio: str = DEFAULT_RATIO
     task_type: str = "video"
     duration: int | None = None
+    reference_is_real_person: bool = False
 
 
 class BulkTaskRetryRequest(BaseModel):
@@ -3538,6 +3539,7 @@ async def _create_compatible_video_task(
             "duration": duration,
             "platform": platform,
             "model": model,
+            "reference_is_real_person": bool(payload.get("reference_is_real_person")),
             "images": [{"name": name, "sha256": hashlib.sha256(data).hexdigest()} for name, data in images],
         })
         meta: dict | None = None
@@ -3673,6 +3675,7 @@ def _compatible_video_response(request: Request, meta: dict, *, vendor: bool = F
         "progress": 100 if internal_status == "success" else 0,
         "ratio": str(meta.get("ratio") or DEFAULT_RATIO),
         "seconds": int(meta.get("duration") or 10),
+        "reference_is_real_person": bool(meta.get("reference_is_real_person")),
         "video_url": video_url,
         "result_endpoint": f"{base_url}/v1/videos/{task_id}",
         "content_endpoint": f"{base_url}/v1/videos/{task_id}/content",
@@ -3790,7 +3793,15 @@ async def openai_chat_completions(
     task_type = "video"
     await _rate_limit(request, "openai-task", 30, 60, access.token_hash)
     key = _idempotency_key(idempotency_key)
-    fingerprint = _request_fingerprint("openai", access.token_hash, {"prompt": repair_text(prompt), "ratio": payload.ratio, "duration": duration, "platform": platform, "model": model, "task_type": task_type})
+    fingerprint = _request_fingerprint("openai", access.token_hash, {
+        "prompt": repair_text(prompt),
+        "ratio": payload.ratio,
+        "duration": duration,
+        "platform": platform,
+        "model": model,
+        "task_type": task_type,
+        "reference_is_real_person": bool(payload.reference_is_real_person),
+    })
     try:
         if key:
             meta, created = find_or_create_task(repair_text(prompt), payload.ratio, access.token_hash if access.is_temp else "", platform, model, task_type, key, fingerprint, "openai", duration)
@@ -3798,7 +3809,12 @@ async def openai_chat_completions(
             meta, created = create_task(repair_text(prompt), payload.ratio, owner_token_hash=access.token_hash if access.is_temp else "", platform=platform, model=model, task_type=task_type, enqueue=False, duration=duration), True
         if not created:
             task_id = str(meta["id"])
-            content = json.dumps({"task_id": task_id, "status": str(meta.get("status") or "submitted"), "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
+            content = json.dumps({
+                "task_id": task_id,
+                "status": str(meta.get("status") or "submitted"),
+                "reference_is_real_person": bool(meta.get("reference_is_real_person")),
+                "result_endpoint": f"/tasks/{task_id}",
+            }, ensure_ascii=False)
             return {"id": f"chatcmpl-{task_id}", "object": "chat.completion", "created": int(time.time()), "model": payload.model, "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
         queued_for_concurrency = False
         if access.is_temp:
@@ -3824,6 +3840,10 @@ async def openai_chat_completions(
                 reference_id=str(meta["id"]),
                 detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
             )
+        update_meta(
+            str(meta["id"]),
+            reference_is_real_person=bool(payload.reference_is_real_person),
+        )
         finalize_task_creation(str(meta["id"]))
     except ValueError as exc:
         raise OpenAIAPIError(409, str(exc), "invalid_request_error", "Idempotency-Key", "idempotency_conflict")
@@ -3842,7 +3862,13 @@ async def openai_chat_completions(
             delete_task(str(meta["id"]))
         raise OpenAIAPIError(500, "Failed to create task", "server_error", code="internal_error")
     task_id = str(meta["id"])
-    content = json.dumps({"task_id": task_id, "status": "pending", "queued_for_concurrency": queued_for_concurrency, "result_endpoint": f"/tasks/{task_id}"}, ensure_ascii=False)
+    content = json.dumps({
+        "task_id": task_id,
+        "status": "pending",
+        "queued_for_concurrency": queued_for_concurrency,
+        "reference_is_real_person": bool(payload.reference_is_real_person),
+        "result_endpoint": f"/tasks/{task_id}",
+    }, ensure_ascii=False)
     return {
         "id": f"chatcmpl-{task_id}",
         "object": "chat.completion",

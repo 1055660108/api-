@@ -1362,6 +1362,28 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(before.credit_units - after.credit_units, 6)
         self.assertEqual({item["id"] for item in store.list_tasks(owner_token_hash=owner_hash)}, {existing["id"], content["task_id"]})
 
+    def test_openai_chat_accepts_real_person_option(self) -> None:
+        registered = self.register("real_person_api")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+
+        response = self.client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {registered['token']}"},
+            json={
+                "model": "dola:Seedance 2.0",
+                "messages": [{"role": "user", "content": "真人参考图视频任务"}],
+                "ratio": "16:9",
+                "duration": 10,
+                "reference_is_real_person": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        content = json.loads(response.json()["choices"][0]["message"]["content"])
+        self.assertTrue(content["reference_is_real_person"])
+        self.assertTrue(store.get_meta(content["task_id"])["reference_is_real_person"])
+
     def test_openai_video_task_endpoint_accepts_exact_compatible_path(self) -> None:
         registered = self.register("video_api_client")
         owner_hash = temp_access.hash_token(registered["token"])
@@ -1388,6 +1410,8 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(meta["prompt"], "城市夜景中的电影感运镜")
         self.assertEqual(meta["ratio"], "16:9")
         self.assertEqual(meta["duration"], 10)
+        self.assertFalse(meta["reference_is_real_person"])
+        self.assertFalse(body["reference_is_real_person"])
 
         status = self.client.get(
             f"/v1/api/v3/contents/generations/tasks/{body['id']}",
@@ -1408,7 +1432,13 @@ class WebAPIContractTests(unittest.TestCase):
         response = self.client.post(
             "/v1/videos",
             headers={"Authorization": f"Bearer {registered['token']}"},
-            data={"model": "dola:Seedance 2.0", "prompt": "让参考图自然运动", "ratio": "16:9", "duration": "10"},
+            data={
+                "model": "dola:Seedance 2.0",
+                "prompt": "让参考图自然运动",
+                "ratio": "16:9",
+                "duration": "10",
+                "reference_is_real_person": "true",
+            },
             files={"image": ("reference.jpg", buffer.tobytes(), "image/jpeg")},
         )
 
@@ -1416,6 +1446,8 @@ class WebAPIContractTests(unittest.TestCase):
         meta = store.get_meta(response.json()["id"])
         self.assertEqual(meta["image_count"], 1)
         self.assertEqual(meta["reference_image_names"], ["reference.jpg"])
+        self.assertTrue(meta["reference_is_real_person"])
+        self.assertTrue(response.json()["reference_is_real_person"])
         self.assertTrue((store.images_dir(meta["id"]) / "01.jpg").is_file())
 
     def test_openai_video_contract_preserves_error_shape_and_ownership(self) -> None:
@@ -1431,6 +1463,13 @@ class WebAPIContractTests(unittest.TestCase):
         conflict = self.client.post("/v1/videos", headers=headers, json={**payload, "prompt": "不同任务"})
         self.assertEqual(conflict.status_code, 409, conflict.text)
         self.assertEqual(conflict.json()["error"]["code"], "idempotency_conflict")
+
+        real_person_conflict = self.client.post(
+            "/v1/videos",
+            headers=headers,
+            json={**payload, "reference_is_real_person": True},
+        )
+        self.assertEqual(real_person_conflict.status_code, 409, real_person_conflict.text)
 
         hidden = self.client.get(
             f"/v1/videos/{created.json()['id']}",

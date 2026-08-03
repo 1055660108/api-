@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.36" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.37" />
   </head>
   <body>
     <script>
@@ -782,19 +782,19 @@
                 </article>
                 <article class="api-item">
                   <div><span class="method post">POST</span><code>/v1/videos</code></div>
-                  <p>创建视频任务。<code>model</code> 必须使用模型列表返回的完整 ID；<code>ratio</code> 支持 9:16、16:9、1:1、3:4、4:3、21:9；时长是否可用以所选模型为准。</p>
-                  <div class="api-example"><span>JSON 请求示例</span><code>curl -X POST https://SERVER/v1/videos -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -H "Idempotency-Key: REQUEST_ID" -d '{"model":"dola:Seedance 2.0","prompt":"城市夜景中的电影感运镜","ratio":"16:9","duration":10}'</code></div>
+                  <p>创建视频任务。<code>model</code> 必须使用模型列表返回的完整 ID；<code>ratio</code> 支持 9:16、16:9、1:1、3:4、4:3、21:9；时长是否可用以所选模型为准。参考图包含真人时传入 <code>reference_is_real_person: true</code>，默认值为 <code>false</code>。</p>
+                  <div class="api-example"><span>JSON 请求示例</span><code>curl -X POST https://SERVER/v1/videos -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -H "Idempotency-Key: REQUEST_ID" -d '{"model":"dola:Seedance 2.0","prompt":"城市夜景中的电影感运镜","ratio":"16:9","duration":10,"reference_is_real_person":false}'</code></div>
                   <div class="api-example"><span>响应示例</span><code>{"id":"TASK_ID","object":"video","status":"queued","model":"dola:Seedance 2.0","result_endpoint":"https://SERVER/v1/videos/TASK_ID"}</code></div>
                 </article>
                 <article class="api-item">
                   <div><span class="method post">POST</span><code>/v1/api/v3/contents/generations/tasks</code></div>
-                  <p>兼容内容生成任务协议。可使用 <code>prompt</code>，也可使用由文本和 Base64 图片组成的 <code>content</code> 数组。</p>
-                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/api/v3/contents/generations/tasks -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -d '{"model":"dola:Seedance 2.0","content":[{"type":"text","text":"海边日落延时摄影"}],"ratio":"16:9","duration":10}'</code></div>
+                  <p>兼容内容生成任务协议。可使用 <code>prompt</code>，也可使用由文本和 Base64 图片组成的 <code>content</code> 数组；真人参考图同样支持 <code>reference_is_real_person</code>。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/api/v3/contents/generations/tasks -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -d '{"model":"dola:Seedance 2.0","content":[{"type":"text","text":"海边日落延时摄影"}],"ratio":"16:9","duration":10,"reference_is_real_person":false}'</code></div>
                 </article>
                 <article class="api-item">
                   <div><span class="method post">POST</span><code>/v1/videos</code><span class="docs-tag">参考图</span></div>
-                  <p>参考图任务使用 <code>multipart/form-data</code>，一个或多个图片字段均会作为参考图接收。</p>
-                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/videos -H "Authorization: Bearer API_KEY" -F "model=dola:Seedance 2.0" -F "prompt=让画面中的场景自然运动" -F "ratio=16:9" -F "duration=10" -F "image=@reference.jpg"</code></div>
+                  <p>参考图任务使用 <code>multipart/form-data</code>，一个或多个图片字段均会作为参考图接收。勾选真人效果对应表单字段 <code>reference_is_real_person=true</code>。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/videos -H "Authorization: Bearer API_KEY" -F "model=dola:Seedance 2.0" -F "prompt=让画面中的场景自然运动" -F "ratio=16:9" -F "duration=10" -F "reference_is_real_person=true" -F "image=@reference.jpg"</code></div>
                 </article>
               </div>
             </section>
@@ -828,8 +828,8 @@
                 </article>
                 <article class="api-item">
                   <div><span class="method post">POST</span><code>/v1/chat/completions</code></div>
-                  <p>兼容旧版聊天补全调用。将提示词放在 <code>messages</code> 中，响应消息内容为任务信息。</p>
-                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/chat/completions -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -d '{"model":"dola:Seedance 2.0","messages":[{"role":"user","content":"雨后的未来城市"}],"ratio":"16:9","duration":10}'</code></div>
+                  <p>兼容旧版聊天补全调用。将提示词放在 <code>messages</code> 中，响应消息内容为任务信息；支持布尔字段 <code>reference_is_real_person</code>。</p>
+                  <div class="api-example"><span>请求示例</span><code>curl -X POST https://SERVER/v1/chat/completions -H "Authorization: Bearer API_KEY" -H "Content-Type: application/json" -d '{"model":"dola:Seedance 2.0","messages":[{"role":"user","content":"雨后的未来城市"}],"ratio":"16:9","duration":10,"reference_is_real_person":false}'</code></div>
                 </article>
               </div>
             </section>
@@ -1479,6 +1479,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.36"></script>
+    <script src="/admin/assets/app.js?v=1.10.37"></script>
   </body>
 </html>

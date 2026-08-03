@@ -51,6 +51,7 @@ class AdminUITests(unittest.TestCase):
             "/tasks/{TASK_ID}",
         ):
             self.assertIn(endpoint, section)
+        self.assertIn("reference_is_real_person", section)
         for admin_endpoint in ("/config/", "/users", "/accounts", "/admin/", "repository-update", "proxy-api"):
             self.assertNotIn(admin_endpoint, section)
 

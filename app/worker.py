@@ -291,6 +291,7 @@ class WorkerManager:
             "worker_alive": worker_alive,
             "worker_configured": configured,
             "worker_effective": effective,
+            "memory_claiming_paused": self._memory_claiming_paused(),
             "claimed": len(self._claimed),
             "result_poll_active": self._result_poll_active,
             "result_poll_concurrency": RESULT_POLL_CONCURRENCY,
@@ -325,6 +326,9 @@ class WorkerManager:
                 task.cancel()
                 return True
         return False
+
+    def _memory_claiming_paused(self) -> bool:
+        return str(self._resource_snapshot.get("level") or "") == "critical"
 
     def _idle_workers_to_trim(self, desired: int) -> list[str]:
         excess = max(0, len(self._workers) - max(1, int(desired)))
@@ -838,6 +842,9 @@ class WorkerManager:
 
     async def _worker_loop(self, worker_id: str) -> None:
         while not self._stopping:
+            if self._memory_claiming_paused():
+                await asyncio.sleep(2)
+                continue
             async with self._claim_lock:
                 active_counts: dict[str, int] = {}
                 for claimed_id in self._claimed:

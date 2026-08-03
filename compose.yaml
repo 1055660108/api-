@@ -18,8 +18,8 @@ x-app-environment: &app-environment
   DOLA_CIRCUIT_FAILURE_THRESHOLD: ${DOLA_CIRCUIT_FAILURE_THRESHOLD:-5}
   DOLA_CIRCUIT_RECOVERY_SECONDS: ${DOLA_CIRCUIT_RECOVERY_SECONDS:-60}
   DOLA_QUEUE_HIGH_WATERMARK: ${DOLA_QUEUE_HIGH_WATERMARK:-1000}
-  DOLA_MEMORY_HIGH_RATIO: ${DOLA_MEMORY_HIGH_RATIO:-0.80}
-  DOLA_MEMORY_CRITICAL_RATIO: ${DOLA_MEMORY_CRITICAL_RATIO:-0.92}
+  DOLA_MEMORY_HIGH_RATIO: ${DOLA_MEMORY_HIGH_RATIO:-0.81}
+  DOLA_MEMORY_CRITICAL_RATIO: ${DOLA_MEMORY_CRITICAL_RATIO:-0.90}
   DOLA_MINIMUM_WORKERS: ${DOLA_MINIMUM_WORKERS:-1}
   DOLA_MAX_EFFECTIVE_WORKERS: ${DOLA_MAX_EFFECTIVE_WORKERS:-48}
   DOLA_RESULT_POLL_CONCURRENCY: ${DOLA_RESULT_POLL_CONCURRENCY:-16}
@@ -45,7 +45,7 @@ x-app-environment: &app-environment
   DOLA_UPDATE_CONTROLLER_SOCKET: /run/dola-update/controller.sock
 
 x-app-base: &app-base
-  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.10.30}
+  image: ${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.10.31}
   init: true
   restart: unless-stopped
   ulimits:
@@ -81,7 +81,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${DOLA_API_MEMORY_LIMIT:-1G}
+          memory: ${DOLA_API_MEMORY_LIMIT:-3G}
 
   worker:
     <<: *app-base
@@ -97,7 +97,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${DOLA_WORKER_MEMORY_LIMIT:-10G}
+          memory: ${DOLA_WORKER_MEMORY_LIMIT:-8G}
 
   redis:
     image: redis:7.4-alpine

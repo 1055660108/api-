@@ -1420,6 +1420,13 @@ class ReliabilityTests(unittest.TestCase):
         manager._worker_task_ids = {"active-worker-1": "task-1", "active-worker-2": "task-2"}
         self.assertEqual(manager._idle_workers_to_trim(1), [])
 
+    def test_worker_pauses_new_claims_only_at_critical_memory(self) -> None:
+        manager = WorkerManager()
+        manager._resource_snapshot = {"level": "high"}
+        self.assertFalse(manager._memory_claiming_paused())
+        manager._resource_snapshot = {"level": "critical"}
+        self.assertTrue(manager._memory_claiming_paused())
+
     def test_browser_timeout_uses_infrastructure_retry_budget(self) -> None:
         task = self.create_task("owner")
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")

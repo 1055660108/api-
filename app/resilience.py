@@ -36,8 +36,8 @@ class ResiliencePolicy:
 
 
 def load_policy() -> ResiliencePolicy:
-    high = min(0.98, _env_float("DOLA_MEMORY_HIGH_RATIO", 0.80))
-    critical = min(0.99, max(high + 0.01, _env_float("DOLA_MEMORY_CRITICAL_RATIO", 0.92)))
+    high = min(0.98, _env_float("DOLA_MEMORY_HIGH_RATIO", 0.81))
+    critical = min(0.99, max(high + 0.01, _env_float("DOLA_MEMORY_CRITICAL_RATIO", 0.90)))
     return ResiliencePolicy(
         platform_rate_per_minute=_env_int("DOLA_PLATFORM_RATE_PER_MINUTE", 30),
         platform_burst=_env_int("DOLA_PLATFORM_BURST", 5),

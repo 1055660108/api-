@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_slider_verification, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, exception_reason, is_final_generation_failure, is_infrastructure_failure
-from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, ReusableBrowserPool
+from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, ReusableBrowserPool
 from .doubao_automation import DoubaoVideoAutomation
 from .qianwen_automation import QianwenVideoAutomation
 from .proxy_manager import shutdown_task_mihomo_pool, task_mihomo_pool_snapshot
@@ -78,10 +78,16 @@ RESULT_POLL_BATCH_SIZE = _bounded_env_int("DOLA_RESULT_POLL_BATCH_SIZE", 256, RE
 RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_SECONDS", 20, 10, 120)
 RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
 IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 10, 1, 16)
-IMAGE_PREPARATION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_PREPARE_CONCURRENCY", 10, 1, 24)
+IMAGE_PREPARATION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_PREPARE_CONCURRENCY", 15, 1, 24)
 PREPARE_UPLOAD_CONCURRENCY = _bounded_env_int("DOLA_PREPARE_UPLOAD_CONCURRENCY", 5, 1, 10)
 IMAGE_UPLOAD_SLOT_WAIT_SECONDS = _bounded_env_int("DOLA_IMAGE_UPLOAD_SLOT_WAIT_SECONDS", 20, 5, 120)
 API_PROXY_REFRESH_CONCURRENCY = _bounded_env_int("DOLA_API_PROXY_REFRESH_CONCURRENCY", 2, 1, 4)
+API_PROXY_ENDPOINT_LIMIT = _bounded_env_int(
+    "DOLA_API_PROXY_ENDPOINT_LIMIT",
+    BROWSER_SUBMISSION_CONCURRENCY,
+    1,
+    BROWSER_SUBMISSION_CONCURRENCY,
+)
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -196,7 +202,7 @@ class WorkerManager:
             contexts_per_process=BROWSER_CONTEXTS_PER_PROCESS,
         )
         self._api_proxy_pool = ReusableApiProxyPool(
-            max_endpoints=BROWSER_POOL_PROCESSES,
+            max_endpoints=API_PROXY_ENDPOINT_LIMIT,
             contexts_per_endpoint=1,
             max_concurrent_refreshes=API_PROXY_REFRESH_CONCURRENCY,
         )

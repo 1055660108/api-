@@ -100,7 +100,7 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
     const rect = element.getBoundingClientRect();
     return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
   };
-  const bodyText = String(document.body && document.body.innerText || "").replace(/\s+/g, " ").trim();
+  const bodyText = String(document.body && document.body.textContent || "").slice(0, 12000).replace(/\s+/g, " ").trim();
   const sliderSelectors = [
     'iframe[src*="captcha"]',
     'iframe[src*="bdcaptcha"]',
@@ -116,13 +116,11 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
   const visibleSliderSelectors = sliderSelectors.filter(selector => Array.from(document.querySelectorAll(selector)).some(visible));
   const sliderSelector = visibleSliderSelectors.length > 0;
   const sliderText = /拖动滑块|向右拖动|按住滑块|完成拼图|请完成验证|安全验证|验证后继续|滑块验证/.test(bodyText);
-  const loginControl = Array.from(document.querySelectorAll('button,a,[role="button"]')).some(element => {
-    const text = String(element.innerText || element.textContent || "").replace(/\s+/g, "").trim();
+  const loginControl = Array.from(document.querySelectorAll(
+    'button,a,[role="button"],[role="link"],input[type="button"],input[type="submit"]'
+  )).some(element => {
+    const text = String(element.value || element.textContent || "").replace(/\s+/g, "").trim();
     return visible(element) && ["登录", "登录/注册", "注册/登录"].includes(text);
-  });
-  const visibleLoginText = Array.from(document.querySelectorAll('body *')).some(element => {
-    const text = String(element.innerText || element.textContent || "").replace(/\s+/g, "").trim();
-    return visible(element) && text === "登录";
   });
   const href = String(location.href || "");
   const loginText = /游客模式|请登录后再试|登录后再试|登录状态失效|账号已退出|请重新登录/.test(bodyText);
@@ -131,7 +129,7 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
     href,
     bodyText: bodyText.slice(0, 2000),
     sliderVerification: sliderSelector || sliderText,
-    loginInvalid: loginText || loginUrl || loginControl || visibleLoginText,
+    loginInvalid: loginText || loginUrl || loginControl,
     riskEvidence: sliderSelector
       ? `slider-selector:${visibleSliderSelectors.join(",")}`
       : sliderText
@@ -142,9 +140,7 @@ SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT = r"""
             ? "login-text"
             : loginControl
               ? "login-control"
-              : visibleLoginText
-                ? "visible-login-text"
-                : "none"
+              : "none"
   };
 }
 """
@@ -167,6 +163,8 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "net::err_proxy",
     "net::err_connection",
     "net::err_timed_out",
+    "net::err_http2_protocol_error",
+    "net::err_tunnel_connection_failed",
     "execution context was destroyed",
     "most likely because of a navigation",
     "cannot find context with specified id",
@@ -228,7 +226,14 @@ PROXY_TRANSPORT_ERROR_MARKERS = (
     "net::err_proxy",
     "net::err_connection",
     "net::err_timed_out",
+    "net::err_http2_protocol_error",
+    "net::err_tunnel_connection_failed",
     "submission transport timeout",
+)
+API_PROXY_FATAL_TRANSPORT_ERROR_MARKERS = (
+    "net::err_ssl_protocol_error",
+    "net::err_http2_protocol_error",
+    "net::err_tunnel_connection_failed",
 )
 REFERENCE_UPLOAD_ERROR_MARKERS = (
     "prepare_upload",
@@ -298,6 +303,11 @@ def exception_reason(exc: BaseException) -> str:
 def is_proxy_transport_failure(text: str) -> bool:
     normalized = str(text or "").strip().lower()
     return any(marker in normalized for marker in PROXY_TRANSPORT_ERROR_MARKERS)
+
+
+def is_api_proxy_fatal_transport_failure(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(marker in normalized for marker in API_PROXY_FATAL_TRANSPORT_ERROR_MARKERS)
 
 
 def is_reference_upload_failure(text: str) -> bool:
@@ -1256,8 +1266,6 @@ class DolaFetchAutomation:
             state = "slider_verification"
         elif bool(snapshot.get("loginInvalid")) or cookies_checked and bool(injected_names & auth_names) and not bool(current_names & auth_names):
             state = "login_invalid"
-        elif not page_inspection_succeeded:
-            state = "inspection_failed"
         return {
             "state": state,
             "url": str(snapshot.get("href") or page.url or "")[:500],
@@ -1267,6 +1275,7 @@ class DolaFetchAutomation:
             "pages_checked": max(0, int(snapshot.get("pagesChecked") or 0)),
             "evidence": str(snapshot.get("riskEvidence") or "none")[:300],
             "page_changed": bool(snapshot.get("pageChanged")),
+            "inspection_transport_failed": not page_inspection_succeeded,
         }
 
     def _finish_image_preparation(self) -> None:
@@ -1322,6 +1331,20 @@ class DolaFetchAutomation:
                 cooldown_seconds=PROXY_TRANSPORT_COOLDOWN_SECONDS,
             )
             self._remember_failed_proxy_node()
+
+    def _discard_active_api_proxy_transport(self) -> None:
+        if self.active_proxy_source != "api":
+            self._cooldown_active_proxy_transport()
+            return
+        self._remember_failed_proxy_node()
+        if getattr(self, "api_proxy_lease", None) is not None:
+            self.api_proxy_lease.invalidate()
+
+    def _handle_active_proxy_transport_failure(self, reason: str) -> None:
+        if self.active_proxy_source == "api" and is_api_proxy_fatal_transport_failure(reason):
+            self._discard_active_api_proxy_transport()
+            return
+        self._cooldown_active_proxy_transport()
 
     def _record_active_gateway_failure(self, status: int) -> None:
         if not self.proxy_node_id:
@@ -1437,11 +1460,11 @@ class DolaFetchAutomation:
                 reference_transport_failure = "timed out" in reason.lower() or is_proxy_transport_failure(reason)
                 direct_upload_failure = "direct image upload transport failure" in reason.lower()
                 if reference_transport_failure and not direct_upload_failure:
-                    self._cooldown_active_proxy_transport()
+                    self._handle_active_proxy_transport_failure(reason)
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
                 if is_proxy_transport_failure(reason):
-                    self._cooldown_active_proxy_transport()
+                    self._handle_active_proxy_transport_failure(reason)
                 self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
                 if self.active_proxy_source == "api" and is_proxy_transport_failure(reason):
                     return {
@@ -1586,6 +1609,8 @@ class DolaFetchAutomation:
                 except Exception as exc:
                     reason = str(exc)[:500]
                     if is_infrastructure_failure(reason):
+                        if is_api_proxy_fatal_transport_failure(reason):
+                            self._discard_active_api_proxy_transport()
                         self._save_result(extra={
                             "submission_ambiguous": True,
                             "submission_ambiguous_at": datetime.now(timezone.utc).isoformat(),
@@ -1655,6 +1680,9 @@ class DolaFetchAutomation:
                         "service_frequent_pages_checked": account_state["pages_checked"],
                         "service_frequent_check_evidence": account_state["evidence"],
                         "service_frequent_page_changed": account_state["page_changed"],
+                        "service_frequent_inspection_transport_failed": bool(
+                            account_state.get("inspection_transport_failed")
+                        ),
                     })
                     if account_state["state"] == "slider_verification":
                         release_task_submission(self.task_id)
@@ -1677,19 +1705,6 @@ class DolaFetchAutomation:
                             "account_fault": True,
                             "account_login_invalid": True,
                             "switch_account": True,
-                        }
-                    if account_state["state"] == "inspection_failed":
-                        self._cooldown_active_proxy_transport()
-                        release_task_submission(self.task_id)
-                        self._save_result(extra={
-                            "submit_error_category": "risk_inspection_timeout",
-                            "submit_phase": "service_frequent_account_check",
-                        })
-                        return {
-                            "success": False,
-                            "retryable": True,
-                            "reason": "risk inspection transport timeout",
-                            "infrastructure_fault": True,
                         }
                     self._remember_failed_proxy_node()
                     release_task_submission(self.task_id)

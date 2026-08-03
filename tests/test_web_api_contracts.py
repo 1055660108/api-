@@ -446,7 +446,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.login_admin()
         current = self.client.get("/config/runtime").json()
         self.assertEqual(current["dola_submit_interval_seconds"], 5.0)
-        self.assertEqual(current["dola_global_submit_interval_seconds"], 8.0)
+        self.assertEqual(current["dola_global_submit_interval_seconds"], 12.0)
         self.assertEqual(current["task_retry_limit"], 2)
         self.assertEqual(current["doubao_submit_retry_limit"], 2)
         self.assertEqual(current["batch_history_retention_days"], 30)

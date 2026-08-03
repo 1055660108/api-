@@ -1127,13 +1127,13 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(automation.SERVICE_FREQUENT_OBSERVE_SECONDS, 15.0)
         self.assertEqual(automation.SERVICE_FREQUENT_POLL_INTERVAL_MS, 500)
 
-    def test_service_frequent_account_state_detects_visible_login_text(self) -> None:
+    def test_service_frequent_account_state_uses_lightweight_login_controls(self) -> None:
         script = automation.SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT
 
-        self.assertIn('document.querySelectorAll(\'body *\')', script)
-        self.assertIn('text === "登录"', script)
-        self.assertIn('loginControl || visibleLoginText', script)
-        self.assertIn('"visible-login-text"', script)
+        self.assertNotIn('document.querySelectorAll(\'body *\')', script)
+        self.assertNotIn("document.body.innerText", script)
+        self.assertIn('input[type="submit"]', script)
+        self.assertIn("loginText || loginUrl || loginControl", script)
 
     def test_service_frequent_risk_check_scans_secondary_slider_page_before_reload(self) -> None:
         task = self.create_task("secondary-risk-page")
@@ -1879,7 +1879,8 @@ class ReliabilityTests(unittest.TestCase):
         ), patch.object(automation, "SERVICE_FREQUENT_POLL_INTERVAL_MS", 1):
             outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
 
-        self.assertEqual(outcome["state"], "inspection_failed")
+        self.assertEqual(outcome["state"], "service_frequent")
+        self.assertTrue(outcome["inspection_transport_failed"])
         self.assertIn("TimeoutError", outcome["inspection_error"])
 
     def test_service_frequent_cookie_check_has_an_independent_timeout(self) -> None:
@@ -1943,6 +1944,28 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(outcome["defer_category"], "proxy_refresh")
         cooldown_proxy.assert_called_once_with()
 
+    def test_fatal_browser_protocol_error_discards_api_proxy(self) -> None:
+        task = self.create_task("owner-fatal-proxy")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        runner.active_proxy_source = "api"
+        runner._run_once = AsyncMock(side_effect=RuntimeError("Page.goto: net::ERR_HTTP2_PROTOCOL_ERROR"))
+
+        with patch.object(runner, "_discard_active_api_proxy_transport") as discard_proxy, patch.object(
+            runner, "_cooldown_active_proxy_transport"
+        ) as cooldown_proxy:
+            outcome = asyncio.run(runner.run())
+
+        self.assertTrue(outcome["infrastructure_fault"])
+        self.assertTrue(outcome["defer_only"])
+        discard_proxy.assert_called_once_with()
+        cooldown_proxy.assert_not_called()
+        for reason in (
+            "net::ERR_SSL_PROTOCOL_ERROR",
+            "net::ERR_HTTP2_PROTOCOL_ERROR",
+            "net::ERR_TUNNEL_CONNECTION_FAILED",
+        ):
+            self.assertTrue(automation.is_api_proxy_fatal_transport_failure(reason))
+
     def test_reference_attachment_cache_coalesces_concurrent_uploads(self) -> None:
         automation.clear_reference_attachment_cache()
         first = self.create_task("owner-a")
@@ -2005,11 +2028,11 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["image_submission_claimed"], 0)
         self.assertEqual(snapshot["image_submission_claim_limit"], IMAGE_PREPARATION_CONCURRENCY)
         self.assertEqual(snapshot["image_preparation_claimed"], 0)
-        self.assertEqual(snapshot["image_preparation_claim_limit"], 10)
+        self.assertEqual(snapshot["image_preparation_claim_limit"], 15)
         self.assertEqual(snapshot["browser_pool"]["process_limit"], 15)
         self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 3)
         self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 45)
-        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 15)
+        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 45)
         self.assertEqual(snapshot["api_proxy_pool"]["refresh_concurrency_limit"], 2)
 
     def test_reference_preparation_releases_before_submission_and_only_once(self) -> None:

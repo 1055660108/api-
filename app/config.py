@@ -117,7 +117,7 @@ def default_config() -> dict[str, Any]:
         "task_retry_limit": 2,
         "doubao_submit_retry_limit": 2,
         "dola_submit_interval_seconds": 5.0,
-        "dola_global_submit_interval_seconds": 8.0,
+        "dola_global_submit_interval_seconds": 12.0,
         # Kept to migrate settings written by releases before global pacing.
         "dola_exit_submit_interval_seconds": 8.0,
         "video_duration": 15,
@@ -542,7 +542,7 @@ def load_settings() -> Settings:
         task_retry_limit=max(0, min(10, int(data.get("task_retry_limit") if data.get("task_retry_limit") is not None else 2))),
         doubao_submit_retry_limit=max(0, min(10, int(data.get("doubao_submit_retry_limit") if data.get("doubao_submit_retry_limit") is not None else 2))),
         dola_submit_interval_seconds=max(1.0, min(5.0, float(data.get("dola_submit_interval_seconds") or 5.0))),
-        dola_global_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_global_submit_interval_seconds") or 8.0))),
+        dola_global_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_global_submit_interval_seconds") or 12.0))),
         dola_exit_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_exit_submit_interval_seconds") or 8.0))),
         video_duration=max(1, int(data.get("video_duration") or 15)),
         max_image_count=max(0, min(9, int(data.get("max_image_count") or 9))),

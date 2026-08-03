@@ -90,7 +90,7 @@ API_PROXY_ENDPOINT_LIMIT = _bounded_env_int(
 )
 API_PROXY_CONTEXTS_PER_ENDPOINT = _bounded_env_int(
     "DOLA_API_PROXY_CONTEXTS_PER_ENDPOINT",
-    2,
+    1,
     1,
     BROWSER_CONTEXTS_PER_PROCESS,
 )

@@ -2089,8 +2089,8 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["browser_pool"]["process_limit"], 15)
         self.assertEqual(snapshot["browser_pool"]["contexts_per_process"], 3)
         self.assertEqual(snapshot["browser_pool"]["submission_capacity"], 45)
-        self.assertEqual(snapshot["api_proxy_pool"]["contexts_per_endpoint"], 2)
-        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 90)
+        self.assertEqual(snapshot["api_proxy_pool"]["contexts_per_endpoint"], 1)
+        self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 45)
         self.assertEqual(snapshot["api_proxy_pool"]["refresh_concurrency_limit"], 2)
 
     def test_reference_preparation_releases_before_submission_and_only_once(self) -> None:

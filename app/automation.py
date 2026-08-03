@@ -75,6 +75,8 @@ SERVICE_FREQUENT_POLL_INTERVAL_MS = 500
 SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS = 3.0
 SERVICE_FREQUENT_INSPECTION_TIMEOUT_SECONDS = 20.0
 SERVICE_FREQUENT_RELOAD_TIMEOUT_SECONDS = 10.0
+DOLA_SUBMIT_TIMEOUT_SECONDS = 75.0
+DOLA_SUBMIT_WITH_REFERENCES_TIMEOUT_SECONDS = 135.0
 SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
 PROXY_TRANSPORT_COOLDOWN_SECONDS = 60
 
@@ -172,6 +174,7 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "target page, context or browser has been closed",
     "target page has been closed",
     "browser timeout",
+    "submission transport timeout",
     "all configured proxy modes are unavailable",
     "all selected authenticated proxies are unavailable",
     "all eligible proxy nodes are unavailable",
@@ -225,6 +228,7 @@ PROXY_TRANSPORT_ERROR_MARKERS = (
     "net::err_proxy",
     "net::err_connection",
     "net::err_timed_out",
+    "submission transport timeout",
 )
 REFERENCE_UPLOAD_ERROR_MARKERS = (
     "prepare_upload",
@@ -1077,7 +1081,16 @@ class DolaFetchAutomation:
     ) -> dict[str, Any]:
         last_result: dict[str, Any] = {}
         for attempt in range(1, SLIDER_RECOVERY_SUBMIT_ATTEMPTS + 1):
-            value = await page.evaluate(SUBMIT_SCRIPT, payload)
+            timeout = (
+                DOLA_SUBMIT_WITH_REFERENCES_TIMEOUT_SECONDS
+                if payload.get("attachments")
+                else DOLA_SUBMIT_TIMEOUT_SECONDS
+            )
+            try:
+                value = await asyncio.wait_for(page.evaluate(SUBMIT_SCRIPT, payload), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                self._cooldown_active_proxy_transport()
+                raise RuntimeError(f"Dola submission transport timeout after {timeout:g} seconds") from exc
             if not isinstance(value, dict):
                 raise RuntimeError("Dola submission returned an invalid response")
             last_result = value
@@ -1111,8 +1124,10 @@ class DolaFetchAutomation:
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + SERVICE_FREQUENT_INSPECTION_TIMEOUT_SECONDS
+        page_inspection_succeeded = False
 
         async def inspect_pages(stage: str) -> dict[str, Any]:
+            nonlocal page_inspection_succeeded
             pages = [page]
             for candidate in list(getattr(context, "pages", []) or []):
                 if candidate not in pages:
@@ -1133,6 +1148,7 @@ class DolaFetchAutomation:
                     value = dict(value)
                     value["inspectionStage"] = stage
                     snapshots.append(value)
+                    page_inspection_succeeded = True
                 except asyncio.TimeoutError:
                     errors.append(f"TimeoutError: risk inspection {stage} exceeded the per-check deadline")
                 except Exception as exc:
@@ -1210,12 +1226,9 @@ class DolaFetchAutomation:
                 )[:300]
         cookies_checked = True
         try:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise asyncio.TimeoutError()
             current_cookies = await asyncio.wait_for(
                 context.cookies(),
-                timeout=min(SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS, remaining),
+                timeout=SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             cookies_checked = False
@@ -1243,7 +1256,7 @@ class DolaFetchAutomation:
             state = "slider_verification"
         elif bool(snapshot.get("loginInvalid")) or cookies_checked and bool(injected_names & auth_names) and not bool(current_names & auth_names):
             state = "login_invalid"
-        elif not cookies_checked or bool(snapshot.get("inspectionFailed")):
+        elif not page_inspection_succeeded:
             state = "inspection_failed"
         return {
             "state": state,

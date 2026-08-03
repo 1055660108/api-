@@ -205,6 +205,28 @@ class SliderAutomationRecoveryTests(unittest.TestCase):
         self.assertEqual(page.evaluate.await_count, 2)
         runner._inspect_service_frequent_account_state.assert_awaited_once()
 
+    def test_reference_submission_transport_timeout_is_bounded(self) -> None:
+        async def hanging_evaluate(*_args):
+            await asyncio.Event().wait()
+
+        runner = self.runner()
+        runner._cooldown_active_proxy_transport = Mock()
+        page = SimpleNamespace(evaluate=AsyncMock(side_effect=hanging_evaluate))
+
+        with patch.object(automation, "DOLA_SUBMIT_WITH_REFERENCES_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaisesRegex(RuntimeError, "submission transport timeout"):
+                asyncio.run(
+                    runner._submit_with_slider_recovery(
+                        page,
+                        SimpleNamespace(),
+                        {"attachments": [{"image_uri": "test"}]},
+                    )
+                )
+
+        self.assertTrue(automation.is_infrastructure_failure("Dola submission transport timeout after 135 seconds"))
+        self.assertTrue(automation.is_proxy_transport_failure("Dola submission transport timeout after 135 seconds"))
+        runner._cooldown_active_proxy_transport.assert_called_once_with()
+
     def test_environment_slider_settings_are_bounded(self) -> None:
         with patch.dict(
             automation.os.environ,

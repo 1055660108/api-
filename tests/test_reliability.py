@@ -1122,7 +1122,8 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(normal["inspection_stage"], "after_reload")
         self.assertEqual(normal["pages_checked"], 1)
         self.assertFalse(normal["page_changed"])
-        self.assertEqual(cookie_error["state"], "inspection_failed")
+        self.assertEqual(cookie_error["state"], "service_frequent")
+        self.assertIn("cookie read failed", cookie_error["inspection_error"])
         self.assertEqual(automation.SERVICE_FREQUENT_OBSERVE_SECONDS, 15.0)
         self.assertEqual(automation.SERVICE_FREQUENT_POLL_INTERVAL_MS, 500)
 
@@ -1880,6 +1881,34 @@ class ReliabilityTests(unittest.TestCase):
 
         self.assertEqual(outcome["state"], "inspection_failed")
         self.assertIn("TimeoutError", outcome["inspection_error"])
+
+    def test_service_frequent_cookie_check_has_an_independent_timeout(self) -> None:
+        async def hanging_cookies():
+            await asyncio.Event().wait()
+
+        task = self.create_task("risk-cookie-timeout")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        page = SimpleNamespace(
+            url="https://www.dola.com/chat/local_test",
+            evaluate=AsyncMock(return_value={
+                "sliderVerification": False,
+                "loginInvalid": False,
+                "href": "https://www.dola.com/chat/local_test",
+                "bodyText": "normal page",
+            }),
+            reload=AsyncMock(),
+        )
+        context = SimpleNamespace(pages=[page], cookies=AsyncMock(side_effect=hanging_cookies))
+
+        with patch.object(automation, "SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS", 0.01), patch.object(
+            automation, "SERVICE_FREQUENT_OBSERVE_SECONDS", 0.001
+        ), patch.object(automation, "SERVICE_FREQUENT_POLL_INTERVAL_MS", 1), patch(
+            "app.automation.asyncio.sleep", new=AsyncMock()
+        ):
+            outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
+
+        self.assertEqual(outcome["state"], "service_frequent")
+        self.assertIn("cookie check timed out", outcome["inspection_error"])
 
     def test_reference_upload_timeout_uses_infrastructure_retry_budget(self) -> None:
         task = self.create_task("owner-reference-infrastructure")

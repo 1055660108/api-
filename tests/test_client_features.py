@@ -416,6 +416,8 @@ class ClientFeatureTests(unittest.TestCase):
         first = self.register("announcement_one")
         second = self.register("announcement_two")
         self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+        users = self.client.get("/users").json()["users"]
+        first_user_id = next(item["id"] for item in users if item["username"] == "announcement_one")
         created = self.client.post("/admin/announcements", json={"title": "维护通知", "content": "今晚进行维护。"})
         self.assertEqual(created.status_code, 201)
         announcement_id = created.json()["announcement"]["id"]
@@ -427,11 +429,27 @@ class ClientFeatureTests(unittest.TestCase):
         self.assertEqual(self.client.get("/announcements", headers=second_headers).json()["unseen"], 1)
 
         emergency = self.client.post("/admin/announcements", json={"title": "紧急维护", "content": "服务维护中", "level": "emergency", "lock_screen": True})
+        self.assertEqual(emergency.status_code, 201, emergency.text)
         emergency_id = emergency.json()["announcement"]["id"]
+        set_exemption = self.client.patch(f"/admin/announcements/{emergency_id}", json={"lock_exempt_user_ids": [first_user_id]})
+        self.assertEqual(set_exemption.status_code, 200, set_exemption.text)
+        first_emergency = next(item for item in self.client.get("/announcements", headers=first_headers).json()["announcements"] if item["id"] == emergency_id)
+        self.assertFalse(first_emergency["lock_screen"])
+        self.assertTrue(first_emergency["lock_exempt"])
+        self.assertNotIn("lock_exempt_user_ids", first_emergency)
         listed = self.client.get("/announcements", headers=second_headers).json()["announcements"]
         emergency_row = next(item for item in listed if item["id"] == emergency_id)
         self.assertEqual(emergency_row["level"], "emergency")
         self.assertTrue(emergency_row["lock_screen"])
+        self.assertFalse(emergency_row["lock_exempt"])
+        admin_row = next(item for item in self.client.get("/admin/announcements").json()["announcements"] if item["id"] == emergency_id)
+        self.assertEqual(admin_row["lock_exempt_user_ids"], [first_user_id])
+        removed_exemption = self.client.patch(f"/admin/announcements/{emergency_id}", json={"lock_exempt_user_ids": []})
+        self.assertEqual(removed_exemption.status_code, 200)
+        first_locked = next(item for item in self.client.get("/announcements", headers=first_headers).json()["announcements"] if item["id"] == emergency_id)
+        self.assertTrue(first_locked["lock_screen"])
+        invalid_exemption = self.client.patch(f"/admin/announcements/{emergency_id}", json={"lock_exempt_user_ids": ["missing-user"]})
+        self.assertEqual(invalid_exemption.status_code, 400)
         unlocked = self.client.patch(f"/admin/announcements/{emergency_id}", json={"lock_screen": False})
         self.assertFalse(unlocked.json()["announcement"]["lock_screen"])
         deleted = self.client.delete(f"/admin/announcements/{emergency_id}")

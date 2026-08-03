@@ -6441,6 +6441,24 @@ body[data-portal="client"][data-view="points"] .commerce-header h2 {
 .announcement-lock-control > input:checked + .switch-track { background: #b6403a; }
 .announcement-lock-control > input:checked + .switch-track > span { transform: translateX(18px); }
 .announcement-lock-control > input:focus-visible + .switch-track { outline: 2px solid #4da59d; outline-offset: 2px; }
+.announcement-exempt-panel {
+  overflow: hidden;
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.announcement-exempt-panel .recipient-header { min-height: 56px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.announcement-exempt-panel .recipient-header > div { display: grid; gap: 3px; }
+.announcement-exempt-panel .recipient-header small,
+.announcement-exempt-panel .recipient-header > span { color: var(--muted); font-size: 12px; }
+.recipient-search { display: flex; align-items: center; gap: 8px; margin: 10px; padding: 0 11px; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
+.recipient-search > svg { width: 16px; height: 16px; color: var(--muted); }
+.recipient-search input { width: 100%; min-height: 38px; padding: 0; border: 0; background: transparent; outline: none; }
+.announcement-exempt-panel .recipient-list { max-height: 210px; padding: 0 10px 10px; overflow-y: auto; }
+.announcement-exempt-modal { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; width: min(calc(100vw - 48px), 680px); height: min(calc(100vh - 48px), 720px); overflow: hidden; }
+.announcement-exempt-modal .recipient-list { min-height: 0; padding: 0 18px 18px; overflow-y: auto; }
+.announcement-exempt-modal .recipient-search { margin: 14px 18px; }
+.announcement-exempt-modal .modal-actions .muted { margin-right: auto; }
 .settings-entry-button { justify-content: center; width: 100%; min-height: 42px; margin-top: 14px; }
 .admin-management-modal { grid-template-rows: auto minmax(0, 1fr) auto; width: min(calc(100vw - 48px), 1180px); height: min(calc(100vh - 48px), 820px); max-height: calc(100vh - 48px); padding: 24px; overflow: hidden; }
 .admin-management-body { min-height: 0; padding-right: 4px; overflow-y: auto; }

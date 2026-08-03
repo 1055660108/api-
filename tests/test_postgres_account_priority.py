@@ -10,6 +10,11 @@ class _EmptyResult:
         return None
 
 
+class _SingleResult:
+    def fetchone(self):
+        return (1,)
+
+
 class _RecordingConnection:
     def __init__(self) -> None:
         self.query = ""
@@ -60,6 +65,24 @@ class PostgresAccountPriorityTests(unittest.TestCase):
         with patch.object(postgres, "connection", fake_connection):
             postgres.claim_available_account("dola", set(), "2026-08-01", "2026-08-01T00:00:00+00:00", lambda account: account, duration=15)
         self.assertIn("COALESCE(payload->>'ten_second_only', 'false') <> 'true'", connection.query)
+
+    def test_duration_support_uses_one_account_query(self) -> None:
+        connection = _RecordingConnection()
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        with patch.object(postgres, "connection", fake_connection):
+            self.assertFalse(postgres.account_supports_duration("account-1", "dola", 15))
+        self.assertIn("id = %s", connection.query)
+        self.assertIn("ten_second_only", connection.query)
+        self.assertEqual(connection.params, ("account-1", "dola"))
+
+        connection = _RecordingConnection()
+        connection.execute = lambda query, params=(): _SingleResult()
+        with patch.object(postgres, "connection", fake_connection):
+            self.assertTrue(postgres.account_supports_duration("account-1", "dola", 10))
 
 
 if __name__ == "__main__":

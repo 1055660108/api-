@@ -664,7 +664,7 @@ class AdminUITests(unittest.TestCase):
         self.assertNotIn(".announcement-modal-accent", styles)
 
     def test_points_messages_memberships_and_cards_are_wired(self) -> None:
-        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipTaskDiscount", "membershipDetailsButton", "membershipDetailsModal", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState", "billingPriorityControl", "billingPriorityState"):
+        for element_id in ("pointCardsNavItem", "pointCardForm", "pointCardSearch", "openPointCardModal", "redeemForm", "transactionsView", "membershipList", "membershipModal", "membershipConcurrency", "membershipTaskDiscount", "membershipDetailsButton", "membershipDetailsModal", "membershipBonus", "packagePaymentUrl", "userSearch", "announcementLevel", "announcementExemptField", "announcementExemptSearch", "announcementExemptUsers", "announcementExemptModal", "saveAnnouncementExemptUsers", "emergencyAnnouncementOverlay", "smallAnnouncementToast", "repositoryLatestVersion", "sidebarMembershipName", "sidebarVersion", "dashboardPointsBalance", "openMyPrompts", "promptPickerModal", "promptPickerList", "promptPickerPrev", "promptPickerNext", "messagesRefreshState", "billingPriorityControl", "billingPriorityState"):
             self.assertIn(f'id="{element_id}"', self.html)
         for endpoint in ("/admin/point-cards", "/points/redeem", "/points/transactions", "/admin/memberships", "/memberships/", "/admin/announcements", "/admin/notifications/", "/admin/feedback/", "/notifications/read-all"):
             self.assertIn(endpoint, self.javascript)
@@ -679,6 +679,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('data-announcement-level="large"', self.html)
         self.assertIn('data-announcement-level="emergency"', self.html)
         self.assertIn('setAnnouncementComposerLevel(button.dataset.announcementLevel)', self.javascript)
+        self.assertIn("lock_exempt_user_ids", self.javascript)
+        self.assertIn("data-edit-announcement-exempt", self.javascript)
         self.assertIn('els.refreshTransactions?.addEventListener("click", refreshTransactions)', self.javascript)
         self.assertIn('els.refreshPointCards?.addEventListener("click", refreshPointCards)', self.javascript)
         self.assertIn('toast("消费明细已刷新")', self.javascript)

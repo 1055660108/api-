@@ -2361,7 +2361,18 @@ async def admin_delete_notification(notification_id: str):
 
 @app.get("/admin/announcements", dependencies=[Depends(require_admin)])
 async def admin_announcements():
-    return {"announcements": list_announcements(include_disabled=True)}
+    return {"announcements": list_announcements(include_disabled=True, include_exemptions=True)}
+
+
+def _validated_announcement_exempt_user_ids(payload: dict) -> list[str]:
+    values = payload.get("lock_exempt_user_ids", [])
+    if not isinstance(values, list):
+        raise HTTPException(status_code=400, detail="lock_exempt_user_ids must be a list")
+    selected = list(dict.fromkeys(str(item or "").strip() for item in values if str(item or "").strip()))
+    valid_ids = {str(item.get("id") or "") for item in list_users(list_temp_tokens())}
+    if any(user_id not in valid_ids for user_id in selected):
+        raise HTTPException(status_code=400, detail="指定解锁用户中包含无效账号")
+    return selected
 
 
 @app.post("/admin/announcements", dependencies=[Depends(require_admin)], status_code=201)
@@ -2369,7 +2380,8 @@ async def admin_create_announcement(request: Request):
     payload = await _request_payload(request)
     try:
         lock_screen = str(payload.get("lock_screen", "false")).lower() in {"1", "true", "yes", "on"}
-        return {"ok": True, "announcement": create_announcement(payload.get("title", ""), payload.get("content", ""), payload.get("level", "large"), lock_screen)}
+        exempt_user_ids = _validated_announcement_exempt_user_ids(payload)
+        return {"ok": True, "announcement": create_announcement(payload.get("title", ""), payload.get("content", ""), payload.get("level", "large"), lock_screen, exempt_user_ids)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -2380,7 +2392,15 @@ async def admin_update_announcement(announcement_id: str, request: Request):
     try:
         enabled = str(payload["enabled"]).lower() in {"1", "true", "yes", "on"} if "enabled" in payload else None
         lock_screen = str(payload["lock_screen"]).lower() in {"1", "true", "yes", "on"} if "lock_screen" in payload else None
-        return {"ok": True, "announcement": update_announcement(announcement_id, enabled=enabled, lock_screen=lock_screen)}
+        update_lock_exemptions = "lock_exempt_user_ids" in payload
+        exempt_user_ids = _validated_announcement_exempt_user_ids(payload) if update_lock_exemptions else None
+        return {"ok": True, "announcement": update_announcement(
+            announcement_id,
+            enabled=enabled,
+            lock_screen=lock_screen,
+            lock_exempt_user_ids=exempt_user_ids,
+            update_lock_exemptions=update_lock_exemptions,
+        )}
     except KeyError:
         raise HTTPException(status_code=404, detail="公告不存在")
 

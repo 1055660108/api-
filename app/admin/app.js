@@ -128,12 +128,24 @@ const els = {
   announcementLevel: document.getElementById("announcementLevel"),
   announcementLockField: document.getElementById("announcementLockField"),
   announcementLockScreen: document.getElementById("announcementLockScreen"),
+  announcementExemptField: document.getElementById("announcementExemptField"),
+  announcementExemptSearch: document.getElementById("announcementExemptSearch"),
+  announcementExemptUsers: document.getElementById("announcementExemptUsers"),
+  announcementExemptState: document.getElementById("announcementExemptState"),
   publishAnnouncementButton: document.getElementById("publishAnnouncementButton"),
   openAnnouncementHistory: document.getElementById("openAnnouncementHistory"),
   announcementHistoryModal: document.getElementById("announcementHistoryModal"),
   closeAnnouncementHistory: document.getElementById("closeAnnouncementHistory"),
   cancelAnnouncementHistory: document.getElementById("cancelAnnouncementHistory"),
   adminAnnouncementList: document.getElementById("adminAnnouncementList"),
+  announcementExemptModal: document.getElementById("announcementExemptModal"),
+  announcementExemptModalTitle: document.getElementById("announcementExemptModalTitle"),
+  announcementExemptModalSearch: document.getElementById("announcementExemptModalSearch"),
+  announcementExemptModalUsers: document.getElementById("announcementExemptModalUsers"),
+  announcementExemptModalState: document.getElementById("announcementExemptModalState"),
+  closeAnnouncementExemptModal: document.getElementById("closeAnnouncementExemptModal"),
+  cancelAnnouncementExemptModal: document.getElementById("cancelAnnouncementExemptModal"),
+  saveAnnouncementExemptUsers: document.getElementById("saveAnnouncementExemptUsers"),
   announcementModal: document.getElementById("announcementModal"),
   announcementModalTitle: document.getElementById("announcementModalTitle"),
   announcementModalContent: document.getElementById("announcementModalContent"),
@@ -776,8 +788,8 @@ const state = {
   concurrency: 1,
   configuredWorkers: 1,
   maxEffectiveWorkers: 1,
-  browserPoolProcesses: 8,
-  browserContextsPerProcess: 3,
+  browserPoolProcesses: 20,
+  browserContextsPerProcess: 1,
   submissionConcurrency: 45,
   billingPriority: "video_first",
   version: "",
@@ -815,6 +827,10 @@ const state = {
   messageTab: "feedback",
   notificationUsers: [],
   selectedNotificationUserIds: new Set(),
+  adminAnnouncements: [],
+  selectedAnnouncementExemptUserIds: new Set(),
+  editingAnnouncementId: "",
+  editingAnnouncementExemptUserIds: new Set(),
   authenticated: false,
 };
 
@@ -2008,6 +2024,29 @@ function updateNotificationRecipientState() {
   if (els.selectAllNotificationUsers) els.selectAllNotificationUsers.checked = Boolean(state.notificationUsers.length) && count === state.notificationUsers.length;
 }
 
+function announcementUserMatches(item, query) {
+  const normalized = String(query || "").trim().toLocaleLowerCase();
+  if (!normalized) return true;
+  return [item.username, item.email, item.id].some((value) => String(value || "").toLocaleLowerCase().includes(normalized));
+}
+
+function renderAnnouncementExemptUsers({ modal = false } = {}) {
+  const container = modal ? els.announcementExemptModalUsers : els.announcementExemptUsers;
+  const search = modal ? els.announcementExemptModalSearch : els.announcementExemptSearch;
+  const selected = modal ? state.editingAnnouncementExemptUserIds : state.selectedAnnouncementExemptUserIds;
+  const stateElement = modal ? els.announcementExemptModalState : els.announcementExemptState;
+  if (!container) return;
+  const users = state.notificationUsers.filter((item) => announcementUserMatches(item, search?.value));
+  container.innerHTML = users.length ? users.map((item) => `<label class="recipient-option"><input type="checkbox" value="${escapeHtml(item.id)}" data-announcement-exempt-user ${selected.has(item.id) ? "checked" : ""} /><span><strong>${escapeHtml(item.username)}</strong><small>${escapeHtml(item.email || (item.enabled ? "未绑定邮箱" : "账号已停用"))}</small></span></label>`).join("") : '<div class="empty-state">未找到匹配用户</div>';
+  if (stateElement) stateElement.textContent = selected.size ? `已解锁 ${selected.size} 位用户` : "未选择用户";
+}
+
+function syncAnnouncementExemptVisibility() {
+  const visible = els.announcementLevel?.value === "emergency" && Boolean(els.announcementLockScreen?.checked);
+  els.announcementExemptField?.classList.toggle("hidden", !visible);
+  if (visible) renderAnnouncementExemptUsers();
+}
+
 async function loadNotificationRecipients() {
   if (portal !== "admin" || !els.notificationRecipients) return;
   const data = await apiFetch("/admin/notification-recipients");
@@ -2015,6 +2054,8 @@ async function loadNotificationRecipients() {
   state.selectedNotificationUserIds = new Set(Array.from(state.selectedNotificationUserIds).filter((id) => state.notificationUsers.some((item) => item.id === id)));
   els.notificationRecipients.innerHTML = state.notificationUsers.length ? state.notificationUsers.map((item) => `<label class="recipient-option"><input type="checkbox" value="${escapeHtml(item.id)}" data-notification-user ${state.selectedNotificationUserIds.has(item.id) ? "checked" : ""} /><span><strong>${escapeHtml(item.username)}</strong><small>${escapeHtml(item.email || (item.enabled ? "未绑定邮箱" : "账号已停用"))}</small></span></label>`).join("") : '<div class="empty-state">暂无注册用户</div>';
   updateNotificationRecipientState();
+  renderAnnouncementExemptUsers();
+  if (state.editingAnnouncementId) renderAnnouncementExemptUsers({ modal: true });
 }
 
 async function loadAdminNotifications() {
@@ -2037,8 +2078,12 @@ async function loadAdminAnnouncements() {
   if (portal !== "admin" || !els.adminAnnouncementList) return;
   const data = await apiFetch("/admin/announcements");
   const rows = Array.isArray(data.announcements) ? data.announcements : [];
+  state.adminAnnouncements = rows;
   const levelLabels = { small: "小公告", large: "大公告", emergency: "紧急公告" };
-  els.adminAnnouncementList.innerHTML = rows.length ? rows.map((item) => `<article class="admin-message-row" data-announcement-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(levelLabels[item.level] || "大公告")} · ${escapeHtml(formatTime(item.created_at))}</span></div><div class="announcement-actions"><span class="message-status ${item.enabled ? "resolved" : "closed"}">${item.enabled ? "启用中" : "已停用"}</span>${item.level === "emergency" && item.enabled ? `<button class="secondary-button compact-button" type="button" data-toggle-announcement-lock data-locked="${Boolean(item.lock_screen)}">${item.lock_screen ? "解除锁屏" : "启用锁屏"}</button>` : ""}<button class="secondary-button compact-button" type="button" data-toggle-announcement data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button compact-button" type="button" data-delete-announcement>删除</button></div></div><p>${escapeHtml(item.content)}</p>${item.level === "emergency" ? `<div class="message-history-meta"><span>界面锁定</span><strong>${item.lock_screen ? "已开启" : "未开启"}</strong></div>` : ""}</article>`).join("") : '<div class="empty-state">暂无公告</div>';
+  els.adminAnnouncementList.innerHTML = rows.length ? rows.map((item) => {
+    const exemptCount = Array.isArray(item.lock_exempt_user_ids) ? item.lock_exempt_user_ids.length : 0;
+    return `<article class="admin-message-row" data-announcement-id="${escapeHtml(item.id)}"><div class="message-card-head"><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(levelLabels[item.level] || "大公告")} · ${escapeHtml(formatTime(item.created_at))}</span></div><div class="announcement-actions"><span class="message-status ${item.enabled ? "resolved" : "closed"}">${item.enabled ? "启用中" : "已停用"}</span>${item.level === "emergency" && item.enabled ? `<button class="secondary-button compact-button" type="button" data-toggle-announcement-lock data-locked="${Boolean(item.lock_screen)}">${item.lock_screen ? "解除锁屏" : "启用锁屏"}</button>` : ""}${item.level === "emergency" && item.lock_screen ? '<button class="secondary-button compact-button" type="button" data-edit-announcement-exempt>设置解锁用户</button>' : ""}<button class="secondary-button compact-button" type="button" data-toggle-announcement data-enabled="${item.enabled}">${item.enabled ? "停用" : "启用"}</button><button class="danger-button compact-button" type="button" data-delete-announcement>删除</button></div></div><p>${escapeHtml(item.content)}</p>${item.level === "emergency" ? `<div class="message-history-meta"><span>界面锁定</span><strong>${item.lock_screen ? "已开启" : "未开启"}</strong><span>单独解锁</span><strong>${exemptCount} 位用户</strong></div>` : ""}</article>`;
+  }).join("") : '<div class="empty-state">暂无公告</div>';
 }
 
 async function showNextUnseenAnnouncement() {
@@ -2100,8 +2145,10 @@ async function submitAdminAnnouncement(event) {
   event.preventDefault();
   setBusy(els.publishAnnouncementButton, true, "发布中");
   try {
-    await apiFetch("/admin/announcements", { method: "POST", body: { title: els.announcementTitle.value.trim(), content: els.announcementContent.value.trim(), level: els.announcementLevel.value, lock_screen: els.announcementLockScreen.checked } });
+    await apiFetch("/admin/announcements", { method: "POST", body: { title: els.announcementTitle.value.trim(), content: els.announcementContent.value.trim(), level: els.announcementLevel.value, lock_screen: els.announcementLockScreen.checked, lock_exempt_user_ids: Array.from(state.selectedAnnouncementExemptUserIds) } });
     els.adminAnnouncementForm.reset();
+    state.selectedAnnouncementExemptUserIds.clear();
+    if (els.announcementExemptSearch) els.announcementExemptSearch.value = "";
     setAnnouncementComposerLevel("large");
     await loadAdminAnnouncements();
     toast("公告已发布");
@@ -2123,6 +2170,40 @@ function setAnnouncementComposerLevel(level) {
   const emergency = selected === "emergency";
   els.announcementLockField?.classList.toggle("hidden", !emergency);
   if (!emergency && els.announcementLockScreen) els.announcementLockScreen.checked = false;
+  syncAnnouncementExemptVisibility();
+}
+
+function closeAnnouncementExemptEditor() {
+  closeSettingsModal(els.announcementExemptModal);
+  state.editingAnnouncementId = "";
+  state.editingAnnouncementExemptUserIds.clear();
+  if (els.announcementExemptModalSearch) els.announcementExemptModalSearch.value = "";
+}
+
+async function openAnnouncementExemptEditor(announcementId) {
+  if (!state.notificationUsers.length) await loadNotificationRecipients();
+  const item = state.adminAnnouncements.find((row) => row.id === announcementId);
+  if (!item) return toast("公告不存在，请刷新后重试", "error");
+  state.editingAnnouncementId = announcementId;
+  state.editingAnnouncementExemptUserIds = new Set(Array.isArray(item.lock_exempt_user_ids) ? item.lock_exempt_user_ids : []);
+  if (els.announcementExemptModalTitle) els.announcementExemptModalTitle.textContent = `设置解锁用户：${item.title || "紧急公告"}`;
+  renderAnnouncementExemptUsers({ modal: true });
+  openSettingsModal(els.announcementExemptModal, els.closeAnnouncementExemptModal);
+}
+
+async function saveAnnouncementExemptUsers() {
+  if (!state.editingAnnouncementId) return;
+  setBusy(els.saveAnnouncementExemptUsers, true, "保存中");
+  try {
+    await apiFetch(`/admin/announcements/${encodeURIComponent(state.editingAnnouncementId)}`, { method: "PATCH", body: { lock_exempt_user_ids: Array.from(state.editingAnnouncementExemptUserIds) } });
+    closeAnnouncementExemptEditor();
+    await loadAdminAnnouncements();
+    toast("指定用户解锁名单已更新");
+  } catch (error) {
+    toast(`解锁名单保存失败：${error.message}`, "error");
+  } finally {
+    setBusy(els.saveAnnouncementExemptUsers, false);
+  }
 }
 
 async function loadMessageCenter(options = {}) {
@@ -2136,7 +2217,7 @@ async function loadMessageCenter(options = {}) {
     } else if (state.messageTab === "notifications") {
       await Promise.all([loadNotificationRecipients(), loadAdminNotifications()]);
     } else {
-      await loadAdminAnnouncements();
+      await Promise.all([loadNotificationRecipients(), loadAdminAnnouncements()]);
     }
     return true;
   } catch (error) {
@@ -3221,8 +3302,8 @@ async function refreshHealth() {
   const effectiveWorkers = Number(data.components?.resources?.effective_workers ?? configuredWorkers);
   state.configuredWorkers = configuredWorkers || 1;
   state.maxEffectiveWorkers = Number(data.components?.resources?.capacity_limit ?? configuredWorkers ?? 1);
-  state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 15);
-  state.browserContextsPerProcess = Number(data.components?.browser?.contexts_per_process || 3);
+  state.browserPoolProcesses = Number(data.components?.browser?.process_limit || 20);
+  state.browserContextsPerProcess = Number(data.components?.browser?.contexts_per_process || 1);
   state.submissionConcurrency = Number(data.components?.browser?.submission_capacity || effectiveWorkers || 32);
   renderResourceMonitoring(data.components?.monitoring || {});
   if (portal === "admin") {
@@ -4039,8 +4120,8 @@ async function importAccount(event) {
 }
 
 function openWorkersModal() {
-  els.workersInput.value = String(state.browserPoolProcesses || 8);
-  els.effectiveWorkersInput.value = String(state.browserContextsPerProcess || 4);
+  els.workersInput.value = String(state.browserPoolProcesses || 20);
+  els.effectiveWorkersInput.value = String(state.browserContextsPerProcess || 1);
   els.submissionConcurrencyInput.value = String(state.submissionConcurrency || 32);
   els.workersModalState.textContent = "";
   els.workersModal.classList.remove("hidden");
@@ -4141,8 +4222,8 @@ async function saveWorkersConfig() {
     });
     state.configuredWorkers = Number(data.browser_workers ?? submissionConcurrency);
     state.maxEffectiveWorkers = Number(data.max_effective_workers ?? data.capacity_limit ?? submissionConcurrency);
-    state.browserPoolProcesses = Number(data.browser_pool_processes || 15);
-    state.browserContextsPerProcess = Number(data.browser_contexts_per_process || 3);
+    state.browserPoolProcesses = Number(data.browser_pool_processes || 20);
+    state.browserContextsPerProcess = Number(data.browser_contexts_per_process || 1);
     state.submissionConcurrency = Number(data.submission_concurrency || 32);
     els.metricWorkers.textContent = String(state.submissionConcurrency);
     els.workersModalState.textContent = "已保存，全局远端不限制";
@@ -6898,6 +6979,27 @@ function bindEvents() {
   document.querySelectorAll("[data-announcement-level]").forEach((button) => button.addEventListener("click", () => {
     setAnnouncementComposerLevel(button.dataset.announcementLevel);
   }));
+  els.announcementLockScreen?.addEventListener("change", syncAnnouncementExemptVisibility);
+  els.announcementExemptSearch?.addEventListener("input", () => renderAnnouncementExemptUsers());
+  els.announcementExemptUsers?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-announcement-exempt-user]");
+    if (!checkbox) return;
+    if (checkbox.checked) state.selectedAnnouncementExemptUserIds.add(checkbox.value);
+    else state.selectedAnnouncementExemptUserIds.delete(checkbox.value);
+    renderAnnouncementExemptUsers();
+  });
+  els.announcementExemptModalSearch?.addEventListener("input", () => renderAnnouncementExemptUsers({ modal: true }));
+  els.announcementExemptModalUsers?.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-announcement-exempt-user]");
+    if (!checkbox) return;
+    if (checkbox.checked) state.editingAnnouncementExemptUserIds.add(checkbox.value);
+    else state.editingAnnouncementExemptUserIds.delete(checkbox.value);
+    renderAnnouncementExemptUsers({ modal: true });
+  });
+  els.closeAnnouncementExemptModal?.addEventListener("click", closeAnnouncementExemptEditor);
+  els.cancelAnnouncementExemptModal?.addEventListener("click", closeAnnouncementExemptEditor);
+  els.announcementExemptModal?.addEventListener("click", (event) => { if (event.target === els.announcementExemptModal) closeAnnouncementExemptEditor(); });
+  els.saveAnnouncementExemptUsers?.addEventListener("click", saveAnnouncementExemptUsers);
   els.membershipForm?.addEventListener("submit", createMembership);
   els.refreshMessages?.addEventListener("click", refreshMessageCenter);
   els.feedbackTableBody?.addEventListener("change", async (event) => {
@@ -6964,7 +7066,7 @@ function bindEvents() {
     }
   });
   els.adminAnnouncementList?.addEventListener("click", async (event) => {
-    const button = event.target.closest("[data-toggle-announcement], [data-toggle-announcement-lock], [data-delete-announcement]");
+    const button = event.target.closest("[data-toggle-announcement], [data-toggle-announcement-lock], [data-edit-announcement-exempt], [data-delete-announcement]");
     const article = button?.closest("[data-announcement-id]");
     if (!button || !article) return;
     try {
@@ -6973,6 +7075,10 @@ function bindEvents() {
         await apiFetch(`/admin/announcements/${encodeURIComponent(article.dataset.announcementId)}`, { method: "DELETE" });
         await loadAdminAnnouncements();
         toast("公告已删除");
+        return;
+      }
+      if (button.hasAttribute("data-edit-announcement-exempt")) {
+        await openAnnouncementExemptEditor(article.dataset.announcementId);
         return;
       }
       const body = button.hasAttribute("data-toggle-announcement-lock") ? { lock_screen: button.dataset.locked !== "true" } : { enabled: button.dataset.enabled !== "true" };

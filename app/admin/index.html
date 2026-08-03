@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.38" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.39" />
   </head>
   <body>
     <script>
@@ -402,6 +402,11 @@
                 <div class="field"><span>公告类型</span><input id="announcementLevel" type="hidden" value="large" /><div class="announcement-level-picker" role="radiogroup" aria-label="公告类型"><button type="button" data-announcement-level="small" role="radio" aria-checked="false"><i data-lucide="message-square" aria-hidden="true"></i><span><strong>小公告</strong><small>右下角显示 8 秒</small></span></button><button class="active" type="button" data-announcement-level="large" role="radio" aria-checked="true"><i data-lucide="panel-top-open" aria-hidden="true"></i><span><strong>大公告</strong><small>登录后弹窗显示</small></span></button><button type="button" data-announcement-level="emergency" role="radio" aria-checked="false"><i data-lucide="triangle-alert" aria-hidden="true"></i><span><strong>紧急公告</strong><small>全屏维护通知</small></span></button></div></div>
                 <div class="announcement-content-grid"><label class="field"><span>公告标题</span><input id="announcementTitle" maxlength="120" required /></label><label class="field announcement-content-field"><span>公告内容</span><textarea id="announcementContent" maxlength="5000" required></textarea></label></div>
                 <label class="announcement-lock-control hidden" id="announcementLockField"><input id="announcementLockScreen" type="checkbox" /><span class="switch-track" aria-hidden="true"><span></span></span><span class="announcement-lock-copy"><strong>锁定所有用户界面</strong><small>仅用于维护或重要更新，停用公告后自动解除</small></span></label>
+                <section class="announcement-exempt-panel hidden" id="announcementExemptField" aria-labelledby="announcementExemptTitle">
+                  <div class="recipient-header"><div><strong id="announcementExemptTitle">指定解锁用户</strong><small>已选用户可正常使用，其他用户保持锁定</small></div><span id="announcementExemptState">未选择用户</span></div>
+                  <label class="recipient-search"><i data-lucide="search" aria-hidden="true"></i><input id="announcementExemptSearch" type="search" placeholder="搜索用户名或邮箱" autocomplete="off" /></label>
+                  <div class="recipient-list" id="announcementExemptUsers"></div>
+                </section>
                 <div class="message-submit-row"><span class="muted">公告发布后立即生效</span><button class="primary-button icon-text-button" id="publishAnnouncementButton" type="submit"><i data-lucide="megaphone" aria-hidden="true"></i>发布公告</button></div>
               </form>
             </section>
@@ -887,7 +892,7 @@
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"browser_pool_processes":15,"browser_contexts_per_process":3,"submission_concurrency":45,"remote_generation_limit":0}</code>
+                    <code>{"browser_pool_processes":20,"browser_contexts_per_process":1,"submission_concurrency":20,"remote_generation_limit":0}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -902,7 +907,7 @@
                   </div>
                   <div class="api-example">
                     <span>响应示例</span>
-                    <code>{"ok":true,"browser_pool_processes":15,"browser_contexts_per_process":3,"submission_concurrency":45,"remote_generation_limit":0}</code>
+                    <code>{"ok":true,"browser_pool_processes":20,"browser_contexts_per_process":1,"submission_concurrency":20,"remote_generation_limit":0}</code>
                   </div>
                 </article>
                 <article class="api-item">
@@ -1253,6 +1258,14 @@
         <div class="modal-actions model-modal-actions"><span>保存后同步更新号池中三个平台的账号额度</span><button class="secondary-button" id="cancelAccountQuotaSettings" type="button">取消</button><button class="primary-button" id="saveAccountQuotaSettings" type="button">保存额度设定</button></div>
       </section>
     </div>
+    <div class="modal-backdrop hidden elevated-modal" id="announcementExemptModal" aria-hidden="true">
+      <section class="modal-panel announcement-exempt-modal" role="dialog" aria-modal="true" aria-labelledby="announcementExemptModalTitle">
+        <div class="modal-header"><div><h2 id="announcementExemptModalTitle">设置解锁用户</h2><p>选中的用户不会被这条紧急公告锁定。</p></div><button class="modal-close" id="closeAnnouncementExemptModal" type="button" aria-label="关闭">×</button></div>
+        <label class="recipient-search"><i data-lucide="search" aria-hidden="true"></i><input id="announcementExemptModalSearch" type="search" placeholder="搜索用户名或邮箱" autocomplete="off" /></label>
+        <div class="recipient-list" id="announcementExemptModalUsers"></div>
+        <div class="modal-actions"><span class="muted" id="announcementExemptModalState">未选择用户</span><button class="secondary-button" id="cancelAnnouncementExemptModal" type="button">取消</button><button class="primary-button" id="saveAnnouncementExemptUsers" type="button">保存</button></div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="invitationManagementModal" aria-hidden="true">
       <section class="modal-panel admin-management-modal" role="dialog" aria-modal="true" aria-labelledby="invitationManagementTitle">
         <div class="modal-header"><div><h2 id="invitationManagementTitle">邀请码管理</h2><p>生成纯英文字母邀请码，长期有效，手动删除后失效。</p></div><button class="modal-close" id="closeInvitationManagementModal" type="button" aria-label="关闭">×</button></div>
@@ -1479,6 +1492,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.38"></script>
+    <script src="/admin/assets/app.js?v=1.10.39"></script>
   </body>
 </html>

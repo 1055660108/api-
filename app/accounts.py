@@ -879,6 +879,8 @@ def _account_supports_duration(account: dict[str, Any], platform: str, duration:
 
 def account_supports_duration(account_id: str, platform: str, duration: int) -> bool:
     normalized_id = str(account_id or "").strip().lower()
+    if postgres.enabled():
+        return postgres.account_supports_duration(normalized_id, normalize_platform(platform), duration)
     with _ACCOUNTS_LOCK:
         account = next(
             (item for item in _read_data()["accounts"] if str(item.get("id") or "") == normalized_id),

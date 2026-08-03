@@ -676,6 +676,22 @@ def claim_available_account(
         return result
 
 
+def account_supports_duration(account_id: str, platform: str, duration: int) -> bool:
+    conditions = [
+        "id = %s",
+        "COALESCE(payload->>'platform', 'dola') = %s",
+    ]
+    params: list[Any] = [str(account_id or "").strip().lower(), str(platform or "dola")]
+    if str(platform or "dola") == "dola" and (int(duration or 0) <= 0 or int(duration or 0) > 10):
+        conditions.append("COALESCE(payload->>'ten_second_only', 'false') <> 'true'")
+    with connection() as conn:
+        row = conn.execute(
+            f"SELECT 1 FROM dola_accounts WHERE {' AND '.join(conditions)} LIMIT 1",
+            tuple(params),
+        ).fetchone()
+    return row is not None
+
+
 def delete_document(name: str) -> None:
     with connection() as conn:
         if name == "accounts":

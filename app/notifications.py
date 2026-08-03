@@ -140,7 +140,19 @@ def delete_notification(notification_id: str) -> dict[str, Any]:
         return record
 
 
-def create_announcement(title: str, content: str, level: str = "large", lock_screen: bool = False) -> dict[str, Any]:
+def _normalize_user_ids(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
+
+
+def create_announcement(
+    title: str,
+    content: str,
+    level: str = "large",
+    lock_screen: bool = False,
+    lock_exempt_user_ids: object = None,
+) -> dict[str, Any]:
     title = str(title or "").strip()
     content = str(content or "").strip()
     if not title or len(title) > 120:
@@ -151,6 +163,7 @@ def create_announcement(title: str, content: str, level: str = "large", lock_scr
     if level not in {"small", "large", "emergency"}:
         raise ValueError("公告类型必须为 small、large 或 emergency")
     lock_screen = bool(lock_screen) if level == "emergency" else False
+    exempt_user_ids = _normalize_user_ids(lock_exempt_user_ids) if lock_screen else []
     now = _now()
     announcement = {
         "id": secrets.token_hex(12),
@@ -158,6 +171,7 @@ def create_announcement(title: str, content: str, level: str = "large", lock_scr
         "content": content,
         "level": level,
         "lock_screen": lock_screen,
+        "lock_exempt_user_ids": exempt_user_ids,
         "enabled": True,
         "seen_by": [],
         "created_at": now,
@@ -170,7 +184,7 @@ def create_announcement(title: str, content: str, level: str = "large", lock_scr
     return dict(announcement)
 
 
-def list_announcements(user_id: str = "", include_disabled: bool = False) -> list[dict[str, Any]]:
+def list_announcements(user_id: str = "", include_disabled: bool = False, include_exemptions: bool = False) -> list[dict[str, Any]]:
     with _LOCK:
         rows = [dict(item) for item in _read()["announcements"].values() if isinstance(item, dict)]
     if not include_disabled:
@@ -178,7 +192,16 @@ def list_announcements(user_id: str = "", include_disabled: bool = False) -> lis
     for item in rows:
         seen_by = {str(value) for value in item.pop("seen_by", [])}
         item["level"] = str(item.get("level") or "large")
-        item["lock_screen"] = bool(item.get("lock_screen", False)) if item["level"] == "emergency" else False
+        exempt_user_ids = _normalize_user_ids(item.get("lock_exempt_user_ids"))
+        globally_locked = bool(item.get("lock_screen", False)) if item["level"] == "emergency" else False
+        lock_exempt = bool(user_id and str(user_id) in exempt_user_ids)
+        item["lock_screen"] = globally_locked and not lock_exempt if user_id else globally_locked
+        if include_exemptions:
+            item["lock_exempt_user_ids"] = exempt_user_ids
+        else:
+            item.pop("lock_exempt_user_ids", None)
+        if user_id:
+            item["lock_exempt"] = lock_exempt
         item["seen"] = bool(user_id and str(user_id) in seen_by)
     rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return rows
@@ -198,11 +221,19 @@ def mark_announcement_seen(announcement_id: str, user_id: str) -> dict[str, Any]
             _write(data)
         public = dict(record)
         public.pop("seen_by", None)
+        public.pop("lock_exempt_user_ids", None)
         public["seen"] = True
         return public
 
 
-def update_announcement(announcement_id: str, *, enabled: bool | None = None, lock_screen: bool | None = None) -> dict[str, Any]:
+def update_announcement(
+    announcement_id: str,
+    *,
+    enabled: bool | None = None,
+    lock_screen: bool | None = None,
+    lock_exempt_user_ids: object = None,
+    update_lock_exemptions: bool = False,
+) -> dict[str, Any]:
     with _LOCK:
         data = _read()
         record = data["announcements"].get(str(announcement_id or ""))
@@ -212,6 +243,14 @@ def update_announcement(announcement_id: str, *, enabled: bool | None = None, lo
             record["enabled"] = bool(enabled)
         if lock_screen is not None:
             record["lock_screen"] = bool(lock_screen) if record.get("level") == "emergency" else False
+            if not record["lock_screen"]:
+                record["lock_exempt_user_ids"] = []
+        if update_lock_exemptions:
+            record["lock_exempt_user_ids"] = (
+                _normalize_user_ids(lock_exempt_user_ids)
+                if record.get("level") == "emergency" and record.get("lock_screen", False)
+                else []
+            )
         record["updated_at"] = _now()
         _write(data)
         public = dict(record)

@@ -500,6 +500,30 @@ def list_account_credentials(platform: str) -> list[dict[str, Any]]:
         return [dict(item) for item in _read_data()["accounts"] if str(item.get("platform") or DEFAULT_PLATFORM) == target_platform]
 
 
+def account_cookie_export(account_id: str) -> dict[str, str]:
+    normalized_id = str(account_id or "").strip().lower()
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            account = postgres.read_account(normalized_id)
+        else:
+            account = next(
+                (item for item in _read_data()["accounts"] if str(item.get("id") or "") == normalized_id),
+                None,
+            )
+    if not isinstance(account, dict):
+        raise KeyError("account not found")
+    cookies = account.get("cookies") if isinstance(account.get("cookies"), list) else []
+    cookie_data = str(account.get("cookie_header") or "").strip() or _cookie_header_from_items(cookies)
+    if not cookie_data:
+        raise ValueError("account cookie is empty")
+    return {
+        "account_id": normalized_id,
+        "name": str(account.get("name") or normalized_id),
+        "platform": str(account.get("platform") or DEFAULT_PLATFORM),
+        "cookie_data": cookie_data,
+    }
+
+
 def _account_fingerprint(platform: str, cookies: list[dict[str, Any]]) -> str:
     normalized = sorted(
         (

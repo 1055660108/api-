@@ -676,6 +676,15 @@ def claim_available_account(
         return result
 
 
+def read_account(account_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT payload FROM dola_accounts WHERE id = %s",
+            (str(account_id or "").strip().lower(),),
+        ).fetchone()
+    return dict(row[0]) if row else None
+
+
 def account_supports_duration(account_id: str, platform: str, duration: int) -> bool:
     conditions = [
         "id = %s",

@@ -1703,6 +1703,10 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(account["account_source"], "api")
         for secret_field in ("cookies", "cookie_header", "cookie_names", "cookie_count", "current_task_id", "current_worker_id"):
             self.assertNotIn(secret_field, account)
+        self.assertEqual(
+            self.client.get(f"/accounts/{account['id']}/cookie", headers=key_headers).status_code,
+            403,
+        )
 
         listed = self.client.get("/account-access/accounts?group=dola", headers={"X-Account-Access-Key": first_key})
         self.assertEqual(listed.status_code, 200)
@@ -2158,6 +2162,15 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertTrue({"id", "platform", "name", "enabled", "account_status", "quota_limit", "quota_used", "quota_remaining", "cookie_count", "cookie_names", "created_at", "updated_at"} <= set(created))
         self.assertNotIn("cookies", created)
         self.assertNotIn("cookie_header", created)
+        cookie_export = self.client.get(f"/accounts/{created['id']}/cookie")
+        self.assertEqual(cookie_export.status_code, 200, cookie_export.text)
+        self.assertEqual(cookie_export.json(), {
+            "account_id": created["id"],
+            "name": "契约账号",
+            "platform": "dola",
+            "cookie_data": "session=secret-value",
+        })
+        self.assertEqual(cookie_export.headers["cache-control"], "no-store")
         accounts_payload = self.client.get("/accounts").json()
         self.assertEqual(set(accounts_payload), {"accounts", "quota_summary", "next_quota_reset_at"})
         self.assertEqual(set(accounts_payload["quota_summary"]), {"total_limit", "total_used", "total_remaining", "unlimited_count"})

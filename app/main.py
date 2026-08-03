@@ -32,7 +32,7 @@ from .account_access import generate_key as generate_account_access_key, revoke_
 from .admin_audit import list_admin_actions, prune_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
-from .accounts import account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, migrate_ten_second_accounts_to_api, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
+from .accounts import account_cookie_export, account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, migrate_ten_second_accounts_to_api, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
 from .billing import model_cost_points, model_cost_units, nonnegative_points_to_units, points_to_units, units_to_points
 from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
@@ -4345,6 +4345,27 @@ async def accounts_deletion_history(limit: int = Query(90, ge=1, le=180)):
         "cleanup_time": "23:00",
         "timezone": "Asia/Shanghai",
     }
+
+
+@app.get("/accounts/{account_id}/cookie", dependencies=[Depends(require_admin)])
+async def account_cookie_for_admin(account_id: str, request: Request):
+    try:
+        payload = await asyncio.to_thread(account_cookie_export, account_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="account not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await _record_admin_action_safe(
+        "account_cookie_copy",
+        "复制账号 Cookie",
+        detail=f"账号：{payload['name']}；平台：{payload['platform']}",
+        ip_address=_request_client_key(request),
+        reference_id=payload["account_id"],
+    )
+    return JSONResponse(
+        content=payload,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 def _run_account_list_maintenance() -> None:

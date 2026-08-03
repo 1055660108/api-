@@ -357,6 +357,10 @@ class BrowserRuntimeTests(unittest.TestCase):
         self.assertIn("await dola_proxy_available", dola)
         self.assertIn("browser_pool=self._dola_browser_pool", (root / "worker.py").read_text(encoding="utf-8"))
         self.assertIn("submission_pacer=self._wait_for_dola_submit_slot", (root / "worker.py").read_text(encoding="utf-8"))
+        self.assertIn(
+            "contexts_per_endpoint=API_PROXY_CONTEXTS_PER_ENDPOINT",
+            (root / "worker.py").read_text(encoding="utf-8"),
+        )
         self.assertIn("proxy_session=proxy_session", (root / "worker.py").read_text(encoding="utf-8"))
         self.assertIn("proxy=proxy_config", doubao)
         self.assertIn("await bounded_cleanup(lease.release())", doubao)

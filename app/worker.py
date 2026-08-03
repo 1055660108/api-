@@ -88,6 +88,12 @@ API_PROXY_ENDPOINT_LIMIT = _bounded_env_int(
     1,
     BROWSER_SUBMISSION_CONCURRENCY,
 )
+API_PROXY_CONTEXTS_PER_ENDPOINT = _bounded_env_int(
+    "DOLA_API_PROXY_CONTEXTS_PER_ENDPOINT",
+    2,
+    1,
+    BROWSER_CONTEXTS_PER_PROCESS,
+)
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -203,7 +209,7 @@ class WorkerManager:
         )
         self._api_proxy_pool = ReusableApiProxyPool(
             max_endpoints=API_PROXY_ENDPOINT_LIMIT,
-            contexts_per_endpoint=1,
+            contexts_per_endpoint=API_PROXY_CONTEXTS_PER_ENDPOINT,
             max_concurrent_refreshes=API_PROXY_REFRESH_CONCURRENCY,
         )
         self._remote_generation_reservations: dict[str, str] = {}

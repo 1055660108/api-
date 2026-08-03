@@ -4,7 +4,7 @@ import asyncio
 import base64
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import cv2
 import numpy as np
@@ -184,6 +184,13 @@ class SliderAutomationRecoveryTests(unittest.TestCase):
 
         self.assertTrue(result["slider_verification"])
         self.assertEqual(page.evaluate.await_count, 1)
+        runner._resolve_slider_if_present.assert_awaited_once_with(
+            page,
+            ANY,
+            phase="submission_response",
+            wait_seconds=automation.SLIDER_RECOVERY_OBSERVE_SECONDS,
+            reload_if_missing=False,
+        )
 
     def test_service_frequent_slider_is_solved_before_retry(self) -> None:
         runner = self.runner()

@@ -1767,10 +1767,18 @@ class ReliabilityTests(unittest.TestCase):
                 account={"id": "dola-upload-timeout"},
                 image_upload_slot=upload_slot,
             )
-            runner._upload_one_image_by_fetch = hanging_upload
-            with patch.object(automation, "REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS", 0.01):
+            runner.active_proxy_server = "http://proxy.example:18080"
+            upload = AsyncMock(side_effect=hanging_upload)
+            runner._upload_one_image_by_fetch = upload
+            with patch.object(runner, "_cooldown_active_proxy_transport") as cooldown_proxy, patch.object(
+                automation, "REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS", 0.01
+            ), patch(
+                "app.automation.asyncio.sleep", new=AsyncMock()
+            ):
                 with self.assertRaisesRegex(RuntimeError, "reference image upload timed out"):
                     await runner._upload_images_if_needed(object())
+            self.assertEqual(upload.await_count, 3)
+            cooldown_proxy.assert_called_once_with()
 
         asyncio.run(exercise())
         self.assertTrue(slot_exited)
@@ -1798,6 +1806,54 @@ class ReliabilityTests(unittest.TestCase):
         stored = store.load_result(task["id"])
         self.assertTrue(stored["reference_upload_transport_recovered"])
         self.assertEqual(stored["reference_upload_transport_attempts"], 2)
+
+    def test_reference_upload_uses_the_active_browser_proxy(self) -> None:
+        task = self.create_task("owner-upload-proxy")
+        image = store.images_dir(task["id"]) / "01.png"
+        image.write_bytes(b"small-reference")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16", account={"id": "dola-proxy"})
+        runner.active_proxy_server = "http://proxy.example:18080"
+        runner.proxy_node_id = "api:proxy.example:18080"
+        runner._prepare_image_upload = AsyncMock(return_value={
+            "service_id": "service-test",
+            "upload_host": "imagex.example",
+            "upload_auth_token": {
+                "AccessKeyId": "access",
+                "SecretAccessKey": "secret",
+                "SessionToken": "session",
+            },
+        })
+
+        class ClientContext:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        responses = [
+            ({
+                "Result": {
+                    "UploadAddress": {
+                        "StoreInfos": [{"StoreUri": "tos/test", "Auth": "upload-auth"}],
+                        "UploadHosts": ["upload.example"],
+                        "SessionKey": "session-key",
+                    }
+                }
+            }, SimpleNamespace(status_code=200)),
+            ({"code": 2000}, SimpleNamespace(status_code=200)),
+            ({"Result": {"Results": [{"Uri": "tos/test"}], "PluginResult": [{}]}}, SimpleNamespace(status_code=200)),
+        ]
+        with patch("app.automation.httpx.AsyncClient", return_value=ClientContext()) as client_factory, patch(
+            "app.automation._fetch_json", new=AsyncMock(side_effect=responses)
+        ):
+            result = asyncio.run(runner._upload_one_image_by_fetch(object(), image))
+
+        self.assertEqual(result["uri"], "tos/test")
+        self.assertEqual(client_factory.call_args.kwargs["proxy"], runner.active_proxy_server)
+        stored = store.load_result(task["id"])
+        self.assertEqual(stored["reference_upload_stage"], "completed")
+        self.assertEqual(stored["reference_upload_proxy_node_id"], runner.proxy_node_id)
 
     def test_direct_upload_transport_failure_does_not_retire_browser_api_proxy(self) -> None:
         task = self.create_task("owner-direct-upload-failure")
@@ -1924,6 +1980,7 @@ class ReliabilityTests(unittest.TestCase):
         task = self.create_task("owner-reference-api-timeout")
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
         runner.active_proxy_source = "api"
+        runner.active_proxy_server = "http://proxy.example:18080"
         runner._run_once = AsyncMock(side_effect=RuntimeError("prepare_upload timed out"))
         with patch.object(runner, "_cooldown_active_proxy_transport") as cooldown_proxy:
             outcome = asyncio.run(runner.run())

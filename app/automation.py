@@ -78,6 +78,7 @@ SERVICE_FREQUENT_RELOAD_TIMEOUT_SECONDS = 10.0
 DOLA_SUBMIT_TIMEOUT_SECONDS = 75.0
 DOLA_SUBMIT_WITH_REFERENCES_TIMEOUT_SECONDS = 135.0
 SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
+SLIDER_RECOVERY_OBSERVE_SECONDS = 15.0
 PROXY_TRANSPORT_COOLDOWN_SECONDS = 60
 
 
@@ -977,6 +978,8 @@ class DolaFetchAutomation:
         self.uploaded_images: list[dict[str, Any]] = []
         self.proxy_node_id = ""
         self.active_proxy_source = ""
+        self.active_proxy_server = ""
+        self.reference_upload_stage = ""
         self.subscription_proxy: dict[str, str] | None = None
         self.account_proxy_bridge: dict[str, str] | None = None
         self.proxy_exit_id = "direct"
@@ -1118,8 +1121,8 @@ class DolaFetchAutomation:
                 page,
                 context,
                 phase="submission_response",
-                wait_seconds=5.0,
-                reload_if_missing=True,
+                wait_seconds=SLIDER_RECOVERY_OBSERVE_SECONDS,
+                reload_if_missing=False,
             )
             value["_slider_result"] = slider_result
             if slider_result.status != "success" or attempt >= SLIDER_RECOVERY_SUBMIT_ATTEMPTS:
@@ -1458,8 +1461,7 @@ class DolaFetchAutomation:
                 self._record_active_gateway_failure(gateway_status)
             if reference_upload_failure:
                 reference_transport_failure = "timed out" in reason.lower() or is_proxy_transport_failure(reason)
-                direct_upload_failure = "direct image upload transport failure" in reason.lower()
-                if reference_transport_failure and not direct_upload_failure:
+                if reference_transport_failure and self.active_proxy_server:
                     self._handle_active_proxy_transport_failure(reason)
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
@@ -1785,6 +1787,7 @@ class DolaFetchAutomation:
             self.api_proxy_lease = lease
             self.proxy_node_id = lease.node_id
             self.active_proxy_source = "api"
+            self.active_proxy_server = lease.server
             self.proxy_exit_id = await proxy_exit_identity(lease.server, lease.node_id)
             record_node_success(lease.node_id)
             mark_proxy_source_available("api")
@@ -1844,6 +1847,7 @@ class DolaFetchAutomation:
                 continue
             self.proxy_node_id = node_id
             self.active_proxy_source = "api"
+            self.active_proxy_server = server
             self.proxy_exit_id = await proxy_exit_identity(server, node_id)
             record_node_success(node_id)
             mark_proxy_source_available("api")
@@ -1885,6 +1889,7 @@ class DolaFetchAutomation:
         self.settings = load_settings()
         self.proxy_platform = str(getattr(self, "proxy_platform", "dola") or "dola")
         self.active_proxy_source = ""
+        self.active_proxy_server = ""
         self.proxy_node_id = ""
         self.proxy_exit_id = "direct"
         meta = get_meta(self.task_id) if self._task_exists() else {}
@@ -1939,6 +1944,7 @@ class DolaFetchAutomation:
                     self.subscription_proxy = proxy
                     self.proxy_node_id = str(proxy.get("node_id") or "")
                     self.active_proxy_source = source
+                    self.active_proxy_server = str(proxy.get("server") or "")
                     self.proxy_exit_id = str(proxy.get("exit_id") or f"node:{self.proxy_node_id}")
                     mark_proxy_source_available(source)
                     if avoid_node_id and self.proxy_node_id != avoid_node_id:
@@ -1985,6 +1991,9 @@ class DolaFetchAutomation:
                             config = account_browser_config(entry)
                         self.proxy_node_id = str(entry.get("id") or "")
                         self.active_proxy_source = source
+                        self.active_proxy_server = str(
+                            (getattr(self, "account_proxy_bridge", None) or {}).get("server") or probe_url
+                        )
                         self.proxy_exit_id = str((getattr(self, "account_proxy_bridge", None) or {}).get("exit_id") or "") or await proxy_exit_identity(probe_url, self.proxy_node_id)
                         mark_proxy_source_available(source)
                         if avoid_node_id and self.proxy_node_id != avoid_node_id:
@@ -2030,7 +2039,6 @@ class DolaFetchAutomation:
         if getattr(self, "api_proxy_lease", None) is not None:
             await _bounded_cleanup(self.api_proxy_lease.release())
             self.api_proxy_lease = None
-
     def mark_browser_proxy_unavailable(self, *, reason: str = "runtime_failure") -> None:
         """Retire the active proxy after a browser-level network or region failure."""
         self._mark_active_proxy_unavailable(reason=reason)
@@ -2118,6 +2126,8 @@ class DolaFetchAutomation:
             if attempt < attempts:
                 await asyncio.sleep(1.5 * attempt)
 
+        if self.active_proxy_server:
+            self._cooldown_active_proxy_transport()
         raise RuntimeError(
             f"prepare_upload transport failure after {attempts} attempts: {last_transport_error or 'transport error'}"
         )
@@ -2127,6 +2137,12 @@ class DolaFetchAutomation:
         file_name = image_path.name
         ext = _file_extension_for_upload(image_path)
         mime = _mime_from_path(image_path)
+        self.reference_upload_stage = "prepare_upload"
+        self._save_result(extra={
+            "reference_upload_stage": self.reference_upload_stage,
+            "reference_upload_proxy_node_id": self.proxy_node_id,
+            "reference_upload_stage_started_at": datetime.now(timezone.utc).isoformat(),
+        })
         upload_config = await self._prepare_image_upload(page)
         credentials = _normalize_upload_credentials(upload_config.get("upload_auth_token") or {})
         service_id = str(upload_config.get("service_id") or "")
@@ -2135,7 +2151,20 @@ class DolaFetchAutomation:
             raise RuntimeError("prepare_upload did not return service_id")
 
         timeout = httpx.Timeout(90.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+        client_options: dict[str, Any] = {
+            "timeout": timeout,
+            "follow_redirects": False,
+            "trust_env": False,
+        }
+        if self.active_proxy_server:
+            client_options["proxy"] = self.active_proxy_server
+        async with httpx.AsyncClient(**client_options) as client:
+            self.reference_upload_stage = "apply_upload"
+            self._save_result(extra={
+                "reference_upload_stage": self.reference_upload_stage,
+                "reference_upload_proxy_node_id": self.proxy_node_id,
+                "reference_upload_stage_started_at": datetime.now(timezone.utc).isoformat(),
+            })
             apply_params = {
                 "Action": "ApplyImageUpload",
                 "Version": IMAGEX_API_VERSION,
@@ -2177,6 +2206,12 @@ class DolaFetchAutomation:
             if isinstance(upload_address.get("UploadHeader"), dict):
                 upload_headers.update({str(key): str(value) for key, value in upload_address["UploadHeader"].items()})
             upload_url = f"https://{upload_host}/upload/v1/{store_uri}"
+            self.reference_upload_stage = "upload_binary"
+            self._save_result(extra={
+                "reference_upload_stage": self.reference_upload_stage,
+                "reference_upload_input_bytes": len(buffer),
+                "reference_upload_stage_started_at": datetime.now(timezone.utc).isoformat(),
+            })
             upload_data, upload_response = await _fetch_json(
                 client,
                 upload_url,
@@ -2201,6 +2236,11 @@ class DolaFetchAutomation:
                     include_payload_hash=True,
                 ),
             }
+            self.reference_upload_stage = "commit_upload"
+            self._save_result(extra={
+                "reference_upload_stage": self.reference_upload_stage,
+                "reference_upload_stage_started_at": datetime.now(timezone.utc).isoformat(),
+            })
             commit_data, _ = await _fetch_json(
                 client,
                 commit_url,
@@ -2218,6 +2258,11 @@ class DolaFetchAutomation:
         uri = str(first_result.get("Uri") or "")
         if not uri:
             raise RuntimeError(f"CommitImageUpload did not return image uri: {json.dumps(commit_data, ensure_ascii=False)[:500]}")
+        self.reference_upload_stage = "completed"
+        self._save_result(extra={
+            "reference_upload_stage": self.reference_upload_stage,
+            "reference_upload_completed_at": datetime.now(timezone.utc).isoformat(),
+        })
         return {
             "uri": uri,
             "name": plugin.get("FileName") or Path(uri).name or file_name,
@@ -2229,7 +2274,7 @@ class DolaFetchAutomation:
         }
 
     async def _upload_one_image_with_timeout(self, page: Page, image_path: Path) -> dict[str, Any]:
-        last_transport_error: httpx.TransportError | None = None
+        last_transport_error: BaseException | None = None
         attempts = max(1, int(REFERENCE_IMAGE_UPLOAD_TRANSPORT_ATTEMPTS))
         for attempt in range(1, attempts + 1):
             try:
@@ -2245,7 +2290,15 @@ class DolaFetchAutomation:
                     })
                 return uploaded
             except asyncio.TimeoutError as exc:
-                raise RuntimeError("reference image upload timed out") from exc
+                last_transport_error = exc
+                self._save_result(extra={
+                    "reference_upload_transport_attempts": attempt,
+                    "reference_upload_transport_error": "TimeoutError",
+                    "reference_upload_timeout_stage": self.reference_upload_stage or "unknown",
+                    "reference_upload_input_bytes": image_path.stat().st_size if image_path.is_file() else 0,
+                })
+                if attempt >= attempts:
+                    break
             except httpx.TransportError as exc:
                 last_transport_error = exc
                 error_name = type(exc).__name__
@@ -2256,12 +2309,21 @@ class DolaFetchAutomation:
                 })
                 if attempt >= attempts:
                     break
-                self._set_phase(
-                    "uploading_reference_retry",
-                    f"参考图上传连接恢复中（{attempt}/{attempts}）",
-                )
-                await asyncio.sleep(min(5.0, 1.5 * attempt))
+            self._set_phase(
+                "uploading_reference_retry",
+                f"参考图上传连接恢复中（{attempt}/{attempts}）",
+            )
+            await asyncio.sleep(min(5.0, 1.5 * attempt))
+        if isinstance(last_transport_error, asyncio.TimeoutError):
+            if self.active_proxy_server:
+                self._cooldown_active_proxy_transport()
+            raise RuntimeError(
+                f"reference image upload timed out after {attempts} attempts during "
+                f"{self.reference_upload_stage or 'unknown'}"
+            ) from last_transport_error
         error_name = type(last_transport_error).__name__ if last_transport_error is not None else "TransportError"
+        if self.active_proxy_server:
+            self._cooldown_active_proxy_transport()
         raise RuntimeError(
             f"direct image upload transport failure after {attempts} attempts: {error_name}"
         ) from last_transport_error

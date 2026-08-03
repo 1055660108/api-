@@ -90,6 +90,27 @@ def _encode_upload_copy(image: np.ndarray) -> bytes | None:
     return best
 
 
+def compress_reference_image(source: Path, target: Path) -> Path:
+    image = _load_image(source)
+    encoded = _encode_upload_copy(image) if image is not None else None
+    if not encoded or len(encoded) > REFERENCE_UPLOAD_MAX_BYTES:
+        raise ValueError("reference image could not be compressed to the upload limit")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(f"{target.suffix}.tmp")
+    try:
+        temporary.write_bytes(encoded)
+        if temporary.stat().st_size <= 0:
+            raise OSError("compressed reference image is empty")
+        temporary.replace(target)
+        if source != target:
+            source.unlink(missing_ok=True)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        raise
+    return target
+
+
 def _prepare_upload_sized_images(task_id: str, paths: list[Path]) -> list[Path]:
     if not paths:
         return []

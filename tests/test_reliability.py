@@ -77,6 +77,21 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(len(waits), 2)
         self.assertTrue(all(wait > 4.9 for wait in waits))
 
+    def test_dola_preparation_admission_is_non_blocking_before_account_claim(self) -> None:
+        manager = WorkerManager()
+
+        async def exercise() -> tuple[int, int]:
+            manager._last_dola_admitted_at = asyncio.get_running_loop().time()
+            with patch("app.worker.load_settings", return_value=SimpleNamespace(dola_global_submit_interval_seconds=5.0)):
+                delayed = await manager._admit_dola_preparation()
+                manager._last_dola_admitted_at = 0.0
+                admitted = await manager._admit_dola_preparation()
+            return delayed, admitted
+
+        delayed, admitted = asyncio.run(exercise())
+        self.assertGreaterEqual(delayed, 5)
+        self.assertEqual(admitted, 0)
+
     def test_doubao_submission_pacing_prevents_browser_release_bursts(self) -> None:
         manager = WorkerManager()
 
@@ -725,10 +740,31 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(queue.enqueue.call_args.args[0], task["id"])
         self.assertAlmostEqual(queued_at.timestamp(), available_at.timestamp(), delta=0.1)
 
-    def test_due_redis_retries_are_promoted_ahead_of_newer_ready_tasks(self) -> None:
+    def test_due_redis_retries_are_promoted_into_the_weighted_retry_queue(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "app" / "task_queue.py").read_text(encoding="utf-8")
         self.assertIn("for index = #tasks, 1, -1 do", source)
         self.assertIn("redis.call('RPUSH', KEYS[2], task_id)", source)
+        self.assertIn('priority_policy": "3_initial_to_1_retry"', source)
+
+    def test_redis_queue_forces_one_retry_after_three_initial_claims(self) -> None:
+        queue = task_queue.RedisTaskQueue.__new__(task_queue.RedisTaskQueue)
+        queue.ready = "ready"
+        queue.retry_ready = "retry-ready"
+        queue.processing = "processing"
+        queue.owners = "owners"
+        queue.leases = "leases"
+        queue.visibility_timeout = 180
+        queue._initial_claim_streak = 3
+        queue.client = unittest.mock.Mock()
+        queue.client.lmove.return_value = "retry-task"
+        queue.client.pipeline.return_value = unittest.mock.Mock()
+        with patch.object(queue, "recover"), patch.object(queue, "_promote"), patch.object(
+            store, "get_meta", return_value={"status": store.STATUS_PENDING, "retry_count": 1}
+        ), patch.object(store, "mark_running", return_value=True):
+            claimed = queue.claim("worker-1", set(), {}, {})
+        self.assertEqual(claimed, "retry-task")
+        self.assertEqual(queue.client.lmove.call_args_list[0].args[0], "retry-ready")
+        self.assertEqual(queue._initial_claim_streak, 0)
 
     def test_initializing_tasks_are_failed_during_recovery(self) -> None:
         task = store.create_task("未完成创建", "9:16", owner_token_hash="owner", enqueue=False)
@@ -1768,6 +1804,7 @@ class ReliabilityTests(unittest.TestCase):
                 image_upload_slot=upload_slot,
             )
             runner.active_proxy_server = "http://proxy.example:18080"
+            runner.reference_upload_last_route = "proxy"
             upload = AsyncMock(side_effect=hanging_upload)
             runner._upload_one_image_by_fetch = upload
             with patch.object(runner, "_cooldown_active_proxy_transport") as cooldown_proxy, patch.object(
@@ -1814,6 +1851,8 @@ class ReliabilityTests(unittest.TestCase):
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16", account={"id": "dola-proxy"})
         runner.active_proxy_server = "http://proxy.example:18080"
         runner.proxy_node_id = "api:proxy.example:18080"
+        runner.reference_upload_route_selected = True
+        runner.reference_upload_route_proxy = runner.active_proxy_server
         runner._prepare_image_upload = AsyncMock(return_value={
             "service_id": "service-test",
             "upload_host": "imagex.example",

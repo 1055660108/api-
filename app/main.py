@@ -47,6 +47,7 @@ from .batch_jobs import (
     finish_row_creation as finish_batch_row_creation,
     get_job as get_batch_job,
     list_jobs as list_batch_jobs,
+    mark_row_assets_ready as mark_batch_row_assets_ready,
     public_job as public_batch_job,
     reconcile_job as reconcile_batch_job,
     recover_stale_creating_rows,
@@ -70,6 +71,7 @@ from .invitation_codes import complete_reservation as complete_invitation_reserv
 from .notifications import create_announcement, create_notifications, delete_announcement, delete_notification, list_admin_notifications, list_announcements, list_notifications_for_user, mark_all_notifications_read, mark_announcement_seen, mark_notification_read, update_announcement
 from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, PLATFORM_VIDEO_DURATIONS, normalize_model, normalize_platform
 from .query import query_task
+from .reference_images import compress_reference_image
 from .qianwen_models import fetch_qianwen_video_models
 from .platform_model_sync import fetch_platform_video_models
 from .proxy_manager import activate_mihomo_node, fetch_proxy_from_api, fetch_subscription_node_list, measure_node_delays, node_payload, probe_dola_proxy, rebuild_mihomo_from_snapshot
@@ -176,6 +178,21 @@ def _save_uploaded_image(upload: UploadFile, target: Path) -> None:
     if not any(first.startswith(magic) for magic in IMAGE_MAGIC[suffix]):
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="invalid image content")
+
+
+def _save_compressed_uploaded_image(upload: UploadFile, target: Path) -> Path:
+    source_suffix = Path(upload.filename or "").suffix.lower()
+    if source_suffix not in IMAGE_MAGIC:
+        raise HTTPException(status_code=400, detail="unsupported image type")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.parent / f".{secrets.token_hex(8)}{source_suffix}"
+    try:
+        _save_uploaded_image(upload, temporary)
+        return compress_reference_image(temporary, target)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="参考图压缩失败，请更换图片") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _save_image_bytes(data: bytes, filename: str, target: Path) -> None:
@@ -326,6 +343,12 @@ def _batch_asset_upload_path(upload_id: str) -> Path:
     if len(normalized) != 32 or any(character not in "0123456789abcdef" for character in normalized):
         raise ValueError("invalid batch asset upload id")
     return app_config.DATA_DIR / "batch_asset_uploads" / normalized
+
+
+def _delete_batch_row_assets(job_id: str, row: dict[str, object]) -> None:
+    assets_root = _batch_job_assets_path(job_id)
+    for name in row.get("image_files", []):
+        (assets_root / Path(str(name)).name).unlink(missing_ok=True)
 
 
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
@@ -544,8 +567,8 @@ def _save_batch_reference_bundle(owner_token_hash: str, batch_id: str, uploads: 
             suffix = Path(upload.filename or "").suffix.lower()
             if suffix not in IMAGE_MAGIC:
                 raise HTTPException(status_code=400, detail="unsupported image type")
-            filename = f"{index:02d}{suffix}"
-            _save_uploaded_image(upload, target_dir / filename)
+            filename = f"{index:02d}.jpg"
+            _save_compressed_uploaded_image(upload, target_dir / filename)
             saved.append(filename)
             original_names.append(_reference_image_name(upload.filename, index, suffix))
         metadata = {
@@ -1105,11 +1128,14 @@ async def batch_scheduler_tick() -> bool:
         claim = await asyncio.to_thread(claim_next_batch_row, owner)
         if not claim:
             return False
+        if bool(claim.get("awaiting_assets")):
+            return True
         job_id = str(dict(claim.get("job") or {}).get("id") or "")
         row_index = int(dict(claim.get("row") or {}).get("index") or 0)
         try:
             task_id = await _create_scheduled_batch_task(claim)
             await asyncio.to_thread(finish_batch_row_creation, job_id, row_index, task_id)
+            await asyncio.to_thread(_delete_batch_row_assets, job_id, dict(claim.get("row") or {}))
         except (QuotaExceeded, ValueError) as exc:
             await asyncio.to_thread(fail_or_requeue_batch_row, job_id, row_index, str(exc), retry=False)
         except HTTPException as exc:
@@ -5096,6 +5122,7 @@ async def create_persistent_batch_job(
     reference_count = max(0, min(load_settings().max_image_count, int(payload.get("reference_count") or 0)))
     reference_batch_id = str(payload.get("reference_batch_id") or "").strip()[:100]
     reference_is_real_person = payload.get("reference_is_real_person") is True
+    lazy_assets = payload.get("lazy_assets") is True
     _ensure_batch_active(access, reference_batch_id)
     if reference_id:
         shared_paths = await asyncio.to_thread(_batch_reference_paths, reference_id, access.token_hash, reference_batch_id)
@@ -5125,9 +5152,11 @@ async def create_persistent_batch_job(
             "image_names": [],
         })
     uploads = [item for item in (images or []) if item and item.filename]
+    if lazy_assets and (asset_upload_id or uploads):
+        raise HTTPException(status_code=400, detail="按任务上传参考图时不能预传整批图片")
     if asset_upload_id and uploads:
         raise HTTPException(status_code=400, detail="批量参考图不能同时使用分片和直接上传")
-    if not asset_upload_id and len(uploads) != expected_images:
+    if not lazy_assets and not asset_upload_id and len(uploads) != expected_images:
         raise HTTPException(status_code=400, detail="批量任务参考图上传不完整，请重新提交")
 
     job_id = secrets.token_hex(16)
@@ -5135,7 +5164,9 @@ async def create_persistent_batch_job(
     assets_consumed = False
     upload_cursor = 0
     try:
-        if asset_upload_id:
+        if lazy_assets:
+            assets_root.mkdir(parents=True, exist_ok=False)
+        elif asset_upload_id:
             await asyncio.to_thread(
                 _consume_batch_asset_upload,
                 asset_upload_id,
@@ -5188,6 +5219,65 @@ async def create_persistent_batch_job(
             shutil.rmtree(assets_root, ignore_errors=True)
         raise
     return JSONResponse(status_code=201, content={"job": public_batch_job(job)})
+
+
+@app.post("/batch-prompts/jobs/{job_id}/rows/{row_index}/assets", dependencies=[Depends(require_temp)])
+async def upload_persistent_batch_row_assets(
+    request: Request,
+    access: Annotated[AccessContext, Depends(require_temp)],
+    job_id: str,
+    row_index: int,
+    images: Annotated[list[UploadFile] | None, File(alias="images")] = None,
+):
+    job = await asyncio.to_thread(get_batch_job, job_id, access.token_hash)
+    if not job:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    row = next(
+        (item for item in job.get("rows", []) if isinstance(item, dict) and int(item.get("index") or 0) == int(row_index)),
+        None,
+    )
+    if not row or str(row.get("status") or "") != "awaiting_assets" or not bool(row.get("image_count")):
+        raise HTTPException(status_code=409, detail="该任务当前不需要上传参考图")
+    uploads = [item for item in (images or []) if item and item.filename]
+    expected = max(0, int(row.get("image_count") or 0))
+    if len(uploads) != expected:
+        raise HTTPException(status_code=400, detail="当前任务参考图数量不完整")
+    await _rate_limit(request, "batch-row-asset-upload", 240, 60, access.token_hash)
+    assets_root = _batch_job_assets_path(job_id)
+    saved_paths: list[Path] = []
+    saved_names: list[str] = []
+    original_names: list[str] = []
+    try:
+        for image_index, upload in enumerate(uploads, start=1):
+            suffix = Path(upload.filename or "").suffix.lower()
+            filename = f"{int(row_index):06d}-{image_index:02d}.jpg"
+            target = assets_root / filename
+            await asyncio.to_thread(_save_compressed_uploaded_image, upload, target)
+            saved_paths.append(target)
+            saved_names.append(filename)
+            original_names.append(_reference_image_name(upload.filename, image_index, suffix))
+        await asyncio.to_thread(
+            mark_batch_row_assets_ready,
+            job_id,
+            access.token_hash,
+            row_index,
+            saved_names,
+            original_names,
+        )
+    except PermissionError as exc:
+        for path in saved_paths:
+            path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="批次不存在") from exc
+    except (KeyError, RuntimeError, ValueError) as exc:
+        for path in saved_paths:
+            path.unlink(missing_ok=True)
+        raise HTTPException(status_code=409, detail="该任务参考图状态已变化，请刷新后重试") from exc
+    return {
+        "ok": True,
+        "row_index": int(row_index),
+        "image_count": len(saved_paths),
+        "compressed_bytes": sum(path.stat().st_size for path in saved_paths if path.is_file()),
+    }
 
 
 @app.get("/batch-prompts/jobs/current", dependencies=[Depends(require_temp)])

@@ -80,6 +80,7 @@ def create_job(
             "image_files": [str(name) for name in row.get("image_files", []) if str(name)],
             "image_names": [str(name).strip()[:180] for name in row.get("image_names", []) if str(name).strip()],
             "image_count": max(0, int(row.get("image_count") or 0)),
+            "assets_ready": bool(row.get("image_files")) or max(0, int(row.get("image_count") or 0)) == 0,
             "status": "queued",
             "task_id": "",
             "error": "",
@@ -285,7 +286,7 @@ def _mutate_job(job_id: str, mutator: Callable[[dict[str, Any]], Any]) -> Any:
 
 def public_job(job: dict[str, Any], since_revision: int | None = None) -> dict[str, Any]:
     rows = []
-    counts = {"queued": 0, "creating": 0, "running": 0, "completed": 0, "failed": 0, "canceled": 0}
+    counts = {"queued": 0, "awaiting_assets": 0, "creating": 0, "running": 0, "completed": 0, "failed": 0, "canceled": 0}
     revision = max(0, int(job.get("revision") or 0))
     full = since_revision is None or int(since_revision) > revision
     for raw in job.get("rows", []):
@@ -305,6 +306,8 @@ def public_job(job: dict[str, Any], since_revision: int | None = None) -> dict[s
             "error": str(raw.get("error") or ""),
             "video_url": str(raw.get("video_url") or ""),
             "image_count": int(raw.get("image_count") or 0),
+            "assets_required": status == "awaiting_assets" and not bool(raw.get("assets_ready") or raw.get("image_files")),
+            "assets_ready": bool(raw.get("assets_ready") or raw.get("image_files")) or int(raw.get("image_count") or 0) == 0,
             "revision": max(0, int(raw.get("revision") or 0)),
         })
     return {
@@ -332,7 +335,7 @@ def cancel_job(job_id: str, owner_token_hash: str, reason: str = "用户停止�
             raise PermissionError(job_id)
         job["canceled_at"] = _now()
         for row in job.get("rows", []):
-            if str(row.get("status") or "") in {"queued", "creating"} and not str(row.get("task_id") or ""):
+            if str(row.get("status") or "") in {"queued", "awaiting_assets", "creating"} and not str(row.get("task_id") or ""):
                 row.update(status="canceled", error=str(reason or "用户停止批量生成")[:500], finished_at=_now())
         job["status"] = "canceling" if any(str(row.get("status") or "") == "running" for row in job.get("rows", [])) else "canceled"
         return job
@@ -375,6 +378,12 @@ def claim_next_row(owner_token_hash: str) -> dict[str, Any] | None:
         def mutate(current: dict[str, Any]):
             if str(current.get("status") or "") not in {"queued", "running"} or current.get("canceled_at"):
                 return None
+            if any(
+                str(item.get("status") or "") == "awaiting_assets"
+                for item in current.get("rows", [])
+                if isinstance(item, dict)
+            ):
+                return None
             now = datetime.now(timezone.utc)
             row = None
             for item in current.get("rows", []):
@@ -391,6 +400,13 @@ def claim_next_row(owner_token_hash: str) -> dict[str, Any] | None:
                     break
             if not row:
                 return None
+            if (
+                max(0, int(row.get("image_count") or 0)) > 0
+                and not bool(row.get("assets_ready") or row.get("image_files"))
+            ):
+                row.update(status="awaiting_assets", asset_requested_at=_now(), claimed_at="", error="")
+                current["status"] = "running"
+                return {"job": deepcopy(current), "row": deepcopy(row), "awaiting_assets": True}
             row.update(status="creating", claimed_at=_now(), next_attempt_at="", error="")
             current["status"] = "running"
             return {"job": deepcopy(current), "row": deepcopy(row)}
@@ -399,6 +415,39 @@ def claim_next_row(owner_token_hash: str) -> dict[str, Any] | None:
         if claimed:
             return claimed
     return None
+
+
+def mark_row_assets_ready(
+    job_id: str,
+    owner_token_hash: str,
+    row_index: int,
+    image_files: list[str],
+    image_names: list[str],
+) -> dict[str, Any]:
+    def mutate(job: dict[str, Any]):
+        if str(job.get("owner_token_hash") or "") != str(owner_token_hash):
+            raise PermissionError(job_id)
+        if job.get("canceled_at"):
+            raise RuntimeError("batch job is canceled")
+        row = next((item for item in job.get("rows", []) if int(item.get("index") or 0) == int(row_index)), None)
+        if not row or str(row.get("task_id") or ""):
+            raise KeyError(row_index)
+        expected = max(0, int(row.get("image_count") or 0))
+        if expected <= 0 or len(image_files) != expected or len(image_names) != expected:
+            raise ValueError("batch row reference image count mismatch")
+        row.update(
+            status="queued",
+            image_files=[str(name) for name in image_files],
+            image_names=[str(name).strip()[:180] for name in image_names],
+            assets_ready=True,
+            asset_requested_at="",
+            assets_uploaded_at=_now(),
+            error="",
+        )
+        job["status"] = "running"
+        return deepcopy(row)
+
+    return _mutate_job(job_id, mutate)
 
 
 def finish_row_creation(job_id: str, row_index: int, task_id: str) -> None:

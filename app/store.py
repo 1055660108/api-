@@ -56,6 +56,8 @@ _TASK_LOCKS_LOCK = threading.RLock()
 _TASK_LOCKS: dict[str, threading.RLock] = {}
 _TASK_CREATE_LOCK = threading.RLock()
 _RUNTIME_LOCK = threading.RLock()
+_FILE_INITIAL_CLAIM_STREAK = 0
+_INITIAL_CLAIM_BURST = 3
 TRANSIENT_RESULT_FIELDS = {
     "chat_status",
     "chat_content_type",
@@ -1827,6 +1829,7 @@ def reset_running_tasks() -> None:
 
 
 def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_counts: dict[str, int] | None = None, token_concurrency_limits: dict[str, int] | None = None) -> str | None:
+    global _FILE_INITIAL_CLAIM_STREAK
     ensure_storage()
     if task_submission_paused():
         return None
@@ -1873,7 +1876,25 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
             owner: max(supplied_counts.get(owner, 0), running_counts.get(owner, 0))
             for owner in set(supplied_counts) | set(running_counts)
         }
-        candidates.sort(key=lambda meta: (str(meta.get("queue_priority_at") or meta.get("created_at") or meta.get("queued_at") or ""), str(meta.get("created_at") or ""), str(meta.get("id") or "")))
+        def is_retry(meta: dict[str, Any]) -> bool:
+            return bool(
+                max(0, int(meta.get("retry_count") or 0))
+                or max(0, int(meta.get("infrastructure_retry_count") or 0))
+                or str(meta.get("retry_of_task_id") or "")
+            )
+
+        candidates.sort(key=lambda meta: (
+            str(meta.get("queue_priority_at") or meta.get("created_at") or meta.get("queued_at") or ""),
+            str(meta.get("created_at") or ""),
+            str(meta.get("id") or ""),
+        ))
+        initial = [meta for meta in candidates if not is_retry(meta)]
+        retries = [meta for meta in candidates if is_retry(meta)]
+        candidates = (
+            [*retries, *initial]
+            if _FILE_INITIAL_CLAIM_STREAK >= _INITIAL_CLAIM_BURST and retries
+            else [*initial, *retries]
+        )
         for meta in candidates:
             if task_submission_paused():
                 return None
@@ -1888,6 +1909,7 @@ def claim_next_pending(worker_id: str, claimed_ids: set[str], token_active_count
             if owner and owner in concurrency_limits and active_counts.get(owner, 0) >= concurrency_limits[owner]:
                 continue
             if not meta.get("cancel_requested") and mark_running(task_id, worker_id, concurrency_limits):
+                _FILE_INITIAL_CLAIM_STREAK = 0 if is_retry(meta) else _FILE_INITIAL_CLAIM_STREAK + 1
                 return task_id
         return None
     finally:

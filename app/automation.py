@@ -980,6 +980,9 @@ class DolaFetchAutomation:
         self.active_proxy_source = ""
         self.active_proxy_server = ""
         self.reference_upload_stage = ""
+        self.reference_upload_route_selected = False
+        self.reference_upload_route_proxy = ""
+        self.reference_upload_last_route = "direct"
         self.subscription_proxy: dict[str, str] | None = None
         self.account_proxy_bridge: dict[str, str] | None = None
         self.proxy_exit_id = "direct"
@@ -2150,14 +2153,49 @@ class DolaFetchAutomation:
         if not service_id:
             raise RuntimeError("prepare_upload did not return service_id")
 
+        if not self.reference_upload_route_selected:
+            async def probe(proxy_server: str) -> float | None:
+                options: dict[str, Any] = {
+                    "timeout": httpx.Timeout(6.0, connect=4.0),
+                    "follow_redirects": False,
+                    "trust_env": False,
+                }
+                if proxy_server:
+                    options["proxy"] = proxy_server
+                started_at = time.monotonic()
+                try:
+                    async with httpx.AsyncClient(**options) as probe_client:
+                        await probe_client.head(f"https://{imagex_host}/")
+                    return max(0.0, time.monotonic() - started_at)
+                except Exception:
+                    return None
+
+            direct_latency, proxy_latency = await asyncio.gather(
+                probe(""),
+                probe(self.active_proxy_server) if self.active_proxy_server else asyncio.sleep(0, result=None),
+            )
+            use_proxy = bool(
+                self.active_proxy_server
+                and proxy_latency is not None
+                and (direct_latency is None or proxy_latency < direct_latency)
+            )
+            self.reference_upload_route_proxy = self.active_proxy_server if use_proxy else ""
+            self.reference_upload_route_selected = True
+            self._save_result(extra={
+                "reference_upload_route": "proxy" if use_proxy else "direct",
+                "reference_upload_direct_probe_ms": round(direct_latency * 1000, 1) if direct_latency is not None else None,
+                "reference_upload_proxy_probe_ms": round(proxy_latency * 1000, 1) if proxy_latency is not None else None,
+            })
+
         timeout = httpx.Timeout(90.0, connect=30.0)
         client_options: dict[str, Any] = {
             "timeout": timeout,
             "follow_redirects": False,
             "trust_env": False,
         }
-        if self.active_proxy_server:
-            client_options["proxy"] = self.active_proxy_server
+        if self.reference_upload_route_proxy:
+            client_options["proxy"] = self.reference_upload_route_proxy
+        self.reference_upload_last_route = "proxy" if self.reference_upload_route_proxy else "direct"
         async with httpx.AsyncClient(**client_options) as client:
             self.reference_upload_stage = "apply_upload"
             self._save_result(extra={
@@ -2309,20 +2347,27 @@ class DolaFetchAutomation:
                 })
                 if attempt >= attempts:
                     break
+            if self.active_proxy_server:
+                failed_route = self.reference_upload_last_route
+                self.reference_upload_route_proxy = "" if failed_route == "proxy" else self.active_proxy_server
+                self.reference_upload_route_selected = True
+                self._save_result(extra={
+                    "reference_upload_route_fallback": f"{failed_route}_to_{'proxy' if self.reference_upload_route_proxy else 'direct'}",
+                })
             self._set_phase(
                 "uploading_reference_retry",
                 f"参考图上传连接恢复中（{attempt}/{attempts}）",
             )
             await asyncio.sleep(min(5.0, 1.5 * attempt))
         if isinstance(last_transport_error, asyncio.TimeoutError):
-            if self.active_proxy_server:
+            if self.active_proxy_server and self.reference_upload_last_route == "proxy":
                 self._cooldown_active_proxy_transport()
             raise RuntimeError(
                 f"reference image upload timed out after {attempts} attempts during "
                 f"{self.reference_upload_stage or 'unknown'}"
             ) from last_transport_error
         error_name = type(last_transport_error).__name__ if last_transport_error is not None else "TransportError"
-        if self.active_proxy_server:
+        if self.active_proxy_server and self.reference_upload_last_route == "proxy":
             self._cooldown_active_proxy_transport()
         raise RuntimeError(
             f"direct image upload transport failure after {attempts} attempts: {error_name}"

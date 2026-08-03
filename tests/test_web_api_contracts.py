@@ -853,7 +853,7 @@ class WebAPIContractTests(unittest.TestCase):
         temp_access.add_temp_credit_units(owner_hash, 20)
         headers = {"X-API-Token": registered["token"]}
         reference_batch_id = "persistent-reference-session"
-        shared_image = b"\x89PNG\r\n\x1a\nshared-persistent"
+        shared_image = cv2.imencode(".png", np.full((32, 32, 3), 180, dtype=np.uint8))[1].tobytes()
         row_image = b"\x89PNG\r\n\x1a\nrow-persistent"
         shared = self.client.post(
             "/batch-prompts/references",
@@ -880,11 +880,68 @@ class WebAPIContractTests(unittest.TestCase):
             )
             self.assertEqual(created.status_code, 201, created.text)
             self.assertTrue(created.json()["job"]["reference_is_real_person"])
+            job_id = created.json()["job"]["id"]
+            batch_jobs._mutate_job(job_id, lambda current: current["rows"][0].pop("assets_ready", None))
             claim = batch_jobs.claim_next_row(owner_hash)
+            self.assertFalse(claim.get("awaiting_assets", False))
             task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
-        self.assertEqual([path.read_bytes() for path in store.task_image_paths(task_id)], [shared_image, row_image])
+        copied = [path.read_bytes() for path in store.task_image_paths(task_id)]
+        self.assertTrue(copied[0].startswith(b"\xff\xd8\xff"))
+        self.assertEqual(copied[1], row_image)
         self.assertEqual(store.get_meta(task_id)["reference_image_names"], ["shared.png", "row.png"])
         self.assertTrue(store.get_meta(task_id)["reference_is_real_person"])
+
+    def test_persistent_batch_uploads_and_compresses_only_the_requested_row(self) -> None:
+        registered = self.register("persistent_lazy_images")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        headers = {"X-API-Token": registered["token"]}
+        image = cv2.imencode(".png", np.full((640, 640, 3), 120, dtype=np.uint8))[1].tobytes()
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 1,
+            "lazy_assets": True,
+            "rows": [
+                {"client_index": 0, "sheet_row": 2, "prompt": "按任务上传参考图", "image_count": 1},
+                {"client_index": 1, "sheet_row": 3, "prompt": "尚未轮到的参考图", "image_count": 1},
+            ],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            created = self.client.post(
+                "/batch-prompts/jobs",
+                headers=headers,
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)},
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            job_id = created.json()["job"]["id"]
+            self.assertEqual(list(main._batch_job_assets_path(job_id).iterdir()), [])
+
+            requested = batch_jobs.claim_next_row(owner_hash)
+            self.assertTrue(requested["awaiting_assets"])
+            self.assertEqual(requested["row"]["status"], "awaiting_assets")
+            status = self.client.get(f"/batch-prompts/jobs/{job_id}", headers=headers).json()["job"]
+            self.assertTrue(status["rows"][0]["assets_required"])
+            self.assertEqual(status["rows"][1]["status"], "queued")
+
+            uploaded = self.client.post(
+                f"/batch-prompts/jobs/{job_id}/rows/1/assets",
+                headers=headers,
+                files=[("images", ("source.png", image, "image/png"))],
+            )
+            self.assertEqual(uploaded.status_code, 200, uploaded.text)
+            compressed = main._batch_job_assets_path(job_id) / "000001-01.jpg"
+            self.assertTrue(compressed.read_bytes().startswith(b"\xff\xd8\xff"))
+            self.assertEqual([path.name for path in main._batch_job_assets_path(job_id).iterdir()], ["000001-01.jpg"])
+
+            claim = batch_jobs.claim_next_row(owner_hash)
+            self.assertEqual(claim["row"]["index"], 1)
+            task_id = self.client.portal.call(main._create_scheduled_batch_task, claim)
+            batch_jobs.finish_row_creation(job_id, 1, task_id)
+            main._delete_batch_row_assets(job_id, claim["row"])
+
+        self.assertFalse(compressed.exists())
+        self.assertTrue(store.task_image_paths(task_id)[0].read_bytes().startswith(b"\xff\xd8\xff"))
+        self.assertEqual(store.get_meta(task_id)["reference_image_names"], ["source.png"])
 
     def test_manual_reference_real_person_flag_defaults_off_and_persists_when_checked(self) -> None:
         registered = self.register("real_person_flag")
@@ -960,7 +1017,7 @@ class WebAPIContractTests(unittest.TestCase):
             "platform": "dola",
             "model": "Seedance 2.0",
         }
-        shared_image = b"\x89PNG\r\n\x1a\nshared-reference"
+        shared_image = cv2.imencode(".png", np.full((32, 32, 3), 180, dtype=np.uint8))[1].tobytes()
         row_image = b"\x89PNG\r\n\x1a\nrow-reference"
         uploaded = self.client.post(
             "/batch-prompts/references",
@@ -984,7 +1041,8 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             created.append(response.json()["id"])
             copied = [path.read_bytes() for path in store.task_image_paths(response.json()["id"])]
-            self.assertEqual(copied, [shared_image, row_image] if index == 2 else [shared_image])
+            self.assertTrue(copied[0].startswith(b"\xff\xd8\xff"))
+            self.assertEqual(copied[1:], [row_image] if index == 2 else [])
             self.assertEqual(
                 store.get_meta(response.json()["id"])["reference_image_names"],
                 ["shared.png", "row.png"] if index == 2 else ["shared.png"],

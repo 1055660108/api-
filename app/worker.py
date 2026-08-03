@@ -168,6 +168,8 @@ class WorkerManager:
         self._workers: dict[str, asyncio.Task] = {}
         self._worker_task_ids: dict[str, str] = {}
         self._claim_lock = asyncio.Lock()
+        self._dola_admission_lock = asyncio.Lock()
+        self._last_dola_admitted_at = 0.0
         self._dola_submit_lock = asyncio.Lock()
         self._last_dola_submit_at = 0.0
         self._doubao_submit_lock = asyncio.Lock()
@@ -842,6 +844,16 @@ class WorkerManager:
                 await asyncio.sleep(delay)
             self._last_dola_submit_at = asyncio.get_running_loop().time()
 
+    async def _admit_dola_preparation(self) -> int:
+        async with self._dola_admission_lock:
+            now = asyncio.get_running_loop().time()
+            submit_interval = load_settings().dola_global_submit_interval_seconds
+            delay = submit_interval - (now - self._last_dola_admitted_at)
+            if delay > 0:
+                return max(1, int(delay + 0.999))
+            self._last_dola_admitted_at = now
+            return 0
+
     async def _wait_for_doubao_submit_slot(self) -> None:
         # Releasing the browser after submission must not create a burst of
         # new Doubao generation requests.
@@ -919,6 +931,12 @@ class WorkerManager:
                     continue
                 if not can_run_task(task_id, worker_id):
                     continue
+                if platform == "dola":
+                    retry_after = await self._admit_dola_preparation()
+                    if retry_after > 0:
+                        defer_task(task_id, "等待接近提交时段", "submit_admission", retry_after)
+                        continue
+                    set_execution_phase(task_id, "preparing_submission_slot", "正在准备生成资源")
                 account = claim_account_for_worker(
                     worker_id,
                     task_id,

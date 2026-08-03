@@ -45,6 +45,7 @@ class FileTaskQueue:
 
 class RedisTaskQueue:
     backend = "redis"
+    initial_claim_burst = 3
 
     def __init__(self) -> None:
         try:
@@ -55,15 +56,35 @@ class RedisTaskQueue:
         namespace = str(os.environ.get("DOLA_QUEUE_NAMESPACE") or "dola:tasks").strip().rstrip(":")
         self.client = redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=5, socket_timeout=5)
         self.ready = f"{namespace}:ready"
+        self.retry_ready = f"{namespace}:retry-ready"
         self.processing = f"{namespace}:processing"
         self.delayed = f"{namespace}:delayed"
+        self.retry_delayed = f"{namespace}:retry-delayed"
         self.leases = f"{namespace}:leases"
         self.owners = f"{namespace}:owners"
         self.known = f"{namespace}:known"
         self.visibility_timeout = max(30, int(os.environ.get("DOLA_QUEUE_VISIBILITY_TIMEOUT") or 180))
+        self._initial_claim_streak = 0
+
+    @staticmethod
+    def _is_retry_task(task_id: str) -> bool:
+        try:
+            from .store import get_meta
+
+            meta = get_meta(task_id)
+        except (FileNotFoundError, ValueError):
+            return False
+        return bool(
+            max(0, int(meta.get("retry_count") or 0))
+            or max(0, int(meta.get("infrastructure_retry_count") or 0))
+            or str(meta.get("retry_of_task_id") or "")
+        )
 
     def enqueue(self, task_id: str, available_at: datetime | None = None) -> bool:
         score = available_at.timestamp() if available_at else 0
+        retrying = self._is_retry_task(task_id)
+        delayed_key = self.retry_delayed if retrying else self.delayed
+        ready_key = self.retry_ready if retrying else self.ready
         script = """
         if redis.call('SADD', KEYS[1], ARGV[1]) == 0 then return 0 end
         if tonumber(ARGV[2]) > tonumber(ARGV[3]) then
@@ -73,39 +94,48 @@ class RedisTaskQueue:
         end
         return 1
         """
-        return bool(self.client.eval(script, 3, self.known, self.delayed, self.ready, task_id, score, time.time()))
+        return bool(self.client.eval(script, 3, self.known, delayed_key, ready_key, task_id, score, time.time()))
 
     def requeue(self, task_id: str, available_at: datetime | None = None) -> bool:
         score = available_at.timestamp() if available_at else 0
+        retrying = self._is_retry_task(task_id)
+        destination_delayed = self.retry_delayed if retrying else self.delayed
+        destination_ready = self.retry_ready if retrying else self.ready
         script = """
         redis.call('LREM', KEYS[1], 0, ARGV[1])
         redis.call('LREM', KEYS[2], 0, ARGV[1])
-        redis.call('ZREM', KEYS[3], ARGV[1])
+        redis.call('LREM', KEYS[3], 0, ARGV[1])
         redis.call('ZREM', KEYS[4], ARGV[1])
-        redis.call('HDEL', KEYS[5], ARGV[1])
-        redis.call('SADD', KEYS[6], ARGV[1])
+        redis.call('ZREM', KEYS[5], ARGV[1])
+        redis.call('ZREM', KEYS[6], ARGV[1])
+        redis.call('HDEL', KEYS[7], ARGV[1])
+        redis.call('SADD', KEYS[8], ARGV[1])
         if tonumber(ARGV[2]) > tonumber(ARGV[3]) then
-          redis.call('ZADD', KEYS[3], ARGV[2], ARGV[1])
+          redis.call('ZADD', KEYS[9], ARGV[2], ARGV[1])
         else
-          redis.call('LPUSH', KEYS[1], ARGV[1])
+          redis.call('LPUSH', KEYS[10], ARGV[1])
         end
         return 1
         """
         return bool(self.client.eval(
             script,
-            6,
+            10,
             self.ready,
+            self.retry_ready,
             self.processing,
             self.delayed,
+            self.retry_delayed,
             self.leases,
             self.owners,
             self.known,
+            destination_delayed,
+            destination_ready,
             task_id,
             score,
             time.time(),
         ))
 
-    def _promote(self) -> int:
+    def _promote_queue(self, delayed: str, ready: str) -> int:
         now = time.time()
         script = """
         local tasks = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 100)
@@ -115,7 +145,10 @@ class RedisTaskQueue:
         end
         return #tasks
         """
-        return int(self.client.eval(script, 2, self.delayed, self.ready, now))
+        return int(self.client.eval(script, 2, delayed, ready, now))
+
+    def _promote(self) -> int:
+        return self._promote_queue(self.delayed, self.ready) + self._promote_queue(self.retry_delayed, self.retry_ready)
 
     def claim(self, worker_id: str, claimed_ids: set[str], active_counts: dict[str, int], concurrency_limits: dict[str, int]) -> str | None:
         from .store import STATUS_PENDING, get_meta, mark_running, parse_time
@@ -123,7 +156,14 @@ class RedisTaskQueue:
         self.recover()
         self._promote()
         for _ in range(100):
-            task_id = self.client.lmove(self.ready, self.processing, "RIGHT", "LEFT")
+            prefer_retry = self._initial_claim_streak >= self.initial_claim_burst
+            first_queue = self.retry_ready if prefer_retry else self.ready
+            second_queue = self.ready if prefer_retry else self.retry_ready
+            task_id = self.client.lmove(first_queue, self.processing, "RIGHT", "LEFT")
+            claimed_from_retry = bool(task_id and first_queue == self.retry_ready)
+            if not task_id:
+                task_id = self.client.lmove(second_queue, self.processing, "RIGHT", "LEFT")
+                claimed_from_retry = bool(task_id and second_queue == self.retry_ready)
             if not task_id:
                 return None
             try:
@@ -149,13 +189,16 @@ class RedisTaskQueue:
             pipe.hset(self.owners, task_id, worker_id)
             pipe.zadd(self.leases, {task_id: time.time() + self.visibility_timeout})
             pipe.execute()
+            self._initial_claim_streak = 0 if claimed_from_retry else self._initial_claim_streak + 1
             return task_id
         return None
 
     def _delay_claimed(self, task_id: str, score: float) -> None:
+        delayed_key = self.retry_delayed if self._is_retry_task(task_id) else self.delayed
         pipe = self.client.pipeline(transaction=True)
         pipe.lrem(self.processing, 0, task_id)
-        pipe.zadd(self.delayed, {task_id: score})
+        pipe.zadd(delayed_key, {task_id: score})
+        pipe.zrem(self.retry_delayed if delayed_key == self.delayed else self.delayed, task_id)
         pipe.zrem(self.leases, task_id)
         pipe.hdel(self.owners, task_id)
         pipe.execute()
@@ -163,9 +206,11 @@ class RedisTaskQueue:
     def _ack(self, task_id: str) -> None:
         pipe = self.client.pipeline(transaction=True)
         pipe.lrem(self.ready, 0, task_id)
+        pipe.lrem(self.retry_ready, 0, task_id)
         pipe.lrem(self.processing, 0, task_id)
         pipe.zrem(self.leases, task_id)
         pipe.zrem(self.delayed, task_id)
+        pipe.zrem(self.retry_delayed, task_id)
         pipe.hdel(self.owners, task_id)
         pipe.srem(self.known, task_id)
         pipe.execute()
@@ -208,7 +253,8 @@ class RedisTaskQueue:
         redis.call('HDEL', KEYS[1], ARGV[1])
         return 1
         """
-        self.client.eval(script, 4, self.owners, self.leases, self.processing, self.delayed, task_id, worker_id, score)
+        delayed_key = self.retry_delayed if self._is_retry_task(task_id) else self.delayed
+        self.client.eval(script, 4, self.owners, self.leases, self.processing, delayed_key, task_id, worker_id, score)
 
     def _ack_owned(self, task_id: str, worker_id: str) -> None:
         script = """
@@ -221,6 +267,8 @@ class RedisTaskQueue:
         return 1
         """
         self.client.eval(script, 5, self.owners, self.processing, self.leases, self.delayed, self.known, task_id, worker_id)
+        self.client.lrem(self.retry_ready, 0, task_id)
+        self.client.zrem(self.retry_delayed, task_id)
 
     def recover(self) -> int:
         expired = self.client.zrangebyscore(self.leases, "-inf", time.time(), start=0, num=100)
@@ -257,9 +305,9 @@ class RedisTaskQueue:
                         mark_submitted(task_id)
                     else:
                         mark_pending(task_id, "worker lease expired")
-                        self.client.lpush(self.ready, task_id)
+                        self.client.lpush(self.retry_ready if self._is_retry_task(task_id) else self.ready, task_id)
                 elif str(meta.get("status") or "") == "pending":
-                    self.client.lpush(self.ready, task_id)
+                    self.client.lpush(self.retry_ready if self._is_retry_task(task_id) else self.ready, task_id)
                 else:
                     self.client.srem(self.known, task_id)
             except FileNotFoundError:
@@ -289,7 +337,22 @@ class RedisTaskQueue:
     def health(self) -> dict[str, Any]:
         try:
             self.client.ping()
-            return {"ok": True, "backend": self.backend, "ready": self.client.llen(self.ready), "processing": self.client.llen(self.processing), "delayed": self.client.zcard(self.delayed)}
+            primary_ready = self.client.llen(self.ready)
+            retry_ready = self.client.llen(self.retry_ready)
+            primary_delayed = self.client.zcard(self.delayed)
+            retry_delayed = self.client.zcard(self.retry_delayed)
+            return {
+                "ok": True,
+                "backend": self.backend,
+                "ready": primary_ready + retry_ready,
+                "processing": self.client.llen(self.processing),
+                "delayed": primary_delayed + retry_delayed,
+                "initial_ready": primary_ready,
+                "retry_ready": retry_ready,
+                "initial_delayed": primary_delayed,
+                "retry_delayed": retry_delayed,
+                "priority_policy": "3_initial_to_1_retry",
+            }
         except Exception as exc:
             return {"ok": False, "backend": self.backend, "error": str(exc)[:200]}
 

@@ -719,6 +719,8 @@ const state = {
   batchDraftOwner: "",
   batchDraftSaveTimer: 0,
   batchImagePersistenceFailed: false,
+  batchAssetRowsUploading: new Set(),
+  batchAssetRowsMissing: new Set(),
   userActiveTaskCount: 0,
   isTempToken: false,
   tempTokens: [],
@@ -5900,7 +5902,7 @@ async function loadBatchDraft() {
       let status = String(item?.status || "");
       if (["running", "success"].includes(status)) status = taskId ? "running" : "";
       if (status === "queued" && taskId) status = "running";
-      if (!["", "queued", "running", "success", "completed", "failed", "canceled"].includes(status)) status = "";
+      if (!["", "queued", "awaiting_assets", "uploading", "running", "success", "completed", "failed", "canceled"].includes(status)) status = "";
       return {
         row: Math.max(1, Number(item?.row || index + 1)),
         prompt: String(item?.prompt || "").slice(0, 4000),
@@ -5981,14 +5983,14 @@ function clearBatchReferenceImages() {
 }
 
 function batchItemIsCreated(item) {
-  return ["uploading", "queued", "creating", "success", "running", "completed", "canceled"].includes(String(item.status || ""));
+  return ["uploading", "queued", "awaiting_assets", "creating", "success", "running", "completed", "canceled"].includes(String(item.status || ""));
 }
 
 function batchItemMatchesStatus(item, filter = state.batchStatusFilter) {
   const status = String(item?.status || "");
   if (filter === "success") return ["success", "completed"].includes(status);
   if (filter === "failed") return status === "failed";
-  if (filter === "generating") return ["uploading", "queued", "creating", "running"].includes(status);
+  if (filter === "generating") return ["uploading", "queued", "awaiting_assets", "creating", "running"].includes(status);
   return true;
 }
 
@@ -6051,7 +6053,8 @@ function syncBatchPromptsFromTaskState() {
 }
 
 function batchItemStatusText(item) {
-  if (item.status === "uploading") return "正在分片上传参考图";
+  if (item.status === "uploading") return "正在上传当前任务参考图";
+  if (item.status === "awaiting_assets") return "当前任务等待参考图上传";
   if (item.status === "queued") return "批次排队中，尚未创建任务";
   if (item.status === "creating") return "正在创建任务";
   if (item.status === "running") return `生成中 ${shortId(item.taskId)}`;
@@ -6080,6 +6083,8 @@ function resetBatchTaskPage() {
   state.batchReferenceIsRealPerson = false;
   state.batchStatusFilter = "all";
   state.batchRetrying = false;
+  state.batchAssetRowsUploading.clear();
+  state.batchAssetRowsMissing.clear();
   if (els.batchSpreadsheetInput) els.batchSpreadsheetInput.value = "";
   if (els.batchSharedImageInput) els.batchSharedImageInput.value = "";
   if (els.batchMappedImageInput) els.batchMappedImageInput.value = "";
@@ -6461,8 +6466,8 @@ function applyPersistentBatchJob(job) {
   }
   const counts = job.counts || {};
   const finished = Number(counts.completed || 0) + Number(counts.failed || 0) + Number(counts.canceled || 0);
-  const active = Number(counts.creating || 0) + Number(counts.running || 0);
-  const queued = Number(counts.queued || 0);
+  const active = Number(counts.awaiting_assets || 0) + Number(counts.creating || 0) + Number(counts.running || 0);
+  const queued = Number(counts.queued || 0) + Number(counts.awaiting_assets || 0);
   const total = Math.max(0, Number(job.total || Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0) || state.batchPrompts.length));
   const summarySignature = JSON.stringify([job.status, total, counts]);
   const summaryChanged = summarySignature !== state.batchJobSummarySignature;
@@ -6486,6 +6491,64 @@ function applyPersistentBatchJob(job) {
   return ["queued", "running", "canceling"].includes(String(job.status || ""));
 }
 
+function batchItemForPersistentRow(jobId, row) {
+  const rowIndex = Math.max(1, Number(row?.index || 0));
+  const sheetRow = Number(row?.sheet_row || 0);
+  const prompt = String(row?.prompt || "");
+  return state.batchPrompts.find((entry) => (
+    String(entry.batchJobId || "") === String(jobId || "") && Number(entry.batchRowIndex || 0) === rowIndex
+  )) || state.batchPrompts.find((entry) => (
+    Number(entry.row) === sheetRow && String(entry.prompt || "") === prompt
+  ));
+}
+
+async function uploadRequestedBatchAssets(job) {
+  if (!job?.id || !Array.isArray(job.rows)) return;
+  const requests = job.rows.filter((row) => row.assets_required || String(row.status || "") === "awaiting_assets");
+  for (const row of requests) {
+    const rowIndex = Math.max(1, Number(row.index || 0));
+    const key = `${job.id}:${rowIndex}`;
+    if (state.batchAssetRowsUploading.has(key)) continue;
+    const item = batchItemForPersistentRow(job.id, row);
+    const files = (item?.images || []).map((entry) => entry.file).filter((file) => file instanceof Blob);
+    const expected = Math.max(0, Number(row.image_count || 0));
+    if (!item || files.length !== expected || expected <= 0) {
+      if (!state.batchAssetRowsMissing.has(key)) {
+        state.batchAssetRowsMissing.add(key);
+        if (item) item.error = "当前任务缺少本地参考图，请重新选择";
+        toast(`第 ${Number(row.sheet_row || rowIndex)} 行缺少本地参考图`, "error");
+        renderBatchPrompts();
+      }
+      continue;
+    }
+    state.batchAssetRowsMissing.delete(key);
+    state.batchAssetRowsUploading.add(key);
+    item.status = "uploading";
+    item.error = "";
+    renderBatchPrompts();
+    const form = new FormData();
+    files.forEach((file) => form.append("images", file, file.name || "reference-image"));
+    try {
+      await apiFetch(`/batch-prompts/jobs/${encodeURIComponent(job.id)}/rows/${encodeURIComponent(rowIndex)}/assets`, {
+        method: "POST",
+        body: form,
+        timeout: batchAssetChunkTimeout(files.map((file) => ({ file }))),
+      });
+      releaseBatchImageEntries(item.images);
+      item.images = [];
+      item.status = "queued";
+      await persistBatchReferenceImages();
+      renderBatchPrompts();
+    } catch (error) {
+      item.status = "awaiting_assets";
+      item.error = batchFriendlyError(error.message);
+      renderBatchPrompts();
+    } finally {
+      state.batchAssetRowsUploading.delete(key);
+    }
+  }
+}
+
 async function monitorPersistentBatchJob(jobId) {
   const normalized = String(jobId || "");
   if (!normalized) return;
@@ -6497,6 +6560,7 @@ async function monitorPersistentBatchJob(jobId) {
       await waitForBatchPoll(5000);
       const result = await apiFetch(persistentBatchStatusPath(normalized), { timeout: 30000 });
       active = applyPersistentBatchJob(result.job);
+      await uploadRequestedBatchAssets(result.job);
       await Promise.allSettled([refreshTasks({ quiet: true }), refreshHealth()]);
     }
   } catch (error) {
@@ -6520,6 +6584,7 @@ async function restorePersistentBatchJob() {
     const result = await apiFetch(path, { timeout: 30000 });
     if (!result.job) return;
     const active = applyPersistentBatchJob(result.job);
+    await uploadRequestedBatchAssets(result.job);
     if (active && !state.batchAutoRunning) monitorPersistentBatchJob(result.job.id);
   } catch (error) {
     if (Number(error.status || 0) !== 404) console.warn("batch restore failed", error);
@@ -6663,9 +6728,8 @@ async function autoSubmitBatchTasks() {
   state.batchSubmitting = true;
   state.batchAutoRunning = true;
   state.batchAutoStopRequested = false;
-  const hasReferenceImages = state.batchSharedImages.length > 0 || selected.some(({ item }) => (item.images || []).length > 0);
   selected.forEach(({ item }) => {
-    item.status = hasReferenceImages ? "uploading" : "queued";
+    item.status = "queued";
     item.error = "";
     item.taskId = "";
     item.videoUrl = "";
@@ -6678,9 +6742,8 @@ async function autoSubmitBatchTasks() {
   renderBatchPrompts();
 
   try {
+    await persistBatchReferenceImages();
     const referenceBundle = await prepareBatchReferenceBundle(sessionId);
-    if (state.batchAutoStopRequested) throw new Error("批次生成已停止");
-    const assetUploadId = await prepareBatchTaskImageAssets(sessionId, selected);
     if (state.batchAutoStopRequested) throw new Error("批次生成已停止");
     selected.forEach(({ item }) => { item.status = "queued"; });
     renderBatchPrompts();
@@ -6698,7 +6761,7 @@ async function autoSubmitBatchTasks() {
       reference_count: Number(referenceBundle?.count || 0),
       reference_batch_id: sessionId,
       reference_is_real_person: Boolean(state.batchReferenceIsRealPerson),
-      asset_upload_id: assetUploadId,
+      lazy_assets: true,
       rows,
     }));
     if (els.batchTaskProgress) els.batchTaskProgress.textContent = `正在保存 ${selected.length} 条批量计划`;

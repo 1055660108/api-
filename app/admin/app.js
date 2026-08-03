@@ -534,6 +534,7 @@ const els = {
   accountSliderVerificationCount: document.getElementById("accountSliderVerificationCount"),
   accountAbnormalCount: document.getElementById("accountAbnormalCount"),
   openAccountQuotaSettings: document.getElementById("openAccountQuotaSettings"),
+  accountSelectionMode: document.getElementById("accountSelectionMode"),
   accountQuotaSettingsModal: document.getElementById("accountQuotaSettingsModal"),
   closeAccountQuotaSettings: document.getElementById("closeAccountQuotaSettings"),
   cancelAccountQuotaSettings: document.getElementById("cancelAccountQuotaSettings"),
@@ -730,6 +731,7 @@ const state = {
   accountTotalPages: 1,
   accountStats: null,
   accountPlatformFilter: "all",
+  accountSelectionMode: "api_first",
   accountStatusFilter: "all",
   accountPage: 1,
   accountPageSize: 20,
@@ -813,6 +815,7 @@ const state = {
   membership: null,
   membershipHoldings: [],
   modelDiscounts: {},
+  modelQuotaDiscounts: {},
   userDetailsUserId: "",
   activeAnnouncement: null,
   pointCards: [],
@@ -1704,21 +1707,25 @@ function applyPortalText() {
 function updateBillingPreview() {
   const selectedPlatform = state.platforms.find((item) => item.id === state.platform);
   const modelCost = Number(selectedPlatform?.model_duration_costs?.[state.model]?.[String(state.duration)] ?? selectedPlatform?.model_costs?.[state.model] ?? 1);
+  const modelQuotaCost = Number(selectedPlatform?.model_duration_quota_costs?.[state.model]?.[String(state.duration)] ?? 1);
   const membershipDiscount = Math.max(0, Number(state.membership?.task_discount_points || 0));
   const modelDiscount = Math.max(0, Number(state.modelDiscounts?.[state.platform]?.[state.model] || 0));
+  const modelQuotaDiscount = Math.max(0, Number(state.modelQuotaDiscounts?.[state.platform]?.[state.model] || 0));
   const discountedCost = Math.max(0.1, Math.round((modelCost - membershipDiscount - modelDiscount) * 10) / 10);
+  const discountedQuotaCost = Math.max(0.1, Math.round((modelQuotaCost - modelQuotaDiscount) * 10) / 10);
   const usePoints = state.billingPriority === "points_first" && state.points >= discountedCost;
+  const useVideoQuota = state.freeRemaining >= discountedQuotaCost && !usePoints;
   if (els.submitCostText) {
     els.submitCostText.textContent = state.membership?.name
       ? `${state.membership.name} · 减免后需 ${discountedCost} 积分`
       : modelDiscount > 0
         ? `专属减免后需 ${discountedCost} 积分`
-      : usePoints || state.freeRemaining <= 0
+      : usePoints || !useVideoQuota
         ? `本次消耗 ${discountedCost} 积分`
-        : "本次使用 1 次视频额度";
+        : `本次使用 ${discountedQuotaCost} 视频额度`;
   }
   if (portal === "client" && els.submitTask && !state.submitting) {
-    els.submitTask.disabled = state.freeRemaining <= 0 && state.points < discountedCost;
+    els.submitTask.disabled = state.freeRemaining < discountedQuotaCost && state.points < discountedCost;
   }
 }
 
@@ -1729,6 +1736,7 @@ function applyAccessScope(data = {}) {
   if (data.user_name) state.userName = String(data.user_name);
   if (data.billing_priority) state.billingPriority = String(data.billing_priority) === "points_first" ? "points_first" : "video_first";
   if (data.model_discounts && typeof data.model_discounts === "object") state.modelDiscounts = data.model_discounts;
+  if (data.model_quota_discounts && typeof data.model_quota_discounts === "object") state.modelQuotaDiscounts = data.model_quota_discounts;
   if (!state.userName) state.userName = "当前用户";
   if (data.token_concurrency != null || (isClient && data.browser_workers != null)) {
     const previousConcurrency = state.concurrency;
@@ -2599,8 +2607,8 @@ function renderUserBalanceModal() {
   els.userBalanceSubtitle.textContent = userBalanceState.userName || "用户余额";
   els.userBalanceCurrent.textContent = quota ? `${balance} 次视频额度` : `${balance} 积分`;
   els.userBalanceAmountLabel.textContent = quota ? "视频额度数量" : "积分数量";
-  els.userBalanceAmount.min = quota ? "1" : "0.1";
-  els.userBalanceAmount.step = quota ? "1" : "0.1";
+  els.userBalanceAmount.min = "0.1";
+  els.userBalanceAmount.step = "0.1";
   els.userBalanceVisibilityRow?.classList.toggle("hidden", credit);
   els.userBalanceType.querySelectorAll("[data-user-balance-type]").forEach((button) => {
     const active = button.dataset.userBalanceType === userBalanceState.balanceType;
@@ -2632,8 +2640,8 @@ async function submitUserBalance(event) {
   event.preventDefault();
   const quota = userBalanceState.balanceType === "video_quota";
   const amount = Number(els.userBalanceAmount.value);
-  if (!Number.isFinite(amount) || amount <= 0 || quota && !Number.isInteger(amount) || !quota && !Number.isInteger(amount * 10)) {
-    return toast(quota ? "视频额度数量必须是正整数" : "积分最多保留 1 位小数", "error");
+  if (!Number.isFinite(amount) || amount <= 0 || !Number.isInteger(amount * 10)) {
+    return toast(quota ? "视频额度最多保留 1 位小数" : "积分最多保留 1 位小数", "error");
   }
   const current = quota ? userBalanceState.videoQuota : userBalanceState.points;
   if (userBalanceState.action === "deduct" && amount > current) return toast(`扣除数量不能超过当前${quota ? "视频额度" : "积分"}`, "error");
@@ -2674,7 +2682,8 @@ function renderUserModelDiscounts(catalog = []) {
     const models = Array.isArray(platform.models) ? platform.models : [];
     return `<section class="user-model-discount-group"><h4>${escapeHtml(platform.label || PLATFORM_LABELS[platform.id] || platform.id)}</h4><div>${models.map((model) => {
       const prices = Object.entries(model.duration_costs || {}).map(([duration, price]) => `${duration}秒 ${price}积分`).join(" / ");
-      return `<label class="user-model-discount-row"><span><strong>${escapeHtml(model.name)}</strong><small>${escapeHtml(prices || "按模型价格计费")}${model.enabled === false ? " · 当前停用" : ""}</small></span><span class="user-model-discount-input"><input type="number" min="0" step="0.1" value="${escapeHtml(model.discount || 0)}" data-user-model-discount data-platform="${escapeHtml(platform.id)}" data-model="${escapeHtml(model.name)}" aria-label="${escapeHtml(model.name)} 每条视频减免积分"><em>积分/条</em></span></label>`;
+      const quotaPrices = Object.entries(model.duration_quota_costs || {}).map(([duration, price]) => `${duration}秒 ${price}额度`).join(" / ");
+      return `<div class="user-model-discount-row"><span><strong>${escapeHtml(model.name)}</strong><small>${escapeHtml(prices || "按模型价格计费")}<br>${escapeHtml(quotaPrices || "每条消耗 1 视频额度")}${model.enabled === false ? " · 当前停用" : ""}</small></span><span class="user-model-discount-controls"><label class="user-model-discount-input"><input type="number" min="0" step="0.1" value="${escapeHtml(model.discount || 0)}" data-user-model-discount data-platform="${escapeHtml(platform.id)}" data-model="${escapeHtml(model.name)}" aria-label="${escapeHtml(model.name)} 每条视频减免积分"><em>积分</em></label><label class="user-model-discount-input"><input type="number" min="0" step="0.1" value="${escapeHtml(model.quota_discount || 0)}" data-user-model-quota-discount data-platform="${escapeHtml(platform.id)}" data-model="${escapeHtml(model.name)}" aria-label="${escapeHtml(model.name)} 每条视频减免额度"><em>额度</em></label></span></div>`;
     }).join("")}</div></section>`;
   }).join("") : '<div class="empty-state">暂无可配置模型</div>';
 }
@@ -2682,6 +2691,7 @@ function renderUserModelDiscounts(catalog = []) {
 async function saveUserModelDiscounts() {
   if (!state.userDetailsUserId || !els.userModelDiscountList) return;
   const discounts = {};
+  const quotaDiscounts = {};
   for (const input of els.userModelDiscountList.querySelectorAll("[data-user-model-discount]")) {
     const value = Number(input.value || 0);
     if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value * 10)) {
@@ -2694,10 +2704,22 @@ async function saveUserModelDiscounts() {
     discounts[platform] ||= {};
     discounts[platform][model] = value;
   }
+  for (const input of els.userModelDiscountList.querySelectorAll("[data-user-model-quota-discount]")) {
+    const value = Number(input.value || 0);
+    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value * 10)) {
+      input.focus();
+      return toast("减免视频额度必须大于等于 0，且最多保留 1 位小数", "error");
+    }
+    const platform = String(input.dataset.platform || "");
+    const model = String(input.dataset.model || "");
+    if (!platform || !model) continue;
+    quotaDiscounts[platform] ||= {};
+    quotaDiscounts[platform][model] = value;
+  }
   setBusy(els.saveUserModelDiscounts, true, "保存中");
   try {
-    await apiFetch(`/users/${encodeURIComponent(state.userDetailsUserId)}/model-discounts`, { method: "PUT", body: { discounts } });
-    toast("单模型积分减免已保存");
+    await apiFetch(`/users/${encodeURIComponent(state.userDetailsUserId)}/model-discounts`, { method: "PUT", body: { discounts, quota_discounts: quotaDiscounts } });
+    toast("单模型积分与视频额度减免已保存");
     await openUserDetails(state.userDetailsUserId);
   } catch (error) {
     toast(`保存失败：${error.message}`, "error");
@@ -4136,6 +4158,37 @@ function closeWorkersModal() {
   els.workersModal.setAttribute("aria-hidden", "true");
 }
 
+function renderAccountSelectionMode() {
+  for (const button of els.accountSelectionMode?.querySelectorAll("[data-account-selection-mode]") || []) {
+    const active = button.dataset.accountSelectionMode === state.accountSelectionMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-checked", String(active));
+  }
+}
+
+async function loadAccountSelectionMode() {
+  if (portal !== "admin" || !els.accountSelectionMode) return;
+  const data = await apiFetch("/config/account-selection");
+  state.accountSelectionMode = ["api_first", "admin_first", "random"].includes(data.mode) ? data.mode : "api_first";
+  renderAccountSelectionMode();
+}
+
+async function saveAccountSelectionMode(mode) {
+  const previous = state.accountSelectionMode;
+  state.accountSelectionMode = mode;
+  renderAccountSelectionMode();
+  try {
+    const data = await apiFetch("/config/account-selection", { method: "POST", body: { mode } });
+    state.accountSelectionMode = data.mode;
+    renderAccountSelectionMode();
+    toast(mode === "api_first" ? "后续任务优先使用 API 账号" : mode === "admin_first" ? "后续任务优先使用普通账号" : "后续任务随机分配账号");
+  } catch (error) {
+    state.accountSelectionMode = previous;
+    renderAccountSelectionMode();
+    toast(`账号分配模式保存失败：${error.message}`, "error");
+  }
+}
+
 function openSettingsModal(modal, focusTarget) {
   modal?.classList.remove("hidden");
   modal?.setAttribute("aria-hidden", "false");
@@ -4347,16 +4400,16 @@ function configuredModelDurations(platformId, modelName) {
   return supported.filter((duration) => selected.includes(duration));
 }
 
-function modelDurationToggles(platformId, selectedDurations = supportedPlatformDurations(platformId), durationCosts = {}) {
+function modelDurationToggles(platformId, selectedDurations = supportedPlatformDurations(platformId), durationCosts = {}, durationQuotaCosts = {}) {
   const selected = new Set((selectedDurations || []).map(Number));
-  return `<span class="model-duration-field" aria-label="可用时长和积分">${supportedPlatformDurations(platformId).map((duration) => `<span class="model-duration-option"><label><input type="checkbox" data-model-duration value="${duration}" ${selected.has(duration) ? "checked" : ""}><span>${duration} 秒</span></label><span class="model-duration-cost"><input type="number" data-model-duration-cost="${duration}" min="0.1" step="0.1" value="${escapeHtml(durationCosts?.[String(duration)] ?? 1)}"><em>积分</em></span></span>`).join("")}</span>`;
+  return `<span class="model-duration-field" aria-label="可用时长、积分和视频额度">${supportedPlatformDurations(platformId).map((duration) => `<span class="model-duration-option"><label><input type="checkbox" data-model-duration value="${duration}" ${selected.has(duration) ? "checked" : ""}><span>${duration} 秒</span></label><span class="model-duration-cost"><input type="number" data-model-duration-cost="${duration}" min="0.1" step="0.1" value="${escapeHtml(durationCosts?.[String(duration)] ?? 1)}"><em>积分</em></span><span class="model-duration-cost"><input type="number" data-model-duration-quota-cost="${duration}" min="0.1" step="0.1" value="${escapeHtml(durationQuotaCosts?.[String(duration)] ?? 1)}"><em>额度</em></span></span>`).join("")}</span>`;
 }
 
 function renderModelConfig() {
   if (!els.modelConfigList || portal !== "admin") return;
   els.modelConfigList.innerHTML = state.platforms.map((platform) => {
     const models = Array.isArray(platform.all_models) ? platform.all_models : (platform.models || []).map((name) => ({ name, enabled: true, cost: platform.model_costs?.[name] ?? 1 }));
-    const rows = models.map((item) => `<div class="model-config-row"><input type="checkbox" data-model-enabled ${item.enabled !== false ? "checked" : ""}><input type="text" data-model-name value="${escapeHtml(item.name || "")}">${modelDurationToggles(platform.id, item.durations, item.duration_costs ?? platform.model_duration_costs?.[item.name])}<button class="secondary-button" type="button" data-remove-model>删除</button></div>`).join("");
+    const rows = models.map((item) => `<div class="model-config-row"><input type="checkbox" data-model-enabled ${item.enabled !== false ? "checked" : ""}><input type="text" data-model-name value="${escapeHtml(item.name || "")}">${modelDurationToggles(platform.id, item.durations, item.duration_costs ?? platform.model_duration_costs?.[item.name], item.duration_quota_costs ?? platform.model_duration_quota_costs?.[item.name])}<button class="secondary-button" type="button" data-remove-model>删除</button></div>`).join("");
     return `<section class="model-config-platform" data-model-platform="${escapeHtml(platform.id)}"><div class="model-config-heading"><strong>${escapeHtml(platform.label || platform.id)}</strong><span>${models.length} 个模型</span><button class="secondary-button" type="button" data-add-model>添加</button></div><div class="model-config-rows" data-model-rows>${rows}</div></section>`;
   }).join("");
   if (els.modelConfigDisplay) {
@@ -4371,17 +4424,23 @@ async function saveModelConfig() {
     id: section.dataset.modelPlatform,
     models: Array.from(section.querySelectorAll(".model-config-row")).map((row) => {
       const durationCosts = Object.fromEntries(Array.from(row.querySelectorAll("[data-model-duration-cost]")).map((input) => [String(input.dataset.modelDurationCost), Number(input.value)]));
+      const durationQuotaCosts = Object.fromEntries(Array.from(row.querySelectorAll("[data-model-duration-quota-cost]")).map((input) => [String(input.dataset.modelDurationQuotaCost), Number(input.value)]));
       return {
         name: row.querySelector("[data-model-name]").value.trim(),
         enabled: row.querySelector("[data-model-enabled]").checked,
         cost: Object.values(durationCosts)[0] ?? 1,
         durations: Array.from(row.querySelectorAll("[data-model-duration]:checked")).map((input) => Number(input.value)),
         duration_costs: durationCosts,
+        duration_quota_costs: durationQuotaCosts,
       };
     }).filter((item) => item.name),
   }));
   if (platforms.some((platform) => platform.models.some((model) => Object.values(model.duration_costs).some((cost) => !Number.isFinite(cost) || cost <= 0 || !Number.isInteger(cost * 10))))) {
     toast("各时长积分必须为正数且精确到 0.1", "error");
+    return;
+  }
+  if (platforms.some((platform) => platform.models.some((model) => Object.values(model.duration_quota_costs).some((cost) => !Number.isFinite(cost) || cost <= 0 || !Number.isInteger(cost * 10))))) {
+    toast("各时长视频额度必须为正数且精确到 0.1", "error");
     return;
   }
   setBusy(els.saveModelConfig, true, "保存中");
@@ -4500,7 +4559,7 @@ async function refreshDashboard() {
   try {
     await refreshHealth();
     const jobs = [refreshTasks({ quiet: true }), loadPlatforms()];
-    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }), loadInvitationConfig());
+    if (portal === "admin") jobs.push(loadProxyConfig(), refreshAccounts({ quiet: true }), loadAccountSelectionMode(), loadInvitationConfig());
     if (portal === "client") jobs.push(loadClientNotifications(), loadMemberships(), loadClientProfile());
     const results = await Promise.allSettled(jobs);
     const rejected = results.find((item) => item.status === "rejected");
@@ -7965,6 +8024,11 @@ function bindEvents() {
     loadPreferredAccounts().catch((error) => toast(`可用账号读取失败：${error.message}`, "error"));
   });
   els.accountForm?.addEventListener("submit", importAccount);
+  els.accountSelectionMode?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-account-selection-mode]");
+    if (!button || button.dataset.accountSelectionMode === state.accountSelectionMode) return;
+    saveAccountSelectionMode(button.dataset.accountSelectionMode);
+  });
   els.accountTaskSearch?.addEventListener("input", () => {
     state.accountPage = 1;
     window.clearTimeout(state.accountSearchTimer);

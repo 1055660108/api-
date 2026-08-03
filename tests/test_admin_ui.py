@@ -81,7 +81,7 @@ class AdminUITests(unittest.TestCase):
     def test_account_header_uses_wrapping_grid_without_overflow(self) -> None:
         styles = (Path(__file__).resolve().parents[1] / "app" / "admin" / "styles.css").read_text(encoding="utf-8")
         self.assertIn('.accounts-panel > .panel-header {\n  display: grid;', styles)
-        self.assertIn('grid-template-columns: minmax(420px, 1fr) auto minmax(180px, 240px) auto auto;', styles)
+        self.assertIn('grid-template-columns: auto minmax(220px, auto) minmax(180px, 1fr) auto;', styles)
         self.assertIn('grid-template-columns: auto minmax(96px, 1fr) auto minmax(112px, 1fr) auto;', styles)
 
     def test_repository_update_control_is_present(self) -> None:
@@ -311,7 +311,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('id="userModelDiscountList"', self.html)
         self.assertIn('id="saveUserModelDiscounts"', self.html)
         self.assertIn('data-user-model-discount', self.javascript)
-        self.assertIn('/model-discounts`, { method: "PUT", body: { discounts } }', self.javascript)
+        self.assertIn('data-user-model-quota-discount', self.javascript)
+        self.assertIn('/model-discounts`, { method: "PUT", body: { discounts, quota_discounts: quotaDiscounts } }', self.javascript)
         self.assertIn('renderUserModelDiscounts(data.model_discount_catalog)', self.javascript)
 
     def test_task_and_account_tables_use_server_pagination(self) -> None:
@@ -470,6 +471,18 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('apiFetch("/config/account-quotas", { method: "POST"', self.javascript)
         self.assertIn('data-account-quota-cost', self.javascript)
         self.assertIn('API账号</span>', self.javascript)
+
+    def test_account_selection_mode_control_is_bound(self) -> None:
+        self.assertIn('id="accountSelectionMode"', self.html)
+        for mode in ("api_first", "admin_first", "random"):
+            self.assertIn(f'data-account-selection-mode="{mode}"', self.html)
+        self.assertIn('apiFetch("/config/account-selection")', self.javascript)
+        self.assertIn('apiFetch("/config/account-selection", { method: "POST", body: { mode } })', self.javascript)
+
+    def test_model_settings_include_fractional_video_quota_costs(self) -> None:
+        self.assertIn('data-model-duration-quota-cost', self.javascript)
+        self.assertIn('duration_quota_costs: durationQuotaCosts', self.javascript)
+        self.assertIn('各时长视频额度必须为正数且精确到 0.1', self.javascript)
 
     def test_batch_row_images_use_natural_ordinal_mapping(self) -> None:
         self.assertIn('function naturallySortedBatchImageFiles(files)', self.javascript)

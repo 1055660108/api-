@@ -51,6 +51,21 @@ class PostgresAccountPriorityTests(unittest.TestCase):
         self.assertEqual(connection.query.count("%s"), len(connection.params))
         self.assertEqual(connection.params[:4], ("doubao", "2026-08-01", 2, "2026-08-01T00:00:00+00:00"))
 
+    def test_claim_query_supports_admin_priority_and_random_modes(self) -> None:
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        connection = _RecordingConnection()
+        with patch.object(postgres, "connection", fake_connection):
+            postgres.claim_available_account("dola", set(), "2026-08-01", "2026-08-01T00:00:00+00:00", lambda account: account, selection_mode="admin_first")
+        self.assertIn("= 'admin' THEN 0 ELSE 1", connection.query)
+
+        connection = _RecordingConnection()
+        with patch.object(postgres, "connection", fake_connection):
+            postgres.claim_available_account("dola", set(), "2026-08-01", "2026-08-01T00:00:00+00:00", lambda account: account, selection_mode="random")
+        self.assertIn("ORDER BY random()", connection.query)
+
     def test_dola_ten_second_filter_only_applies_above_ten_seconds(self) -> None:
         @contextmanager
         def fake_connection():

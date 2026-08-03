@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import postgres
-from .billing import POINT_SCALE
+from .billing import POINT_SCALE, nonnegative_points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
 
 
@@ -52,8 +52,8 @@ def record_transaction(
     balance_units: int | None = None,
     reference_id: str = "",
     detail: str = "",
-    video_quota_change: int = 0,
-    video_quota_balance: int | None = None,
+    video_quota_change: int | float = 0,
+    video_quota_balance: int | float | None = None,
     transaction_id: str = "",
     visible_to_client: bool = True,
 ) -> dict[str, Any]:
@@ -68,8 +68,12 @@ def record_transaction(
         "amount": _points(amount_units),
         "balance_units": int(balance_units) if balance_units is not None else None,
         "balance": _points(balance_units) if balance_units is not None else None,
-        "video_quota_change": int(video_quota_change),
-        "video_quota_balance": max(0, int(video_quota_balance)) if video_quota_balance is not None else None,
+        "video_quota_change": (
+            units_to_points(nonnegative_points_to_units(video_quota_change))
+            if float(video_quota_change or 0) >= 0
+            else -units_to_points(nonnegative_points_to_units(abs(float(video_quota_change))))
+        ),
+        "video_quota_balance": units_to_points(nonnegative_points_to_units(video_quota_balance)) if video_quota_balance is not None else None,
         "title": str(title or "积分变动").strip()[:120],
         "detail": str(detail or "").strip()[:500],
         "reference_id": str(reference_id or "").strip()[:120],

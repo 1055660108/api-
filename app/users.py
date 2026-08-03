@@ -581,7 +581,10 @@ def list_users(temp_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
             free_limit = max(1, int(entry.get("free_limit") or 3))
             migrated = int(q.get("credit_units") or 0) > 0 or "free_remaining" in q
             used = max(0, int(q.get("used") or 0))
-            free_remaining = max(0, int(q.get("free_remaining") or 0)) if migrated else max(0, free_limit - used)
+            free_remaining = (
+                units_to_points(max(0, int(q.get("video_quota_units") or nonnegative_points_to_units(q.get("free_remaining") or 0))))
+                if migrated else max(0, free_limit - used)
+            )
             points = units_to_points(int(q.get("credit_units") or 0)) if migrated else max(0, max(free_limit, int(q.get("limit") or free_limit)) - max(used, free_limit))
             seen = datetime.fromisoformat(str(entry.get("last_seen_at") or entry.get("created_at")))
             if seen.tzinfo is None:
@@ -614,7 +617,7 @@ def user_balance_by_token_hash(token_hash: str, temp_entries: list[dict[str, Any
     if postgres.enabled():
         context = get_temp_context_by_hash(token_hash)
         if context:
-            q = {"free_remaining": context.free_remaining, "credit_units": context.credit_units, "used": context.used, "limit": context.limit}
+            q = {"free_remaining": context.free_remaining, "video_quota_units": context.video_quota_units, "credit_units": context.credit_units, "used": context.used, "limit": context.limit}
     with _LOCK:
         candidate = _read_user_entry("token_hash", token_hash)
         entry = candidate[1] if candidate else {}
@@ -622,7 +625,7 @@ def user_balance_by_token_hash(token_hash: str, temp_entries: list[dict[str, Any
     migrated = int(q.get("credit_units") or 0) > 0 or "free_remaining" in q
     used = max(0, int(q.get("used") or 0))
     return {
-        "free_remaining": max(0, int(q.get("free_remaining") or 0)) if migrated else max(0, free_limit - used),
+        "free_remaining": units_to_points(max(0, int(q.get("video_quota_units") or nonnegative_points_to_units(q.get("free_remaining") or 0)))) if migrated else max(0, free_limit - used),
         "points": units_to_points(int(q.get("credit_units") or 0)) if migrated else max(0, max(free_limit, int(q.get("limit") or free_limit)) - max(used, free_limit)),
     }
 
@@ -693,16 +696,17 @@ def deduct_user_points(user_id: str, amount: object) -> None:
         deduct_temp_points(str(entry.get("token_hash") or ""), max(1, int(entry.get("free_limit") or 1)), amount)
 
 
-def adjust_user_video_quota(user_id: str, amount: object) -> dict[str, int]:
+def adjust_user_video_quota(user_id: str, amount: object) -> dict[str, int | float]:
     try:
         if isinstance(amount, bool):
             raise ValueError
         parsed = Decimal(str(amount).strip())
-        if not parsed.is_finite() or parsed != parsed.to_integral_value():
+        units = parsed * 10
+        if not parsed.is_finite() or units != units.to_integral_value():
             raise ValueError
-        change = int(parsed)
+        change = units_to_points(int(units)) if units >= 0 else -units_to_points(abs(int(units)))
     except (InvalidOperation, TypeError, ValueError) as exc:
-        raise ValueError("视频额度数量必须是整数") from exc
+        raise ValueError("视频额度必须精确到 0.1") from exc
     if not change:
         raise ValueError("视频额度数量不能为 0")
     with _LOCK:
@@ -715,7 +719,7 @@ def adjust_user_video_quota(user_id: str, amount: object) -> dict[str, int]:
             max(1, int(entry.get("free_limit") or 1)),
             change,
         )
-    return {"changed": change, "free_remaining": max(0, int(balance.get("free_remaining") or 0))}
+    return {"changed": change, "free_remaining": balance.get("free_remaining") or 0}
 
 
 def purchase_user_membership(user_id: str, package: dict[str, Any]) -> dict[str, Any]:
@@ -892,6 +896,14 @@ def user_model_discounts_by_token_hash(token_hash: str) -> dict[str, dict[str, i
         return _normalized_model_discounts(candidate[1].get("model_discount_points"))
 
 
+def user_model_quota_discounts_by_token_hash(token_hash: str) -> dict[str, dict[str, int | float]]:
+    with _LOCK:
+        candidate = _read_user_entry("token_hash", token_hash)
+        if not candidate:
+            return {}
+        return _normalized_model_discounts(candidate[1].get("model_discount_video_quota"))
+
+
 def user_model_discount_units_by_token_hash(token_hash: str, platform: str, model: str) -> int:
     discounts = user_model_discounts_by_token_hash(token_hash)
     platform_discounts = discounts.get(str(platform or "").strip().lower(), {})
@@ -913,6 +925,19 @@ def task_discount_units_by_token_hash(token_hash: str, platform: str, model: str
     )
 
 
+def task_video_quota_discount_units_by_token_hash(token_hash: str, platform: str, model: str) -> int:
+    discounts = user_model_quota_discounts_by_token_hash(token_hash)
+    platform_discounts = discounts.get(str(platform or "").strip().lower(), {})
+    normalized_model = str(model or "").strip().casefold()
+    for configured_model, discount in platform_discounts.items():
+        if configured_model.casefold() == normalized_model:
+            try:
+                return nonnegative_points_to_units(discount)
+            except ValueError:
+                return 0
+    return 0
+
+
 def set_user_model_discounts(user_id: str, discounts: object) -> dict[str, dict[str, int | float]]:
     normalized = _normalized_model_discounts(discounts)
     with _LOCK:
@@ -928,6 +953,26 @@ def set_user_model_discounts(user_id: str, discounts: object) -> dict[str, dict[
         if not isinstance(entry, dict):
             raise KeyError(user_id)
         entry["model_discount_points"] = normalized
+        entry["updated_at"] = _now()
+        _write(data)
+        return normalized
+
+
+def set_user_model_quota_discounts(user_id: str, discounts: object) -> dict[str, dict[str, int | float]]:
+    normalized = _normalized_model_discounts(discounts)
+    with _LOCK:
+        if postgres.enabled():
+            def mutate(entry: dict[str, Any]) -> dict[str, dict[str, int | float]]:
+                entry["model_discount_video_quota"] = normalized
+                entry["updated_at"] = _now()
+                return normalized
+
+            return postgres.mutate_user("id", user_id, mutate)
+        data = _read()
+        entry = next((item for item in data["users"].values() if str(item.get("id") or "") == str(user_id or "")), None)
+        if not isinstance(entry, dict):
+            raise KeyError(user_id)
+        entry["model_discount_video_quota"] = normalized
         entry["updated_at"] = _now()
         _write(data)
         return normalized

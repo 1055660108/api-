@@ -925,6 +925,7 @@ def _select_account(
     preferred_id: str = "",
     quota_cost: int = 1,
     duration: int = 0,
+    selection_mode: str = "",
 ) -> dict[str, Any] | None:
     excluded = exclude_ids or set()
     target_platform = normalize_platform(platform)
@@ -959,15 +960,21 @@ def _select_account(
     if not enabled_accounts:
         return None
 
-    def priority(item: dict[str, Any]) -> tuple[int, int, int, str]:
-        quota_limit = max(0, int(item.get("quota_limit") or 0))
-        quota_used = max(0, int(item.get("quota_used") or 0))
-        quota_remaining = max(0, quota_limit - quota_used) if quota_limit else 1000000
-        api_priority = 0 if str(item.get("account_source") or "").lower() == "api" else 1
-        return (api_priority, -quota_remaining, quota_used, str(item.get("last_used_at") or ""))
+    mode = str(selection_mode or "api_first").strip().lower()
+    if mode == "random":
+        account = secrets.choice(enabled_accounts)
+    else:
+        preferred_source = "admin" if mode == "admin_first" else "api"
 
-    enabled_accounts.sort(key=priority)
-    account = enabled_accounts[0]
+        def priority(item: dict[str, Any]) -> tuple[int, int, int, str]:
+            quota_limit = max(0, int(item.get("quota_limit") or 0))
+            quota_used = max(0, int(item.get("quota_used") or 0))
+            quota_remaining = max(0, quota_limit - quota_used) if quota_limit else 1000000
+            source_priority = 0 if str(item.get("account_source") or "admin").lower() == preferred_source else 1
+            return (source_priority, -quota_remaining, quota_used, str(item.get("last_used_at") or ""))
+
+        enabled_accounts.sort(key=priority)
+        account = enabled_accounts[0]
     return {
         "id": str(account.get("id") or ""),
         "platform": str(account.get("platform") or DEFAULT_PLATFORM),
@@ -986,13 +993,15 @@ def claim_account_for_worker(
     preferred_id: str = "",
     quota_cost: int = 1,
     duration: int = 0,
+    selection_mode: str = "api_first",
 ) -> dict[str, Any] | None:
     preferred_id = str(preferred_id or "").strip().lower()
     quota_cost = max(1, int(quota_cost or 1))
+    selection_mode = str(selection_mode or "api_first").strip().lower()
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(account: dict[str, Any]) -> dict[str, Any]:
-                selected = _select_account([account], platform=platform, preferred_id=preferred_id, quota_cost=quota_cost, duration=duration)
+                selected = _select_account([account], platform=platform, preferred_id=preferred_id, quota_cost=quota_cost, duration=duration, selection_mode=selection_mode)
                 if selected is None:
                     raise RuntimeError("selected account became unavailable")
                 now = utc_now()
@@ -1005,10 +1014,10 @@ def claim_account_for_worker(
                 return selected
 
             return postgres.claim_available_account(
-                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id, quota_cost, duration
+                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id, quota_cost, duration, selection_mode
             )
         data = _read_data()
-        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id, quota_cost, duration)
+        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id, quota_cost, duration, selection_mode)
         if not selected:
             return None
         now = utc_now()

@@ -1187,6 +1187,8 @@ class WebAPIContractTests(unittest.TestCase):
             self.assertEqual(store.task_image_paths(retry_id)[0].read_bytes(), b"reference-image")
 
         self.assertEqual(len(set(retry_ids)), 2)
+        self.assertFalse(store.task_exists(source_ids[0]))
+        self.assertTrue(store.task_exists(source_ids[1]))
         after_retries = temp_access.get_temp_context_by_hash(owner_hash)
         self.assertEqual(before_retries.credit_units - after_retries.credit_units, 12)
         active = store.create_task("active task", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
@@ -1275,10 +1277,12 @@ class WebAPIContractTests(unittest.TestCase):
         temp_access.add_temp_credit_units(owner_hash, 100)
         temp_access.set_temp_billing_priority(owner_hash, "points_first")
         matched_ids = []
+        matched_created_at = {}
         for index in range(3):
             source = store.create_task(f"跨页目标 {index}", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
             store.mark_failed(source["id"], "测试失败")
             matched_ids.append(source["id"])
+            matched_created_at[source["id"]] = source["created_at"]
         unrelated = store.create_task("其他失败任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
         store.mark_failed(unrelated["id"], "测试失败")
 
@@ -1295,9 +1299,9 @@ class WebAPIContractTests(unittest.TestCase):
         available = [datetime.fromisoformat(item["available_at"]) for item in payload["results"]["created"]]
         self.assertEqual([(available[index] - available[index - 1]).total_seconds() for index in range(1, len(available))], [1, 1])
         for source_id, item in zip(matched_ids, payload["results"]["created"], strict=True):
-            source_meta = store.get_meta(source_id)
             retry_meta = store.get_meta(item["retry_id"])
-            self.assertEqual(retry_meta["queue_priority_at"], source_meta["created_at"])
+            self.assertFalse(store.task_exists(source_id))
+            self.assertEqual(retry_meta["queue_priority_at"], matched_created_at[source_id])
             self.assertEqual(retry_meta["next_attempt_at"], item["available_at"])
         self.assertFalse(payload["truncated"])
 
@@ -2278,9 +2282,9 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(set(platforms), {"default_platform", "platforms"})
         self.assertEqual({item["id"] for item in platforms["platforms"]}, {"dola", "doubao", "qianwen"})
         for platform in platforms["platforms"]:
-            self.assertEqual(set(platform), {"id", "label", "models", "model_costs", "model_durations", "model_duration_costs", "supported_durations", "all_models", "enabled"})
+            self.assertEqual(set(platform), {"id", "label", "models", "model_costs", "model_durations", "model_duration_costs", "model_duration_quota_costs", "supported_durations", "all_models", "enabled"})
             for model in platform["all_models"]:
-                self.assertEqual(set(model), {"name", "enabled", "cost", "durations", "duration_costs"})
+                self.assertEqual(set(model), {"name", "enabled", "cost", "durations", "duration_costs", "duration_quota_costs"})
 
     def test_proxy_health_refresh_switches_within_checked_countries(self) -> None:
         nodes = proxy_manager.subscription_node_list("http://us.example.com:8080#US\nhttp://jp.example.com:8080#Japan")
@@ -2896,6 +2900,71 @@ class WebAPIContractTests(unittest.TestCase):
             json={"platforms": [{"id": "dola", "models": [{"name": "Seedance 2.0", "cost": 1.25}]}]},
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_account_selection_mode_is_admin_configurable(self) -> None:
+        self.assertEqual(self.client.get("/config/account-selection", headers={"X-API-Token": self.admin_token}).json()["mode"], "api_first")
+        for mode in ("admin_first", "random", "api_first"):
+            response = self.client.post(
+                "/config/account-selection",
+                headers={"X-API-Token": self.admin_token},
+                json={"mode": mode},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["mode"], mode)
+        invalid = self.client.post(
+            "/config/account-selection",
+            headers={"X-API-Token": self.admin_token},
+            json={"mode": "unknown"},
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_admin_task_search_matches_registered_username(self) -> None:
+        registered = self.register("username_task_filter")
+        owner_hash = temp_access.hash_token(registered["token"])
+        expected = store.create_task("用户名筛选任务", "9:16", owner_token_hash=owner_hash, model="Seedance 2.0")
+        response = self.client.get(
+            "/tasks?page=1&page_size=20&q=username_task_filter",
+            headers={"X-API-Token": self.admin_token},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([item["id"] for item in response.json()["tasks"]], [expected["id"]])
+        self.assertEqual(response.json()["tasks"][0]["owner_name"], "username_task_filter")
+
+    def test_fractional_model_video_quota_and_user_discount_are_charged(self) -> None:
+        registered = self.register("quota_discount_client")
+        owner_hash = temp_access.hash_token(registered["token"])
+        user_id = users.user_identity_by_token_hash(owner_hash)["id"]
+        configured = self.client.post(
+            "/config/platforms",
+            headers={"X-API-Token": self.admin_token},
+            json={
+                "default_platform": "dola",
+                "platforms": [
+                    {"id": "dola", "models": [{"name": "Seedance 2.0", "enabled": True, "cost": 1, "durations": [10], "duration_costs": {"5": 1, "10": 1, "15": 1}, "duration_quota_costs": {"5": 0.5, "10": 0.7, "15": 1.5}}]},
+                    {"id": "doubao", "models": []},
+                    {"id": "qianwen", "models": []},
+                ],
+            },
+        )
+        self.assertEqual(configured.status_code, 200, configured.text)
+        dola = next(item for item in configured.json()["platforms"] if item["id"] == "dola")
+        self.assertEqual(dola["model_duration_quota_costs"]["Seedance 2.0"]["10"], 0.7)
+        discount = self.client.put(
+            f"/users/{user_id}/model-discounts",
+            headers={"X-API-Token": self.admin_token},
+            json={"discounts": {}, "quota_discounts": {"dola": {"Seedance 2.0": 0.4}}},
+        )
+        self.assertEqual(discount.status_code, 200, discount.text)
+        self.assertEqual(discount.json()["quota_discounts"], {"dola": {"Seedance 2.0": 0.4}})
+        created = self.client.post(
+            "/tasks",
+            headers={"X-API-Token": registered["token"]},
+            data={"prompt": "额度折扣任务", "ratio": "9:16", "platform": "dola", "model": "Seedance 2.0", "duration": "10", "task_type": "video"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        reservation = temp_access.get_temp_reservation(owner_hash, created.json()["id"])
+        self.assertEqual(reservation["video_units"], 3)
+        self.assertEqual(temp_access.get_temp_context_by_hash(owner_hash).free_remaining, 0.7)
 
 
 if __name__ == "__main__":

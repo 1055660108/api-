@@ -937,6 +937,7 @@ class WorkerManager:
                         defer_task(task_id, "等待接近提交时段", "submit_admission", retry_after)
                         continue
                     set_execution_phase(task_id, "preparing_submission_slot", "正在准备生成资源")
+                account_settings = load_settings()
                 account = claim_account_for_worker(
                     worker_id,
                     task_id,
@@ -947,8 +948,10 @@ class WorkerManager:
                         platform,
                         str(meta.get("model") or ""),
                         duration,
+                        account_settings,
                     ),
                     duration=duration,
+                    selection_mode=account_settings.account_selection_mode,
                 )
                 if not account:
                     if preferred_account_id:

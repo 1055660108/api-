@@ -627,6 +627,7 @@ def claim_available_account(
     preferred_id: str = "",
     quota_cost: int = 1,
     duration: int = 0,
+    selection_mode: str = "api_first",
 ) -> T | None:
     from psycopg.types.json import Jsonb
 
@@ -655,11 +656,19 @@ def claim_available_account(
     if preferred_id:
         conditions.append("id = %s")
         params.append(preferred_id)
+    mode = str(selection_mode or "api_first").strip().lower()
+    if mode == "random":
+        order_by = "random()"
+    else:
+        preferred_source = "admin" if mode == "admin_first" else "api"
+        order_by = (
+            f"CASE WHEN COALESCE(payload->>'account_source', 'admin') = '{preferred_source}' THEN 0 ELSE 1 END, "
+            f"CASE WHEN {quota_limit} = 0 THEN 1000000 ELSE {quota_limit} - {quota_used} END DESC, "
+            f"{quota_used}, COALESCE(payload->>'last_used_at', ''), id"
+        )
     query = (
         f"SELECT id, payload FROM dola_accounts WHERE {' AND '.join(conditions)} "
-        "ORDER BY CASE WHEN COALESCE(payload->>'account_source', 'admin') = 'api' THEN 0 ELSE 1 END, "
-        f"CASE WHEN {quota_limit} = 0 THEN 1000000 ELSE {quota_limit} - {quota_used} END DESC, "
-        f"{quota_used}, COALESCE(payload->>'last_used_at', ''), id "
+        f"ORDER BY {order_by} "
         "FOR UPDATE SKIP LOCKED LIMIT 1"
     )
     with connection() as conn:

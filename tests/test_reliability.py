@@ -746,6 +746,19 @@ class ReliabilityTests(unittest.TestCase):
         self.assertIn("redis.call('RPUSH', KEYS[2], task_id)", source)
         self.assertIn('priority_policy": "3_initial_to_1_retry"', source)
 
+    def test_redis_reconcile_bulk_loads_pending_metadata_without_per_task_reads(self) -> None:
+        queue = task_queue.RedisTaskQueue.__new__(task_queue.RedisTaskQueue)
+        rows = [
+            ("initial-task", {"status": store.STATUS_PENDING, "created_at": "2026-08-04T00:00:00+00:00"}),
+            ("retry-task", {"status": store.STATUS_PENDING, "created_at": "2026-08-04T00:00:01+00:00", "retry_count": 1}),
+        ]
+        with patch("app.store.list_task_metas_by_statuses", return_value=rows) as bulk, patch(
+            "app.store.get_meta", side_effect=AssertionError("reconcile must not read each task")
+        ), patch.object(queue, "requeue", return_value=True) as requeue:
+            self.assertEqual(queue.reconcile(), 2)
+        bulk.assert_called_once_with({store.STATUS_PENDING})
+        self.assertEqual([call.kwargs["retrying"] for call in requeue.call_args_list], [False, True])
+
     def test_redis_queue_forces_one_retry_after_three_initial_claims(self) -> None:
         queue = task_queue.RedisTaskQueue.__new__(task_queue.RedisTaskQueue)
         queue.ready = "ready"
@@ -883,6 +896,17 @@ class ReliabilityTests(unittest.TestCase):
 
             self.assertEqual(claimed["id"], api_account["id"])
             self.assertEqual(claimed["account_source"], "api")
+
+    def test_account_selection_mode_can_prefer_admin_or_randomize(self) -> None:
+        admin = accounts.add_account("普通账号", "session=admin", quota_limit=10, account_source="admin")
+        accounts.add_account("API账号", "session=api", quota_limit=10, account_source="api")
+        claimed = accounts.claim_account_for_worker("worker-admin", "task-admin", selection_mode="admin_first")
+        self.assertEqual(claimed["id"], admin["id"])
+        accounts.clear_account_current_task(admin["id"], "task-admin")
+        with patch("app.accounts.secrets.choice", side_effect=lambda rows: rows[-1]) as choose:
+            claimed = accounts.claim_account_for_worker("worker-random", "task-random", selection_mode="random")
+        self.assertTrue(choose.called)
+        self.assertIn(claimed["account_source"], {"api", "admin"})
 
     def test_sync_account_default_quotas_updates_existing_platform_pools(self) -> None:
         accounts.add_account("Dola", "session=dola", quota_limit=9)

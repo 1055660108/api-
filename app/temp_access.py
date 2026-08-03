@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from .billing import POINT_SCALE, points_to_units, units_to_points
+from .billing import POINT_SCALE, nonnegative_points_to_units, points_to_units, units_to_points
 from .config import DATA_DIR, ensure_dirs
 from . import postgres
 
@@ -44,7 +44,8 @@ class AccessContext:
     concurrency: int = 0
     remote_generation_limit: int = 1
     task_retention_days: int = DEFAULT_TASK_RETENTION_DAYS
-    free_remaining: int = 0
+    free_remaining: int | float = 0
+    video_quota_units: int = 0
     credit_units: int = 0
     billing_priority: str = VIDEO_FIRST
 
@@ -74,6 +75,21 @@ def hash_token(token: str) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _entry_video_quota_units(entry: dict[str, Any]) -> int:
+    if entry.get("video_quota_units") is not None:
+        return max(0, int(entry.get("video_quota_units") or 0))
+    try:
+        return nonnegative_points_to_units(entry.get("free_remaining") or 0)
+    except ValueError:
+        return 0
+
+
+def _set_entry_video_quota_units(entry: dict[str, Any], units: int) -> None:
+    value = max(0, int(units))
+    entry["video_quota_units"] = value
+    entry["free_remaining"] = units_to_points(value)
 
 
 def _read_data() -> dict[str, Any]:
@@ -124,7 +140,8 @@ def _public_token(token_hash: str, entry: dict[str, Any]) -> dict[str, Any]:
     concurrency = max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY)))
     task_retention_days = normalize_retention_days(entry.get("task_retention_days"))
     remark = str(entry.get("remark") or entry.get("note") or "")[:100]
-    free_remaining = max(0, int(entry.get("free_remaining") or 0))
+    video_quota_units = _entry_video_quota_units(entry)
+    free_remaining = units_to_points(video_quota_units)
     credit_units = max(0, int(entry.get("credit_units") or 0))
     billing_priority = normalize_billing_priority(entry.get("billing_priority"))
     return {
@@ -135,6 +152,7 @@ def _public_token(token_hash: str, entry: dict[str, Any]) -> dict[str, Any]:
         "used": used,
         "remaining": max(0, limit - used),
         "free_remaining": free_remaining,
+        "video_quota_units": video_quota_units,
         "credit_units": credit_units,
         "points": units_to_points(credit_units),
         "billing_priority": billing_priority,
@@ -186,7 +204,7 @@ def create_temp_tokens(count: int, limit: int = TEMP_TOKEN_LIMIT, concurrency: i
                     token_hash = hash_token(token)
                     if token_hash in tokens:
                         continue
-                    entry = {"token": token, "limit": limit, "concurrency": concurrency, "task_retention_days": task_retention_days, "remark": remark, "used": 0, "free_remaining": limit, "credit_units": 0, "billing_version": 2, "reservations": {}, "created_at": _now()}
+                    entry = {"token": token, "limit": limit, "concurrency": concurrency, "task_retention_days": task_retention_days, "remark": remark, "used": 0, "free_remaining": limit, "video_quota_units": limit * POINT_SCALE, "credit_units": 0, "billing_version": 3, "reservations": {}, "created_at": _now()}
                     tokens[token_hash] = entry
                     created.append(_public_token(token_hash, entry))
                 return created
@@ -207,8 +225,9 @@ def create_temp_tokens(count: int, limit: int = TEMP_TOKEN_LIMIT, concurrency: i
                 "remark": remark,
                 "used": 0,
                 "free_remaining": limit,
+                "video_quota_units": limit * POINT_SCALE,
                 "credit_units": 0,
-                "billing_version": 2,
+                "billing_version": 3,
                 "reservations": {},
                 "created_at": _now(),
             }
@@ -305,20 +324,21 @@ def adjust_temp_video_quota(token_hash: str, free_limit: int, amount: object) ->
         if isinstance(amount, bool):
             raise ValueError
         parsed = Decimal(str(amount).strip())
-        if not parsed.is_finite() or parsed != parsed.to_integral_value():
+        units = parsed * POINT_SCALE
+        if not parsed.is_finite() or units != units.to_integral_value():
             raise ValueError
-        change = int(parsed)
+        change_units = int(units)
     except (InvalidOperation, TypeError, ValueError) as exc:
-        raise ValueError("视频额度数量必须是整数") from exc
-    if not change:
+        raise ValueError("视频额度必须精确到 0.1") from exc
+    if not change_units:
         raise ValueError("视频额度数量不能为 0")
 
     def apply(entry: dict[str, Any]) -> dict[str, Any]:
         _migrate_entry(entry, free_limit)
-        current = max(0, int(entry.get("free_remaining") or 0))
-        if current + change < 0:
+        current_units = _entry_video_quota_units(entry)
+        if current_units + change_units < 0:
             raise ValueError("用户视频额度不足")
-        entry["free_remaining"] = current + change
+        _set_entry_video_quota_units(entry, current_units + change_units)
         _sync_legacy_fields(entry)
         entry["updated_at"] = _now()
         return _public_token(token_hash, entry)
@@ -346,7 +366,7 @@ def purchase_temp_membership(token_hash: str, free_limit: int, points_cost: obje
             if int(entry.get("credit_units") or 0) < units:
                 raise ValueError("用户积分不足")
             entry["credit_units"] = int(entry.get("credit_units") or 0) - units
-            entry["free_remaining"] = int(entry.get("free_remaining") or 0) + bonus
+            _set_entry_video_quota_units(entry, _entry_video_quota_units(entry) + bonus * POINT_SCALE)
             entry["concurrency"] = target_concurrency
             _sync_legacy_fields(entry)
             entry["updated_at"] = _now()
@@ -440,7 +460,8 @@ def get_temp_context(token: str) -> AccessContext | None:
         concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))),
         remote_generation_limit=normalize_remote_generation_limit(entry),
         task_retention_days=normalize_retention_days(entry.get("task_retention_days")),
-        free_remaining=max(0, int(entry.get("free_remaining") or 0)),
+        free_remaining=units_to_points(_entry_video_quota_units(entry)),
+        video_quota_units=_entry_video_quota_units(entry),
         credit_units=max(0, int(entry.get("credit_units") or 0)),
         billing_priority=normalize_billing_priority(entry.get("billing_priority")),
     )
@@ -461,23 +482,32 @@ def get_temp_reservation(token_hash: str, task_id: str) -> dict[str, Any]:
 
 
 def _migrate_entry(entry: dict[str, Any], free_limit: int) -> bool:
-    if int(entry.get("billing_version") or 0) >= 2:
-        return False
-    free_limit = max(0, int(free_limit or 0))
-    limit = max(free_limit, int(entry.get("limit") or free_limit))
-    used = max(0, int(entry.get("used") or 0))
-    entry["free_remaining"] = max(0, free_limit - used)
-    entry["credit_units"] = max(0, limit - max(used, free_limit)) * POINT_SCALE
-    entry["billing_version"] = 2
-    entry["reservations"] = {}
-    _sync_legacy_fields(entry)
-    return True
+    version = int(entry.get("billing_version") or 0)
+    changed = False
+    if version < 2:
+        normalized_limit = max(0, int(free_limit or 0))
+        limit = max(normalized_limit, int(entry.get("limit") or normalized_limit))
+        used = max(0, int(entry.get("used") or 0))
+        entry["free_remaining"] = max(0, normalized_limit - used)
+        entry["credit_units"] = max(0, limit - max(used, normalized_limit)) * POINT_SCALE
+        entry["reservations"] = {}
+        version = 2
+        changed = True
+    if version < 3:
+        _set_entry_video_quota_units(entry, nonnegative_points_to_units(entry.get("free_remaining") or 0))
+        entry["billing_version"] = 3
+        changed = True
+    if changed:
+        _sync_legacy_fields(entry)
+    return changed
 
 
 def _sync_legacy_fields(entry: dict[str, Any]) -> None:
-    free_remaining = max(0, int(entry.get("free_remaining") or 0))
+    video_quota_units = _entry_video_quota_units(entry)
+    free_remaining = units_to_points(video_quota_units)
+    _set_entry_video_quota_units(entry, video_quota_units)
     credit_units = max(0, int(entry.get("credit_units") or 0))
-    entry["limit"] = free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE
+    entry["limit"] = int((video_quota_units + credit_units + POINT_SCALE - 1) // POINT_SCALE)
     entry["used"] = 0
 
 
@@ -552,7 +582,7 @@ def add_temp_credit_units(token_hash: str, units: int) -> dict[str, Any]:
         return _public_token(normalized_hash, entry)
 
 
-def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int = POINT_SCALE, user_id: str = "") -> AccessContext:
+def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int = POINT_SCALE, user_id: str = "", video_cost_units: int = POINT_SCALE) -> AccessContext:
     if not access.is_temp:
         return access
     with _LOCK:
@@ -566,19 +596,20 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
                         return get_temp_context_from_entry(access.token_hash, entry)
                     raise QuotaExceeded("task quota reservation is closed")
                 required_units = max(1, int(cost_units))
+                required_video_units = max(1, int(video_cost_units))
                 points_available = int(entry.get("credit_units") or 0) >= required_units
-                free_used = int(entry.get("free_remaining") or 0) > 0 and not (
+                free_used = _entry_video_quota_units(entry) >= required_video_units and not (
                     normalize_billing_priority(entry.get("billing_priority")) == POINTS_FIRST and points_available
                 )
                 charged_units = 0 if free_used else required_units
                 if not free_used and int(entry.get("credit_units") or 0) < charged_units:
                     raise QuotaExceeded("temporary token quota exhausted")
                 if free_used:
-                    entry["free_remaining"] = int(entry.get("free_remaining") or 0) - 1
+                    _set_entry_video_quota_units(entry, _entry_video_quota_units(entry) - required_video_units)
                 else:
                     entry["credit_units"] = int(entry.get("credit_units") or 0) - charged_units
                 if task_id:
-                    reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "user_id": str(user_id or ""), "created_at": _now()}
+                    reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "video_units": required_video_units if free_used else 0, "user_id": str(user_id or ""), "created_at": _now()}
                 _prune_reservations(entry)
                 _sync_legacy_fields(entry)
                 entry["updated_at"] = _now()
@@ -600,19 +631,20 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
                 return get_temp_context_from_entry(access.token_hash, entry)
             raise QuotaExceeded("task quota reservation is closed")
         required_units = max(1, int(cost_units))
+        required_video_units = max(1, int(video_cost_units))
         points_available = int(entry.get("credit_units") or 0) >= required_units
-        free_used = int(entry.get("free_remaining") or 0) > 0 and not (
+        free_used = _entry_video_quota_units(entry) >= required_video_units and not (
             normalize_billing_priority(entry.get("billing_priority")) == POINTS_FIRST and points_available
         )
         charged_units = 0 if free_used else required_units
         if not free_used and int(entry.get("credit_units") or 0) < charged_units:
             raise QuotaExceeded("temporary token quota exhausted")
         if free_used:
-            entry["free_remaining"] = int(entry.get("free_remaining") or 0) - 1
+            _set_entry_video_quota_units(entry, _entry_video_quota_units(entry) - required_video_units)
         else:
             entry["credit_units"] = int(entry.get("credit_units") or 0) - charged_units
         if task_id:
-            reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "user_id": str(user_id or ""), "created_at": _now()}
+            reservations[task_id] = {"status": "reserved", "free": free_used, "units": charged_units, "video_units": required_video_units if free_used else 0, "user_id": str(user_id or ""), "created_at": _now()}
         _prune_reservations(entry)
         _sync_legacy_fields(entry)
         entry["updated_at"] = _now()
@@ -621,9 +653,11 @@ def reserve_temp_quota(access: AccessContext, task_id: str = "", cost_units: int
 
 
 def get_temp_context_from_entry(token_hash: str, entry: dict[str, Any]) -> AccessContext:
-    free_remaining = max(0, int(entry.get("free_remaining") or 0))
+    video_quota_units = _entry_video_quota_units(entry)
+    free_remaining = units_to_points(video_quota_units)
     credit_units = max(0, int(entry.get("credit_units") or 0))
-    return AccessContext(token_hash=token_hash, is_admin=False, is_temp=True, limit=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, used=0, remaining=free_remaining + (credit_units + POINT_SCALE - 1) // POINT_SCALE, concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))), remote_generation_limit=normalize_remote_generation_limit(entry), task_retention_days=normalize_retention_days(entry.get("task_retention_days")), free_remaining=free_remaining, credit_units=credit_units, billing_priority=normalize_billing_priority(entry.get("billing_priority")))
+    combined_limit = int((video_quota_units + credit_units + POINT_SCALE - 1) // POINT_SCALE)
+    return AccessContext(token_hash=token_hash, is_admin=False, is_temp=True, limit=combined_limit, used=0, remaining=combined_limit, concurrency=max(1, min(MAX_TEMP_TOKEN_CONCURRENCY, int(entry.get("concurrency") or TEMP_TOKEN_CONCURRENCY))), remote_generation_limit=normalize_remote_generation_limit(entry), task_retention_days=normalize_retention_days(entry.get("task_retention_days")), free_remaining=free_remaining, video_quota_units=video_quota_units, credit_units=credit_units, billing_priority=normalize_billing_priority(entry.get("billing_priority")))
 
 
 def set_temp_billing_priority(token_hash: str, priority: str) -> dict[str, Any]:
@@ -639,7 +673,7 @@ def refund_temp_quota(access: AccessContext) -> None:
 def _record_reservation_refund(transaction: dict[str, Any], refund_id: str) -> None:
     user_id = str(transaction.get("user_id") or "")
     units = int(transaction.get("units") or 0)
-    video_quota_change = int(transaction.get("video_quota_change") or 0)
+    video_quota_change = transaction.get("video_quota_change") or 0
     if not user_id or (units <= 0 and video_quota_change == 0):
         return
     from .point_transactions import record_transaction
@@ -651,7 +685,7 @@ def _record_reservation_refund(transaction: dict[str, Any], refund_id: str) -> N
         "视频额度任务退款" if video_quota_change else "任务退款",
         balance_units=int(transaction.get("balance_units") or 0),
         video_quota_change=video_quota_change,
-        video_quota_balance=int(transaction.get("video_quota_balance") or 0),
+        video_quota_balance=transaction.get("video_quota_balance") or 0,
         reference_id=refund_id,
         detail=f"任务 ID：{refund_id}" if refund_id else "",
     )
@@ -670,13 +704,14 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                     if not isinstance(reservation, dict) or reservation.get("status") != "reserved":
                         return False
                     if reservation.get("free"):
-                        entry["free_remaining"] = int(entry.get("free_remaining") or 0) + 1
+                        video_units = max(1, int(reservation.get("video_units") or POINT_SCALE))
+                        _set_entry_video_quota_units(entry, _entry_video_quota_units(entry) + video_units)
                         refunded_transaction.update({
                             "user_id": str(reservation.get("user_id") or ""),
                             "units": 0,
                             "balance_units": int(entry.get("credit_units") or 0),
-                            "video_quota_change": 1,
-                            "video_quota_balance": int(entry.get("free_remaining") or 0),
+                            "video_quota_change": units_to_points(video_units),
+                            "video_quota_balance": units_to_points(_entry_video_quota_units(entry)),
                         })
                     else:
                         units = int(reservation.get("units") or 0)
@@ -685,7 +720,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                             "user_id": str(reservation.get("user_id") or ""),
                             "units": units,
                             "balance_units": int(entry.get("credit_units") or 0),
-                            "video_quota_balance": int(entry.get("free_remaining") or 0),
+                            "video_quota_balance": units_to_points(_entry_video_quota_units(entry)),
                         })
                     reservation["status"] = "refunded"
                     reservation["refunded_at"] = _now()
@@ -718,13 +753,14 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
             if not isinstance(reservation, dict) or reservation.get("status") != "reserved":
                 return False
             if reservation.get("free"):
-                entry["free_remaining"] = int(entry.get("free_remaining") or 0) + 1
+                video_units = max(1, int(reservation.get("video_units") or POINT_SCALE))
+                _set_entry_video_quota_units(entry, _entry_video_quota_units(entry) + video_units)
                 refunded_transaction.update({
                     "user_id": str(reservation.get("user_id") or ""),
                     "units": 0,
                     "balance_units": int(entry.get("credit_units") or 0),
-                    "video_quota_change": 1,
-                    "video_quota_balance": int(entry.get("free_remaining") or 0),
+                    "video_quota_change": units_to_points(video_units),
+                    "video_quota_balance": units_to_points(_entry_video_quota_units(entry)),
                 })
             else:
                 units = int(reservation.get("units") or 0)
@@ -733,7 +769,7 @@ def refund_temp_quota_hash(token_hash: str, refund_id: str = "") -> bool:
                     "user_id": str(reservation.get("user_id") or ""),
                     "units": units,
                     "balance_units": int(entry.get("credit_units") or 0),
-                    "video_quota_balance": int(entry.get("free_remaining") or 0),
+                    "video_quota_balance": units_to_points(_entry_video_quota_units(entry)),
                 })
             reservation["status"] = "refunded"
             reservation["refunded_at"] = _now()

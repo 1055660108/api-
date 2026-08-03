@@ -19,7 +19,7 @@ class FileTaskQueue:
     def enqueue(self, task_id: str, available_at: datetime | None = None) -> bool:
         return True
 
-    def requeue(self, task_id: str, available_at: datetime | None = None) -> bool:
+    def requeue(self, task_id: str, available_at: datetime | None = None, *, retrying: bool | None = None) -> bool:
         return True
 
     def claim(self, worker_id: str, claimed_ids: set[str], active_counts: dict[str, int], concurrency_limits: dict[str, int]) -> str | None:
@@ -67,18 +67,22 @@ class RedisTaskQueue:
         self._initial_claim_streak = 0
 
     @staticmethod
-    def _is_retry_task(task_id: str) -> bool:
+    def _meta_is_retry(meta: dict[str, Any]) -> bool:
+        return bool(
+            max(0, int(meta.get("retry_count") or 0))
+            or max(0, int(meta.get("infrastructure_retry_count") or 0))
+            or str(meta.get("retry_of_task_id") or "")
+        )
+
+    @classmethod
+    def _is_retry_task(cls, task_id: str) -> bool:
         try:
             from .store import get_meta
 
             meta = get_meta(task_id)
         except (FileNotFoundError, ValueError):
             return False
-        return bool(
-            max(0, int(meta.get("retry_count") or 0))
-            or max(0, int(meta.get("infrastructure_retry_count") or 0))
-            or str(meta.get("retry_of_task_id") or "")
-        )
+        return cls._meta_is_retry(meta)
 
     def enqueue(self, task_id: str, available_at: datetime | None = None) -> bool:
         score = available_at.timestamp() if available_at else 0
@@ -96,9 +100,9 @@ class RedisTaskQueue:
         """
         return bool(self.client.eval(script, 3, self.known, delayed_key, ready_key, task_id, score, time.time()))
 
-    def requeue(self, task_id: str, available_at: datetime | None = None) -> bool:
+    def requeue(self, task_id: str, available_at: datetime | None = None, *, retrying: bool | None = None) -> bool:
         score = available_at.timestamp() if available_at else 0
-        retrying = self._is_retry_task(task_id)
+        retrying = self._is_retry_task(task_id) if retrying is None else bool(retrying)
         destination_delayed = self.retry_delayed if retrying else self.delayed
         destination_ready = self.retry_ready if retrying else self.ready
         script = """
@@ -315,15 +319,10 @@ class RedisTaskQueue:
         return recovered
 
     def reconcile(self) -> int:
-        from .store import STATUS_PENDING, get_meta, list_tasks, parse_time
+        from .store import STATUS_PENDING, list_task_metas_by_statuses, parse_time
 
         added = 0
-        pending: list[tuple[str, dict[str, Any]]] = []
-        for item in list_tasks():
-            if str(item.get("status") or "") != STATUS_PENDING:
-                continue
-            meta = get_meta(str(item["id"]))
-            pending.append((str(item["id"]), meta))
+        pending = list_task_metas_by_statuses({STATUS_PENDING})
         pending.sort(key=lambda row: (
             str(row[1].get("queue_priority_at") or row[1].get("created_at") or row[1].get("queued_at") or ""),
             str(row[1].get("created_at") or ""),
@@ -331,7 +330,7 @@ class RedisTaskQueue:
         ))
         for task_id, meta in pending:
             available_at = parse_time(str(meta.get("next_attempt_at") or ""))
-            added += int(self.requeue(task_id, available_at))
+            added += int(self.requeue(task_id, available_at, retrying=self._meta_is_retry(meta)))
         return added
 
     def health(self) -> dict[str, Any]:

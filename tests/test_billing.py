@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import config, package_catalog, point_transactions, temp_access, users
-from app.billing import model_cost_units, package_bonus_free_uses, points_to_units, units_to_points
+from app.billing import model_cost_units, model_video_quota_cost_units, package_bonus_free_uses, points_to_units, units_to_points
 
 
 class BillingTests(unittest.TestCase):
@@ -62,6 +62,13 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(model_cost_units("dola", "Seedance 2.0", duration=5), 5)
         self.assertEqual(model_cost_units("dola", "Seedance 2.0", duration=10), 12)
         self.assertEqual(model_cost_units("dola", "Seedance 2.0", duration=15), 23)
+
+    def test_video_quota_costs_can_be_configured_per_duration(self) -> None:
+        config.ensure_config()
+        config.update_config({"model_duration_quota_costs": {"dola": {"Seedance 2.0": {"5": 0.5, "10": 1.2, "15": 2.3}}, "doubao": {}, "qianwen": {}}})
+        self.assertEqual(model_video_quota_cost_units("dola", "Seedance 2.0", duration=5), 5)
+        self.assertEqual(model_video_quota_cost_units("dola", "Seedance 2.0", duration=10), 12)
+        self.assertEqual(model_video_quota_cost_units("dola", "Seedance 2.0", duration=15), 23)
 
     def test_free_quota_is_reserved_before_credits(self) -> None:
         token = temp_access.create_temp_tokens(1, 1)[0]
@@ -121,6 +128,15 @@ class BillingTests(unittest.TestCase):
         data = json.loads(self.tokens_path.read_text(encoding="utf-8"))["tokens"][token["id"]]
         self.assertEqual(data["free_remaining"], 1)
         self.assertEqual(data["credit_units"], 20)
+
+    def test_fractional_video_quota_cost_is_reserved_and_refunded_exactly(self) -> None:
+        token = temp_access.create_temp_tokens(1, 2)[0]
+        access = temp_access.get_temp_context(token["token"])
+        reserved = temp_access.reserve_temp_quota(access, "task-fractional", 10, video_cost_units=15)
+        self.assertEqual(reserved.free_remaining, 0.5)
+        self.assertEqual(temp_access.get_temp_reservation(token["id"], "task-fractional")["video_units"], 15)
+        self.assertTrue(temp_access.refund_temp_quota_hash(token["id"], "task-fractional"))
+        self.assertEqual(temp_access.get_temp_context_by_hash(token["id"]).free_remaining, 2)
 
     def test_paid_refund_records_one_ledger_entry(self) -> None:
         token = temp_access.create_temp_tokens(1, 1)[0]
@@ -234,10 +250,11 @@ class BillingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "不能为 0"):
             users.adjust_user_video_quota(user_id, 0)
-        with self.assertRaisesRegex(ValueError, "必须是整数"):
-            users.adjust_user_video_quota(user_id, 1.5)
+        self.assertEqual(users.adjust_user_video_quota(user_id, 1.5)["free_remaining"], 2.5)
+        with self.assertRaisesRegex(ValueError, "0.1"):
+            users.adjust_user_video_quota(user_id, 0.01)
         with self.assertRaisesRegex(ValueError, "不足"):
-            users.adjust_user_video_quota(user_id, -2)
+            users.adjust_user_video_quota(user_id, -3)
 
 
 if __name__ == "__main__":

@@ -68,6 +68,28 @@ def model_cost_points(platform: str, model: str, task_type: str = "video", durat
     return units_to_points(model_cost_units(platform, model, task_type, duration))
 
 
+def model_video_quota_cost_units(platform: str, model: str, duration: int | None = None) -> int:
+    from .config import load_settings
+
+    settings = load_settings()
+    normalized_platform = str(platform or "").strip().lower()
+    normalized_model = str(model or "").strip().casefold()
+    for configured_model, duration_costs in settings.model_duration_quota_costs.get(normalized_platform, {}).items():
+        if configured_model.casefold() != normalized_model:
+            continue
+        selected_duration = int(duration or 0)
+        if not selected_duration:
+            enabled = settings.model_durations.get(normalized_platform, {}).get(configured_model, [])
+            preferred = settings.video_duration if normalized_platform == "dola" else 10
+            selected_duration = preferred if preferred in enabled else (enabled[0] if enabled else preferred)
+        return points_to_units(duration_costs.get(selected_duration, 1))
+    return POINT_SCALE
+
+
+def model_video_quota_cost(platform: str, model: str, duration: int | None = None) -> int | float:
+    return units_to_points(model_video_quota_cost_units(platform, model, duration))
+
+
 def package_bonus_free_uses(points: object) -> int:
     units = points_to_units(points)
     if units < 300:

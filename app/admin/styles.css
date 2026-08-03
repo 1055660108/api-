@@ -516,19 +516,20 @@ button:disabled {
 .user-model-discounts { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .user-model-discounts .user-details-heading .primary-button { min-height: 34px; padding: 0 12px; }
 .user-model-discounts .user-details-heading .primary-button i { width: 15px; height: 15px; }
-.user-model-discount-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); max-height: 260px; overflow-y: auto; }
+.user-model-discount-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); max-height: 420px; overflow-y: auto; }
 .user-model-discount-group { min-width: 0; border-right: 1px solid var(--line); }
 .user-model-discount-group:last-child { border-right: 0; }
 .user-model-discount-group h4 { margin: 0; padding: 10px 14px; color: #39413f; background: #fbfbfb; border-bottom: 1px solid var(--line); font-size: 12px; }
-.user-model-discount-row { display: grid; grid-template-columns: minmax(0, 1fr) 116px; gap: 12px; align-items: center; min-height: 58px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.user-model-discount-row { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 12px; align-items: center; min-height: 68px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
 .user-model-discount-row:last-child { border-bottom: 0; }
 .user-model-discount-row > span:first-child { min-width: 0; }
 .user-model-discount-row strong,
 .user-model-discount-row small { display: block; overflow-wrap: anywhere; }
 .user-model-discount-row strong { color: #252b29; font-size: 12px; }
 .user-model-discount-row small { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.4; }
-.user-model-discount-input { position: relative; display: block; width: 116px; }
-.user-model-discount-input input { width: 100%; min-height: 34px; padding: 5px 48px 5px 8px; }
+.user-model-discount-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; width: 190px; }
+.user-model-discount-input { position: relative; display: block; width: 100%; }
+.user-model-discount-input input { width: 100%; min-height: 34px; padding: 5px 34px 5px 8px; }
 .user-model-discount-input em { position: absolute; top: 50%; right: 8px; color: var(--muted); font-size: 10px; font-style: normal; transform: translateY(-50%); pointer-events: none; }
 .user-details-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; min-height: 0; }
 .user-details-section { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 380px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
@@ -2360,6 +2361,24 @@ textarea:focus {
   background: var(--danger-soft);
 }
 
+.account-selection-control {
+  display: flex;
+  flex-wrap: nowrap;
+  width: auto;
+  min-height: 40px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.account-selection-control button {
+  flex: 1 1 auto;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
 .account-deletion-history-modal {
   width: min(calc(100vw - 48px), 920px);
   max-height: calc(100vh - 48px);
@@ -2694,7 +2713,7 @@ textarea:focus {
 .model-cost-field input { padding-right: 52px !important; }
 .model-cost-field em { position: absolute; top: 50%; right: 8px; color: var(--muted); font-size: 11px; font-style: normal; transform: translateY(-50%); pointer-events: none; }
 .model-duration-field { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.model-duration-option { display: grid; grid-template-columns: auto 86px; align-items: center; gap: 6px; min-height: 34px; padding: 3px 5px 3px 8px; background: #f7f9f8; border: 1px solid var(--line); border-radius: 7px; }
+.model-duration-option { display: grid; grid-template-columns: auto 86px 86px; align-items: center; gap: 6px; min-height: 34px; padding: 3px 5px 3px 8px; background: #f7f9f8; border: 1px solid var(--line); border-radius: 7px; }
 .model-duration-option > label { display: inline-flex; align-items: center; gap: 5px; margin: 0; white-space: nowrap; }
 .model-duration-option input[type="checkbox"] { margin: 0; }
 .model-duration-cost { position: relative; display: block; }
@@ -4562,6 +4581,7 @@ body[data-portal="admin"] .client-billing-panel {
   .account-toolbar-actions,
   .account-platform-filter,
   .account-status-counts,
+  .account-selection-control,
   .account-task-search,
   .quota-reset-countdown,
   .account-toolbar-actions .secondary-button {
@@ -7809,7 +7829,7 @@ body[data-portal="client"] .admin-settings-grid {
 
 .account-toolbar-actions {
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) auto minmax(180px, 240px) auto auto;
+  grid-template-columns: auto minmax(220px, auto) minmax(180px, 1fr) auto;
   grid-column: 1 / -1;
   align-items: center;
   justify-content: stretch;
@@ -7817,6 +7837,15 @@ body[data-portal="client"] .admin-settings-grid {
   width: 100%;
   margin-left: 0;
 }
+
+.account-toolbar-actions .account-platform-filter { grid-column: 1 / -1; grid-row: 1; }
+.account-toolbar-actions .account-status-counts { grid-column: 1; grid-row: 2; }
+.account-toolbar-actions .account-selection-control { grid-column: 2; grid-row: 2; }
+.account-toolbar-actions .account-task-search { grid-column: 3; grid-row: 2; }
+.account-toolbar-actions .quota-reset-countdown { grid-column: 4; grid-row: 2; }
+.account-toolbar-actions #openAccountDeletionHistory { grid-column: 2; grid-row: 3; }
+.account-toolbar-actions #openAccountQuotaSettings { grid-column: 3; grid-row: 3; }
+.account-toolbar-actions #refreshAccounts { grid-column: 4; grid-row: 3; }
 
 .account-platform-filter {
   display: grid;
@@ -7852,7 +7881,7 @@ body[data-portal="client"] .admin-settings-grid {
 
 @media (max-width: 1350px) {
   .account-toolbar-actions {
-    grid-template-columns: auto minmax(180px, 1fr) auto auto;
+    grid-template-columns: auto minmax(220px, auto) minmax(180px, 1fr) auto;
   }
 
   .account-platform-filter {
@@ -7878,6 +7907,11 @@ body[data-portal="client"] .admin-settings-grid {
   .accounts-panel > .panel-header,
   .account-toolbar-actions {
     grid-template-columns: 1fr;
+  }
+
+  .account-toolbar-actions > * {
+    grid-column: auto !important;
+    grid-row: auto !important;
   }
 
   .account-quota-summary {
@@ -8339,6 +8373,8 @@ body[data-portal] .proxy-node-card[aria-pressed="true"] {
 }
 
 @media (max-width: 700px) {
+  .user-model-discount-row { grid-template-columns: 1fr; }
+  .user-model-discount-controls { width: 100%; }
   .model-config-row { grid-template-columns: 18px minmax(0, 1fr) auto; }
   .model-duration-field { grid-column: 1 / -1; }
   .prompt-pager { justify-content: center; margin-top: 26px; }

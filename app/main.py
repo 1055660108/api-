@@ -34,7 +34,7 @@ from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
 from .accounts import account_cookie_export, account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, migrate_ten_second_accounts_to_api, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
-from .billing import model_cost_points, model_cost_units, nonnegative_points_to_units, points_to_units, units_to_points
+from .billing import model_cost_points, model_cost_units, model_video_quota_cost, model_video_quota_cost_units, nonnegative_points_to_units, points_to_units, units_to_points
 from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
 from .batch_jobs import (
     cancel_job as cancel_persistent_batch_job,
@@ -266,7 +266,7 @@ def _task_video_url(meta: dict[str, Any], result: dict[str, Any]) -> str:
 from .textfix import repair_text
 from .version import __version__
 from .worker import refund_account_quota_once, refund_temp_quota_once
-from .users import add_user_points, adjust_user_video_quota, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, set_user_model_discounts, set_user_remote_generation_limit, sync_user_membership_by_token_hash, task_discount_units_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_model_discounts_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
+from .users import add_user_points, adjust_user_video_quota, change_user_email_by_token_hash, change_user_password_by_token_hash, deduct_user_points, delete_user, has_verified_enabled_email, list_users, login_user, purchase_user_membership, register_user, repair_registered_user_tokens, reset_user_password_by_email, rotate_user_token_by_hash, set_user_concurrency, set_user_concurrency_by_token_hash, set_user_enabled, set_user_model_discounts, set_user_model_quota_discounts, set_user_remote_generation_limit, sync_user_membership_by_token_hash, task_discount_units_by_token_hash, task_video_quota_discount_units_by_token_hash, touch_user_by_token, touch_user_by_token_hash, user_balance_by_token_hash, user_identity_by_token_hash, user_model_discounts_by_token_hash, user_model_quota_discounts_by_token_hash, user_profile_by_token_hash, user_token_is_enabled
 
 
 create_sem = None
@@ -983,12 +983,15 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
             base_cost_units = model_cost_units(platform, model, "video", duration)
             discount_units = await _storage_call(task_discount_units_by_token_hash, owner_hash, platform, model)
             cost_units = max(1, base_cost_units - discount_units)
+            video_discount_units = await _storage_call(task_video_quota_discount_units_by_token_hash, owner_hash, platform, model)
+            video_cost_units = max(1, model_video_quota_cost_units(platform, model, duration) - video_discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
-            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id, video_cost_units=video_cost_units)
             if not _batch_job_is_active(job_id, owner_hash):
                 raise HTTPException(status_code=409, detail="批量提交已停止")
             reservation = await _storage_call(get_temp_reservation, owner_hash, str(meta["id"]))
             charged_units = int(reservation.get("units") or 0)
+            charged_video_units = int(reservation.get("video_units") or 0)
             if user_id and reservation:
                 free_used = bool(reservation.get("free"))
                 await _storage_call(
@@ -998,7 +1001,7 @@ async def _create_scheduled_batch_task(claim: dict[str, object]) -> str:
                     0 if free_used else -charged_units,
                     "视频额度任务消费" if free_used else "视频任务消费",
                     balance_units=reserved_access.credit_units,
-                    video_quota_change=-1 if free_used else 0,
+                    video_quota_change=-units_to_points(charged_video_units) if free_used else 0,
                     video_quota_balance=reserved_access.free_remaining,
                     reference_id=str(meta["id"]),
                     detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
@@ -1551,6 +1554,7 @@ def _client_access_payload(access: AccessContext) -> dict:
         "task_retention_days": access.task_retention_days,
         "billing_priority": access.billing_priority,
         "model_discounts": user_model_discounts_by_token_hash(access.token_hash),
+        "model_quota_discounts": user_model_quota_discounts_by_token_hash(access.token_hash),
         "user_name": user_name,
     }
 
@@ -1850,7 +1854,7 @@ async def points_redeem(request: Request, access: Annotated[AccessContext, Depen
             int(card.get("points_units") or 0),
             "积分充值",
             balance_units=int(balance.get("credit_units") or 0),
-            video_quota_balance=int(balance.get("free_remaining") or 0),
+            video_quota_balance=balance.get("free_remaining") or 0,
             reference_id=str(card.get("id") or ""),
         )
         await _record_activity_safe(str(user.get("id") or ""), "points_redeem", "使用卡密充值积分", reference_id=str(card.get("id") or ""), detail=f"充值 {card.get('points', 0)} 积分")
@@ -1889,7 +1893,7 @@ async def purchase_membership(package_id: str, access: Annotated[AccessContext, 
             f"购买会员：{package.get('name')}",
             balance_units=int(balance.get("credit_units") or 0),
             video_quota_change=int(package.get("bonus_free_uses") or 0),
-            video_quota_balance=int(balance.get("free_remaining") or 0),
+            video_quota_balance=balance.get("free_remaining") or 0,
             reference_id=str(package.get("id") or ""),
             detail=f"有效期 {package.get('duration_days')} 天 / 并发 {package.get('concurrency')} / 赠送视频额度 {package.get('bonus_free_uses')}",
         )
@@ -2538,19 +2542,27 @@ async def user_details(user_id: str):
     owner_hash = hash_token(str(user.get("token") or "")) if user.get("token") else ""
     tasks = await asyncio.to_thread(list_tasks, owner_hash) if owner_hash else []
     model_discounts = await asyncio.to_thread(user_model_discounts_by_token_hash, owner_hash) if owner_hash else {}
+    model_quota_discounts = await asyncio.to_thread(user_model_quota_discounts_by_token_hash, owner_hash) if owner_hash else {}
     settings = load_settings()
     model_discount_catalog = []
     for platform in PLATFORM_LABELS:
         models = []
         platform_discounts = model_discounts.get(platform, {})
+        platform_quota_discounts = model_quota_discounts.get(platform, {})
         for model in settings.platform_models.get(platform, []):
             discount = next((value for name, value in platform_discounts.items() if name.casefold() == model.casefold()), 0)
+            quota_discount = next((value for name, value in platform_quota_discounts.items() if name.casefold() == model.casefold()), 0)
             models.append({
                 "name": model,
                 "enabled": settings.platform_model_states.get(platform, {}).get(model, True),
                 "discount": discount,
+                "quota_discount": quota_discount,
                 "duration_costs": {
                     str(duration): model_cost_points(platform, model, duration=duration)
+                    for duration in PLATFORM_VIDEO_DURATIONS[platform]
+                },
+                "duration_quota_costs": {
+                    str(duration): model_video_quota_cost(platform, model, duration=duration)
                     for duration in PLATFORM_VIDEO_DURATIONS[platform]
                 },
             })
@@ -2570,6 +2582,7 @@ async def user_details(user_id: str):
         "activities": activities,
         "task_summary": task_summary,
         "model_discounts": model_discounts,
+        "model_quota_discounts": model_quota_discounts,
         "model_discount_catalog": model_discount_catalog,
     }
 
@@ -2578,10 +2591,14 @@ async def user_details(user_id: str):
 async def users_set_model_discounts(user_id: str, request: Request):
     payload = await _request_payload(request)
     raw_discounts = payload.get("discounts")
+    raw_quota_discounts = payload.get("quota_discounts")
     if not isinstance(raw_discounts, dict):
         raise HTTPException(status_code=400, detail="模型减免配置格式无效")
+    if raw_quota_discounts is not None and not isinstance(raw_quota_discounts, dict):
+        raise HTTPException(status_code=400, detail="模型视频额度减免配置格式无效")
     settings = load_settings()
     normalized: dict[str, dict[str, int | float]] = {}
+    normalized_quota: dict[str, dict[str, int | float]] = {}
     try:
         for raw_platform, raw_models in raw_discounts.items():
             platform = str(raw_platform or "").strip().lower()
@@ -2600,19 +2617,41 @@ async def users_set_model_discounts(user_id: str, request: Request):
             if platform_values:
                 normalized[platform] = platform_values
         saved = await asyncio.to_thread(set_user_model_discounts, user_id, normalized)
+        if raw_quota_discounts is None:
+            owner = next((item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == str(user_id)), None)
+            owner_hash = hash_token(str(owner.get("token") or "")) if owner and owner.get("token") else ""
+            quota_saved = await asyncio.to_thread(user_model_quota_discounts_by_token_hash, owner_hash) if owner_hash else {}
+        else:
+            for raw_platform, raw_models in raw_quota_discounts.items():
+                platform = str(raw_platform or "").strip().lower()
+                if platform not in PLATFORM_LABELS or not isinstance(raw_models, dict):
+                    raise ValueError("模型视频额度减免平台无效")
+                canonical_models = {item.casefold(): item for item in settings.platform_models.get(platform, [])}
+                platform_values: dict[str, int | float] = {}
+                for raw_model, raw_discount in raw_models.items():
+                    model = canonical_models.get(str(raw_model or "").strip().casefold())
+                    if not model:
+                        raise ValueError(f"{PLATFORM_LABELS.get(platform, platform)} 模型不存在")
+                    units = nonnegative_points_to_units(raw_discount)
+                    if units > 0:
+                        platform_values[model] = units_to_points(units)
+                if platform_values:
+                    normalized_quota[platform] = platform_values
+            quota_saved = await asyncio.to_thread(set_user_model_quota_discounts, user_id, normalized_quota)
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     configured_count = sum(len(models) for models in saved.values())
+    configured_quota_count = sum(len(models) for models in quota_saved.values())
     await _record_activity_safe(
         user_id,
         "admin_model_discount",
-        "管理员调整单模型积分减免",
-        detail=f"已设置 {configured_count} 个模型的单条视频积分减免",
+        "管理员调整单模型计费减免",
+        detail=f"已设置 {configured_count} 个模型积分减免、{configured_quota_count} 个模型视频额度减免",
         actor="admin",
     )
-    return {"ok": True, "discounts": saved}
+    return {"ok": True, "discounts": saved, "quota_discounts": quota_saved}
 
 
 @app.post("/users/{user_id}/points", dependencies=[Depends(require_admin)])
@@ -2623,10 +2662,7 @@ async def users_add_points(user_id: str, request: Request):
         raise HTTPException(status_code=400, detail="充值类型无效")
     try:
         if balance_type == "video_quota":
-            raw_amount = payload.get("amount")
-            amount = int(raw_amount)
-            if isinstance(raw_amount, bool) or amount <= 0 or isinstance(raw_amount, float) and not raw_amount.is_integer():
-                raise ValueError("视频额度充值数量必须是正整数")
+            amount = units_to_points(points_to_units(payload.get("amount")))
             credited = adjust_user_video_quota(user_id, amount)
             user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
             record_transaction(
@@ -2636,7 +2672,7 @@ async def users_add_points(user_id: str, request: Request):
                 "管理员充值视频额度",
                 balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
                 video_quota_change=amount,
-                video_quota_balance=int(user.get("free_remaining") or 0),
+                video_quota_balance=user.get("free_remaining") or 0,
             )
             await _record_activity_safe(user_id, "admin_video_quota_credit", "管理员充值视频额度", detail=f"增加 {amount} 次视频额度", actor="admin")
             return {"ok": True, "balance_type": balance_type, **credited}
@@ -2648,7 +2684,7 @@ async def users_add_points(user_id: str, request: Request):
             points_to_units(payload.get("amount")),
             "管理员充值",
             balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
-            video_quota_balance=int(user.get("free_remaining") or 0),
+            video_quota_balance=user.get("free_remaining") or 0,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -2667,10 +2703,7 @@ async def users_deduct_points(user_id: str, request: Request):
         raise HTTPException(status_code=400, detail="扣除类型无效")
     try:
         if balance_type == "video_quota":
-            raw_amount = payload.get("amount")
-            amount = int(raw_amount)
-            if isinstance(raw_amount, bool) or amount <= 0 or isinstance(raw_amount, float) and not raw_amount.is_integer():
-                raise ValueError("视频额度扣除数量必须是正整数")
+            amount = units_to_points(points_to_units(payload.get("amount")))
             deducted = adjust_user_video_quota(user_id, -amount)
             user = next(item for item in list_users(list_temp_tokens()) if str(item.get("id") or "") == user_id)
             record_transaction(
@@ -2680,7 +2713,7 @@ async def users_deduct_points(user_id: str, request: Request):
                 "管理员扣除视频额度",
                 balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
                 video_quota_change=-amount,
-                video_quota_balance=int(user.get("free_remaining") or 0),
+                video_quota_balance=user.get("free_remaining") or 0,
                 visible_to_client=visible_to_client,
             )
             visibility_detail = "用户端显示" if visible_to_client else "用户端隐藏"
@@ -2694,7 +2727,7 @@ async def users_deduct_points(user_id: str, request: Request):
             -points_to_units(payload.get("amount")),
             "管理员扣除",
             balance_units=points_to_units(user.get("points") or 0) if float(user.get("points") or 0) > 0 else 0,
-            video_quota_balance=int(user.get("free_remaining") or 0),
+            video_quota_balance=user.get("free_remaining") or 0,
             visible_to_client=visible_to_client,
         )
     except KeyError:
@@ -3410,6 +3443,13 @@ async def platforms_config():
                     }
                     for model in settings.platform_models.get(platform, [])
                 },
+                "model_duration_quota_costs": {
+                    model: {
+                        str(duration): model_video_quota_cost(platform, model, duration)
+                        for duration in PLATFORM_VIDEO_DURATIONS[platform]
+                    }
+                    for model in settings.platform_models.get(platform, [])
+                },
                 "supported_durations": list(PLATFORM_VIDEO_DURATIONS[platform]),
                 "all_models": [
                     {
@@ -3419,6 +3459,10 @@ async def platforms_config():
                         "durations": settings.model_durations.get(platform, {}).get(model, []),
                         "duration_costs": {
                             str(duration): model_cost_points(platform, model, duration=duration)
+                            for duration in PLATFORM_VIDEO_DURATIONS[platform]
+                        },
+                        "duration_quota_costs": {
+                            str(duration): model_video_quota_cost(platform, model, duration)
                             for duration in PLATFORM_VIDEO_DURATIONS[platform]
                         },
                     }
@@ -3640,11 +3684,14 @@ async def _create_compatible_video_task(
             base_cost_units = model_cost_units(platform, model, "video", duration)
             discount_units = await _storage_call(task_discount_units_by_token_hash, access.token_hash, platform, model) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
+            video_discount_units = await _storage_call(task_video_quota_discount_units_by_token_hash, access.token_hash, platform, model) if access.is_temp else 0
+            video_cost_units = max(1, model_video_quota_cost_units(platform, model, duration) - video_discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
-            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id, video_cost_units=video_cost_units)
             reservation = await _storage_call(get_temp_reservation, access.token_hash, str(meta["id"])) if access.is_temp else {}
             if user_id and reservation:
                 charged_units = int(reservation.get("units") or 0)
+                charged_video_units = int(reservation.get("video_units") or 0)
                 free_used = bool(reservation.get("free"))
                 await _storage_call(
                     record_transaction,
@@ -3653,7 +3700,7 @@ async def _create_compatible_video_task(
                     0 if free_used else -charged_units,
                     "视频额度任务消费" if free_used else "视频任务消费",
                     balance_units=reserved_access.credit_units,
-                    video_quota_change=-1 if free_used else 0,
+                    video_quota_change=-units_to_points(charged_video_units) if free_used else 0,
                     video_quota_balance=reserved_access.free_remaining,
                     reference_id=str(meta["id"]),
                     detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
@@ -3883,10 +3930,13 @@ async def openai_chat_completions(
         base_cost_units = model_cost_units(platform, model, task_type, duration)
         discount_units = task_discount_units_by_token_hash(access.token_hash, platform, model) if access.is_temp else 0
         cost_units = max(1, base_cost_units - discount_units)
+        video_discount_units = task_video_quota_discount_units_by_token_hash(access.token_hash, platform, model) if access.is_temp else 0
+        video_cost_units = max(1, model_video_quota_cost_units(platform, model, duration) - video_discount_units)
         user_id = _transaction_user_id(access)
-        reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id)
+        reserved_access = reserve_temp_quota(access, str(meta["id"]), cost_units, user_id=user_id, video_cost_units=video_cost_units)
         reservation = get_temp_reservation(access.token_hash, str(meta["id"])) if access.is_temp else {}
         charged_units = int(reservation.get("units") or 0)
+        charged_video_units = int(reservation.get("video_units") or 0)
         if user_id and reservation:
             free_used = bool(reservation.get("free"))
             record_transaction(
@@ -3895,7 +3945,7 @@ async def openai_chat_completions(
                 0 if free_used else -charged_units,
                 "视频额度任务消费" if free_used else "视频任务消费",
                 balance_units=reserved_access.credit_units,
-                video_quota_change=-1 if free_used else 0,
+                video_quota_change=-units_to_points(charged_video_units) if free_used else 0,
                 video_quota_balance=reserved_access.free_remaining,
                 reference_id=str(meta["id"]),
                 detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
@@ -3955,6 +4005,7 @@ async def update_platforms_config(request: Request):
     costs_by_platform: dict[str, dict[str, int | float]] = {platform: {} for platform in PLATFORM_LABELS}
     durations_by_platform: dict[str, dict[str, list[int]]] = {platform: {} for platform in PLATFORM_LABELS}
     duration_costs_by_platform: dict[str, dict[str, dict[str, int | float]]] = {platform: {} for platform in PLATFORM_LABELS}
+    duration_quota_costs_by_platform: dict[str, dict[str, dict[str, int | float]]] = {platform: {} for platform in PLATFORM_LABELS}
     for item in raw_platforms:
         if not isinstance(item, dict):
             continue
@@ -3983,17 +4034,24 @@ async def update_platforms_config(request: Request):
                 durations = [value for value in PLATFORM_VIDEO_DURATIONS[platform] if value in raw_durations]
                 raw_duration_costs = raw_model.get("duration_costs") if isinstance(raw_model.get("duration_costs"), dict) else {}
                 duration_costs: dict[str, int | float] = {}
+                raw_duration_quota_costs = raw_model.get("duration_quota_costs") if isinstance(raw_model.get("duration_quota_costs"), dict) else {}
+                duration_quota_costs: dict[str, int | float] = {}
                 for duration in PLATFORM_VIDEO_DURATIONS[platform]:
                     try:
                         duration_costs[str(duration)] = units_to_points(points_to_units(raw_duration_costs.get(str(duration), cost)))
                     except ValueError as exc:
                         raise HTTPException(status_code=400, detail=f"{platform} {model or '模型'} {duration} 秒: {exc}")
+                    try:
+                        duration_quota_costs[str(duration)] = units_to_points(points_to_units(raw_duration_quota_costs.get(str(duration), 1)))
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=f"{platform} {model or '模型'} {duration} 秒视频额度: {exc}")
             else:
                 model = normalize_model(str(raw_model or ""))
                 enabled = True
                 cost = model_cost_points(platform, model)
                 durations = list(PLATFORM_VIDEO_DURATIONS[platform])
                 duration_costs = {str(duration): model_cost_points(platform, model, duration=duration) for duration in durations}
+                duration_quota_costs = {str(duration): model_video_quota_cost(platform, model, duration=duration) for duration in durations}
             if not model or model in seen:
                 continue
             seen.add(model)
@@ -4002,10 +4060,11 @@ async def update_platforms_config(request: Request):
             costs_by_platform[platform][model] = cost
             durations_by_platform[platform][model] = durations
             duration_costs_by_platform[platform][model] = duration_costs
+            duration_quota_costs_by_platform[platform][model] = duration_quota_costs
     default_platform = str(payload.get("default_platform") or load_settings().default_platform)
     try:
         default_platform = normalize_platform(default_platform)
-        update_config({"default_platform": default_platform, "platform_models": models_by_platform, "platform_model_states": states_by_platform, "model_costs": costs_by_platform, "model_durations": durations_by_platform, "model_duration_costs": duration_costs_by_platform})
+        update_config({"default_platform": default_platform, "platform_models": models_by_platform, "platform_model_states": states_by_platform, "model_costs": costs_by_platform, "model_durations": durations_by_platform, "model_duration_costs": duration_costs_by_platform, "model_duration_quota_costs": duration_quota_costs_by_platform})
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return await platforms_config()
@@ -4275,6 +4334,28 @@ async def account_quota_config():
             for platform in PLATFORM_LABELS
         ],
     }
+
+
+@app.get("/config/account-selection", dependencies=[Depends(require_admin)])
+async def account_selection_config():
+    return {"mode": load_settings().account_selection_mode}
+
+
+@app.post("/config/account-selection", dependencies=[Depends(require_admin)])
+async def update_account_selection_config(request: Request):
+    payload = await _request_payload(request)
+    mode = str(payload.get("mode") or "").strip().lower()
+    labels = {"api_first": "API 账号优先", "admin_first": "普通账号优先", "random": "随机分配"}
+    if mode not in labels:
+        raise HTTPException(status_code=400, detail="账号分配模式无效")
+    update_config({"account_selection_mode": mode})
+    await _record_admin_action_safe(
+        "account_selection_setting",
+        "调整账号分配模式",
+        detail=labels[mode],
+        ip_address=_request_client_key(request),
+    )
+    return {"ok": True, "mode": mode}
 
 
 @app.post("/config/account-quotas", dependencies=[Depends(require_admin)])
@@ -5538,11 +5619,14 @@ async def submit_task(
             base_cost_units = model_cost_units(platform, model, task_type, duration)
             discount_units = await _storage_call(task_discount_units_by_token_hash, access.token_hash, platform, model) if access.is_temp else 0
             cost_units = max(1, base_cost_units - discount_units)
+            video_discount_units = await _storage_call(task_video_quota_discount_units_by_token_hash, access.token_hash, platform, model) if access.is_temp else 0
+            video_cost_units = max(1, model_video_quota_cost_units(platform, model, duration) - video_discount_units)
             user_id = await _storage_call(_transaction_user_id, access)
-            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id)
+            reserved_access = await _storage_call(reserve_temp_quota, access, str(meta["id"]), cost_units, user_id=user_id, video_cost_units=video_cost_units)
             _ensure_batch_active(access, batch_id)
             reservation = await _storage_call(get_temp_reservation, access.token_hash, str(meta["id"])) if access.is_temp else {}
             charged_units = int(reservation.get("units") or 0)
+            charged_video_units = int(reservation.get("video_units") or 0)
             if user_id and reservation:
                 free_used = bool(reservation.get("free"))
                 await _storage_call(
@@ -5552,7 +5636,7 @@ async def submit_task(
                     0 if free_used else -charged_units,
                     "视频额度任务消费" if free_used else "视频任务消费",
                     balance_units=reserved_access.credit_units,
-                    video_quota_change=-1 if free_used else 0,
+                    video_quota_change=-units_to_points(charged_video_units) if free_used else 0,
                     video_quota_balance=reserved_access.free_remaining,
                     reference_id=str(meta["id"]),
                     detail=f"任务 ID：{meta['id']}\n{PLATFORM_LABELS.get(platform, platform)} / {model}",
@@ -5733,6 +5817,16 @@ async def batch_prompt_status(
     return {"tasks": states}
 
 
+def _task_owner_names() -> dict[str, str]:
+    names = temp_token_remarks()
+    for user in list_users(list_temp_tokens()):
+        token = str(user.get("token") or "")
+        username = str(user.get("username") or "").strip()
+        if token and username:
+            names[hash_token(token)] = username
+    return names
+
+
 @app.get("/tasks", dependencies=[Depends(require_token)])
 async def all_tasks(
     access: Annotated[AccessContext, Depends(require_token)],
@@ -5747,7 +5841,7 @@ async def all_tasks(
         owner = access.token_hash if access.is_temp else None
         if page is None and page_size is None and q is None and status is None and platform is None:
             tasks = await asyncio.to_thread(
-                lambda: list_tasks(owner_token_hash=owner, owner_remarks=temp_token_remarks())
+                lambda: list_tasks(owner_token_hash=owner, owner_remarks=_task_owner_names())
             )
             if access.is_temp:
                 tasks = [item for item in tasks if not item.get("task_hidden_for_client")]
@@ -5759,7 +5853,7 @@ async def all_tasks(
         result = await asyncio.to_thread(
             lambda: list_tasks_page(
                 owner_token_hash=owner,
-                owner_remarks=temp_token_remarks(),
+                owner_remarks=_task_owner_names(),
                 audience="client" if access.is_temp else "admin",
                 page=page or 1,
                 page_size=effective_page_size,
@@ -6029,12 +6123,15 @@ async def _create_manual_retry_task(
             base_cost_units = model_cost_units(platform, model, task_type, duration)
             discount_units = await asyncio.to_thread(task_discount_units_by_token_hash, owner_hash, platform, model)
             cost_units = max(1, base_cost_units - discount_units)
+            video_discount_units = await asyncio.to_thread(task_video_quota_discount_units_by_token_hash, owner_hash, platform, model)
+            video_cost_units = max(1, model_video_quota_cost_units(platform, model, duration) - video_discount_units)
             user_id = _transaction_user_id(retry_access)
-            reserved_access = await asyncio.to_thread(reserve_temp_quota, retry_access, str(retry_meta["id"]), cost_units, user_id=user_id)
+            reserved_access = await asyncio.to_thread(reserve_temp_quota, retry_access, str(retry_meta["id"]), cost_units, user_id=user_id, video_cost_units=video_cost_units)
             reservation = await asyncio.to_thread(get_temp_reservation, owner_hash, str(retry_meta["id"]))
             if user_id and reservation:
                 free_used = bool(reservation.get("free"))
                 charged_units = int(reservation.get("units") or 0)
+                charged_video_units = int(reservation.get("video_units") or 0)
                 await asyncio.to_thread(
                     record_transaction,
                     user_id,
@@ -6042,7 +6139,7 @@ async def _create_manual_retry_task(
                     0 if free_used else -charged_units,
                     "视频额度任务消费" if free_used else "视频任务消费",
                     balance_units=reserved_access.credit_units,
-                    video_quota_change=-1 if free_used else 0,
+                    video_quota_change=-units_to_points(charged_video_units) if free_used else 0,
                     video_quota_balance=reserved_access.free_remaining,
                     reference_id=str(retry_meta["id"]),
                     detail=f"重试任务 ID：{retry_meta['id']}\n原任务 ID：{task_id}",
@@ -6077,6 +6174,8 @@ async def _create_manual_retry_task(
             )
         await asyncio.to_thread(update_meta, str(retry_meta["id"]), **retry_updates)
         await asyncio.to_thread(finalize_task_creation, str(retry_meta["id"]))
+        if str(original.get("status") or "") == "failed":
+            await asyncio.to_thread(delete_task, task_id)
     except QuotaExceeded as exc:
         if retry_meta:
             await asyncio.to_thread(delete_task, str(retry_meta["id"]))
@@ -6112,7 +6211,7 @@ async def bulk_retry_failed_tasks(
         result = await asyncio.to_thread(
             lambda: list_tasks_page(
                 owner_token_hash=None,
-                owner_remarks=temp_token_remarks(),
+                owner_remarks=_task_owner_names(),
                 audience="admin",
                 page=1,
                 page_size=limit,

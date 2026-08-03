@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.42" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.43" />
   </head>
   <body>
     <script>
@@ -697,6 +697,11 @@
                   <span class="slider">跳验证 <strong id="accountSliderVerificationCount">0</strong></span>
                   <span class="abnormal">异常 <strong id="accountAbnormalCount">0</strong></span>
                 </div>
+                <div class="segmented account-selection-control" id="accountSelectionMode" role="radiogroup" aria-label="账号分配模式">
+                  <button type="button" data-account-selection-mode="api_first" role="radio" aria-checked="true">API 优先</button>
+                  <button type="button" data-account-selection-mode="admin_first" role="radio" aria-checked="false">普通优先</button>
+                  <button type="button" data-account-selection-mode="random" role="radio" aria-checked="false">随机</button>
+                </div>
                 <input class="account-task-search" id="accountTaskSearch" type="search" placeholder="搜索正在执行任务 ID" />
                 <span class="quota-reset-countdown" id="accountResetCountdown">清零倒计时 --:--:--</span>
                 <button class="secondary-button icon-text-button" id="openAccountDeletionHistory" type="button"><i data-lucide="history" aria-hidden="true"></i>删除详情</button>
@@ -1205,7 +1210,7 @@
     </div>
     <div class="modal-backdrop hidden" id="modelModal" aria-hidden="true">
       <section class="modal-panel settings-model-modal" role="dialog" aria-modal="true" aria-labelledby="modelModalTitle">
-        <div class="modal-header model-modal-header"><div><h2 id="modelModalTitle">编辑生成模型</h2><p>按平台维护模型、可用时长与各时长积分，关闭后客户端将无法选择。</p></div><button class="modal-close" id="closeModelModal" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header model-modal-header"><div><h2 id="modelModalTitle">编辑生成模型</h2><p>按平台维护模型、可用时长，以及各时长积分和视频额度消耗。</p></div><button class="modal-close" id="closeModelModal" type="button" aria-label="关闭">×</button></div>
         <div class="model-config-list" id="modelConfigList"></div>
         <div class="modal-actions model-modal-actions"><button class="secondary-button" id="syncQianwenModels" type="button">同步三平台</button><span>更改仅在保存后生效</span><button class="secondary-button" id="cancelModelModal" type="button">取消</button><button class="primary-button" id="saveModelConfig" type="button">保存模型配置</button></div>
       </section>
@@ -1414,7 +1419,7 @@
         <div class="user-details-content">
           <div class="user-details-summary" id="userDetailsSummary"></div>
           <section class="user-model-discounts" aria-labelledby="userModelDiscountTitle">
-            <div class="user-details-heading"><h3 id="userModelDiscountTitle">单模型积分减免</h3><button class="primary-button" id="saveUserModelDiscounts" type="button"><i data-lucide="save" aria-hidden="true"></i><span>保存减免</span></button></div>
+            <div class="user-details-heading"><h3 id="userModelDiscountTitle">单模型积分与视频额度减免</h3><button class="primary-button" id="saveUserModelDiscounts" type="button"><i data-lucide="save" aria-hidden="true"></i><span>保存减免</span></button></div>
             <div class="user-model-discount-list" id="userModelDiscountList"></div>
           </section>
           <div class="user-details-columns">
@@ -1492,6 +1497,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.42"></script>
+    <script src="/admin/assets/app.js?v=1.10.43"></script>
   </body>
 </html>

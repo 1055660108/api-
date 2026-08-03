@@ -118,6 +118,36 @@ class ApiProxyPoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched, 2)
         await second.release()
 
+    async def test_transport_cooldown_temporarily_removes_endpoint_from_capacity(self) -> None:
+        fetched = 0
+
+        async def fetcher(api_url: str, *, timeout_seconds: int, scheme: str) -> dict[str, str]:
+            nonlocal fetched
+            fetched += 1
+            return {
+                "server": f"http://proxy-{fetched}.example:{18000 + fetched}",
+                "host_port": f"proxy-{fetched}.example:{18000 + fetched}",
+            }
+
+        async def probe(server: str, timeout: float) -> bool:
+            return True
+
+        pool = ReusableApiProxyPool(1, 1, fetch_min_interval_seconds=0, fetcher=fetcher, probe=probe)
+        first = await pool.acquire("https://proxy-api.example/get", timeout_seconds=20, scheme="http")
+        first.cooldown(60)
+        await first.release()
+
+        snapshot = pool.snapshot()
+        self.assertEqual(snapshot["available"], 0)
+        self.assertEqual(snapshot["slots"][0]["state"], "cooling")
+        self.assertGreater(snapshot["slots"][0]["cooldown_remaining_seconds"], 0)
+
+        first.slot.cooldown_until = 0
+        second = await pool.acquire("https://proxy-api.example/get", timeout_seconds=20, scheme="http")
+        self.assertEqual(second.node_id, first.node_id)
+        self.assertEqual(fetched, 1)
+        await second.release()
+
     async def test_parallel_refreshes_stagger_proxy_api_requests(self) -> None:
         started: list[float] = []
 

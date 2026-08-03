@@ -25,6 +25,7 @@ class _ApiProxySlot:
     invalid: bool = False
     total_leases: int = 0
     last_leased_at: float = 0.0
+    cooldown_until: float = 0.0
 
 
 class ApiProxyLease:
@@ -38,6 +39,12 @@ class ApiProxyLease:
 
     def invalidate(self) -> None:
         self.slot.invalid = True
+
+    def cooldown(self, seconds: float) -> None:
+        self.slot.cooldown_until = max(
+            self.slot.cooldown_until,
+            time.monotonic() + max(1.0, float(seconds)),
+        )
 
     async def release(self) -> None:
         if self._released:
@@ -94,15 +101,20 @@ class ReusableApiProxyPool:
         while True:
             create_endpoint = False
             refresh_wait_seconds = 0.0
+            endpoint_cooldown_wait_seconds = 0.0
             known_node_ids: set[str] = set()
             async with self._condition:
                 if self._stopping:
                     raise RuntimeError("api proxy pool is stopping")
                 self._slots = [slot for slot in self._slots if not (slot.invalid and slot.active == 0)]
+                now = time.monotonic()
                 candidates = [
                     slot
                     for slot in self._slots
-                    if not slot.invalid and slot.node_id not in excluded and slot.active < self.contexts_per_endpoint
+                    if not slot.invalid
+                    and slot.cooldown_until <= now
+                    and slot.node_id not in excluded
+                    and slot.active < self.contexts_per_endpoint
                 ]
                 if candidates:
                     minimum_active = min(slot.active for slot in candidates)
@@ -111,6 +123,15 @@ class ReusableApiProxyPool:
                     selected = self._lease_slot(selected_slot)
                     return ApiProxyLease(self, selected)
                 known_node_ids = {slot.node_id for slot in self._slots}
+                cooling_delays = [
+                    slot.cooldown_until - now
+                    for slot in self._slots
+                    if not slot.invalid
+                    and slot.node_id not in excluded
+                    and slot.active < self.contexts_per_endpoint
+                    and slot.cooldown_until > now
+                ]
+                endpoint_cooldown_wait_seconds = min(cooling_delays) if cooling_delays else 0.0
                 refresh_wait_seconds = max(0.0, self._refresh_not_before - time.monotonic())
                 if refresh_wait_seconds > 0:
                     pass
@@ -120,11 +141,16 @@ class ReusableApiProxyPool:
                 ):
                     self._launching += 1
                     create_endpoint = True
+                elif endpoint_cooldown_wait_seconds > 0:
+                    pass
                 else:
                     await self._condition.wait()
                     continue
             if refresh_wait_seconds > 0:
                 await asyncio.sleep(min(refresh_wait_seconds, 1.0))
+                continue
+            if endpoint_cooldown_wait_seconds > 0 and not create_endpoint:
+                await asyncio.sleep(min(endpoint_cooldown_wait_seconds, 1.0))
                 continue
             if not create_endpoint:
                 continue
@@ -240,11 +266,12 @@ class ReusableApiProxyPool:
             self._condition.notify_all()
 
     def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
         active = sum(slot.active for slot in self._slots)
         available = sum(
             max(0, self.contexts_per_endpoint - slot.active)
             for slot in self._slots
-            if not slot.invalid
+            if not slot.invalid and slot.cooldown_until <= now
         )
         return {
             "endpoint_limit": self.max_endpoints,
@@ -267,7 +294,16 @@ class ReusableApiProxyPool:
                     "active": slot.active,
                     "total_leases": slot.total_leases,
                     "last_leased_at": slot.last_leased_at,
-                    "state": "retiring" if slot.invalid else "active" if slot.active else "idle",
+                    "state": (
+                        "retiring"
+                        if slot.invalid
+                        else "cooling"
+                        if slot.cooldown_until > now
+                        else "active"
+                        if slot.active
+                        else "idle"
+                    ),
+                    "cooldown_remaining_seconds": round(max(0.0, slot.cooldown_until - now), 1),
                 }
                 for slot in sorted(self._slots, key=lambda item: (item.host_port, item.node_id))
             ],

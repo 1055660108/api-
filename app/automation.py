@@ -26,7 +26,6 @@ from .api_proxy_pool import ApiProxyLease, ReusableApiProxyPool
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
 from .proxy_manager import (
-    NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,
     acquire_dola_subscription_proxy,
     acquire_authenticated_socks_proxy,
     dola_proxy_available,
@@ -73,7 +72,11 @@ SUBMISSION_SECRET_RE = re.compile(
 FINAL_FAILURE_TEXT = "无法生成该视频，请尝试降低配置后重试。"
 SERVICE_FREQUENT_OBSERVE_SECONDS = 15.0
 SERVICE_FREQUENT_POLL_INTERVAL_MS = 500
+SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS = 3.0
+SERVICE_FREQUENT_INSPECTION_TIMEOUT_SECONDS = 20.0
+SERVICE_FREQUENT_RELOAD_TIMEOUT_SECONDS = 10.0
 SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
+PROXY_TRANSPORT_COOLDOWN_SECONDS = 60
 
 
 def dola_service_frequent_abnormal_outcome(state: str) -> dict[str, Any]:
@@ -243,6 +246,7 @@ except (TypeError, ValueError):
     PREPARE_UPLOAD_TIMEOUT_SECONDS = 60.0
 REFERENCE_IMAGE_UPLOAD_TIMEOUT_SECONDS = 120.0
 REFERENCE_IMAGE_UPLOAD_TRANSPORT_ATTEMPTS = 3
+PREPARE_UPLOAD_TRANSPORT_ATTEMPTS = 3
 REFERENCE_CACHE_WAIT_TIMEOUT_SECONDS = 130.0
 API_PROXY_CANDIDATE_LIMIT = 3
 API_PROXY_FETCH_LIMIT = 6
@@ -463,16 +467,31 @@ async ({body}) => {
     params.set("a_bogus", aBogus);
     requestUrl = `${location.origin}/alice/resource/prepare_upload?${params.toString()}`;
   }
-  const response = await fetch(requestUrl, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "accept": "application/json, text/plain, */*",
-      "agw-js-conv": "str",
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
+  let response;
+  try {
+    response = await fetch(requestUrl, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "accept": "application/json, text/plain, */*",
+        "agw-js-conv": "str",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      text: "",
+      json: null,
+      networkError: true,
+      errorName: String(error && error.name || "Error"),
+      errorMessage: String(error && error.message || error || "Failed to fetch"),
+      requestUrl,
+      pageUrl: String(location.href || "")
+    };
+  }
   const text = await response.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch (_) {}
@@ -921,6 +940,7 @@ class DolaFetchAutomation:
         api_proxy_pool: ReusableApiProxyPool | None = None,
         submission_pacer: Callable[[str], Awaitable[None]] | None = None,
         image_upload_slot: Callable[[], AsyncContextManager[None]] | None = None,
+        prepare_upload_slot: Callable[[], AsyncContextManager[None]] | None = None,
         image_preparation_done: Callable[[], None] | None = None,
         proxy_platform: str = "dola",
     ):
@@ -934,6 +954,7 @@ class DolaFetchAutomation:
         self.api_proxy_lease: ApiProxyLease | None = None
         self.submission_pacer = submission_pacer
         self.image_upload_slot = image_upload_slot
+        self.prepare_upload_slot = prepare_upload_slot
         self.image_preparation_done = image_preparation_done
         self.proxy_platform = str(proxy_platform or "dola").strip().lower()
         if self.proxy_platform not in {"dola", "doubao", "qianwen"}:
@@ -1088,6 +1109,9 @@ class DolaFetchAutomation:
     async def _inspect_service_frequent_account_state(self, page: Page, context: BrowserContext) -> dict[str, Any]:
         self._set_phase("checking_account_risk", "正在确认账号登录和滑块状态")
 
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SERVICE_FREQUENT_INSPECTION_TIMEOUT_SECONDS
+
         async def inspect_pages(stage: str) -> dict[str, Any]:
             pages = [page]
             for candidate in list(getattr(context, "pages", []) or []):
@@ -1097,12 +1121,20 @@ class DolaFetchAutomation:
             errors: list[str] = []
             for candidate in pages:
                 try:
-                    value = await candidate.evaluate(SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT)
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    value = await asyncio.wait_for(
+                        candidate.evaluate(SERVICE_FREQUENT_ACCOUNT_STATE_SCRIPT),
+                        timeout=min(SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS, remaining),
+                    )
                     if not isinstance(value, dict):
                         raise RuntimeError("invalid inspection result")
                     value = dict(value)
                     value["inspectionStage"] = stage
                     snapshots.append(value)
+                except asyncio.TimeoutError:
+                    errors.append(f"TimeoutError: risk inspection {stage} exceeded the per-check deadline")
                 except Exception as exc:
                     errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
             selected = next((item for item in snapshots if bool(item.get("sliderVerification"))), None)
@@ -1131,7 +1163,9 @@ class DolaFetchAutomation:
                 round(SERVICE_FREQUENT_OBSERVE_SECONDS * 1000 / SERVICE_FREQUENT_POLL_INTERVAL_MS),
             )
             for _ in range(checks):
-                await page.wait_for_timeout(SERVICE_FREQUENT_POLL_INTERVAL_MS)
+                if loop.time() >= deadline:
+                    break
+                await asyncio.sleep(SERVICE_FREQUENT_POLL_INTERVAL_MS / 1000.0)
                 snapshot = await inspect_pages("observing")
                 current_signature = (
                     str(snapshot.get("href") or ""),
@@ -1151,21 +1185,44 @@ class DolaFetchAutomation:
             and not bool(snapshot.get("loginInvalid"))
             and not bool(snapshot.get("pageChanged"))
         ):
-            try:
-                await page.reload(wait_until="domcontentloaded", timeout=30000)
-            except Exception as exc:
-                snapshot["inspectionError"] = f"reload: {type(exc).__name__}: {str(exc)[:220]}"
-            await page.wait_for_timeout(2000)
-            refreshed = await inspect_pages("after_reload")
-            if (
-                bool(refreshed.get("sliderVerification"))
-                or bool(refreshed.get("loginInvalid"))
-                or not bool(refreshed.get("inspectionFailed"))
-            ):
-                snapshot = refreshed
+            remaining = deadline - loop.time()
+            if remaining > 0:
+                try:
+                    await page.reload(
+                        wait_until="domcontentloaded",
+                        timeout=max(1, int(min(SERVICE_FREQUENT_RELOAD_TIMEOUT_SECONDS, remaining) * 1000)),
+                    )
+                except Exception as exc:
+                    snapshot["inspectionError"] = f"reload: {type(exc).__name__}: {str(exc)[:220]}"
+                remaining = deadline - loop.time()
+                if remaining > 0:
+                    await asyncio.sleep(min(2.0, remaining))
+                    refreshed = await inspect_pages("after_reload")
+                    if (
+                        bool(refreshed.get("sliderVerification"))
+                        or bool(refreshed.get("loginInvalid"))
+                        or not bool(refreshed.get("inspectionFailed"))
+                    ):
+                        snapshot = refreshed
+            else:
+                snapshot["inspectionError"] = str(
+                    snapshot.get("inspectionError") or "risk inspection exceeded the total deadline"
+                )[:300]
         cookies_checked = True
         try:
-            current_cookies = await context.cookies()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            current_cookies = await asyncio.wait_for(
+                context.cookies(),
+                timeout=min(SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS, remaining),
+            )
+        except asyncio.TimeoutError:
+            cookies_checked = False
+            current_cookies = []
+            snapshot["inspectionError"] = str(
+                snapshot.get("inspectionError") or "risk inspection cookie check timed out"
+            )[:300]
         except Exception as exc:
             cookies_checked = False
             current_cookies = []
@@ -1239,6 +1296,20 @@ class DolaFetchAutomation:
         if not self.proxy_node_id and self.active_proxy_source != "account":
             mark_proxy_source_unavailable(self.active_proxy_source)
 
+    def _cooldown_active_proxy_transport(self) -> None:
+        if self.active_proxy_source == "api":
+            self._remember_failed_proxy_node()
+            if getattr(self, "api_proxy_lease", None) is not None:
+                self.api_proxy_lease.cooldown(PROXY_TRANSPORT_COOLDOWN_SECONDS)
+            return
+        if self.proxy_node_id:
+            mark_node_unavailable(
+                self.proxy_node_id,
+                reason="transport_failure",
+                cooldown_seconds=PROXY_TRANSPORT_COOLDOWN_SECONDS,
+            )
+            self._remember_failed_proxy_node()
+
     def _record_active_gateway_failure(self, status: int) -> None:
         if not self.proxy_node_id:
             return
@@ -1310,7 +1381,6 @@ class DolaFetchAutomation:
                         "reason": "",
                         "confirmation_pending": confirmation_pending,
                     }
-            self._mark_active_proxy_unavailable()
             self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_timeout"})
             return {"success": False, "retryable": True, "reason": "browser timeout", "infrastructure_fault": True}
         except ReferenceUploadCapacityError as exc:
@@ -1353,12 +1423,12 @@ class DolaFetchAutomation:
             if reference_upload_failure:
                 reference_transport_failure = "timed out" in reason.lower() or is_proxy_transport_failure(reason)
                 direct_upload_failure = "direct image upload transport failure" in reason.lower()
-                if self.active_proxy_source == "api" and reference_transport_failure and not direct_upload_failure:
-                    self._mark_active_proxy_unavailable(reason="reference_upload_timeout")
+                if reference_transport_failure and not direct_upload_failure:
+                    self._cooldown_active_proxy_transport()
                 self._save_result(extra={"submit_error_category": "reference_upload", "submit_phase": "uploading_references", "reference_upload_error": reason})
             elif infrastructure_fault:
                 if is_proxy_transport_failure(reason):
-                    self._mark_active_proxy_unavailable()
+                    self._cooldown_active_proxy_transport()
                 self._save_result(extra={"submit_error_category": "infrastructure", "submit_phase": "browser_or_proxy_setup"})
                 if self.active_proxy_source == "api" and is_proxy_transport_failure(reason):
                     return {
@@ -1595,10 +1665,20 @@ class DolaFetchAutomation:
                             "account_login_invalid": True,
                             "switch_account": True,
                         }
-                    self._mark_active_proxy_unavailable(
-                        cooldown_seconds=NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS,
-                        reason="service_frequent",
-                    )
+                    if account_state["state"] == "inspection_failed":
+                        self._cooldown_active_proxy_transport()
+                        release_task_submission(self.task_id)
+                        self._save_result(extra={
+                            "submit_error_category": "risk_inspection_timeout",
+                            "submit_phase": "service_frequent_account_check",
+                        })
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": "risk inspection transport timeout",
+                            "infrastructure_fault": True,
+                        }
+                    self._remember_failed_proxy_node()
                     release_task_submission(self.task_id)
                     self._save_result(extra={"submit_error_category": "service_frequent", "submit_phase": "submission_response"})
                     return dola_service_frequent_abnormal_outcome(account_state["state"])
@@ -1955,24 +2035,64 @@ class DolaFetchAutomation:
         return ".jpeg~" in url or ".jpeg?" in url or url.endswith(".jpeg") or ".jpg~" in url or ".jpg?" in url or url.endswith(".jpg")
 
     async def _prepare_image_upload(self, page: Page) -> dict[str, Any]:
-        try:
-            result = await asyncio.wait_for(
-                page.evaluate(PREPARE_UPLOAD_SCRIPT, {"body": PREPARE_UPLOAD_BODY}),
-                timeout=PREPARE_UPLOAD_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError("prepare_upload timed out") from exc
-        if not isinstance(result, dict):
-            raise RuntimeError("prepare_upload returned invalid response")
-        if not result.get("ok"):
-            raise RuntimeError(f"prepare_upload failed with HTTP {result.get('status')}: {str(result.get('text') or '')[:500]}")
-        data = result.get("json")
-        if not isinstance(data, dict) or data.get("code") != 0:
-            raise RuntimeError(f"prepare_upload returned unexpected body: {str(result.get('text') or data)[:500]}")
-        upload_config = data.get("data")
-        if not isinstance(upload_config, dict):
-            raise RuntimeError("prepare_upload did not return upload config")
-        return upload_config
+        last_transport_error = ""
+        attempts = max(1, int(PREPARE_UPLOAD_TRANSPORT_ATTEMPTS))
+        for attempt in range(1, attempts + 1):
+            try:
+                if self.prepare_upload_slot is not None:
+                    async with self.prepare_upload_slot():
+                        result = await asyncio.wait_for(
+                            page.evaluate(PREPARE_UPLOAD_SCRIPT, {"body": PREPARE_UPLOAD_BODY}),
+                            timeout=PREPARE_UPLOAD_TIMEOUT_SECONDS,
+                        )
+                else:
+                    result = await asyncio.wait_for(
+                        page.evaluate(PREPARE_UPLOAD_SCRIPT, {"body": PREPARE_UPLOAD_BODY}),
+                        timeout=PREPARE_UPLOAD_TIMEOUT_SECONDS,
+                    )
+            except asyncio.TimeoutError:
+                last_transport_error = "prepare_upload timed out"
+            except Exception as exc:
+                detail = exception_reason(exc)
+                if not is_proxy_transport_failure(detail):
+                    raise
+                last_transport_error = detail
+            else:
+                if not isinstance(result, dict):
+                    raise RuntimeError("prepare_upload returned invalid response")
+                if result.get("networkError"):
+                    error_name = str(result.get("errorName") or "Error")
+                    error_message = str(result.get("errorMessage") or "Failed to fetch")
+                    last_transport_error = f"{error_name}: {error_message}"[:500]
+                elif not result.get("ok"):
+                    raise RuntimeError(
+                        f"prepare_upload failed with HTTP {result.get('status')}: {str(result.get('text') or '')[:500]}"
+                    )
+                else:
+                    data = result.get("json")
+                    if not isinstance(data, dict) or data.get("code") != 0:
+                        raise RuntimeError(f"prepare_upload returned unexpected body: {str(result.get('text') or data)[:500]}")
+                    upload_config = data.get("data")
+                    if not isinstance(upload_config, dict):
+                        raise RuntimeError("prepare_upload did not return upload config")
+                    self._save_result(extra={
+                        "reference_upload_prepare_attempts": attempt,
+                        "reference_upload_prepare_recovered": attempt > 1,
+                        "reference_upload_prepare_error": "",
+                    })
+                    return upload_config
+
+            self._save_result(extra={
+                "reference_upload_prepare_attempts": attempt,
+                "reference_upload_prepare_recovered": False,
+                "reference_upload_prepare_error": last_transport_error,
+            })
+            if attempt < attempts:
+                await asyncio.sleep(1.5 * attempt)
+
+        raise RuntimeError(
+            f"prepare_upload transport failure after {attempts} attempts: {last_transport_error or 'transport error'}"
+        )
 
     async def _upload_one_image_by_fetch(self, page: Page, image_path: Path) -> dict[str, Any]:
         buffer = image_path.read_bytes()

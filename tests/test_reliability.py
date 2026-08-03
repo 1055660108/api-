@@ -1108,7 +1108,8 @@ class ReliabilityTests(unittest.TestCase):
             )
             cookie_reader = AsyncMock(side_effect=cookies) if isinstance(cookies, Exception) else AsyncMock(return_value=cookies)
             context = SimpleNamespace(cookies=cookie_reader)
-            return await runner._inspect_service_frequent_account_state(page, context)
+            with patch("app.automation.asyncio.sleep", new=AsyncMock()):
+                return await runner._inspect_service_frequent_account_state(page, context)
 
         slider = asyncio.run(inspect({"sliderVerification": True, "loginInvalid": False, "href": "https://www.dola.com/chat", "bodyText": "请完成验证"}, [{"name": "sessionid"}]))
         login = asyncio.run(inspect({"sliderVerification": False, "loginInvalid": False, "href": "https://www.dola.com/chat", "bodyText": ""}, []))
@@ -1206,11 +1207,12 @@ class ReliabilityTests(unittest.TestCase):
             cookies=AsyncMock(return_value=[{"name": "sessionid"}]),
         )
 
-        outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
+        with patch("app.automation.asyncio.sleep", new=AsyncMock()) as sleep:
+            outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
 
         self.assertEqual(outcome["state"], "slider_verification")
         self.assertEqual(outcome["inspection_stage"], "observing")
-        page.wait_for_timeout.assert_awaited_once_with(500)
+        sleep.assert_awaited_once_with(0.5)
         page.reload.assert_not_awaited()
 
     def test_service_frequent_preserves_a_page_that_changes_while_waiting(self) -> None:
@@ -1248,13 +1250,14 @@ class ReliabilityTests(unittest.TestCase):
             cookies=AsyncMock(return_value=[{"name": "sessionid"}]),
         )
 
-        outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
+        with patch("app.automation.asyncio.sleep", new=AsyncMock()) as sleep:
+            outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
 
         self.assertEqual(outcome["state"], "service_frequent")
         self.assertEqual(outcome["inspection_stage"], "observing")
         self.assertTrue(outcome["page_changed"])
-        self.assertEqual(page.wait_for_timeout.await_count, 30)
-        self.assertTrue(all(item.args == (500,) for item in page.wait_for_timeout.await_args_list))
+        self.assertEqual(sleep.await_count, 30)
+        self.assertTrue(all(item.args == (0.5,) for item in sleep.await_args_list))
         page.reload.assert_not_awaited()
 
     def test_service_frequent_detects_login_loss_during_observation(self) -> None:
@@ -1289,11 +1292,12 @@ class ReliabilityTests(unittest.TestCase):
             cookies=AsyncMock(return_value=[]),
         )
 
-        outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
+        with patch("app.automation.asyncio.sleep", new=AsyncMock()) as sleep:
+            outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
 
         self.assertEqual(outcome["state"], "login_invalid")
         self.assertEqual(outcome["inspection_stage"], "observing")
-        page.wait_for_timeout.assert_awaited_once_with(500)
+        sleep.assert_awaited_once_with(0.5)
         page.reload.assert_not_awaited()
 
     def test_login_invalid_retry_disables_and_switches_account(self) -> None:
@@ -1425,7 +1429,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(outcome["retryable"])
         self.assertTrue(outcome["infrastructure_fault"])
         self.assertEqual(outcome["reason"], "browser timeout")
-        mark_proxy.assert_called_once_with()
+        mark_proxy.assert_not_called()
 
     def test_browser_timeout_after_conversation_id_keeps_submission(self) -> None:
         task = self.create_task("owner")
@@ -1514,10 +1518,10 @@ class ReliabilityTests(unittest.TestCase):
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
         reason = "[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error"
         runner._run_once = AsyncMock(side_effect=RuntimeError(reason))
-        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+        with patch.object(runner, "_cooldown_active_proxy_transport") as cooldown_proxy:
             outcome = asyncio.run(runner.run())
         self.assertTrue(outcome["infrastructure_fault"])
-        mark_proxy.assert_called_once_with()
+        cooldown_proxy.assert_called_once_with()
 
     def test_ambiguous_submission_retry_does_not_consume_generation_budget(self) -> None:
         task = self.create_task("owner")
@@ -1794,12 +1798,12 @@ class ReliabilityTests(unittest.TestCase):
         runner._run_once = AsyncMock(
             side_effect=RuntimeError("direct image upload transport failure after 3 attempts: WriteTimeout")
         )
-        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+        with patch.object(runner, "_cooldown_active_proxy_transport") as cooldown_proxy:
             outcome = asyncio.run(runner.run())
 
         self.assertTrue(outcome["retryable"])
         self.assertTrue(outcome["infrastructure_fault"])
-        mark_proxy.assert_not_called()
+        cooldown_proxy.assert_not_called()
 
     def test_prepare_upload_timeout_is_reported_as_reference_upload_failure(self) -> None:
         async def hanging_evaluate(*_args):
@@ -1815,6 +1819,61 @@ class ReliabilityTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_prepare_upload_retries_page_transport_failures_in_current_browser(self) -> None:
+        page = SimpleNamespace(evaluate=AsyncMock(side_effect=[
+            {
+                "ok": False,
+                "status": 0,
+                "networkError": True,
+                "errorName": "TypeError",
+                "errorMessage": "Failed to fetch",
+            },
+            {
+                "ok": False,
+                "status": 0,
+                "networkError": True,
+                "errorName": "TypeError",
+                "errorMessage": "Failed to fetch",
+            },
+            {
+                "ok": True,
+                "status": 200,
+                "json": {"code": 0, "data": {"service_id": "service", "upload_auth_token": {}}},
+            },
+        ]))
+
+        async def exercise() -> dict:
+            runner = DolaFetchAutomation("missing-task", "prompt", "9:16")
+            with patch("app.automation.asyncio.sleep", new=AsyncMock()) as sleep:
+                result = await runner._prepare_image_upload(page)
+            self.assertEqual([item.args for item in sleep.await_args_list], [(1.5,), (3.0,)])
+            return result
+
+        result = asyncio.run(exercise())
+        self.assertEqual(result["service_id"], "service")
+        self.assertEqual(page.evaluate.await_count, 3)
+
+    def test_service_frequent_page_evaluation_timeout_is_bounded(self) -> None:
+        async def hanging_evaluate(*_args):
+            await asyncio.Event().wait()
+
+        task = self.create_task("risk-inspection-timeout")
+        runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
+        page = SimpleNamespace(
+            url="https://www.dola.com/chat/local_test",
+            evaluate=AsyncMock(side_effect=hanging_evaluate),
+            reload=AsyncMock(),
+        )
+        context = SimpleNamespace(pages=[page], cookies=AsyncMock(return_value=[]))
+
+        with patch.object(automation, "SERVICE_FREQUENT_EVALUATE_TIMEOUT_SECONDS", 0.01), patch.object(
+            automation, "SERVICE_FREQUENT_INSPECTION_TIMEOUT_SECONDS", 0.05
+        ), patch.object(automation, "SERVICE_FREQUENT_POLL_INTERVAL_MS", 1):
+            outcome = asyncio.run(runner._inspect_service_frequent_account_state(page, context))
+
+        self.assertEqual(outcome["state"], "inspection_failed")
+        self.assertIn("TimeoutError", outcome["inspection_error"])
+
     def test_reference_upload_timeout_uses_infrastructure_retry_budget(self) -> None:
         task = self.create_task("owner-reference-infrastructure")
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
@@ -1829,24 +1888,24 @@ class ReliabilityTests(unittest.TestCase):
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
         runner.active_proxy_source = "api"
         runner._run_once = AsyncMock(side_effect=RuntimeError("prepare_upload timed out"))
-        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+        with patch.object(runner, "_cooldown_active_proxy_transport") as cooldown_proxy:
             outcome = asyncio.run(runner.run())
         self.assertTrue(outcome["retryable"])
         self.assertTrue(outcome["infrastructure_fault"])
         self.assertFalse(outcome.get("defer_only", False))
-        mark_proxy.assert_called_once_with(reason="reference_upload_timeout")
+        cooldown_proxy.assert_called_once_with()
 
     def test_navigation_timeout_is_a_proxy_transport_failure(self) -> None:
         task = self.create_task("owner-navigation-timeout")
         runner = DolaFetchAutomation(task["id"], "prompt", "9:16")
         runner.active_proxy_source = "api"
         runner._run_once = AsyncMock(side_effect=RuntimeError("Page.goto: net::ERR_TIMED_OUT"))
-        with patch.object(runner, "_mark_active_proxy_unavailable") as mark_proxy:
+        with patch.object(runner, "_cooldown_active_proxy_transport") as cooldown_proxy:
             outcome = asyncio.run(runner.run())
         self.assertTrue(outcome["infrastructure_fault"])
         self.assertTrue(outcome["defer_only"])
         self.assertEqual(outcome["defer_category"], "proxy_refresh")
-        mark_proxy.assert_called_once_with()
+        cooldown_proxy.assert_called_once_with()
 
     def test_reference_attachment_cache_coalesces_concurrent_uploads(self) -> None:
         automation.clear_reference_attachment_cache()

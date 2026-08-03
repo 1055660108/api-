@@ -79,6 +79,7 @@ RESULT_POLL_BASE_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_POLL_INTERVAL_
 RESULT_WATCH_INTERVAL_SECONDS = _bounded_env_int("DOLA_RESULT_WATCH_INTERVAL_SECONDS", 5, 2, 60)
 IMAGE_SUBMISSION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_UPLOAD_CONCURRENCY", 10, 1, 16)
 IMAGE_PREPARATION_CONCURRENCY = _bounded_env_int("DOLA_IMAGE_PREPARE_CONCURRENCY", 10, 1, 24)
+PREPARE_UPLOAD_CONCURRENCY = _bounded_env_int("DOLA_PREPARE_UPLOAD_CONCURRENCY", 5, 1, 10)
 IMAGE_UPLOAD_SLOT_WAIT_SECONDS = _bounded_env_int("DOLA_IMAGE_UPLOAD_SLOT_WAIT_SECONDS", 20, 5, 120)
 API_PROXY_REFRESH_CONCURRENCY = _bounded_env_int("DOLA_API_PROXY_REFRESH_CONCURRENCY", 2, 1, 4)
 
@@ -160,6 +161,8 @@ class WorkerManager:
         self._doubao_submit_lock = asyncio.Lock()
         self._last_doubao_submit_at = 0.0
         self._image_submission_semaphore = asyncio.Semaphore(IMAGE_SUBMISSION_CONCURRENCY)
+        self._prepare_upload_semaphore = asyncio.Semaphore(PREPARE_UPLOAD_CONCURRENCY)
+        self._prepare_upload_active = 0
         self._image_submission_condition = asyncio.Condition()
         self._image_submission_active = 0
         self._image_submission_reservations: dict[str, str] = {}
@@ -295,6 +298,8 @@ class WorkerManager:
             "image_upload_active": self._image_submission_active,
             "image_upload_concurrency": IMAGE_SUBMISSION_CONCURRENCY,
             "image_upload_reserved": len(self._image_submission_reservations),
+            "prepare_upload_active": self._prepare_upload_active,
+            "prepare_upload_concurrency": PREPARE_UPLOAD_CONCURRENCY,
             "image_preparation_claimed": len(self._claimed_image_preparations),
             "image_preparation_claim_limit": IMAGE_PREPARATION_CONCURRENCY,
             # Retain the old fields for deployment dashboards during the rename.
@@ -727,6 +732,15 @@ class WorkerManager:
         self._claimed_image_preparations.pop(str(task_id or ""), None)
 
     @asynccontextmanager
+    async def _prepare_upload_slot(self):
+        async with self._prepare_upload_semaphore:
+            self._prepare_upload_active += 1
+            try:
+                yield
+            finally:
+                self._prepare_upload_active = max(0, self._prepare_upload_active - 1)
+
+    @asynccontextmanager
     async def _image_upload_slot(self, task_id: str, owner: str):
         normalized_owner = str(owner or "")
         reserved = False
@@ -981,6 +995,7 @@ class WorkerManager:
                         image_upload_slot=(
                             lambda current_task_id=task_id, current_owner=candidate_owner: self._image_upload_slot(current_task_id, current_owner)
                         ) if is_image_submission else None,
+                        prepare_upload_slot=self._prepare_upload_slot if is_image_submission else None,
                         image_preparation_done=(
                             lambda current_task_id=task_id: self._release_image_preparation(current_task_id)
                         ) if is_image_submission else None,

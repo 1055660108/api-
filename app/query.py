@@ -60,6 +60,8 @@ REFERENCE_IMAGE_INVALID_TEXT = "参考图异常，请重试！"
 REFERENCE_REAL_PERSON_REQUIRED_TEXT = "请选择勾选真人按钮并重试"
 PORTRAIT_PROTECTION_RETRY_TEXT = "参考图触发肖像保护，正在更换账号重试"
 TEN_SECOND_LIMIT_TEXT = "Currently generating videos longer than 10 seconds is not supported, do you want to continue generating for you?"
+DOLA_SAME_ACCOUNT_RETRY_TEXT = "视频生成失败，生成额度未扣除。"
+DOLA_SAME_ACCOUNT_RETRY_PREFIX = "再次生成 "
 DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
     "video_current_src",
     "source_src",
@@ -147,6 +149,13 @@ class DolaQueryError(RuntimeError):
 def is_generation_failure_text(text: str) -> bool:
     value = str(text or "")
     return any(marker in value for marker in FAILURE_TEXT_MARKERS)
+
+
+def dola_same_account_retry_prompt(prompt: str) -> str:
+    value = str(prompt or "").strip()
+    if value.startswith(DOLA_SAME_ACCOUNT_RETRY_PREFIX):
+        return value
+    return f"{DOLA_SAME_ACCOUNT_RETRY_PREFIX}{value}".strip()
 
 
 def is_account_login_invalid(text: str) -> bool:
@@ -1282,6 +1291,28 @@ async def _query_task_once(
         meta = get_meta(task_id)
         refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
         return {"code": "0", "text": "多个账号额度均不足，请稍后重试", "url": ""}
+    if text.strip() == DOLA_SAME_ACCOUNT_RETRY_TEXT:
+        if account_id:
+            clear_account_current_task(account_id, task_id)
+            refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
+        update_meta(
+            task_id,
+            prompt=dola_same_account_retry_prompt(str(meta.get("prompt") or "")),
+            preferred_account_id=account_id,
+        )
+        retry_count = retry_submitted_task(
+            task_id,
+            DOLA_SAME_ACCOUNT_RETRY_TEXT,
+            max_retries=retry_limit,
+            delay_seconds=10,
+        )
+        if retry_count > retry_limit:
+            meta = get_meta(task_id)
+            mark_failed(task_id, "多次生成失败")
+            refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+            return {"code": "0", "text": "多次生成失败", "url": ""}
+        clear_transient_result(task_id)
+        return {"code": "1", "text": RETRY_GENERATING_TEXT, "url": ""}
     if is_generation_failure_text(text):
         if is_suspected_policy_false_positive(text):
             if account_id:

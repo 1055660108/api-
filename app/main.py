@@ -1613,6 +1613,16 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
     return text
 
 
+def _client_active_task_text(meta: dict[str, Any]) -> str:
+    if str(meta.get("platform") or "").strip().lower() != "doubao":
+        return ""
+    status = str(meta.get("status") or "").strip().lower()
+    if status not in {"pending", "running", "submitted"}:
+        return ""
+    model = str(meta.get("model") or "豆包模型").strip() or "豆包模型"
+    return f"{model}生成中" if status == "submitted" else f"{model}正在接入"
+
+
 def _frontend_task_stats(stats: dict[str, Any], *, client: bool) -> dict[str, Any]:
     safe = dict(stats or {})
     combined: dict[str, int] = {}
@@ -1642,6 +1652,10 @@ def _client_task(task: dict) -> dict:
     ):
         safe["error"] = "服务繁忙正在重试！" if service_frequent else "正在重试中，请稍等！"
         safe["status_reason"] = "服务繁忙正在重试！" if service_frequent else str(safe.get("status_reason") or "正在重试中，请稍等！")
+    active_text = _client_active_task_text(safe)
+    if active_text:
+        safe["status_reason"] = active_text
+        safe["error"] = ""
     for key in ("failed_account_ids", "failed_proxy_node_ids", "proxy_retry_avoid_node_id", "account_id", "owner_token_hash", "worker_id", "platform", "execution_phase", "phase_updated_at", "infrastructure_error", "attempt_history", "last_attempt_error", "last_attempt_kind", "last_attempt_at", "reference_upload_cache_bypass", "reference_face_detection_completed", "reference_face_count", "reference_face_processing_errors", "portrait_protection_retry_count", "video_hidden_for_admin", "task_hidden_for_admin", "task_hidden_for_client"):
         safe.pop(key, None)
     return safe
@@ -5614,6 +5628,9 @@ async def batch_prompt_status(
                 str(meta.get("model") or "当前模型"),
                 terminal=True,
             )
+        elif active_text := _client_active_task_text(meta):
+            code = "1"
+            text = active_text
         elif status == "pending" and (
             int(meta.get("retry_count") or 0) > 0 or int(meta.get("infrastructure_retry_count") or 0) > 0
         ):
@@ -5621,7 +5638,7 @@ async def batch_prompt_status(
             text = "服务繁忙正在重试！" if _task_has_service_frequent(meta) else "正在重试中，请稍等！"
         else:
             code = "1"
-            text = _client_safe_text(str(meta.get("status_reason") or meta.get("queue_reason") or meta.get("error") or ""), str(meta.get("model") or "当前模型"))
+            text = _client_active_task_text(meta) or _client_safe_text(str(meta.get("status_reason") or meta.get("queue_reason") or meta.get("error") or ""), str(meta.get("model") or "当前模型"))
         states.append({"id": task_id, "status": status, "code": code, "text": text, "url": url})
     return {"tasks": states}
 
@@ -5728,9 +5745,10 @@ async def task_result(access: Annotated[AccessContext, Depends(require_token)], 
         result = await query_task(task_id)
         if access.is_temp:
             result = dict(result)
-            result["text"] = _client_safe_text(
+            current_meta = await asyncio.to_thread(get_meta, task_id)
+            result["text"] = _client_active_task_text(current_meta) or _client_safe_text(
                 str(result.get("text") or ""),
-                str(meta.get("model") or "当前模型"),
+                str(current_meta.get("model") or "当前模型"),
                 terminal=str(result.get("code") or "") == "0",
             )
         return result

@@ -1836,6 +1836,34 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(admin_task["execution_phase"], "opening_generation_page")
         self.assertTrue(admin_task["phase_updated_at"])
 
+    def test_doubao_client_progress_uses_model_status_without_browser_details(self) -> None:
+        registered = self.register("doubao_progress_client")
+        token = registered["token"]
+        owner_hash = temp_access.hash_token(token)
+        task = store.create_task(
+            "测试豆包阶段",
+            "9:16",
+            owner_token_hash=owner_hash,
+            platform="doubao",
+            model="Seedance 2.0 Mini",
+        )
+        self.assertTrue(store.mark_running(task["id"], "worker-doubao-progress"))
+        store.set_execution_phase(task["id"], "opening_video_creation_page", "正在进入豆包视频创作页面")
+
+        headers = {"X-API-Token": token}
+        client_task = self.client.get("/tasks?page=1&page_size=20", headers=headers).json()["tasks"][0]
+        self.assertEqual(client_task["status_reason"], "Seedance 2.0 Mini正在接入")
+        self.assertEqual(client_task["error"], "")
+        self.assertEqual(self.client.get(f"/tasks/{task['id']}", headers=headers).json()["text"], "Seedance 2.0 Mini正在接入")
+
+        store.mark_submitted(task["id"])
+        submitted_task = self.client.get("/tasks?page=1&page_size=20", headers=headers).json()["tasks"][0]
+        self.assertEqual(submitted_task["status_reason"], "Seedance 2.0 Mini生成中")
+        self.assertEqual(self.client.get(f"/tasks/{task['id']}", headers=headers).json()["text"], "Seedance 2.0 Mini生成中")
+
+        admin_task = self.client.get("/tasks?page=1&page_size=20", headers={"X-API-Token": self.admin_token}).json()["tasks"][0]
+        self.assertNotEqual(admin_task["status_reason"], "Seedance 2.0 Mini生成中")
+
     def test_retrying_task_hides_previous_failure_from_client(self) -> None:
         registered = self.register("retry_text_client")
         token = registered["token"]

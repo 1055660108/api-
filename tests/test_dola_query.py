@@ -909,6 +909,53 @@ class DolaQueryTests(unittest.TestCase):
         retry_task.assert_called_once_with(task_id, automation.FINAL_FAILURE_TEXT, max_retries=2, delay_seconds=10)
         clear_result.assert_called_once_with(task_id)
 
+    def test_explicit_no_quota_failure_retries_same_account_with_prefixed_prompt(self) -> None:
+        task_id = "0" * 32
+        result_data = {
+            "cookie_string": "sessionid=secret",
+            "conversation_id": "12345678901234567",
+            "account_id": "account-1",
+            "account_quota_charge_id": "charge-1",
+        }
+        meta = {
+            "status": query.STATUS_SUBMITTED,
+            "owner_token_hash": "owner-hash",
+            "prompt": "一只纸飞机掠过城市上空",
+        }
+        with patch.object(query, "expire_task_if_timeout", return_value=False), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result_data), patch.object(
+            query, "fetch_single_chain", new=AsyncMock(return_value=("", query.DOLA_SAME_ACCOUNT_RETRY_TEXT))
+        ), patch.object(query, "save_result"), patch.object(
+            query, "clear_account_current_task"
+        ) as clear_account, patch.object(query, "refund_account_quota_once") as refund_account, patch.object(
+            query, "record_failed_account"
+        ) as record_failed, patch.object(query, "update_meta") as update_meta, patch.object(
+            query, "retry_submitted_task", return_value=1
+        ) as retry_task, patch.object(query, "clear_transient_result") as clear_result:
+            response = asyncio.run(query._query_task_once(task_id))
+
+        self.assertEqual(response, {"code": "1", "text": query.RETRY_GENERATING_TEXT, "url": ""})
+        clear_account.assert_called_once_with("account-1", task_id)
+        refund_account.assert_called_once_with(task_id, "account-1", "charge-1")
+        record_failed.assert_not_called()
+        update_meta.assert_called_once_with(
+            task_id,
+            prompt="再次生成 一只纸飞机掠过城市上空",
+            preferred_account_id="account-1",
+        )
+        retry_task.assert_called_once_with(
+            task_id,
+            query.DOLA_SAME_ACCOUNT_RETRY_TEXT,
+            max_retries=2,
+            delay_seconds=10,
+        )
+        clear_result.assert_called_once_with(task_id)
+
+    def test_same_account_retry_prompt_prefix_is_idempotent(self) -> None:
+        self.assertEqual(query.dola_same_account_retry_prompt("原始提示词"), "再次生成 原始提示词")
+        self.assertEqual(query.dola_same_account_retry_prompt("再次生成 原始提示词"), "再次生成 原始提示词")
+
     def test_guest_mode_disables_account_refunds_quota_and_retries(self) -> None:
         task_id = "0" * 32
         guest_text = "游客模式暂不支持生成图片和视频，请登录后再试"

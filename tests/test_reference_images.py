@@ -25,7 +25,7 @@ class ReferenceImageTests(unittest.TestCase):
         self.assertLessEqual(int(processed.max()), 128)
         self.assertGreater(np.count_nonzero(processed), 0)
 
-    def test_face_processing_keeps_original_and_reuses_internal_copy(self) -> None:
+    def test_face_processing_replaces_original_and_reuses_compressed_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "01.png"
@@ -36,23 +36,31 @@ class ReferenceImageTests(unittest.TestCase):
             original = encoded.tobytes()
             source.write_bytes(original)
 
-            with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
+            meta = {"reference_is_real_person": True}
+
+            def image_paths(_task_id: str) -> list[Path]:
+                return sorted(path for path in root.iterdir() if path.is_file())
+
+            def update(_task_id: str, **updates) -> None:
+                meta.update(updates)
+
+            with patch.object(reference_images, "task_image_paths", side_effect=image_paths), patch.object(
                 reference_images, "task_dir", return_value=root
             ), patch.object(
-                reference_images, "get_meta", return_value={"reference_is_real_person": True}
-            ), patch.object(reference_images, "update_meta") as update_meta, patch.object(
+                reference_images, "get_meta", side_effect=lambda _task_id: dict(meta)
+            ), patch.object(reference_images, "update_meta", side_effect=update) as update_meta, patch.object(
                 reference_images, "_detect_faces", return_value=[(50, 45, 60, 70)]
             ) as detect:
                 first = reference_images.prepare_task_reference_images("0" * 32)
                 second = reference_images.prepare_task_reference_images("0" * 32)
 
-            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(source.exists())
             self.assertEqual(first, second)
-            self.assertEqual(first[0].parent.name, "processed_references")
+            self.assertEqual(first[0].name, "01-compressed.jpg")
             self.assertNotEqual(first[0].read_bytes(), original)
             self.assertEqual(detect.call_count, 1)
             face_updates = [call for call in update_meta.call_args_list if "reference_face_count" in call.kwargs]
-            self.assertEqual(len(face_updates), 2)
+            self.assertEqual(len(face_updates), 1)
             self.assertEqual(face_updates[-1].kwargs["reference_face_count"], 1)
 
     def test_image_without_detected_face_is_uploaded_unchanged(self) -> None:
@@ -72,7 +80,7 @@ class ReferenceImageTests(unittest.TestCase):
 
             self.assertEqual(prepared, [source])
 
-    def test_retry_only_grids_detected_face_and_keeps_original(self) -> None:
+    def test_retry_only_grids_detected_face_and_replaces_original(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "01.jpg"
@@ -90,8 +98,8 @@ class ReferenceImageTests(unittest.TestCase):
             ) as detect:
                 prepared = reference_images.prepare_task_reference_images("0" * 32, retry_face_detection=True)
 
-            self.assertEqual(source.read_bytes(), original)
-            self.assertEqual(prepared[0].parent.name, "processed_references")
+            self.assertFalse(source.exists())
+            self.assertEqual(prepared[0].name, "01-compressed.jpg")
             self.assertNotEqual(prepared[0].read_bytes(), original)
             self.assertTrue(detect.call_args.kwargs["retry"])
             grid_update = next(call for call in update_meta.call_args_list if "reference_grid_mode" in call.kwargs)
@@ -141,7 +149,7 @@ class ReferenceImageTests(unittest.TestCase):
             self.assertEqual(grid_update.kwargs["reference_grid_mode"], "disabled")
             self.assertFalse(grid_update.kwargs["reference_face_detection_completed"])
 
-    def test_large_unchecked_reference_uses_small_upload_copy_and_keeps_original(self) -> None:
+    def test_large_unchecked_reference_replaces_original_with_small_upload_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "01.png"
@@ -152,7 +160,10 @@ class ReferenceImageTests(unittest.TestCase):
             self.assertGreater(len(original), reference_images.REFERENCE_UPLOAD_MAX_BYTES)
             source.write_bytes(original)
 
-            with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
+            def image_paths(_task_id: str) -> list[Path]:
+                return sorted(path for path in root.iterdir() if path.is_file())
+
+            with patch.object(reference_images, "task_image_paths", side_effect=image_paths), patch.object(
                 reference_images, "task_dir", return_value=root
             ), patch.object(
                 reference_images, "get_meta", return_value={"reference_is_real_person": False}
@@ -160,15 +171,40 @@ class ReferenceImageTests(unittest.TestCase):
                 first = reference_images.prepare_task_reference_images("0" * 32)
                 second = reference_images.prepare_task_reference_images("0" * 32)
 
-            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(source.exists())
             self.assertEqual(first, second)
-            self.assertEqual(first[0].parent.name, "upload_ready")
+            self.assertEqual(first[0].name, "01-compressed.jpg")
             self.assertLessEqual(first[0].stat().st_size, reference_images.REFERENCE_UPLOAD_MAX_BYTES)
-            self.assertEqual(update_meta.call_args.kwargs["reference_upload_optimized_count"], 1)
-            self.assertLess(
-                update_meta.call_args.kwargs["reference_upload_prepared_bytes"],
-                update_meta.call_args.kwargs["reference_upload_original_bytes"],
+            optimization = next(
+                call for call in update_meta.call_args_list
+                if call.kwargs.get("reference_upload_optimized_count") == 1
             )
+            self.assertEqual(optimization.kwargs["reference_upload_optimized_count"], 1)
+            self.assertLess(
+                optimization.kwargs["reference_upload_prepared_bytes"],
+                optimization.kwargs["reference_upload_original_bytes"],
+            )
+            cleanup = next(call for call in update_meta.call_args_list if "reference_originals_deleted_count" in call.kwargs)
+            self.assertEqual(cleanup.kwargs["reference_originals_deleted_count"], 1)
+            self.assertGreater(cleanup.kwargs["reference_original_bytes_reclaimed"], 0)
+
+    def test_failed_compression_keeps_original_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "01.png"
+            original = b"x" * (reference_images.REFERENCE_UPLOAD_MAX_BYTES + 1)
+            source.write_bytes(original)
+
+            with patch.object(reference_images, "task_image_paths", return_value=[source]), patch.object(
+                reference_images, "task_dir", return_value=root
+            ), patch.object(
+                reference_images, "get_meta", return_value={"reference_is_real_person": False}
+            ), patch.object(reference_images, "update_meta") as update_meta:
+                prepared = reference_images.prepare_task_reference_images("0" * 32)
+
+            self.assertEqual(prepared, [source])
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(any("reference_originals_deleted_count" in call.kwargs for call in update_meta.call_args_list))
 
     def test_face_grid_does_not_modify_pixels_outside_face_region(self) -> None:
         image = np.full((180, 220, 3), 160, dtype=np.uint8)

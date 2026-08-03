@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,74 @@ def _prepare_upload_sized_images(task_id: str, paths: list[Path]) -> list[Path]:
     except (FileNotFoundError, OSError):
         LOGGER.warning("could not persist reference upload optimization metadata for task %s", task_id)
     return prepared
+
+
+def _promote_prepared_references(task_id: str, originals: list[Path], prepared: list[Path]) -> list[Path]:
+    if not originals or len(originals) != len(prepared):
+        return prepared
+    try:
+        meta = get_meta(task_id)
+    except (FileNotFoundError, OSError):
+        meta = {}
+    finalized_names = {
+        str(name or "").strip()
+        for name in meta.get("reference_finalized_image_names") or []
+        if str(name or "").strip()
+    }
+    promoted: list[Path] = []
+    deleted_count = 0
+    reclaimed_bytes = 0
+    cleanup_errors: list[str] = []
+    for index, (original, ready) in enumerate(zip(originals, prepared, strict=True), start=1):
+        if ready == original:
+            promoted.append(original)
+            continue
+        try:
+            original_size = original.stat().st_size
+            ready_size = ready.stat().st_size
+            if ready_size <= 0:
+                raise OSError("prepared reference is empty")
+        except OSError:
+            promoted.append(original)
+            cleanup_errors.append(original.name)
+            continue
+
+        target = original.parent / f"{index:02d}-compressed.jpg"
+        try:
+            if ready != target:
+                ready.replace(target)
+            if original != target:
+                original.unlink()
+        except OSError:
+            if target != original:
+                target.unlink(missing_ok=True)
+            promoted.append(original)
+            cleanup_errors.append(original.name)
+            continue
+
+        promoted.append(target)
+        finalized_names.add(target.name)
+        deleted_count += 1
+        reclaimed_bytes += max(0, original_size - ready_size)
+
+    if deleted_count and all(path.parent == originals[0].parent for path in promoted):
+        shutil.rmtree(task_dir(task_id) / "processed_references", ignore_errors=True)
+    if deleted_count or cleanup_errors:
+        try:
+            update_meta(
+                task_id,
+                reference_finalized_image_names=sorted(finalized_names),
+                reference_originals_deleted_count=(
+                    int(meta.get("reference_originals_deleted_count") or 0) + deleted_count
+                ),
+                reference_original_bytes_reclaimed=(
+                    int(meta.get("reference_original_bytes_reclaimed") or 0) + reclaimed_bytes
+                ),
+                reference_original_cleanup_errors=cleanup_errors,
+            )
+        except (FileNotFoundError, OSError):
+            LOGGER.warning("could not persist reference cleanup metadata for task %s", task_id)
+    return promoted
 
 
 def _overlap_ratio(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> float:
@@ -286,7 +355,17 @@ def prepare_task_reference_images(task_id: str, retry_face_detection: bool | Non
             )
         except (FileNotFoundError, OSError):
             LOGGER.warning("could not persist disabled reference face metadata for task %s", task_id)
-        return _prepare_upload_sized_images(task_id, originals)
+        prepared = _prepare_upload_sized_images(task_id, originals)
+        return _promote_prepared_references(task_id, originals, prepared)
+
+    finalized_names = {
+        str(name or "").strip()
+        for name in meta.get("reference_finalized_image_names") or []
+        if str(name or "").strip()
+    }
+    if all(source.name in finalized_names for source in originals):
+        upload_ready = _prepare_upload_sized_images(task_id, originals)
+        return _promote_prepared_references(task_id, originals, upload_ready)
 
     internal_dir = task_dir(task_id) / "processed_references"
     internal_dir.mkdir(parents=True, exist_ok=True)
@@ -297,8 +376,10 @@ def prepare_task_reference_images(task_id: str, retry_face_detection: bool | Non
     prepared: list[Path] = []
     total_faces = 0
     processing_errors: list[str] = []
-
     for index, source in enumerate(originals, start=1):
+        if source.name in finalized_names:
+            prepared.append(source)
+            continue
         fingerprint = _source_fingerprint(source)
         cached = entries.get(source.name) if isinstance(entries, dict) else None
         cached_mode = str(cached.get("mode") or "") if isinstance(cached, dict) else ""
@@ -354,4 +435,5 @@ def prepare_task_reference_images(task_id: str, retry_face_detection: bool | Non
         )
     except (FileNotFoundError, OSError):
         LOGGER.warning("could not persist reference face metadata for task %s", task_id)
-    return _prepare_upload_sized_images(task_id, prepared)
+    upload_ready = _prepare_upload_sized_images(task_id, prepared)
+    return _promote_prepared_references(task_id, originals, upload_ready)

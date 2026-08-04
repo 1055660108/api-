@@ -2248,10 +2248,12 @@ class DoubaoVideoAutomation:
         async def select_video_setting(label: str) -> None:
             selector = await video_settings_button()
             await selector.scroll_into_view_if_needed()
+            selector_box = await selector.bounding_box()
 
             async def settings_panel_open() -> bool:
                 body_text = re.sub(r"\s+", "", await page.locator("body").inner_text()).replace("：", ":")
-                return all(marker in body_text for marker in ("3:4", "4:3", "9:16", "16:9", "1:1", "21:9"))
+                visible_ratios = sum(marker in body_text for marker in ("3:4", "4:3", "9:16", "16:9", "1:1", "21:9"))
+                return visible_ratios >= 2 and "时长" in body_text
 
             panel_open = False
             try:
@@ -2269,8 +2271,6 @@ class DoubaoVideoAutomation:
                 await selector.evaluate("element => element.click()")
                 await page.wait_for_timeout(500)
                 panel_open = await settings_panel_open()
-            if not panel_open:
-                raise RuntimeError("doubao video settings panel unavailable")
             selected = False
             option_deadline = asyncio.get_running_loop().time() + 5
             while asyncio.get_running_loop().time() < option_deadline and not selected:
@@ -2292,8 +2292,18 @@ class DoubaoVideoAutomation:
                         try:
                             if not await option.is_visible():
                                 continue
+                            option_box = await option.bounding_box()
+                            if selector_box and option_box:
+                                option_center_x = option_box["x"] + option_box["width"] / 2
+                                option_center_y = option_box["y"] + option_box["height"] / 2
+                                in_current_panel = (
+                                    selector_box["x"] - 500 <= option_center_x <= selector_box["x"] + selector_box["width"] + 500
+                                    and selector_box["y"] - 500 <= option_center_y <= selector_box["y"] + selector_box["height"] + 120
+                                )
+                                if not in_current_panel:
+                                    continue
                             interactive = option.locator(
-                                "xpath=ancestor-or-self::*[self::button or @role='button' or @role='option' or @role='menuitem'][1]"
+                                "xpath=ancestor-or-self::*[self::button or @role='button' or @role='option' or @role='menuitem' or self::div][1]"
                             )
                             target = interactive.first if await interactive.count() else option
                             await target.click(force=True)
@@ -2305,10 +2315,11 @@ class DoubaoVideoAutomation:
                         break
                 if not selected:
                     await page.wait_for_timeout(250)
-            if not selected:
+            if not selected and selector_box is None:
                 selected = await click_exact_visible_text(label)
             if not selected:
-                raise RuntimeError(f"doubao video setting unavailable: {label}")
+                reason = "doubao video settings panel unavailable" if not panel_open else f"doubao video setting unavailable: {label}"
+                raise RuntimeError(reason)
             await page.wait_for_timeout(500)
 
         try:

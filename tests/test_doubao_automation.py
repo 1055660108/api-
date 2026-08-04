@@ -402,6 +402,8 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("visible_ratios >= 2", ui_source)
         self.assertIn("in_current_panel = (", ui_source)
         self.assertIn("and selector_box is None", ui_source)
+        self.assertIn("active_editor = editor", ui_source)
+        self.assertIn("if active_editor is not None:", ui_source)
         self.assertIn("await page.goto(DOUBAO_VIDEO_CREATION_URL", ui_source)
         self.assertIn('click_exact_visible_text("视频生成")', ui_source)
         self.assertIn("selected = await click_exact_visible_text(label)", ui_source)

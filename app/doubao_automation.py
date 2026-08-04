@@ -2197,6 +2197,7 @@ class DoubaoVideoAutomation:
 
         ratio_label = "自动" if not self.ratio or self.ratio == "auto" else self.ratio
         duration_label = f"{self.duration}s"
+        active_editor = None
 
         async def video_settings_button():
             selector = page.locator("button:visible").filter(
@@ -2206,18 +2207,25 @@ class DoubaoVideoAutomation:
                 await selector.last.wait_for(state="visible", timeout=10000)
             except Exception as exc:
                 raise RuntimeError("doubao video ratio and duration selector unavailable") from exc
-            editors = page.locator('[contenteditable="true"][role="textbox"]:visible,textarea:visible')
             editor_box = None
-            for index in range(await editors.count() - 1, -1, -1):
-                candidate = editors.nth(index)
+            if active_editor is not None:
                 try:
-                    if not await candidate.is_visible():
-                        continue
-                    editor_box = await candidate.bounding_box()
+                    if await active_editor.is_visible():
+                        editor_box = await active_editor.bounding_box()
                 except Exception:
-                    continue
-                if editor_box:
-                    break
+                    editor_box = None
+            if editor_box is None:
+                editors = page.locator('[contenteditable="true"][role="textbox"]:visible,textarea:visible')
+                for index in range(await editors.count() - 1, -1, -1):
+                    candidate = editors.nth(index)
+                    try:
+                        if not await candidate.is_visible():
+                            continue
+                        editor_box = await candidate.bounding_box()
+                    except Exception:
+                        continue
+                    if editor_box:
+                        break
             if editor_box:
                 positioned: list[tuple[float, Any]] = []
                 editor_center_x = editor_box["x"] + editor_box["width"] / 2
@@ -2297,8 +2305,8 @@ class DoubaoVideoAutomation:
                                 option_center_x = option_box["x"] + option_box["width"] / 2
                                 option_center_y = option_box["y"] + option_box["height"] / 2
                                 in_current_panel = (
-                                    selector_box["x"] - 500 <= option_center_x <= selector_box["x"] + selector_box["width"] + 500
-                                    and selector_box["y"] - 500 <= option_center_y <= selector_box["y"] + selector_box["height"] + 120
+                                    selector_box["x"] - 300 <= option_center_x <= selector_box["x"] + selector_box["width"] + 300
+                                    and selector_box["y"] - 350 <= option_center_y <= selector_box["y"] + selector_box["height"] + 60
                                 )
                                 if not in_current_panel:
                                     continue
@@ -2463,6 +2471,7 @@ class DoubaoVideoAutomation:
                     "accepted": False,
                     "video_creation_ui_error": "doubao video prompt input unavailable",
                 }
+            active_editor = editor
             self._set_phase("submitting_video_creation_page", "正在通过豆包视频创作页提交任务")
             await editor.fill(self.prompt)
             await page.wait_for_timeout(300)

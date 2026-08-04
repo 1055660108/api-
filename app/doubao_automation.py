@@ -2078,29 +2078,60 @@ class DoubaoVideoAutomation:
                 "accepted": False,
                 "video_creation_ui_error": "doubao video creation entry unavailable",
             }
-        await model_button.click(force=True)
-        await page.wait_for_timeout(500)
-        model_items = page.locator('[role="menuitem"]:visible')
-        try:
-            await model_items.first.wait_for(state="visible", timeout=5000)
-        except Exception:
-            model_items = page.get_by_text(self.model, exact=True)
-        selected_model = ""
-        for index in range(await model_items.count() - 1, -1, -1):
-            item = model_items.nth(index)
-            label = re.sub(r"\s+", " ", (await item.inner_text()).strip())
-            if await item.is_visible() and (label == self.model or label.startswith(f"{self.model} ")):
-                await item.click(force=True)
-                selected_model = self.model
-                break
+        current_model_text = re.sub(r"\s+", " ", (await model_button.inner_text()).strip())
+        selected_model = self.model if self.model in current_model_text else ""
         if not selected_model:
-            await page.keyboard.press("Escape")
-            return {
-                "ok": False,
-                "status": 0,
-                "accepted": False,
-                "video_creation_ui_error": f"doubao video model unavailable: {self.model}",
-            }
+            await model_button.click(force=True)
+            await page.wait_for_timeout(500)
+            model_options = (
+                page.get_by_role("menuitem", name=self.model, exact=True),
+                page.get_by_role("option", name=self.model, exact=True),
+                page.get_by_role("button", name=self.model, exact=True),
+                page.get_by_text(self.model, exact=True),
+            )
+            option_clicked = False
+            for options_locator in model_options:
+                for index in range(await options_locator.count() - 1, -1, -1):
+                    item = options_locator.nth(index)
+                    try:
+                        if not await item.is_visible():
+                            continue
+                        label = re.sub(r"\s+", " ", (await item.inner_text()).strip())
+                        if label != self.model and not label.startswith(f"{self.model} "):
+                            continue
+                        await item.click(force=True)
+                        option_clicked = True
+                        break
+                    except Exception:
+                        continue
+                if option_clicked:
+                    break
+            if not option_clicked:
+                await page.keyboard.press("Escape")
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": f"doubao video model unavailable: {self.model}",
+                }
+            confirmation_deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < confirmation_deadline:
+                await page.wait_for_timeout(250)
+                confirmed_button = await visible_model_button(1000)
+                if confirmed_button is None:
+                    continue
+                confirmed_text = re.sub(r"\s+", " ", (await confirmed_button.inner_text()).strip())
+                if self.model in confirmed_text:
+                    selected_model = self.model
+                    model_button = confirmed_button
+                    break
+            if not selected_model:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": f"doubao video model selection mismatch: {self.model}",
+                }
 
         ratio_label = "自动" if not self.ratio or self.ratio == "auto" else self.ratio
         duration_label = f"{self.duration}s"
@@ -2258,10 +2289,10 @@ class DoubaoVideoAutomation:
                 candidate = editors.nth(index)
                 if not await candidate.is_visible():
                     continue
-                attributes = " ".join(
-                    str(await candidate.get_attribute(name) or "")
-                    for name in ("placeholder", "data-placeholder", "aria-label")
-                )
+                attributes_list: list[str] = []
+                for name in ("placeholder", "data-placeholder", "aria-label"):
+                    attributes_list.append(str(await candidate.get_attribute(name) or ""))
+                attributes = " ".join(attributes_list)
                 if "视频" in attributes:
                     editor = candidate
                     break

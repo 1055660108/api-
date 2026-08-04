@@ -365,9 +365,16 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("await editor.fill(self.prompt)", ui_source)
         self.assertIn("await send_button.click", ui_source)
         self.assertIn('page.get_by_text("视频生成", exact=True)', ui_source)
+        self.assertIn('page.get_by_role("menuitem", name=self.model, exact=True)', ui_source)
+        self.assertIn('page.get_by_role("option", name=self.model, exact=True)', ui_source)
+        self.assertIn('page.get_by_role("button", name=self.model, exact=True)', ui_source)
+        self.assertIn("page.get_by_text(self.model, exact=True)", ui_source)
+        self.assertIn("doubao video model selection mismatch", ui_source)
         self.assertIn("page.get_by_text(label, exact=True)", ui_source)
         self.assertLess(ui_source.index("await editor.fill(self.prompt)"), ui_source.index("await select_video_setting(ratio_label)"))
         self.assertLess(ui_source.index("await select_video_setting(ratio_label)"), ui_source.index("await send_button.click"))
+        self.assertIn('attributes = " ".join(attributes_list)', ui_source)
+        self.assertNotIn('" ".join(\n                    str(await', ui_source)
         self.assertNotIn("generationInstruction", ui_source)
 
     def test_direct_video_is_an_accepted_submission(self) -> None:

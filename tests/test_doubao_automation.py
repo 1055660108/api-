@@ -341,6 +341,42 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(classify_doubao_submission(result)[1], "text_only_response")
         runner._submit_via_video_creation_page_ui.assert_awaited_once()
 
+    def test_native_submit_without_network_request_uses_captured_internal_fallback(self) -> None:
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner._submit_via_video_creation_page_ui = AsyncMock(return_value={
+            "ok": True,
+            "status": 200,
+            "accepted": False,
+            "native_submission_request_seen": False,
+        })
+        runner._submit_via_video_creation_internal_request = AsyncMock(return_value={
+            "ok": True,
+            "status": 200,
+            "accepted": True,
+            "conversation_id": "38436759004541698",
+        })
+
+        result = asyncio.run(runner._submit_via_video_creation_page(SimpleNamespace(), image_count=0))
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["native_submission_fallback_used"])
+        runner._submit_via_video_creation_internal_request.assert_awaited_once()
+
+    def test_native_submit_with_network_request_never_duplicates_submission(self) -> None:
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner._submit_via_video_creation_page_ui = AsyncMock(return_value={
+            "ok": True,
+            "status": 200,
+            "accepted": False,
+            "native_submission_request_seen": True,
+        })
+        runner._submit_via_video_creation_internal_request = AsyncMock()
+
+        result = asyncio.run(runner._submit_via_video_creation_page(SimpleNamespace(), image_count=0))
+
+        self.assertFalse(result["accepted"])
+        runner._submit_via_video_creation_internal_request.assert_not_awaited()
+
     def test_text_only_video_response_is_classified_for_account_quarantine(self) -> None:
         responses = (
             "很抱歉，我目前没办法直接生成视频文件。不过给你两段可以直接用于 AI 视频生成工具的提示词。",
@@ -406,7 +442,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("select_video_setting", ui_source)
         self.assertIn("submission_request_seen", ui_source)
         self.assertIn('editor.press("Enter")', ui_source)
-        self.assertNotIn("DOUBAO_SUBMIT_SCRIPT", request_source)
+        self.assertIn("_submit_via_video_creation_internal_request", request_source)
 
     def test_direct_video_is_an_accepted_submission(self) -> None:
         error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})

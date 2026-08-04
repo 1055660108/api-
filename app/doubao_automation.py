@@ -2200,6 +2200,10 @@ class DoubaoVideoAutomation:
         if not isinstance(result, dict):
             return {"ok": False, "status": 0, "accepted": False, "video_creation_ui_error": "doubao video request returned invalid response"}
         result = normalize_doubao_submission_acknowledgement(result)
+        if not result.get("accepted") and is_doubao_text_only_video_response(
+            "\n".join(str(result.get(key) or "") for key in ("initial_response_preview", "response_preview"))
+        ):
+            result["text_only_response"] = True
         result.update(
             video_creation_page_used=True,
             video_creation_selected_model=self.model,
@@ -2808,6 +2812,7 @@ class DoubaoVideoAutomation:
                     "submitted_with_images": submitted_with_images,
                     "generation_wait_message_detected": marker_visible,
                     "generation_wait_message": DOUBAO_SUBMISSION_MARKER if marker_visible else "",
+                    "native_submission_request_seen": submission_request_seen.is_set(),
                 }
             if not conversation_id:
                 return {
@@ -2817,6 +2822,7 @@ class DoubaoVideoAutomation:
                     "video_creation_ui_error": "doubao video creation conversation id missing",
                     "generation_wait_message_detected": True,
                     "generation_wait_message": DOUBAO_SUBMISSION_MARKER,
+                    "native_submission_request_seen": submission_request_seen.is_set(),
                 }
             return {
                 "ok": True,
@@ -2832,6 +2838,7 @@ class DoubaoVideoAutomation:
                 "video_creation_selected_ratio": ratio_label,
                 "video_creation_selected_duration": self.duration,
                 "submitted_with_images": submitted_with_images,
+                "native_submission_request_seen": submission_request_seen.is_set(),
             }
         finally:
             try:
@@ -2848,6 +2855,24 @@ class DoubaoVideoAutomation:
         result = await self._submit_via_video_creation_page_ui(page, image_count=image_count)
         if str(result.get("video_creation_ui_error") or "") == "doubao video settings panel unavailable":
             result["text_only_response"] = True
+        terminal_keys = (
+            "video_creation_ui_error",
+            "text_only_response",
+            "service_frequent",
+            "slider_verification",
+            "quota_insufficient",
+            "region_restricted",
+            "login_invalid",
+        )
+        if (
+            result.get("ok")
+            and not result.get("accepted")
+            and not result.get("native_submission_request_seen")
+            and not any(result.get(key) for key in terminal_keys)
+        ):
+            fallback = await self._submit_via_video_creation_internal_request(page, image_count=image_count)
+            fallback["native_submission_fallback_used"] = True
+            return fallback
         return result
 
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import inspect
 import json
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -312,12 +313,36 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(category, "generation_ack_missing")
 
     def test_quota_exhaustion_is_a_terminal_submission_signal(self) -> None:
-        for text in ("今日额度不足", "视频生成额度已用完", "当前剩余 0 次"):
+        for text in ("今日额度不足", "视频生成额度已用完", "当前剩余 0 次", "今日视频生成免费次数用完了"):
             self.assertTrue(is_doubao_account_quota_insufficient(text))
         error, category = classify_doubao_submission({"ok": True, "quota_insufficient": True})
         self.assertEqual((error, category), ("豆包账号额度不足或已耗尽", "quota_insufficient"))
         self.assertIn("quota_insufficient: quotaInsufficient(text)", DOUBAO_SUBMIT_SCRIPT)
         self.assertIn("return quotaInsufficient(text)", DOUBAO_SUBMIT_SCRIPT)
+
+    def test_ui_acknowledgement_requires_marker_and_selected_model(self) -> None:
+        notice = (
+            "视频生成已提交\n"
+            "本次使用 Seedance 2.0 Fast 生成，预计等待 5 分钟。"
+            "视频生成好后，我会主动发送给你。本次生成将消耗每日免费额度。"
+        )
+        self.assertTrue(doubao_ui_generation_acknowledged(notice, "Seedance 2.0 Fast"))
+        self.assertTrue(doubao_ui_generation_acknowledged(
+            "视频生成已提交\n本次使用 Seedance 2.0 Fast 生成，请稍候查看结果。",
+            "Seedance 2.0 Fast",
+        ))
+        self.assertFalse(doubao_ui_generation_acknowledged(notice, "Seedance 2.0 Mini"))
+        self.assertFalse(doubao_ui_generation_acknowledged("视频生成已提交", "Seedance 2.0 Fast"))
+
+    def test_runtime_submission_uses_browser_ui_instead_of_completion_api(self) -> None:
+        source = inspect.getsource(DoubaoVideoAutomation._run_browser)
+        self.assertIn("_submit_via_video_creation_page", source)
+        self.assertNotIn("DOUBAO_SUBMIT_SCRIPT", source)
+        self.assertNotIn("page.evaluate", source)
+        ui_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page)
+        self.assertIn("await editor.fill(self.prompt)", ui_source)
+        self.assertIn("await send_button.click", ui_source)
+        self.assertNotIn("generationInstruction", ui_source)
 
     def test_direct_video_is_an_accepted_submission(self) -> None:
         error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})
@@ -718,6 +743,18 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner._refresh_cookies = AsyncMock(return_value=[{"name": "session", "value": "value"}])
         runner._context_storage_state = Mock(return_value=None)
         runner._save_video_success = AsyncMock()
+        runner._submit_via_video_creation_page = AsyncMock(return_value={
+            "ok": True,
+            "status": 200,
+            "accepted": True,
+            "conversation_id": "12345678901234567",
+            "web_id": "22345678901234567",
+            "region": "JP",
+            "generation_wait_message_detected": True,
+            "generation_wait_message": acknowledgement,
+            "generation_ack_source": "video_creation_page_dom",
+            "video_creation_page_used": True,
+        })
 
         with patch("app.doubao_automation.task_exists", return_value=False), patch(
             "app.doubao_automation.begin_task_submission", return_value=True
@@ -729,12 +766,11 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertTrue(outcome["success"])
         self.assertTrue(outcome["confirmation_pending"])
         self.assertTrue(outcome["keep_account_claimed"])
-        runner.submission_pacer.assert_awaited_once()
-        self.assertEqual(page.evaluate.await_args.args[1]["attachments"], [])
-        self.assertEqual(page.evaluate.await_args.args[1]["ratio"], "9:16")
+        runner._submit_via_video_creation_page.assert_awaited_once_with(page, image_count=0)
+        page.evaluate.assert_not_awaited()
         mark_submitted.assert_called_once_with("doubao-task", result_poll_delay_seconds=20)
         self.assertTrue(any(call.kwargs["extra"].get("doubao_result_mode") == "interface_poll" for call in save_result.call_args_list))
-        self.assertTrue(any(call.kwargs["extra"].get("doubao_generation_ack_source") == "python_response_fallback" for call in save_result.call_args_list))
+        self.assertTrue(any(call.kwargs["extra"].get("doubao_generation_ack_source") == "video_creation_page_dom" for call in save_result.call_args_list))
         runner._save_video_success.assert_not_awaited()
         lease.release.assert_awaited_once()
 

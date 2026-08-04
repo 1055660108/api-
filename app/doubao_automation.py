@@ -609,6 +609,10 @@ async def fetch_doubao_unwatermarked_url(
 def is_doubao_account_quota_insufficient(text: str) -> bool:
     value = re.sub(r"\s+", "", str(text or ""))
     direct_markers = (
+        "今日视频生成免费次数用完了",
+        "视频生成免费次数用完了",
+        "免费次数用完了",
+        "次数用完了",
         "额度不足",
         "额度已用完",
         "额度用完了",
@@ -626,6 +630,16 @@ def is_doubao_account_quota_insufficient(text: str) -> bool:
     if re.search(r"(?:剩余|还有)0(?:个)?(?:次|额度|视频生成额度)", value):
         return True
     return "视频生成额度" in value and "剩余" in value and "无法生成" in value
+
+
+def doubao_ui_generation_acknowledged(text: str, model: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    model_name = re.sub(r"\s+", "", str(model or ""))
+    return bool(
+        DOUBAO_SUBMISSION_MARKER in normalized
+        and model_name
+        and f"本次使用{model_name}生成" in normalized
+    )
 
 
 def parse_doubao_generation_result(body: str) -> dict[str, Any]:
@@ -1929,14 +1943,52 @@ class DoubaoVideoAutomation:
         return any(marker in body[:2000] for marker in ("扫码登录", "手机号登录", "登录豆包"))
 
     async def _submit_via_video_creation_page(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
-        self._set_phase("opening_video_creation_page", "正在进入豆包视频创作页面")
-        await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
-        await page.wait_for_timeout(5000)
+        self._set_phase("opening_video_creation_page", "正在进入豆包新对话")
+        await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)
+        await page.wait_for_timeout(3000)
         body = await page.locator("body").inner_text()
         if self._is_region_restricted(str(page.url), body):
             return {"ok": False, "status": 0, "accepted": False, "region_restricted": True}
         if await self._login_required(page, body):
             return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
+
+        async def click_visible(candidates: tuple[Any, ...], *, timeout: int = 0) -> bool:
+            deadline = asyncio.get_running_loop().time() + max(0, timeout) / 1000
+            while True:
+                for candidate in candidates:
+                    try:
+                        count = await candidate.count()
+                        for index in range(count - 1, -1, -1):
+                            item = candidate.nth(index)
+                            if await item.is_visible():
+                                await item.click(force=True)
+                                return True
+                    except Exception:
+                        continue
+                if asyncio.get_running_loop().time() >= deadline:
+                    return False
+                await page.wait_for_timeout(250)
+
+        await click_visible(
+            (
+                page.get_by_role("button", name="新对话", exact=True),
+                page.get_by_role("link", name="新对话", exact=True),
+                page.get_by_text("新对话", exact=True),
+            ),
+            timeout=5000,
+        )
+        await page.wait_for_timeout(1200)
+
+        self._set_phase("opening_video_creation_page", "正在打开豆包视频生成")
+        direct_video_entry = await click_visible(
+            (
+                page.get_by_role("button", name="视频生成", exact=True),
+                page.get_by_role("tab", name="视频生成", exact=True),
+            ),
+            timeout=3000,
+        )
+        if direct_video_entry:
+            await page.wait_for_timeout(1200)
 
         async def visible_model_button(timeout: int):
             selector = page.locator("button:visible").filter(
@@ -1948,26 +2000,28 @@ class DoubaoVideoAutomation:
             except Exception:
                 return None
 
-        model_button = await visible_model_button(2000)
+        model_button = await visible_model_button(3000)
         if model_button is None:
-            video_entries = (
-                page.get_by_role("tab", name="视频", exact=True),
-                page.get_by_role("button", name="视频", exact=True),
-                page.get_by_role("button", name="视频生成", exact=True),
-                page.get_by_text("视频", exact=True),
-                page.get_by_text("视频生成", exact=True),
+            ai_creation_opened = await click_visible(
+                (
+                    page.get_by_role("button", name="AI 创作", exact=True),
+                    page.get_by_role("link", name="AI 创作", exact=True),
+                    page.get_by_text("AI 创作", exact=True),
+                ),
+                timeout=5000,
             )
-            for entry in video_entries:
-                try:
-                    visible_entry = entry.last
-                    if await visible_entry.count() and await visible_entry.is_visible():
-                        await visible_entry.click(force=True)
-                        await page.wait_for_timeout(1200)
-                        model_button = await visible_model_button(3000)
-                        if model_button is not None:
-                            break
-                except Exception:
-                    continue
+            if ai_creation_opened:
+                await page.wait_for_timeout(1500)
+                await click_visible(
+                    (
+                        page.get_by_role("tab", name="视频", exact=True),
+                        page.get_by_role("button", name="视频", exact=True),
+                        page.get_by_text("视频", exact=True),
+                    ),
+                    timeout=5000,
+                )
+                await page.wait_for_timeout(1200)
+                model_button = await visible_model_button(5000)
         if model_button is None:
             return {
                 "ok": False,
@@ -2052,7 +2106,18 @@ class DoubaoVideoAutomation:
         submitted_with_images = False
         if image_count > 0:
             paths = await asyncio.to_thread(prepare_task_reference_images, self.task_id)
-            file_input = page.locator('input[type="file"][multiple]')
+            file_input = page.locator('input[type="file"]')
+            if paths and not await file_input.count():
+                await click_visible(
+                    (
+                        page.get_by_role("button", name=re.compile(r"^(?:添加|上传|参考图|\+)$")),
+                        page.locator('button:visible[aria-label*="上传"]'),
+                        page.locator('button:visible[aria-label*="添加"]'),
+                    ),
+                    timeout=3000,
+                )
+                await page.wait_for_timeout(500)
+                file_input = page.locator('input[type="file"]')
             if not paths or not await file_input.count():
                 return {
                     "ok": False,
@@ -2061,15 +2126,41 @@ class DoubaoVideoAutomation:
                     "video_creation_ui_error": "doubao video reference input unavailable",
                 }
             self._set_phase("uploading_video_creation_references", "正在向豆包视频创作页添加参考图")
-            await file_input.last.set_input_files([str(path) for path in paths])
-            await page.wait_for_timeout(5000)
-            upload_body = await page.locator("body").inner_text()
-            if any(marker in upload_body[-2000:] for marker in ("上传失败", "图片上传失败", "参考图上传失败")):
+            async def upload_references() -> str:
+                visible_images_before = await page.locator("img:visible").count()
+                await file_input.last.set_input_files([str(path) for path in paths])
+                upload_deadline = asyncio.get_running_loop().time() + 90
+                while asyncio.get_running_loop().time() < upload_deadline:
+                    await page.wait_for_timeout(500)
+                    upload_body = await page.locator("body").inner_text()
+                    upload_tail = re.sub(r"\s+", "", upload_body[-3000:])
+                    if any(marker in upload_tail for marker in ("上传失败", "图片上传失败", "参考图上传失败")):
+                        return "failed"
+                    visible_images = await page.locator("img:visible").count()
+                    uploading = any(marker in upload_tail for marker in ("正在上传", "上传中", "处理中"))
+                    if not uploading and visible_images >= visible_images_before + min(len(paths), image_count):
+                        return "completed"
+                return "timeout"
+
+            image_upload_slot = getattr(self, "image_upload_slot", None)
+            if image_upload_slot is not None:
+                async with image_upload_slot():
+                    upload_state = await upload_references()
+            else:
+                upload_state = await upload_references()
+            if upload_state == "failed":
                 return {
                     "ok": False,
                     "status": 0,
                     "accepted": False,
                     "video_creation_ui_error": "doubao video reference upload failed",
+                }
+            if upload_state != "completed":
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video reference upload completion missing",
                 }
             submitted_with_images = True
 
@@ -2109,8 +2200,28 @@ class DoubaoVideoAutomation:
 
         page.on("response", capture_submission)
         try:
-            editor = page.locator('[contenteditable="true"][role="textbox"]:visible').last
-            if not await editor.count():
+            editors = page.locator('[contenteditable="true"][role="textbox"]:visible,textarea:visible')
+            editor = None
+            fallback_editors: list[tuple[float, Any]] = []
+            settings_box = await settings_button.bounding_box()
+            for index in range(await editors.count() - 1, -1, -1):
+                candidate = editors.nth(index)
+                if not await candidate.is_visible():
+                    continue
+                attributes = " ".join(
+                    str(await candidate.get_attribute(name) or "")
+                    for name in ("placeholder", "data-placeholder", "aria-label")
+                )
+                if "视频" in attributes:
+                    editor = candidate
+                    break
+                box = await candidate.bounding_box()
+                if box and settings_box:
+                    distance = abs((box["y"] + box["height"]) - settings_box["y"])
+                    fallback_editors.append((distance, candidate))
+            if editor is None and fallback_editors:
+                editor = min(fallback_editors, key=lambda item: item[0])[1]
+            if editor is None:
                 return {
                     "ok": False,
                     "status": 0,
@@ -2119,11 +2230,62 @@ class DoubaoVideoAutomation:
                 }
             self._set_phase("submitting_video_creation_page", "正在通过豆包视频创作页提交任务")
             await editor.fill(self.prompt)
+            await page.wait_for_timeout(300)
+
+            async def find_send_button():
+                named = (
+                    page.get_by_role("button", name=re.compile(r"^(?:发送|提交|生成)$")),
+                    page.locator('button:visible[aria-label*="发送"]'),
+                    page.locator('button:visible[title*="发送"]'),
+                )
+                for candidate in named:
+                    count = await candidate.count()
+                    for index in range(count - 1, -1, -1):
+                        item = candidate.nth(index)
+                        if await item.is_visible() and await item.is_enabled():
+                            return item
+                editor_box = await editor.bounding_box()
+                if not editor_box:
+                    return None
+                positioned: list[tuple[float, Any]] = []
+                buttons = page.locator("button:visible")
+                for index in range(await buttons.count() - 1, -1, -1):
+                    item = buttons.nth(index)
+                    try:
+                        if not await item.is_enabled():
+                            continue
+                        box = await item.bounding_box()
+                    except Exception:
+                        continue
+                    if not box:
+                        continue
+                    center_x = box["x"] + box["width"] / 2
+                    center_y = box["y"] + box["height"] / 2
+                    if (
+                        center_x >= editor_box["x"] + editor_box["width"] * 0.75
+                        and editor_box["y"] - 20 <= center_y <= editor_box["y"] + editor_box["height"] + 80
+                    ):
+                        positioned.append((-center_x, item))
+                return min(positioned, key=lambda item: item[0])[1] if positioned else None
+
+            send_button = await find_send_button()
+            if send_button is None:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video send button unavailable",
+                }
+            baseline_body = await page.locator("body").inner_text()
+            baseline_ack_count = baseline_body.count(DOUBAO_SUBMISSION_MARKER)
+            if self.submission_pacer is not None:
+                await self.submission_pacer()
             capture_enabled = True
-            await editor.press("Enter")
+            await send_button.click(force=True)
 
             deadline = asyncio.get_running_loop().time() + DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS
             marker_visible = False
+            acknowledgement_visible = False
             last_body = ""
             while asyncio.get_running_loop().time() < deadline:
                 await page.wait_for_timeout(500)
@@ -2136,13 +2298,14 @@ class DoubaoVideoAutomation:
                     return {"ok": True, "status": 200, "accepted": False, "service_frequent": True}
                 if is_doubao_account_quota_insufficient(last_body[-2500:]):
                     return {"ok": True, "status": 200, "accepted": False, "quota_insufficient": True}
-                marker_visible = DOUBAO_SUBMISSION_MARKER in last_body
+                marker_visible = last_body.count(DOUBAO_SUBMISSION_MARKER) > baseline_ack_count
+                acknowledgement_visible = marker_visible and doubao_ui_generation_acknowledged(last_body, self.model)
                 remember_evidence(page.url)
-                if marker_visible and evidence.get("conversation_id"):
+                if acknowledgement_visible and evidence.get("conversation_id"):
                     break
 
             conversation_id = str(evidence.get("conversation_id") or "")
-            if not marker_visible:
+            if not acknowledgement_visible:
                 return {
                     "ok": True,
                     "status": 200,
@@ -2150,6 +2313,8 @@ class DoubaoVideoAutomation:
                     "response_preview": last_body[-6000:],
                     "video_creation_page_used": True,
                     "submitted_with_images": submitted_with_images,
+                    "generation_wait_message_detected": marker_visible,
+                    "generation_wait_message": DOUBAO_SUBMISSION_MARKER if marker_visible else "",
                 }
             if not conversation_id:
                 return {
@@ -2191,7 +2356,6 @@ class DoubaoVideoAutomation:
             page = None
             capture_video_response = None
             capture_tasks: set[asyncio.Task[Any]] = set()
-            reference_uploader: DoubaoReferenceImageUploader | None = None
             try:
                 self._set_phase("starting_browser", "正在启动豆包生成环境")
                 executable_path = resolve_browser_executable(self.settings.browser_executable_path)
@@ -2254,73 +2418,29 @@ class DoubaoVideoAutomation:
                         "switch_account": True,
                     }
                 await self._refresh_cookies(context)
-                model_code = DOUBAO_MODEL_CODES.get(self.model)
-                if not model_code:
+                if self.model not in DOUBAO_MODEL_CODES:
                     return {"success": False, "retryable": False, "reason": "doubao model unavailable"}
                 image_count = int(get_meta(self.task_id).get("image_count") or 0) if task_exists(self.task_id) else 0
-                fresh_conversation_retry_used = bool(
-                    get_meta(self.task_id).get("doubao_fresh_conversation_retry_used")
-                ) if task_exists(self.task_id) else False
                 self._set_phase(
                     "preparing_references",
                     "正在准备豆包参考图" if image_count > 0 else "正在准备豆包生成请求",
                 )
-                reference_uploader = DoubaoReferenceImageUploader(
-                    self.task_id,
-                    self.prompt,
-                    self.ratio,
-                    self.duration,
-                    account=self.account,
-                    image_upload_slot=getattr(self, "image_upload_slot", None),
-                    proxy_platform="doubao",
-                )
-                attachments = await reference_uploader._upload_images_if_needed(page)
-                self._finish_image_preparation()
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
-                self._set_phase("submitting_request", "正在提交豆包生成请求")
-                if self.submission_pacer is not None:
-                    await self.submission_pacer()
-                completion_result = await page.evaluate(
-                    DOUBAO_SUBMIT_SCRIPT,
-                    {
-                        "prompt": self.prompt,
-                        "ratio": self.ratio or "auto",
-                        "model": model_code,
-                        "duration": self.duration,
-                        "attachments": attachments,
-                        "retryLimit": self.settings.doubao_submit_retry_limit,
-                        "retryDelayMs": 15000,
-                        "freshConversationRetryUsed": fresh_conversation_retry_used,
-                    },
-                )
-                if not isinstance(completion_result, dict):
-                    release_task_submission(self.task_id)
-                    return {"success": False, "retryable": True, "reason": "doubao submission returned an invalid response"}
-
-                completion_result = normalize_doubao_submission_acknowledgement(completion_result)
-                if should_use_doubao_video_creation_page(completion_result):
-                    direct_completion_result = dict(completion_result)
-                    try:
-                        completion_result = await self._submit_via_video_creation_page(page, image_count=image_count)
-                    except Exception as exc:
-                        completion_result = {
-                            "ok": False,
-                            "status": 0,
-                            "accepted": False,
-                            "video_creation_ui_error": f"doubao video creation page failed: {str(exc)[:300]}",
-                        }
-                    completion_result["video_creation_page_used"] = True
-                    completion_result["direct_submission_response_preview"] = str(
-                        direct_completion_result.get("response_preview") or ""
-                    )[:6000]
-                    completion_result["direct_initial_response_preview"] = str(
-                        direct_completion_result.get("initial_response_preview") or ""
-                    )[:6000]
-                    for identity_key in ("web_id", "region"):
-                        if not completion_result.get(identity_key) and direct_completion_result.get(identity_key):
-                            completion_result[identity_key] = direct_completion_result[identity_key]
+                self._set_phase("submitting_request", "正在通过豆包网页提交生成请求")
+                try:
+                    completion_result = await self._submit_via_video_creation_page(page, image_count=image_count)
+                except Exception as exc:
+                    completion_result = {
+                        "ok": False,
+                        "status": 0,
+                        "accepted": False,
+                        "video_creation_ui_error": f"doubao video creation page failed: {str(exc)[:300]}",
+                    }
+                finally:
+                    self._finish_image_preparation()
+                completion_result["video_creation_page_used"] = True
                 error, category = classify_doubao_submission(completion_result)
                 if category == "video_creation_ui_error":
                     await self._record_diagnostic(page, "doubao_video_creation_ui_error")

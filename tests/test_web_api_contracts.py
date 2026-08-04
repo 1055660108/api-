@@ -327,7 +327,7 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 404)
 
     def test_doubao_video_download_prefers_local_cache_over_expired_upstream(self) -> None:
-        registered = self.register("doubao_cached_video_owner")
+        registered = self.register("doubao_cache_owner")
         owner_hash = temp_access.hash_token(registered["token"])
         task = store.create_task("豆包缓存视频", "9:16", owner_token_hash=owner_hash, platform="doubao")
         store.save_result(task["id"], extra={

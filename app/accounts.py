@@ -906,6 +906,43 @@ def mark_account_text_only(account_id: str) -> dict[str, Any]:
     raise KeyError("account not found")
 
 
+def mark_account_region_restricted(account_id: str) -> dict[str, Any]:
+    account_id = str(account_id or "").strip().lower()
+    marked_at = utc_now()
+
+    def apply(account: dict[str, Any]) -> dict[str, Any]:
+        reason = "受区域限制，请先登录再使用豆包"
+        account.update(
+            enabled=False,
+            account_status="region_restricted",
+            status_reason=reason,
+            disabled_reason=reason,
+            account_status_marked_at=marked_at,
+            current_task_id="",
+            current_worker_id="",
+            current_started_at="",
+            updated_at=marked_at,
+        )
+        return _public_account(account)
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> dict[str, Any]:
+                for account in data.get("accounts") or []:
+                    if str(account.get("id") or "") == account_id:
+                        return apply(account)
+                raise KeyError("account not found")
+
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") == account_id:
+                result = apply(account)
+                _write_data(data)
+                return result
+    raise KeyError("account not found")
+
+
 def reset_platform_accounts_marked_today(platform: str) -> int:
     target_platform = normalize_platform(platform)
     today = local_today()

@@ -131,6 +131,10 @@ class DoubaoAutomationTests(unittest.TestCase):
         )
         self.assertTrue(DoubaoVideoAutomation._is_region_restricted(DOUBAO_CHAT_URL, "当前地区暂不支持豆包"))
         self.assertTrue(DoubaoVideoAutomation._is_region_restricted(
+            DOUBAO_CHAT_URL,
+            "新对话 视频生成 受区域限制，\n请先登录再使用豆包",
+        ))
+        self.assertTrue(DoubaoVideoAutomation._is_region_restricted(
             "https://www.doubao.com/security/doubao-region-ban?source=1",
             "",
         ))

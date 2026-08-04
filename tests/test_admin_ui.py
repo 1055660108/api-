@@ -89,6 +89,11 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('item.account_status === "text_only"', self.javascript)
         self.assertIn('textOnly ? "出文本"', self.javascript)
 
+    def test_account_list_supports_region_restricted_status(self) -> None:
+        self.assertIn('<option value="region_restricted">区域限制</option>', self.html)
+        self.assertIn('item.account_status === "region_restricted"', self.javascript)
+        self.assertIn('regionRestricted ? "区域限制"', self.javascript)
+
     def test_repository_update_control_is_present(self) -> None:
         for element_id in ("repositoryUpdatePanel", "repositoryUpdateState", "repositoryUpdateError", "repositoryRevision", "updateRepository"):
             self.assertIn(f'id="{element_id}"', self.html)

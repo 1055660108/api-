@@ -7,7 +7,7 @@ import socket
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_slider_verification, mark_account_text_only, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
+from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_region_restricted, mark_account_slider_verification, mark_account_text_only, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, exception_reason, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, ReusableBrowserPool
@@ -152,6 +152,10 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
         return
     if outcome.get("account_text_only"):
         mark_account_text_only(account_id)
+        refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
+        return
+    if outcome.get("account_region_restricted"):
+        mark_account_region_restricted(account_id)
         refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
         return
     if outcome.get("account_quota_insufficient"):

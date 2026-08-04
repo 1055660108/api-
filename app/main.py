@@ -4608,7 +4608,7 @@ def _accounts_list_payload(
         selected_platform = ""
     platform_accounts = [item for item in accounts if not selected_platform or str(item.get("platform") or DEFAULT_PLATFORM) == selected_platform]
     selected_status = str(status or "").strip().lower()
-    if selected_status not in {"", "all", "normal", "api", "ten_second", "slider_verification", "abnormal", "text_only", "disabled"}:
+    if selected_status not in {"", "all", "normal", "api", "ten_second", "slider_verification", "abnormal", "text_only", "region_restricted", "disabled"}:
         raise HTTPException(status_code=422, detail="账号状态筛选无效")
     if selected_status in {"", "all"}:
         status_accounts = platform_accounts
@@ -4624,6 +4624,8 @@ def _accounts_list_payload(
         status_accounts = [item for item in platform_accounts if item.get("account_status") == "abnormal"]
     elif selected_status == "text_only":
         status_accounts = [item for item in platform_accounts if item.get("account_status") == "text_only"]
+    elif selected_status == "region_restricted":
+        status_accounts = [item for item in platform_accounts if item.get("account_status") == "region_restricted"]
     else:
         status_accounts = [item for item in platform_accounts if item.get("enabled") is False and str(item.get("account_status") or "normal") == "normal"]
     keyword = str(q or "").strip().lower()
@@ -4656,6 +4658,7 @@ def _accounts_list_payload(
             "slider_verification": sum(item.get("account_status") == "slider_verification" for item in platform_accounts),
             "abnormal": sum(item.get("account_status") == "abnormal" for item in platform_accounts),
             "text_only": sum(item.get("account_status") == "text_only" for item in platform_accounts),
+            "region_restricted": sum(item.get("account_status") == "region_restricted" for item in platform_accounts),
             "disabled": sum(item.get("enabled") is False for item in platform_accounts),
             "by_platform": {
                 item: sum(str(account.get("platform") or DEFAULT_PLATFORM) == item for account in accounts)

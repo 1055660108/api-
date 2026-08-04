@@ -1078,6 +1078,34 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(cleaned["removed"], 0)
         self.assertEqual(len(accounts.list_accounts()), 1)
 
+    def test_doubao_region_restricted_account_is_retained_excluded_and_refunded(self) -> None:
+        task = store.create_task("豆包区域限制测试", "16:9", platform="doubao", model="Seedance 2.0 Fast")
+        created = accounts.add_account("Doubao region restricted", "session=region", quota_limit=2, platform="doubao")
+        claimed = accounts.claim_account_for_worker("worker-region", task["id"], platform="doubao")
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "doubao",
+            {
+                "retryable": True,
+                "account_fault": True,
+                "account_region_restricted": True,
+                "switch_account": True,
+            },
+        )
+
+        stored = accounts.list_accounts()[0]
+        self.assertEqual(stored["id"], created["id"])
+        self.assertFalse(stored["enabled"])
+        self.assertEqual(stored["account_status"], "region_restricted")
+        self.assertEqual(stored["status_reason"], "受区域限制，请先登录再使用豆包")
+        self.assertEqual(stored["quota_used"], 0)
+        self.assertIsNone(accounts.account_for_worker("another-worker", platform="doubao"))
+        cleaned = accounts.cleanup_flagged_accounts(datetime.now(accounts.LOCAL_TZ).replace(hour=23, minute=0))
+        self.assertEqual(cleaned["removed"], 0)
+        self.assertEqual(len(accounts.list_accounts()), 1)
+
     def test_reset_today_restores_only_marked_accounts_for_platform(self) -> None:
         doubao = accounts.add_account("Doubao marked", "session=doubao-marked", platform="doubao")
         dola = accounts.add_account("Dola marked", "session=dola-marked", platform="dola")

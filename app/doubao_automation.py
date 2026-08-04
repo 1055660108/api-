@@ -31,6 +31,7 @@ DOUBAO_SINGLE_CHAIN_URL = "https://www.doubao.com/im/chain/single"
 VIDEO_URL_RE = re.compile(r'https?://[^"\\\s]+(?:mime_type=video_mp4|\.mp4(?:\?[^"\\\s]*)?)', re.IGNORECASE)
 REGION_RESTRICTION_MARKERS = (
     "doubao-region-ban",
+    "受区域限制，请先登录再使用豆包",
     "当前地区暂不支持",
     "所在地区暂不支持",
     "not available in your region",
@@ -1988,6 +1989,9 @@ class DoubaoVideoAutomation:
         if "doubao-region-ban" in lowered_url:
             return True
         excerpt = str(body or "")[:3000]
+        compact_excerpt = re.sub(r"\s+", "", excerpt)
+        if all(marker in compact_excerpt for marker in ("受区域限制", "请先登录", "使用豆包")):
+            return True
         normal_shell_markers = ("新对话", "AI 创作", "历史对话", "视频生成")
         if any(marker in excerpt for marker in normal_shell_markers):
             return False
@@ -2673,7 +2677,9 @@ class DoubaoVideoAutomation:
                         "success": False,
                         "retryable": True,
                         "reason": "doubao region restricted",
-                        "infrastructure_fault": True,
+                        "account_fault": True,
+                        "account_region_restricted": True,
+                        "switch_account": True,
                     }
                 if await self._login_required(page, body):
                     await self._record_diagnostic(page, "doubao_login_invalid", body)
@@ -2783,7 +2789,9 @@ class DoubaoVideoAutomation:
                             "success": False,
                             "retryable": True,
                             "reason": error,
-                            "infrastructure_fault": True,
+                            "account_fault": True,
+                            "account_region_restricted": True,
+                            "switch_account": True,
                         }
                     if category == "quota_insufficient":
                         return {

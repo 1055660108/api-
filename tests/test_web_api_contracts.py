@@ -2122,6 +2122,11 @@ class WebAPIContractTests(unittest.TestCase):
         text_only = self.client.get("/accounts?page=1&page_size=20&status=text_only").json()
         self.assertEqual([item["id"] for item in text_only["accounts"]], [text_only_account["id"]])
         self.assertEqual(text_only["stats"]["text_only"], 1)
+        region_account = self.client.post("/accounts", json={"name": "区域限制账号", "cookie_data": "session=region", "platform": "doubao"}).json()["account"]
+        accounts.mark_account_region_restricted(region_account["id"])
+        region_restricted = self.client.get("/accounts?page=1&page_size=20&status=region_restricted").json()
+        self.assertEqual([item["id"] for item in region_restricted["accounts"]], [region_account["id"]])
+        self.assertEqual(region_restricted["stats"]["region_restricted"], 1)
         ten_second_account = self.client.post("/accounts", json={"name": "10秒账号", "cookie_data": "session=ten-second", "platform": "dola"}).json()["account"]
         accounts.mark_account_ten_second_limit(ten_second_account["id"])
         ten_second = self.client.get("/accounts?page=1&page_size=20&status=ten_second").json()

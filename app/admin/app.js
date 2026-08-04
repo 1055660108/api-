@@ -533,6 +533,7 @@ const els = {
   accountNormalCount: document.getElementById("accountNormalCount"),
   accountSliderVerificationCount: document.getElementById("accountSliderVerificationCount"),
   accountAbnormalCount: document.getElementById("accountAbnormalCount"),
+  accountRegionRestrictedCount: document.getElementById("accountRegionRestrictedCount"),
   openAccountQuotaSettings: document.getElementById("openAccountQuotaSettings"),
   accountSelectionMode: document.getElementById("accountSelectionMode"),
   accountQuotaSettingsModal: document.getElementById("accountQuotaSettingsModal"),
@@ -4968,6 +4969,7 @@ function renderAccountTable() {
   if (els.accountNormalCount) els.accountNormalCount.textContent = String(Number(stats.normal || 0));
   if (els.accountSliderVerificationCount) els.accountSliderVerificationCount.textContent = String(Number(stats.slider_verification || 0));
   if (els.accountAbnormalCount) els.accountAbnormalCount.textContent = String(Number(stats.abnormal || 0));
+  if (els.accountRegionRestrictedCount) els.accountRegionRestrictedCount.textContent = String(Number(stats.region_restricted || 0));
   if (els.accountPageTotal) els.accountPageTotal.textContent = `本页 ${accounts.length} 条 · 共 ${state.accountTotal} 条 · ${state.accountPage} / ${state.accountTotalPages}`;
   if (els.prevAccountPage) els.prevAccountPage.disabled = state.accountPage <= 1;
   if (els.nextAccountPage) els.nextAccountPage.disabled = state.accountPage >= state.accountTotalPages;
@@ -4985,9 +4987,10 @@ function renderAccountTable() {
     const abnormal = item.account_status === "abnormal";
     const sliderVerification = item.account_status === "slider_verification" || /跳验证|滑块风控/i.test(String(item.status_reason || "")) && !abnormal;
     const textOnly = item.account_status === "text_only";
+    const regionRestricted = item.account_status === "region_restricted";
     const tenSecondOnly = Boolean(item.ten_second_only);
     const apiAccount = String(item.account_source || "admin") === "api";
-    const accountStatus = textOnly ? "出文本" : (sliderVerification ? "跳验证" : (abnormal ? "登录异常" : (enabled ? "正常" : "停用")));
+    const accountStatus = regionRestricted ? "区域限制" : (textOnly ? "出文本" : (sliderVerification ? "跳验证" : (abnormal ? "登录异常" : (enabled ? "正常" : "停用"))));
     const tenSecondChip = tenSecondOnly ? '<span class="chip unknown" title="该账号返回过长于 10 秒的视频限制">10秒</span>' : "";
     const quotaLimit = Number(item.quota_limit || 0);
     const quotaUsed = Number(item.quota_used || 0);
@@ -5011,7 +5014,7 @@ function renderAccountTable() {
             <code>${escapeHtml(id)}</code>
           </div>
         </td>
-        <td><span class="account-card-label">状态</span><span class="chip ${abnormal || textOnly ? "failed" : (sliderVerification ? "unknown" : (enabled ? "success" : "unknown"))}" title="${escapeHtml(item.status_reason || "")}">${accountStatus}</span>${tenSecondChip}</td>
+        <td><span class="account-card-label">状态</span><span class="chip ${abnormal || textOnly || regionRestricted ? "failed" : (sliderVerification ? "unknown" : (enabled ? "success" : "unknown"))}" title="${escapeHtml(item.status_reason || "")}">${accountStatus}</span>${tenSecondChip}</td>
         <td>
           <div class="account-quota-cell">
             <span class="account-card-label">额度</span>

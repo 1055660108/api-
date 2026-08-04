@@ -2201,12 +2201,49 @@ class DoubaoVideoAutomation:
         async def video_settings_button():
             selector = page.locator("button:visible").filter(
                 has_text=re.compile(r"(?:自动|\d+:\d+)\s*[·•]\s*\d+s", re.IGNORECASE)
-            ).last
+            )
             try:
-                await selector.wait_for(state="visible", timeout=10000)
+                await selector.last.wait_for(state="visible", timeout=10000)
             except Exception as exc:
                 raise RuntimeError("doubao video ratio and duration selector unavailable") from exc
-            return selector
+            editors = page.locator('[contenteditable="true"][role="textbox"]:visible,textarea:visible')
+            editor_box = None
+            for index in range(await editors.count() - 1, -1, -1):
+                candidate = editors.nth(index)
+                try:
+                    if not await candidate.is_visible():
+                        continue
+                    editor_box = await candidate.bounding_box()
+                except Exception:
+                    continue
+                if editor_box:
+                    break
+            if editor_box:
+                positioned: list[tuple[float, Any]] = []
+                editor_center_x = editor_box["x"] + editor_box["width"] / 2
+                editor_center_y = editor_box["y"] + editor_box["height"] / 2
+                for index in range(await selector.count() - 1, -1, -1):
+                    candidate = selector.nth(index)
+                    try:
+                        if not await candidate.is_visible():
+                            continue
+                        box = await candidate.bounding_box()
+                    except Exception:
+                        continue
+                    if not box:
+                        continue
+                    center_x = box["x"] + box["width"] / 2
+                    center_y = box["y"] + box["height"] / 2
+                    near_editor = (
+                        editor_box["x"] - 40 <= center_x <= editor_box["x"] + editor_box["width"] + 40
+                        and editor_box["y"] - 100 <= center_y <= editor_box["y"] + editor_box["height"] + 40
+                    )
+                    if near_editor:
+                        distance = abs(center_x - editor_center_x) + abs(center_y - editor_center_y)
+                        positioned.append((distance, candidate))
+                if positioned:
+                    return min(positioned, key=lambda item: item[0])[1]
+            return selector.last
 
         async def select_video_setting(label: str) -> None:
             selector = await video_settings_button()

@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+from pathlib import Path
 from typing import Any, AsyncContextManager, Awaitable, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -56,6 +57,7 @@ DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
 DOUBAO_PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "5", "resource_type": 2}
 DOUBAO_SUBMISSION_MARKER = "视频生成已提交"
 DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS = 75
+DOUBAO_VIDEO_CACHE_MAX_BYTES = 512 * 1024 * 1024
 DOUBAO_CONVERSATION_ID_RE = re.compile(
     r'(?:"|\\")?(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:"|\\")?\s*[:=]\s*(?:"|\\")?(\d{15,24})',
     re.IGNORECASE,
@@ -133,6 +135,7 @@ async def fetch_doubao_generation_result(
     web_id: str = "111",
     region: str = "JP",
     proxy_server: str = "",
+    video_cache_path: str | Path | None = None,
 ) -> dict[str, Any]:
     timeout = httpx.Timeout(30.0, connect=15.0)
     headers = {
@@ -170,6 +173,28 @@ async def fetch_doubao_generation_result(
         if unwatermarked_url:
             source = str(unwatermarked.get("source") or "fallback_unwatermarked")
             key = str(unwatermarked.get("key") or "video_model.fallback_api")
+            cache_bytes = 0
+            if video_cache_path is not None:
+                try:
+                    cache_bytes = await cache_doubao_video(
+                        client,
+                        cookie_header,
+                        unwatermarked_url,
+                        Path(video_cache_path),
+                    )
+                except Exception as exc:
+                    return {
+                        "state": "awaiting_unwatermarked",
+                        "text": str(parsed.get("text") or "视频已生成，正在准备下载地址"),
+                        "watermarked_candidate": dict(parsed.get("candidate") or {}),
+                        "unwatermarked_status": "video_cache_unavailable",
+                        "unwatermarked_attempts": int(unwatermarked.get("attempts") or 0),
+                        "unwatermarked_errors": [
+                            *list(unwatermarked.get("errors") or [])[:9],
+                            f"video_cache_{type(exc).__name__}",
+                        ],
+                        "video_cache_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    }
             return {
                 "state": "completed",
                 "text": str(parsed.get("text") or ""),
@@ -187,6 +212,8 @@ async def fetch_doubao_generation_result(
                 "unwatermarked_status": "completed",
                 "unwatermarked_attempts": int(unwatermarked.get("attempts") or 0),
                 "unwatermarked_errors": list(unwatermarked.get("errors") or [])[:10],
+                "video_cache_bytes": cache_bytes,
+                "video_cache_error": "",
             }
         if parsed.get("state") == "completed":
             return {
@@ -201,6 +228,47 @@ async def fetch_doubao_generation_result(
         parsed["unwatermarked_attempts"] = int(unwatermarked.get("attempts") or 0)
         parsed["unwatermarked_errors"] = list(unwatermarked.get("errors") or [])[:10]
         return parsed
+
+
+async def cache_doubao_video(
+    client: httpx.AsyncClient,
+    cookie_header: str,
+    url: str,
+    target: Path,
+) -> int:
+    if target.is_file() and target.stat().st_size > 0:
+        return target.stat().st_size
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    headers = {
+        "Accept": "video/*,*/*;q=0.8",
+        "Accept-Encoding": "identity",
+        "Cookie": str(cookie_header or ""),
+        "Origin": "https://www.doubao.com",
+        "Referer": DOUBAO_URL,
+        "User-Agent": BROWSER_USER_AGENT,
+    }
+    total = 0
+    try:
+        async with client.stream("GET", str(url or ""), headers=headers, follow_redirects=True) as response:
+            response.raise_for_status()
+            content_length = int(response.headers.get("content-length") or 0)
+            if content_length > DOUBAO_VIDEO_CACHE_MAX_BYTES:
+                raise RuntimeError("doubao video exceeds cache size limit")
+            with temporary.open("wb") as output:
+                async for chunk in response.aiter_bytes():
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > DOUBAO_VIDEO_CACHE_MAX_BYTES:
+                        raise RuntimeError("doubao video exceeds cache size limit")
+                    output.write(chunk)
+        if total <= 0:
+            raise RuntimeError("doubao video cache response was empty")
+        temporary.replace(target)
+        return total
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 async def fetch_doubao_single_chain(

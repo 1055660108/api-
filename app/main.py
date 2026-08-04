@@ -117,6 +117,7 @@ from .store import (
     request_task_cancel,
     set_task_submission_paused,
     task_has_video,
+    task_video_path,
     task_submission_paused,
     validate_task_id,
     update_meta,
@@ -5953,6 +5954,16 @@ async def task_video(
         raise HTTPException(status_code=404, detail="task not found")
     if access.is_temp and str(meta.get("owner_token_hash") or "") != access.token_hash:
         raise HTTPException(status_code=404, detail="task not found")
+    cached_video = task_video_path(task_id)
+    if cached_video.is_file() and cached_video.stat().st_size > 0:
+        download_name = _video_download_filename(meta, task_id)
+        return FileResponse(
+            cached_video,
+            media_type="video/mp4",
+            filename=download_name,
+            content_disposition_type="attachment" if download else "inline",
+            headers={"Cache-Control": "private, max-age=300", "Accept-Ranges": "bytes"},
+        )
     url = _validate_video_url(_task_video_url(meta, result))
     headers = {
         "Accept": "video/*,*/*;q=0.8",

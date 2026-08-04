@@ -326,6 +326,29 @@ class WebAPIContractTests(unittest.TestCase):
         denied = self.client.get(f"/tasks/{task['id']}/video", headers={"X-API-Token": other["token"]})
         self.assertEqual(denied.status_code, 404)
 
+    def test_doubao_video_download_prefers_local_cache_over_expired_upstream(self) -> None:
+        registered = self.register("doubao_cached_video_owner")
+        owner_hash = temp_access.hash_token(registered["token"])
+        task = store.create_task("豆包缓存视频", "9:16", owner_token_hash=owner_hash, platform="doubao")
+        store.save_result(task["id"], extra={
+            "decoded_main_url": "https://expired.example/video.mp4",
+            "doubao_result_source": "fallback_unwatermarked",
+            "doubao_watermark_status": "original",
+        })
+        cached = store.task_video_path(task["id"])
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(b"cached-video")
+
+        with patch.object(main.httpx, "AsyncClient", side_effect=AssertionError("upstream should not be used")):
+            response = self.client.get(
+                f"/tasks/{task['id']}/video?download=true",
+                headers={"X-API-Token": registered["token"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"cached-video")
+        self.assertTrue(response.headers["content-disposition"].startswith("attachment;"))
+
     def test_task_video_proxy_closes_upstream_on_invalid_redirect(self) -> None:
         registered = self.register("video_redirect_owner")
         owner_hash = temp_access.hash_token(registered["token"])

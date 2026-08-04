@@ -201,6 +201,10 @@ def reference_thumbnails_dir(task_id: str) -> Path:
     return task_dir(task_id) / "reference_thumbnails"
 
 
+def task_video_path(task_id: str) -> Path:
+    return task_dir(task_id) / "video.mp4"
+
+
 def ensure_task_directories(task_id: str) -> Path:
     root = task_dir(task_id)
     root.mkdir(parents=True, exist_ok=True)

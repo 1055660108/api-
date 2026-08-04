@@ -16,7 +16,7 @@ from .accounts import clear_account_current_task, disable_account_for_login, exh
 from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
 from .config import load_settings
 from .proxy_manager import acquire_dola_subscription_proxy, fetch_proxy_from_api, release_dola_subscription_proxy
-from .store import AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_late_result_success, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_proxy_task, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, update_meta
+from .store import AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_late_result_success, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_proxy_task, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, task_video_path, update_meta
 from .temp_access import refund_temp_quota_hash
 
 
@@ -806,6 +806,7 @@ async def _query_doubao_task_once(
                 web_id=str(result.get("doubao_web_id") or "111"),
                 region=str(result.get("doubao_region") or "JP"),
                 proxy_server=proxy_server,
+                video_cache_path=task_video_path(task_id),
             ),
         )
     except httpx.HTTPStatusError as exc:
@@ -852,6 +853,8 @@ async def _query_doubao_task_once(
             "doubao_unwatermarked_status": str(queried.get("unwatermarked_status") or ""),
             "doubao_unwatermarked_attempts": max(0, int(queried.get("unwatermarked_attempts") or 0)),
             "doubao_unwatermarked_errors": [str(item)[:100] for item in queried.get("unwatermarked_errors") or []][:10],
+            "doubao_video_cache_bytes": max(0, int(queried.get("video_cache_bytes") or 0)),
+            "doubao_video_cache_error": str(queried.get("video_cache_error") or "")[:500],
         },
     )
     account_id = str(result.get("account_id") or "")

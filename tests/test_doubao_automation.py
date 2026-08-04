@@ -12,10 +12,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -27,6 +28,25 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner.settings = SimpleNamespace(task_timeout_seconds=600, doubao_submit_retry_limit=2)
         runner.task_id = "doubao-task"
         return runner
+
+    def test_unwatermarked_video_is_streamed_to_task_cache(self) -> None:
+        payload = b"video-bytes"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.headers["referer"], "https://www.doubao.com/chat/")
+            self.assertEqual(request.headers["cookie"], "session=value")
+            return httpx.Response(200, headers={"content-type": "video/mp4"}, content=payload)
+
+        async def run(target: Path) -> int:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                return await cache_doubao_video(client, "session=value", "https://video.example/result.mp4", target)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "task" / "video.mp4"
+            size = asyncio.run(run(target))
+            self.assertEqual(size, len(payload))
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertFalse(target.with_name(".video.mp4.tmp").exists())
 
     def test_shared_proxy_is_passed_to_browser_and_released(self) -> None:
         proxy = {"server": "http://proxy.example:18080"}

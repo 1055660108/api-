@@ -17,7 +17,7 @@ import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_reference_upload_progress_visible, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -130,6 +130,14 @@ class DoubaoAutomationTests(unittest.TestCase):
             )
         )
         self.assertTrue(DoubaoVideoAutomation._is_region_restricted(DOUBAO_CHAT_URL, "当前地区暂不支持豆包"))
+        self.assertTrue(DoubaoVideoAutomation._is_region_restricted(
+            "https://www.doubao.com/security/doubao-region-ban?source=1",
+            "",
+        ))
+        self.assertFalse(DoubaoVideoAutomation._is_region_restricted(
+            DOUBAO_CHAT_URL,
+            "历史对话 当前地区暂不支持测试 新对话 AI 创作 视频生成",
+        ))
         self.assertFalse(DoubaoVideoAutomation._is_region_restricted(DOUBAO_CHAT_URL, "开始视频生成"))
 
     def test_service_frequent_observation_marks_login_immediately(self) -> None:
@@ -334,6 +342,12 @@ class DoubaoAutomationTests(unittest.TestCase):
             ("豆包仅返回文本，未提交视频生成", "text_only_response"),
         )
 
+    def test_reference_upload_progress_must_disappear_before_submission(self) -> None:
+        for text in ("参考图上传 29%", "76%", "100%", "正在上传", "图片处理中"):
+            with self.subTest(text=text):
+                self.assertTrue(doubao_reference_upload_progress_visible(text))
+        self.assertFalse(doubao_reference_upload_progress_visible("参考图已上传完成"))
+
     def test_quota_exhaustion_is_a_terminal_submission_signal(self) -> None:
         for text in ("今日额度不足", "视频生成额度已用完", "当前剩余 0 次", "今日视频生成免费次数用完了"):
             self.assertTrue(is_doubao_account_quota_insufficient(text))
@@ -371,6 +385,9 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("page.get_by_text(self.model, exact=True)", ui_source)
         self.assertIn("doubao video model selection mismatch", ui_source)
         self.assertIn("page.get_by_text(label, exact=True)", ui_source)
+        self.assertIn("stable_checks >= DOUBAO_REFERENCE_UPLOAD_STABLE_CHECKS", ui_source)
+        self.assertIn("progress_visible = doubao_reference_upload_progress_visible(upload_tail)", ui_source)
+        self.assertIn("await visible_model_button(10000) if direct_video_entry else None", ui_source)
         self.assertLess(ui_source.index("await editor.fill(self.prompt)"), ui_source.index("await select_video_setting(ratio_label)"))
         self.assertLess(ui_source.index("await select_video_setting(ratio_label)"), ui_source.index("await send_button.click"))
         self.assertIn('attributes = " ".join(attributes_list)', ui_source)

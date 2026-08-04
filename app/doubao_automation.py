@@ -58,6 +58,7 @@ DOUBAO_PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "5", "resource_type"
 DOUBAO_SUBMISSION_MARKER = "视频生成已提交"
 DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS = 75
 DOUBAO_VIDEO_CACHE_MAX_BYTES = 512 * 1024 * 1024
+DOUBAO_REFERENCE_UPLOAD_STABLE_CHECKS = 2
 DOUBAO_CONVERSATION_ID_RE = re.compile(
     r'(?:"|\\")?(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:"|\\")?\s*[:=]\s*(?:"|\\")?(\d{15,24})',
     re.IGNORECASE,
@@ -873,6 +874,13 @@ def is_doubao_text_only_video_response(value: str) -> bool:
         "可直接使用",
     ))
     return explicit_prompt_rewrite or (prompt_export and (tool_recommendation or versioned_prompts))
+
+
+def doubao_reference_upload_progress_visible(value: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    if any(marker in text for marker in ("正在上传", "上传中", "处理中")):
+        return True
+    return any(0 <= int(match) <= 100 for match in re.findall(r"(?<!\d)(\d{1,3})%(?!\d)", text))
 
 
 def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
@@ -1976,8 +1984,14 @@ class DoubaoVideoAutomation:
 
     @staticmethod
     def _is_region_restricted(page_url: str, body: str) -> bool:
-        haystack = f"{page_url}\n{body[:3000]}".lower()
-        return any(marker.lower() in haystack for marker in REGION_RESTRICTION_MARKERS)
+        lowered_url = str(page_url or "").lower()
+        if "doubao-region-ban" in lowered_url:
+            return True
+        excerpt = str(body or "")[:3000]
+        normal_shell_markers = ("新对话", "AI 创作", "历史对话", "视频生成")
+        if any(marker in excerpt for marker in normal_shell_markers):
+            return False
+        return any(marker.lower() in excerpt.lower() for marker in REGION_RESTRICTION_MARKERS[1:])
 
     @staticmethod
     async def _login_required(page, body: str) -> bool:
@@ -2034,10 +2048,10 @@ class DoubaoVideoAutomation:
                 page.get_by_role("tab", name="视频生成", exact=True),
                 page.get_by_text("视频生成", exact=True),
             ),
-            timeout=3000,
+            timeout=8000,
         )
         if direct_video_entry:
-            await page.wait_for_timeout(1200)
+            await page.wait_for_timeout(1500)
 
         async def visible_model_button(timeout: int):
             selector = page.locator("button:visible").filter(
@@ -2049,7 +2063,7 @@ class DoubaoVideoAutomation:
             except Exception:
                 return None
 
-        model_button = await visible_model_button(3000)
+        model_button = await visible_model_button(10000) if direct_video_entry else None
         if model_button is None:
             ai_creation_opened = await click_visible(
                 (
@@ -2061,16 +2075,17 @@ class DoubaoVideoAutomation:
             )
             if ai_creation_opened:
                 await page.wait_for_timeout(1500)
-                await click_visible(
+                video_tab_opened = await click_visible(
                     (
                         page.get_by_role("tab", name="视频", exact=True),
                         page.get_by_role("button", name="视频", exact=True),
                         page.get_by_text("视频", exact=True),
                     ),
-                    timeout=5000,
+                    timeout=8000,
                 )
-                await page.wait_for_timeout(1200)
-                model_button = await visible_model_button(5000)
+                if video_tab_opened:
+                    await page.wait_for_timeout(1500)
+                    model_button = await visible_model_button(10000)
         if model_button is None:
             return {
                 "ok": False,
@@ -2211,6 +2226,7 @@ class DoubaoVideoAutomation:
                 visible_images_before = await page.locator("img:visible").count()
                 await file_input.last.set_input_files([str(path) for path in paths])
                 upload_deadline = asyncio.get_running_loop().time() + 90
+                stable_checks = 0
                 while asyncio.get_running_loop().time() < upload_deadline:
                     await page.wait_for_timeout(500)
                     upload_body = await page.locator("body").inner_text()
@@ -2218,9 +2234,14 @@ class DoubaoVideoAutomation:
                     if any(marker in upload_tail for marker in ("上传失败", "图片上传失败", "参考图上传失败")):
                         return "failed"
                     visible_images = await page.locator("img:visible").count()
-                    uploading = any(marker in upload_tail for marker in ("正在上传", "上传中", "处理中"))
-                    if not uploading and visible_images >= visible_images_before + min(len(paths), image_count):
-                        return "completed"
+                    progress_visible = doubao_reference_upload_progress_visible(upload_tail)
+                    preview_ready = visible_images >= visible_images_before + min(len(paths), image_count)
+                    if not progress_visible and preview_ready:
+                        stable_checks += 1
+                        if stable_checks >= DOUBAO_REFERENCE_UPLOAD_STABLE_CHECKS:
+                            return "completed"
+                    else:
+                        stable_checks = 0
                 return "timeout"
 
             image_upload_slot = getattr(self, "image_upload_slot", None)

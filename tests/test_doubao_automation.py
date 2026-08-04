@@ -1160,15 +1160,15 @@ class QianwenProxyAutomationTests(unittest.TestCase):
 
     def test_qianwen_duration_is_explicitly_limited_to_ten_seconds(self) -> None:
         runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
-        page = SimpleNamespace(get_by_role=Mock())
+        control = SimpleNamespace(count=AsyncMock(return_value=0))
+        filtered = SimpleNamespace(last=control)
+        page = SimpleNamespace(locator=Mock(return_value=SimpleNamespace(filter=Mock(return_value=filtered))))
         runner.duration = 15
         self.assertFalse(asyncio.run(runner._ensure_video_duration(page)))
-        page.get_by_role.assert_not_called()
+        page.locator.assert_not_called()
 
         runner.duration = 10
-        controls = SimpleNamespace(count=AsyncMock(return_value=0))
-        page.get_by_role = Mock(return_value=controls)
-        self.assertTrue(asyncio.run(runner._ensure_video_duration(page)))
+        self.assertFalse(asyncio.run(runner._ensure_video_duration(page)))
 
 
 DOUBAO_CHAT_URL = "https://www.doubao.com/chat/"

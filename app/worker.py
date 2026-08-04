@@ -58,6 +58,7 @@ GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 
 RUNNING_WATCH_GRACE_SECONDS = 90
 RESULT_WATCH_DEADLINE_MINUTES = 20
 DOUBAO_RESULT_WATCH_DEADLINE_MINUTES = 30
+QIANWEN_RESULT_WATCH_DEADLINE_MINUTES = 30
 RESULT_LONG_WAIT_SECONDS = 8 * 60
 RESULT_LOW_RATE_SECONDS = 15 * 60
 RESULT_MAX_TOTAL_WATCH_SECONDS = 30 * 60
@@ -432,6 +433,12 @@ class WorkerManager:
             due_before=due_before,
             limit=RESULT_POLL_BATCH_SIZE,
         )
+        qianwen_submitted_rows = list_task_metas_by_statuses(
+            {STATUS_SUBMITTED},
+            platform="qianwen",
+            due_before=due_before,
+            limit=RESULT_POLL_BATCH_SIZE,
+        )
         dola_late_rows = list_task_metas_by_statuses(
             {"failed"},
             platform="dola",
@@ -446,8 +453,15 @@ class WorkerManager:
             limit=RESULT_POLL_BATCH_SIZE,
             execution_phase="late_result_watch",
         )
+        qianwen_late_rows = list_task_metas_by_statuses(
+            {"failed"},
+            platform="qianwen",
+            due_before=due_before,
+            limit=RESULT_POLL_BATCH_SIZE,
+            execution_phase="late_result_watch",
+        )
         late_ids = []
-        for task_id, meta in dola_late_rows + doubao_late_rows:
+        for task_id, meta in dola_late_rows + doubao_late_rows + qianwen_late_rows:
             if self._late_result_watch_active(meta):
                 late_ids.append(task_id)
             else:
@@ -458,7 +472,7 @@ class WorkerManager:
                     status_reason=str(meta.get("error") or "generation timeout"),
                 )
         await self._watch_unfinished_success_tasks(
-            [task_id for task_id, _ in dola_submitted_rows + doubao_submitted_rows] + late_ids
+            [task_id for task_id, _ in dola_submitted_rows + doubao_submitted_rows + qianwen_submitted_rows] + late_ids
         )
         loop_now = asyncio.get_running_loop().time()
         if loop_now - self._last_pending_retry_reconcile_at >= 15:
@@ -556,7 +570,7 @@ class WorkerManager:
                     return
                 meta = get_meta(task_id)
                 platform = str(meta.get("platform") or "dola")
-                if platform not in {"dola", "doubao"}:
+                if platform not in {"dola", "doubao", "qianwen"}:
                     return
                 late_watch = self._late_result_watch_active(meta)
                 if str(meta.get("status") or "") != STATUS_SUBMITTED and not late_watch:
@@ -568,26 +582,32 @@ class WorkerManager:
                     if not late_until or now >= late_until:
                         update_meta(task_id, late_result_watch_until="", execution_phase="failed", status_reason=str(meta.get("error") or "generation timeout"))
                         return
-                deadline_minutes = DOUBAO_RESULT_WATCH_DEADLINE_MINUTES if platform == "doubao" else RESULT_WATCH_DEADLINE_MINUTES
+                if platform == "doubao":
+                    deadline_minutes = DOUBAO_RESULT_WATCH_DEADLINE_MINUTES
+                elif platform == "qianwen":
+                    deadline_minutes = QIANWEN_RESULT_WATCH_DEADLINE_MINUTES
+                else:
+                    deadline_minutes = RESULT_WATCH_DEADLINE_MINUTES
                 if not late_watch and submitted_at and now - submitted_at >= timedelta(minutes=deadline_minutes):
                     account_id = str(result.get("account_id") or "")
                     if account_id:
-                        if platform == "doubao":
+                        if platform in {"doubao", "qianwen"}:
                             refund_account_quota_once(task_id, account_id, str(result.get("account_quota_charge_id") or ""))
                         else:
                             settle_account_quota(account_id, str(result.get("account_quota_charge_id") or ""))
                         clear_account_current_task(account_id, task_id)
-                    timeout_reason = "生成超过30分钟，仍未返回结果" if platform == "doubao" else "生成超过20分钟，仍未返回结果"
+                    timeout_reason = "生成超过30分钟，仍未返回结果" if platform in {"doubao", "qianwen"} else "生成超过20分钟，仍未返回结果"
                     mark_failed(task_id, timeout_reason)
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     late_until = submitted_at + timedelta(seconds=RESULT_MAX_TOTAL_WATCH_SECONDS)
                     if late_until > now:
+                        late_platform_label = {"doubao": "豆包", "qianwen": "千问"}.get(platform, "Dola")
                         update_meta(
                             task_id,
                             late_result_watch_until=late_until.isoformat(),
                             late_result_refunded_at=utc_now(),
                             execution_phase="late_result_watch",
-                            status_reason=f"已退款，后台继续观察{'豆包' if platform == 'doubao' else 'Dola'}结果",
+                            status_reason=f"已退款，后台继续观察{late_platform_label}结果",
                             next_result_poll_at=(now + timedelta(seconds=RESULT_LATE_POLL_INTERVAL_SECONDS)).isoformat(),
                         )
                     else:
@@ -602,7 +622,8 @@ class WorkerManager:
                     return
                 age_seconds = max(0.0, (now - submitted_at).total_seconds()) if submitted_at else 0.0
                 if age_seconds >= RESULT_LONG_WAIT_SECONDS and not meta.get("long_result_wait_marked_at"):
-                    update_meta(task_id, long_result_wait_marked_at=utc_now(), execution_phase="waiting_result_long", status_reason=f"{'豆包' if platform == 'doubao' else 'Dola'}生成时间较长，继续查询结果")
+                    platform_label = {"doubao": "豆包", "qianwen": "千问"}.get(platform, "Dola")
+                    update_meta(task_id, long_result_wait_marked_at=utc_now(), execution_phase="waiting_result_long", status_reason=f"{platform_label}生成时间较长，继续查询结果")
                 if platform == "dola" and age_seconds >= RESULT_LOW_RATE_SECONDS and not meta.get("late_account_released_at"):
                     account_id = str(result.get("account_id") or "")
                     if account_id:
@@ -619,7 +640,7 @@ class WorkerManager:
                 jitter = secrets.randbelow(5001) / 1000
                 if late_watch:
                     interval = RESULT_LATE_POLL_INTERVAL_SECONDS
-                elif platform == "doubao":
+                elif platform in {"doubao", "qianwen"}:
                     interval = 15 if age_seconds < 5 * 60 else 30 if age_seconds < 15 * 60 else 60
                 else:
                     interval = RESULT_LATE_POLL_INTERVAL_SECONDS if age_seconds >= RESULT_LOW_RATE_SECONDS else min(45, RESULT_POLL_BASE_INTERVAL_SECONDS + max(0, miss_count - 1) * 5)
@@ -1052,7 +1073,7 @@ class WorkerManager:
                 if platform != "dola":
                     if outcome.get("success"):
                         self._platform_guard.record_success(platform)
-                    elif outcome.get("retryable") and not outcome.get("account_fault") and not outcome.get("infrastructure_fault"):
+                    elif outcome.get("retryable") and not outcome.get("submitted") and not outcome.get("account_fault") and not outcome.get("infrastructure_fault"):
                         self._platform_guard.record_failure(platform)
                 if outcome.get("success") and platform in {"dola", "doubao", "qianwen"} and account:
                     if not outcome.get("confirmation_pending"):

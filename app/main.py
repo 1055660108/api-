@@ -240,7 +240,7 @@ def _video_download_filename(meta: dict, task_id: str) -> str:
 
 def _video_referer(platform: str) -> str:
     return {
-        "qianwen": "https://chat.qwen.ai/",
+        "qianwen": "https://www.qianwen.com/",
         "doubao": "https://www.doubao.com/",
     }.get(str(platform or "").lower(), "https://www.dola.com/")
 

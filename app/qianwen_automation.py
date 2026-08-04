@@ -6,19 +6,202 @@ import re
 import time
 from typing import Any
 
+import httpx
 from playwright.async_api import async_playwright
 
 from .accounts import disable_account_for_login, update_account_cookies
 from .browser_runtime import cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import QIANWEN_PROFILES_DIR, TASKS_DIR, ensure_dirs, load_settings
-from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, mark_submitted, mark_success, save_result, task_exists
+from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, save_result, task_exists, task_image_paths
 from .profile_lock import account_profile_lock
 
 
 QIANWEN_URL = "https://www.qianwen.com/"
+QIANWEN_CHAT_API_URL = "https://chat2.qianwen.com/api/v2/chat"
+QIANWEN_DETAIL_API_URL = "https://chat2-api.qianwen.com/api/v1/session/req/detail"
 VIDEO_URL_RE = re.compile(r'https?://[^"\\\s]+\.mp4(?:\?[^"\\\s]*)?', re.IGNORECASE)
 MEDIA_URL_RE = re.compile(r'https?://[^"\\\s]+(?:\.mp4|mime_type=video|video_mp4|\.m3u8)(?:\?[^"\\\s]*)?', re.IGNORECASE)
 TASK_KEY_RE = re.compile(r"(?:task|job|request|aigc|generation|message)[_-]?id", re.IGNORECASE)
+QIANWEN_QUERY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+
+
+def _try_parse_json(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return value
+
+
+def _walk_qianwen(value: Any, path: str = ""):
+    value = _try_parse_json(value)
+    yield path, value
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            yield from _walk_qianwen(child, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from _walk_qianwen(child, f"{path}[{index}]")
+
+
+def qianwen_cookie_header(cookies: list[dict[str, Any]]) -> str:
+    return "; ".join(
+        f"{item['name']}={item['value']}"
+        for item in cookies
+        if isinstance(item, dict) and item.get("name") and item.get("value") is not None
+    )
+
+
+def qianwen_cookie_value(cookie_header: str, name: str) -> str:
+    expected = str(name or "").strip()
+    for part in str(cookie_header or "").split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key.replace("\\_", "_") == expected:
+            return value.strip()
+    return ""
+
+
+def parse_qianwen_submission(post_data: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(str(post_data or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    biz_data = _try_parse_json(payload.get("biz_data"))
+    if not isinstance(biz_data, dict):
+        return {}
+    request_data = biz_data.get("req") if isinstance(biz_data.get("req"), dict) else {}
+    params = request_data.get("params") if isinstance(request_data.get("params"), dict) else {}
+    scene = str(payload.get("ai_tool_scene") or "")
+    if scene != "zaodian_generate_video" and str(biz_data.get("bizScene") or "") != "genVideo":
+        return {}
+    report = biz_data.get("videoReportParams") if isinstance(biz_data.get("videoReportParams"), dict) else {}
+    attachments = params.get("attachments") if isinstance(params.get("attachments"), list) else []
+    return {
+        "session_id": str(payload.get("session_id") or ""),
+        "req_id": str(payload.get("req_id") or ""),
+        "root_model": str(request_data.get("rootModel") or ""),
+        "model": str(report.get("model") or request_data.get("rootModel") or ""),
+        "duration": int(params.get("duration") or 0),
+        "ratio": str(params.get("size") or ""),
+        "resolution": str(params.get("resolution") or ""),
+        "gen_mode": str(request_data.get("genMode") or params.get("gen_mode") or ""),
+        "attachment_ids": [
+            str(item.get("materialId") or "")
+            for item in attachments
+            if isinstance(item, dict) and item.get("materialId")
+        ],
+    }
+
+
+def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
+    download_candidates: list[tuple[int, str, str]] = []
+    status_values: list[tuple[str, Any]] = []
+    error_codes: list[int] = []
+    messages: list[str] = []
+    task_ids: list[str] = []
+    for path, value in _walk_qianwen(payload):
+        key = path.rsplit(".", 1)[-1].split("[", 1)[0].lower()
+        if key in {"status", "state", "progress"} and isinstance(value, (str, int, float, bool)):
+            status_values.append((path, value))
+        if key == "error_code":
+            try:
+                error_codes.append(int(value or 0))
+            except (TypeError, ValueError):
+                pass
+        if key in {"error_msg", "message", "text"} and isinstance(value, str) and value.strip():
+            messages.append(value.strip())
+        if key == "task_id" and isinstance(value, str) and value and value not in task_ids:
+            task_ids.append(value)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            lowered = path.lower()
+            score = 0
+            if "download_video" in lowered:
+                score += 1000
+            if any(marker in lowered for marker in ("without_watermark", "no_watermark", "unwatermarked", "original")):
+                score += 500
+            if "download" in lowered:
+                score += 250
+            if score:
+                download_candidates.append((score, path, value))
+    download_candidates.sort(reverse=True)
+    video_url = download_candidates[0][2] if download_candidates and download_candidates[0][0] >= 1000 else ""
+    text = "\n".join(dict.fromkeys(messages))[:2000]
+    lowered_text = text.lower()
+    failed = any(code not in {0} for code in error_codes)
+    failed = failed or any(
+        marker in lowered_text
+        for marker in ("无法生成", "生成失败", "内容无法生成", "违规", "审核未通过", "generation failed")
+    )
+    numeric_statuses = {
+        int(value)
+        for path, value in status_values
+        if path.endswith((".content.status", ".extra_info.content.status")) and isinstance(value, (int, float))
+    }
+    failed = failed or 3 in numeric_statuses
+    if video_url:
+        state = "succeeded"
+    elif failed:
+        state = "failed"
+    else:
+        state = "generating"
+    return {
+        "state": state,
+        "video_url": video_url,
+        "video_source": download_candidates[0][1] if video_url else "",
+        "text": text,
+        "task_ids": task_ids,
+        "statuses": status_values[-20:],
+        "error_codes": error_codes[-10:],
+    }
+
+
+async def fetch_qianwen_generation_result(
+    cookie_header: str,
+    session_id: str,
+    req_id: str,
+    *,
+    proxy_server: str = "",
+) -> dict[str, Any]:
+    user_id = qianwen_cookie_value(cookie_header, "b-user-id")
+    params = {
+        "biz_id": "ai_qwen",
+        "chat_client": "h5",
+        "device": "pc",
+        "fr": "pc",
+        "pr": "qwen",
+        "ut": user_id,
+        "la": "zh-CN",
+        "tz": "UTC",
+        "wv": "4.0.14",
+        "ve": "4.0.14",
+        "session_id": str(session_id or ""),
+        "req_id": str(req_id or ""),
+    }
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "cookie": str(cookie_header or ""),
+        "referer": f"https://www.qianwen.com/chat/{session_id}",
+        "user-agent": QIANWEN_QUERY_UA,
+    }
+    client_options: dict[str, Any] = {
+        "headers": headers,
+        "follow_redirects": True,
+        "timeout": httpx.Timeout(45.0, connect=15.0),
+        "trust_env": False,
+    }
+    if proxy_server:
+        client_options["proxy"] = proxy_server
+    async with httpx.AsyncClient(**client_options) as client:
+        response = await client.get(QIANWEN_DETAIL_API_URL, params=params)
+        response.raise_for_status()
+        parsed = parse_qianwen_generation_result(response.json())
+        parsed.update({"http_status": response.status_code, "session_id": session_id, "req_id": req_id})
+        return parsed
 
 
 def qianwen_video_url_score(url: str, key: str = "") -> int:
@@ -86,33 +269,149 @@ class QianwenVideoAutomation:
         self.remote_video_scores: dict[str, int] = {}
         self.first_video_candidate_at = 0.0
         self.remote_error = ""
+        self.remote_session_id = ""
+        self.remote_req_id = ""
+        self.remote_submission: dict[str, Any] = {}
+        self.submission_event = asyncio.Event()
 
-    async def _refresh_cookies(self, context) -> None:
+    def _account_cookies(self) -> list[dict[str, Any]]:
+        cookies: list[dict[str, Any]] = []
+        for item in self.account.get("cookies") or []:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            cookie = dict(item)
+            cookie["domain"] = ".qianwen.com"
+            cookie.setdefault("path", "/")
+            cookies.append(cookie)
+        return cookies
+
+    async def _refresh_cookies(self, context) -> list[dict[str, Any]]:
         account_id = str(self.account.get("id") or "")
-        if not account_id:
-            return
         cookies = await context.cookies([QIANWEN_URL])
-        if cookies:
+        if account_id and cookies:
             update_account_cookies(account_id, cookies)
+        return cookies
+
+    def _video_settings_control(self, page):
+        pattern = re.compile(r"(?:480|720|1080)P\s*[·•.\-/]\s*(?:5|10|15)\s*s", re.IGNORECASE)
+        return page.locator("button:visible").filter(has_text=pattern).last
+
+    async def _select_video_setting(self, page, pattern: re.Pattern[str]) -> bool:
+        control = self._video_settings_control(page)
+        if not await control.count():
+            return False
+        await control.click(force=True)
+        await page.wait_for_timeout(500)
+        options = page.get_by_text(pattern)
+        for index in range(await options.count() - 1, -1, -1):
+            option = options.nth(index)
+            if not await option.is_visible():
+                continue
+            await option.click(force=True)
+            await page.wait_for_timeout(500)
+            return True
+        return False
 
     async def _ensure_video_duration(self, page) -> bool:
         if self.duration != 10:
             return False
-        duration_pattern = re.compile(r"^(?:视频时长[:：]?\s*)?(?:5|10|15)\s*(?:秒|s)$", re.IGNORECASE)
-        controls = page.get_by_role("button", name=duration_pattern)
-        for index in range(min(await controls.count(), 5)):
-            control = controls.nth(index)
-            if not await control.is_visible():
-                continue
-            label = str(await control.inner_text() or "")
-            if re.search(r"10\s*(?:秒|s)", label, re.IGNORECASE):
-                return True
-            await control.click()
-            option = page.get_by_text(re.compile(r"^10\s*(?:秒|s)$", re.IGNORECASE))
-            if await option.count():
-                await option.last.click()
-                return True
+        control = self._video_settings_control(page)
+        if await control.count() and re.search(r"10\s*s", str(await control.inner_text() or ""), re.IGNORECASE):
+            return True
+        return await self._select_video_setting(page, re.compile(r"^10\s*(?:秒|s)$", re.IGNORECASE))
+
+    async def _ensure_video_ratio(self, page) -> bool:
+        ratio = str(self.ratio or "").strip()
+        if ratio not in {"16:9", "9:16", "1:1", "4:3", "3:4"}:
             return False
+        return await self._select_video_setting(page, re.compile(rf"^{re.escape(ratio)}$"))
+
+    async def _ensure_video_model(self, page) -> bool:
+        if self.task_type != "video" or not self.model:
+            return True
+        model_buttons = page.locator("button:visible").filter(has_text=re.compile(r"万相|Wan|HappyHorse", re.IGNORECASE))
+        if not await model_buttons.count():
+            return False
+        model_button = model_buttons.last
+        current_model = str(await model_button.inner_text() or "")
+        if self.model in current_model:
+            return True
+        await model_button.click(force=True)
+        options = page.get_by_text(self.model, exact=True)
+        for index in range(await options.count() - 1, -1, -1):
+            option = options.nth(index)
+            if not await option.is_visible():
+                continue
+            await option.click(force=True)
+            await page.wait_for_timeout(800)
+            return True
+        return False
+
+    async def _open_image_file_chooser(self, page):
+        triggers = page.locator(
+            'button[aria-label*="添加"]:visible, button[aria-label*="附件"]:visible, '
+            'button[aria-label*="上传"]:visible, button[title*="添加"]:visible, '
+            'button[title*="附件"]:visible, [data-testid*="attachment"]:visible'
+        )
+        for index in range(await triggers.count()):
+            trigger = triggers.nth(index)
+            try:
+                async with page.expect_file_chooser(timeout=1500) as chooser_info:
+                    await trigger.click()
+                return await chooser_info.value
+            except Exception:
+                pass
+            upload_options = page.locator(
+                '[role="listbox"]:visible [role="option"], [role="menu"]:visible [role="menuitem"], '
+                '[role="dialog"]:visible button:visible'
+            )
+            for option_index in range(await upload_options.count()):
+                option = upload_options.nth(option_index)
+                label = str(await option.inner_text() or "").strip()
+                if "上传图片" not in label and "本地图片" not in label:
+                    continue
+                try:
+                    async with page.expect_file_chooser(timeout=3000) as chooser_info:
+                        await option.click()
+                    return await chooser_info.value
+                except Exception:
+                    continue
+        image_inputs = page.locator('input[type="file"][accept*="image"]')
+        if await image_inputs.count():
+            return image_inputs.last
+        return None
+
+    async def _wait_for_reference_upload(self, page, *, timeout_seconds: int = 90) -> bool:
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        stable_checks = 0
+        last_preview_count = -1
+        while asyncio.get_running_loop().time() < deadline:
+            body_tail = (await page.locator("body").inner_text())[-2500:]
+            busy_text = any(marker in body_tail for marker in ("上传中", "正在上传", "处理中"))
+            progress_visible = await page.locator('[role="progressbar"]:visible').count() > 0
+            preview_count = await page.locator('img:visible').count()
+            if not busy_text and not progress_visible and preview_count == last_preview_count:
+                stable_checks += 1
+                if stable_checks >= 2:
+                    return True
+            else:
+                stable_checks = 0
+            last_preview_count = preview_count
+            await page.wait_for_timeout(1000)
+        return False
+
+    async def _upload_reference_images(self, page, paths: list[Any]) -> bool:
+        for path in paths:
+            chooser = await self._open_image_file_chooser(page)
+            if chooser is None:
+                return False
+            if hasattr(chooser, "set_files"):
+                await chooser.set_files(str(path))
+            else:
+                await chooser.set_input_files(str(path))
+            await page.wait_for_timeout(2500)
+            if not await self._wait_for_reference_upload(page):
+                return False
         return True
 
     async def _login_state(self, page, context) -> tuple[bool, bool]:
@@ -149,7 +448,8 @@ class QianwenVideoAutomation:
         post_data = str(request.post_data or "")
         url = str(response.url)
         lowered_url = url.lower()
-        relevant = self.prompt in post_data or any(item in lowered_url for item in ("/chat", "video", "wanx", "aigc", "generate", "task", "completion"))
+        submission = parse_qianwen_submission(post_data) if request.method == "POST" and lowered_url.startswith(QIANWEN_CHAT_API_URL) else {}
+        relevant = bool(submission) or self.prompt in post_data or any(item in lowered_url for item in ("/chat", "video", "wanx", "aigc", "generate", "task", "completion"))
         if not relevant:
             return
         try:
@@ -171,6 +471,13 @@ class QianwenVideoAutomation:
             self.remote_error = "risk_control"
         elif any(marker in lowered for marker in ("model not", "unsupported model", "模型不可用")):
             self.remote_error = "model_unavailable"
+        if submission:
+            self.remote_submission = submission
+            self.remote_session_id = str(submission.get("session_id") or "")
+            self.remote_req_id = str(submission.get("req_id") or "")
+            has_stream_error = "stream_error" in lowered and bool(re.search(r'"error_code"\s*:\s*[1-9]\d*', lowered))
+            if response.status == 200 and self.remote_session_id and self.remote_req_id and not has_stream_error:
+                self.submission_event.set()
 
     async def _save_diagnostics(self, page, reason: str) -> None:
         task_dir = TASKS_DIR / self.task_id
@@ -252,6 +559,9 @@ class QianwenVideoAutomation:
             response_handler = None
             response_tasks: set[asyncio.Task[Any]] = set()
             try:
+                imported_cookies = self._account_cookies()
+                if imported_cookies:
+                    await context.add_cookies(imported_cookies)
                 page = context.pages[0] if context.pages else await context.new_page()
                 response_handler = lambda response: create_tracked_task(response_tasks, self._capture_response(response))
                 page.on("response", response_handler)
@@ -264,14 +574,8 @@ class QianwenVideoAutomation:
                     return self._failure("qianwen network timeout", account_fault=False)
                 logged_in, login_visible = await self._login_state(page, context)
                 if not logged_in and login_visible:
-                    cookies = []
-                    for item in self.account.get("cookies") or []:
-                        if isinstance(item, dict) and item.get("name"):
-                            cookie = dict(item)
-                            cookie["domain"] = ".qianwen.com"
-                            cookies.append(cookie)
-                    if cookies:
-                        await context.add_cookies(cookies)
+                    if imported_cookies:
+                        await context.add_cookies(imported_cookies)
                         await page.reload(wait_until="domcontentloaded", timeout=90000)
                         await page.wait_for_timeout(12000)
                         logged_in, login_visible = await self._login_state(page, context)
@@ -297,62 +601,74 @@ class QianwenVideoAutomation:
                     return self._failure("qianwen video mode not active", account_fault=False)
                 editor = page.locator('[contenteditable="true"][role="textbox"]:visible').first
                 await editor.wait_for(state="visible", timeout=15000)
-                if self.task_type == "video" and self.model and self.model != "万相 2.7":
-                    model_button = page.get_by_role("button", name=re.compile(r"万相|Wan", re.IGNORECASE)).first
-                    if await model_button.count():
-                        await model_button.click()
-                        option = page.get_by_text(self.model, exact=True)
-                        if await option.count():
-                            await option.last.click()
-                        else:
-                            await self._save_diagnostics(page, "model unavailable")
-                            return self._failure("qianwen model unavailable", account_fault=False, retryable=False)
+                reference_paths = task_image_paths(self.task_id)
+                if self.task_type == "video" and self.model == "HappyHorse 1.0" and not reference_paths:
+                    await self._save_diagnostics(page, "HappyHorse requires a reference image")
+                    return self._failure("qianwen HappyHorse requires a reference image", account_fault=False, retryable=False)
+                if reference_paths and not await self._upload_reference_images(page, reference_paths):
+                    await self._save_diagnostics(page, "reference image upload unavailable")
+                    return self._failure("qianwen reference image upload failed", account_fault=False)
+                if not await self._ensure_video_model(page):
+                    await self._save_diagnostics(page, "model unavailable")
+                    return self._failure("qianwen model unavailable", account_fault=False, retryable=False)
+                if self.task_type == "video" and not await self._ensure_video_ratio(page):
+                    await self._save_diagnostics(page, "ratio unavailable")
+                    return self._failure(f"qianwen ratio unavailable: {self.ratio}", account_fault=False, retryable=False)
                 if self.task_type == "video" and not await self._ensure_video_duration(page):
                     await self._save_diagnostics(page, "duration unavailable")
                     return self._failure("qianwen duration unavailable", account_fault=False, retryable=False)
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(300)
                 self.network_events.clear()
                 self.remote_task_ids.clear()
                 self.remote_video_urls.clear()
                 self.remote_video_scores.clear()
                 self.first_video_candidate_at = 0.0
                 self.remote_error = ""
-                initial_image_urls: set[str] = set()
-                if self.task_type == "image":
-                    initial_image_urls = set(await page.locator("img").evaluate_all("items => items.map(item => item.src).filter(Boolean)"))
+                self.remote_session_id = ""
+                self.remote_req_id = ""
+                self.remote_submission = {}
+                self.submission_event.clear()
                 await editor.fill(self.prompt)
                 send_button = page.locator('button[aria-label="发送消息"]:visible').first
                 await send_button.wait_for(state="visible", timeout=15000)
+                if await send_button.is_disabled():
+                    await self._save_diagnostics(page, "send button disabled")
+                    return self._failure("qianwen send button disabled", account_fault=False)
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 await send_button.click(force=True)
-                mark_submitted(self.task_id)
-                await page.wait_for_timeout(8000)
-                await self._refresh_cookies(context)
-                body = await page.locator("body").inner_text()
-                prompt_still_visible = await page.get_by_text(self.prompt, exact=True).count()
+                try:
+                    await asyncio.wait_for(self.submission_event.wait(), timeout=25)
+                except asyncio.TimeoutError:
+                    pass
+                await page.wait_for_timeout(2000)
                 if self.remote_error:
                     reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "model_unavailable": "qianwen model unavailable"}
                     reason = reasons[self.remote_error]
                     await self._save_diagnostics(page, reason)
                     return self._failure(reason, account_fault=self.remote_error == "login", retryable=self.remote_error != "model_unavailable")
-                video_request = next((item for item in reversed(self.network_events) if self.prompt in str(item.get("post_data") or "")), None)
-                if video_request:
-                    try:
-                        payload = json.loads(str(video_request.get("post_data") or "{}"))
-                    except Exception:
-                        payload = {}
-                    biz_data = str(payload.get("biz_data") or "")
-                    is_video_request = str(payload.get("ai_tool_scene") or "") == "zaodian_generate_video" or '"bizScene":"genVideo"' in biz_data or '"genMode":"vid_gen"' in biz_data
-                    if not is_video_request:
-                        await self._save_diagnostics(page, "video mode not active: ordinary chat request")
-                        return self._failure("qianwen video mode not active", account_fault=False)
-                request_confirmed = bool(self.remote_task_ids or video_request)
-                if self.task_type == "video" and "正在为你生成视频" not in body and "正在排队中" not in body and not prompt_still_visible and not request_confirmed:
+                if not self.submission_event.is_set() or not self.remote_session_id or not self.remote_req_id:
                     await self._save_diagnostics(page, "submit not confirmed")
                     return self._failure("qianwen submit not confirmed", account_fault=False)
+                refreshed_cookies = await self._refresh_cookies(context)
+                setting_mismatch: list[str] = []
+                actual_duration = int(self.remote_submission.get("duration") or 0)
+                actual_ratio = str(self.remote_submission.get("ratio") or "")
+                actual_model = str(self.remote_submission.get("model") or "")
+                if actual_duration != self.duration:
+                    setting_mismatch.append(f"duration={actual_duration}")
+                if actual_ratio != self.ratio:
+                    setting_mismatch.append(f"ratio={actual_ratio}")
+                if self.model and self.model.lower() not in actual_model.lower():
+                    setting_mismatch.append(f"model={actual_model}")
+                if reference_paths and not self.remote_submission.get("attachment_ids"):
+                    setting_mismatch.append("attachments=missing")
                 save_result(
                     self.task_id,
+                    cookie_string=qianwen_cookie_header(refreshed_cookies),
+                    cookies=refreshed_cookies,
                     extra={
                         "platform": "qianwen",
                         "model": self.model,
@@ -362,58 +678,24 @@ class QianwenVideoAutomation:
                         "account_quota_charge_id": str(self.account.get("quota_charge_id") or ""),
                         "qianwen_page_url": page.url,
                         "qianwen_submit_confirmed": True,
+                        "qianwen_session_id": self.remote_session_id,
+                        "qianwen_req_id": self.remote_req_id,
+                        "qianwen_actual_model": actual_model,
+                        "qianwen_actual_duration": actual_duration,
+                        "qianwen_actual_ratio": actual_ratio,
+                        "qianwen_attachment_ids": list(self.remote_submission.get("attachment_ids") or []),
+                        "qianwen_setting_mismatch": setting_mismatch,
                         "qianwen_remote_task_ids": self.remote_task_ids,
                         "qianwen_network_events": self.network_events[-10:],
                     },
                 )
-                deadline = asyncio.get_running_loop().time() + 1800
-                while asyncio.get_running_loop().time() < deadline:
-                    if self.remote_video_urls:
-                        url = best_qianwen_video_url(self.remote_video_scores)
-                        score = self.remote_video_scores.get(url, 0)
-                        if score >= 200 or time.monotonic() - self.first_video_candidate_at >= 8:
-                            await self._refresh_cookies(context)
-                            save_result(self.task_id, extra={"decoded_main_url": url, "qianwen_remote_task_ids": self.remote_task_ids, "qianwen_page_url": page.url, "qianwen_video_url_score": score})
-                            mark_success(self.task_id)
-                            return {"success": True, "retryable": False, "reason": ""}
-                    if self.task_type == "image":
-                        current_image_urls = await page.locator("img").evaluate_all("items => items.map(item => item.src).filter(Boolean)")
-                        candidates = [str(src) for src in current_image_urls if str(src).startswith("http") and str(src) not in initial_image_urls]
-                        if candidates:
-                            url = candidates[-1]
-                            await self._refresh_cookies(context)
-                            save_result(self.task_id, extra={"decoded_main_url": url, "image_urls": candidates[-4:], "qianwen_page_url": page.url})
-                            mark_success(self.task_id)
-                            return {"success": True, "retryable": False, "reason": ""}
-                    videos = page.locator("video")
-                    video_sources = [str(await videos.nth(index).get_attribute("src") or "") for index in range(await videos.count())]
-                    video_sources = [src for src in video_sources if src.startswith("http")]
-                    if video_sources:
-                        src = best_qianwen_video_url(video_sources)
-                        src_score = qianwen_video_url_score(src, "video_element")
-                        if src_score >= 140:
-                            await self._refresh_cookies(context)
-                            save_result(self.task_id, extra={"decoded_main_url": src, "qianwen_page_url": page.url, "qianwen_video_url_score": src_score})
-                            mark_success(self.task_id)
-                            return {"success": True, "retryable": False, "reason": ""}
-                    html = await page.content()
-                    matches = VIDEO_URL_RE.findall(html.replace("\\u0026", "&").replace("\\/", "/"))
-                    if matches:
-                        url = best_qianwen_video_url(matches)
-                        url_score = qianwen_video_url_score(url, "page_html")
-                        if url_score >= 140:
-                            await self._refresh_cookies(context)
-                            save_result(self.task_id, extra={"decoded_main_url": url, "qianwen_page_url": page.url, "qianwen_video_url_score": url_score})
-                            mark_success(self.task_id)
-                            return {"success": True, "retryable": False, "reason": ""}
-                    body = await page.locator("body").inner_text()
-                    if any(marker in body[-1800:] for marker in ("生成失败", "生成遇到问题", "内容违规")):
-                        await self._save_diagnostics(page, "generation failed")
-                        return self._failure("qianwen generation failed", account_fault=False)
-                    await page.wait_for_timeout(10000)
-                await self._refresh_cookies(context)
-                await self._save_diagnostics(page, f"{self.task_type} result timeout")
-                return {"success": False, "retryable": True, "reason": f"qianwen {self.task_type} result timeout", "account_fault": False, "submitted": True}
+                return {
+                    "success": False,
+                    "retryable": True,
+                    "reason": "qianwen generation submitted",
+                    "account_fault": False,
+                    "submitted": True,
+                }
             finally:
                 if page is not None and response_handler is not None:
                     page.remove_listener("response", response_handler)

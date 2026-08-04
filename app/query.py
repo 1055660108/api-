@@ -971,7 +971,88 @@ async def _query_task_once(
 ) -> dict[str, Any]:
     expire_task_if_timeout(task_id)
     meta = get_meta(task_id)
-    if str(meta.get("platform") or "dola") == "doubao":
+    platform = str(meta.get("platform") or "dola")
+    if platform == "qianwen":
+        result = load_result(task_id)
+        cached_url = str(result.get("decoded_main_url") or "").strip()
+        if cached_url:
+            mark_late_result_success(task_id) if late_watch else mark_success(task_id)
+            return {"code": "2", "text": SUCCESS_TEXT, "url": cached_url}
+        late_watch_active = late_watch and meta.get("status") == STATUS_FAILED and bool(
+            (late_until := parse_time(str(meta.get("late_result_watch_until") or "")))
+            and datetime.now(timezone.utc) < late_until
+        )
+        if meta.get("status") not in {STATUS_SUBMITTED, STATUS_SUCCESS} and not late_watch_active:
+            if meta.get("status") == "running":
+                return {"code": "1", "text": str(meta.get("status_reason") or "正在提交千问生成请求"), "url": ""}
+            if meta.get("status") == STATUS_FAILED:
+                return {"code": "0", "text": str(meta.get("error") or "千问视频生成失败"), "url": ""}
+            return {"code": "1", "text": str(meta.get("status_reason") or "千问任务正在排队"), "url": ""}
+        if not background_poll:
+            return {"code": "1", "text": "千问正在生成视频，请稍候...", "url": ""}
+        cookie = str(result.get("cookie_string") or "")
+        session_id = str(result.get("qianwen_session_id") or "")
+        req_id = str(result.get("qianwen_req_id") or "")
+        if not cookie or not session_id or not req_id:
+            save_result(
+                task_id,
+                extra={
+                    "last_query_error": "qianwen result query identifiers are missing",
+                    "last_query_error_category": "missing_qianwen_query_identifiers",
+                },
+            )
+            return {"code": "1", "text": "千问正在恢复结果查询，请稍候...", "url": "", "retry_after": 30}
+        try:
+            from .qianwen_automation import fetch_qianwen_generation_result
+
+            query_result = await fetch_qianwen_generation_result(cookie, session_id, req_id)
+        except Exception as exc:
+            save_result(task_id, extra=query_error_diagnostic(exc))
+            return {"code": "1", "text": "千问正在生成视频，请稍候...", "url": "", "retry_after": 30}
+        state = str(query_result.get("state") or "generating")
+        text = str(query_result.get("text") or "")[:1000]
+        save_result(
+            task_id,
+            extra={
+                "qianwen_result_state": state,
+                "qianwen_result_task_ids": list(query_result.get("task_ids") or []),
+                "qianwen_result_statuses": list(query_result.get("statuses") or []),
+                "qianwen_result_error_codes": list(query_result.get("error_codes") or []),
+                "qianwen_result_text": sanitize_query_diagnostic(text),
+                "last_query_error": "",
+                "last_query_error_category": "",
+            },
+        )
+        account_id = str(result.get("account_id") or "")
+        charge_id = str(result.get("account_quota_charge_id") or "")
+        if state == "succeeded":
+            video_url = str(query_result.get("video_url") or "").strip()
+            if not video_url:
+                return {"code": "1", "text": "千问视频已生成，正在获取无水印地址...", "url": "", "retry_after": 30}
+            if account_id:
+                settle_account_quota(account_id, charge_id)
+                clear_account_current_task(account_id, task_id)
+            save_result(
+                task_id,
+                extra={
+                    "decoded_main_url": video_url,
+                    "qianwen_result_source": "download_video",
+                    "qianwen_video_source_path": str(query_result.get("video_source") or ""),
+                },
+                remove={"cookie_string", "cookies"},
+            )
+            mark_late_result_success(task_id) if late_watch_active else mark_success(task_id)
+            return {"code": "2", "text": SUCCESS_TEXT, "url": video_url}
+        if state == "failed":
+            reason = text or "千问视频生成失败"
+            if account_id:
+                clear_account_current_task(account_id, task_id)
+                refund_account_quota_once(task_id, account_id, charge_id)
+            mark_failed(task_id, reason[:500])
+            refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+            return {"code": "0", "text": reason[:500], "url": ""}
+        return {"code": "1", "text": "千问正在生成视频，请稍候...", "url": ""}
+    if platform == "doubao":
         result = load_result(task_id)
         cached_web_url = _doubao_cached_web_video_url(result)
         cached_unwatermarked_url = _doubao_cached_unwatermarked_video_url(result)

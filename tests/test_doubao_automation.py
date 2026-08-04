@@ -17,7 +17,7 @@ import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_reference_upload_progress_visible, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_reference_upload_progress_visible, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -182,9 +182,11 @@ class DoubaoAutomationTests(unittest.TestCase):
             self.assertIn(fragment, DOUBAO_SUBMIT_SCRIPT)
         self.assertIn("would you like|do you want|shall i|should i", DOUBAO_SUBMIT_SCRIPT)
         self.assertIn("是否|请问", DOUBAO_SUBMIT_SCRIPT)
-        self.assertIn("调用豆包视频生成能力", DOUBAO_SUBMIT_SCRIPT)
-        self.assertIn("不要只回复文字，不要改写或讲解提示词", DOUBAO_SUBMIT_SCRIPT)
-        self.assertIn("modelDisplayName(model)", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("生成视频：${promptText}，${ratioText}，${seconds}s", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("is_old_user: false", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("related_deleted_message_ids: {}", DOUBAO_SUBMIT_SCRIPT)
+        self.assertNotIn("不要只回复文字", DOUBAO_SUBMIT_SCRIPT)
+        self.assertIn("/alice/message/pre_handle_v2_without_conv", DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT)
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Mini"], "seedance_v2.0_mini")
         self.assertEqual(DOUBAO_MODEL_CODES["Seedance 2.0 Fast"], "seedance_v2.0")
 
@@ -374,51 +376,22 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertFalse(doubao_ui_generation_acknowledged(notice, "Seedance 2.0 Mini"))
         self.assertFalse(doubao_ui_generation_acknowledged("视频生成已提交", "Seedance 2.0 Fast"))
 
-    def test_runtime_submission_uses_browser_ui_instead_of_completion_api(self) -> None:
+    def test_runtime_submission_uses_video_page_internal_request(self) -> None:
         source = inspect.getsource(DoubaoVideoAutomation._run_browser)
         self.assertIn("_submit_via_video_creation_page", source)
         self.assertNotIn("DOUBAO_SUBMIT_SCRIPT", source)
         self.assertNotIn("page.evaluate", source)
-        ui_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page)
-        self.assertIn("await editor.fill(self.prompt)", ui_source)
-        self.assertIn("await send_button.click", ui_source)
-        self.assertIn('page.get_by_text("视频生成", exact=True)', ui_source)
-        self.assertIn('page.get_by_role("menuitem", name=self.model, exact=True)', ui_source)
-        self.assertIn('page.get_by_role("option", name=self.model, exact=True)', ui_source)
-        self.assertIn('page.get_by_role("button", name=self.model, exact=True)', ui_source)
-        self.assertIn("page.get_by_text(self.model, exact=True)", ui_source)
-        self.assertIn("doubao video model selection mismatch", ui_source)
-        self.assertIn("page.get_by_text(option_pattern)", ui_source)
-        self.assertIn("stable_checks >= DOUBAO_REFERENCE_UPLOAD_STABLE_CHECKS", ui_source)
-        self.assertIn("progress_visible = doubao_reference_upload_progress_visible(upload_tail)", ui_source)
-        self.assertIn("await visible_model_button(15000) if direct_video_entry else None", ui_source)
-        self.assertIn("await visible_model_button(20000)", ui_source)
-        self.assertIn("await visible_model_button(30000)", ui_source)
-        self.assertIn('has_text=re.compile(r"Seedance\\s+\\d", re.IGNORECASE)\n            ).last', ui_source)
-        self.assertIn("editor_box = await candidate.bounding_box()", ui_source)
-        self.assertIn("near_editor = (", ui_source)
-        self.assertIn("return min(positioned, key=lambda item: item[0])[1]", ui_source)
-        self.assertIn("await selector.scroll_into_view_if_needed()", ui_source)
-        self.assertIn("await selector.click(timeout=5000)", ui_source)
-        self.assertIn("await page.keyboard.press(\"Enter\")", ui_source)
-        self.assertIn('await selector.evaluate("element => element.click()")', ui_source)
-        self.assertIn("doubao video settings panel unavailable", ui_source)
-        self.assertIn("visible_ratios >= 2", ui_source)
-        self.assertIn("in_current_panel = (", ui_source)
-        self.assertIn("and selector_box is None", ui_source)
-        self.assertIn("active_editor = editor", ui_source)
-        self.assertIn("if active_editor is not None:", ui_source)
-        self.assertIn("await page.goto(DOUBAO_VIDEO_CREATION_URL", ui_source)
-        self.assertIn('click_exact_visible_text("视频生成")', ui_source)
-        self.assertIn("selected = await click_exact_visible_text(label)", ui_source)
-        self.assertIn('.replace("：", ":")', ui_source)
-        self.assertIn("option_deadline = asyncio.get_running_loop().time() + 5", ui_source)
-        self.assertIn("xpath=ancestor-or-self::*[self::button", ui_source)
-        self.assertLess(ui_source.index("await editor.fill(self.prompt)"), ui_source.index("await select_video_setting(ratio_label)"))
-        self.assertLess(ui_source.index("await select_video_setting(ratio_label)"), ui_source.index("await send_button.click"))
-        self.assertIn('attributes = " ".join(attributes_list)', ui_source)
-        self.assertNotIn('" ".join(\n                    str(await', ui_source)
-        self.assertNotIn("generationInstruction", ui_source)
+        request_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page)
+        self.assertIn("await page.goto(DOUBAO_VIDEO_CREATION_URL", request_source)
+        self.assertIn("DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT", request_source)
+        self.assertIn("DOUBAO_SUBMIT_SCRIPT", request_source)
+        self.assertIn('"ratio": ratio', request_source)
+        self.assertIn('"model": DOUBAO_MODEL_CODES[self.model]', request_source)
+        self.assertIn('"duration": self.duration', request_source)
+        self.assertIn('"attachments": attachments', request_source)
+        self.assertNotIn("editor.fill", request_source)
+        self.assertNotIn("send_button.click", request_source)
+        self.assertNotIn("select_video_setting", request_source)
 
     def test_direct_video_is_an_accepted_submission(self) -> None:
         error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})
@@ -954,6 +927,23 @@ class DoubaoAutomationTests(unittest.TestCase):
         cookies = {item["name"]: item["value"] for item in state["cookies"]}
         self.assertEqual(cookies, {"session": "latest", "saved_only": "keep", "account_only": "new"})
         self.assertEqual(state["origins"][0]["localStorage"][0]["value"], "known")
+
+    def test_context_refresh_persists_indexed_db(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+            runner.state_path = Path(directory) / "doubao.json"
+            runner.account = {"id": "account-1"}
+            context = SimpleNamespace(
+                cookies=AsyncMock(return_value=[{"name": "session", "value": "fresh"}]),
+                storage_state=AsyncMock(),
+            )
+
+            with patch("app.doubao_automation.update_account_cookies") as update:
+                cookies = asyncio.run(runner._refresh_cookies(context))
+
+        self.assertEqual(cookies, [{"name": "session", "value": "fresh"}])
+        update.assert_called_once_with("account-1", cookies)
+        context.storage_state.assert_awaited_once_with(path=str(runner.state_path), indexed_db=True)
 
     def test_video_response_recognizes_doubao_media_url(self) -> None:
         response = SimpleNamespace(

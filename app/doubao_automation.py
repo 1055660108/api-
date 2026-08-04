@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
-from .accounts import disable_account_for_login, set_account_cooldown, update_account_cookies
+from .accounts import disable_account_for_login, set_account_cooldown, set_account_pinned_proxy_node, update_account_cookies
 from .automation import DolaFetchAutomation, PREPARE_UPLOAD_SCRIPT, PREPARE_UPLOAD_TIMEOUT_SECONDS, ReferenceUploadCapacityError, is_reference_upload_failure, is_reference_upload_phase
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
@@ -41,6 +41,7 @@ DOUBAO_MODEL_CODES = {
     "Seedance 2.0 Mini": "seedance_v2.0_mini",
     "Seedance 2.0 Fast": "seedance_v2.0",
 }
+DOUBAO_VIDEO_RATIOS = {"auto", "3:4", "4:3", "9:16", "16:9", "1:1", "21:9"}
 DOUBAO_RESULT_WAIT_SECONDS = 10 * 60
 DOUBAO_RESULT_POLL_MILLISECONDS = 5000
 DOUBAO_ORIGINAL_VIDEO_SCORE = 240
@@ -1098,6 +1099,119 @@ async ({conversationId}) => {
 """
 
 
+DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT = r"""
+async ({attachments}) => {
+  function uuid() {
+    return crypto.randomUUID ? crypto.randomUUID() :
+      "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === "x" ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+  }
+  function cookieValue(name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+  function storageFind(regex) {
+    for (const store of [localStorage, sessionStorage]) {
+      for (let index = 0; index < store.length; index += 1) {
+        const key = store.key(index);
+        const value = store.getItem(key) || "";
+        if (regex.test(key) && value && value.length < 100) return value;
+      }
+    }
+    return "";
+  }
+  function trySign(url) {
+    const signers = [window.byted_acrawler, window.bytedAcrawler, window.__acrawler, window.ABogus].filter(Boolean);
+    for (const signer of signers) {
+      try {
+        if (typeof signer.sign !== "function") continue;
+        const signed = signer.sign({url});
+        if (typeof signed === "string" && signed) return signed;
+        if (signed && typeof signed === "object") {
+          if (typeof signed.a_bogus === "string") return signed.a_bogus;
+          if (typeof signed.aBogus === "string") return signed.aBogus;
+        }
+      } catch (_) {}
+    }
+    return "";
+  }
+  const webId = (storageFind(/web_id|tea_uuid|device_id/i).match(/\d{15,24}/) || [])[0]
+    || `${Date.now()}${String(Math.random()).slice(2, 8)}`;
+  const fp = cookieValue("s_v_web_id") || storageFind(/s_v_web_id|fp|verify/i) || `verify_${Date.now()}`;
+  const region = cookieValue("flow_user_country") || "JP";
+  const pcVersion = storageFind(/pc_version/i) || "3.30.1";
+  const localMessageId = uuid();
+  const normalized = (attachments || []).map(item => ({
+    ...item,
+    identifier: item.identifier || uuid(),
+    local_message_id: item.local_message_id || localMessageId
+  }));
+  const results = [];
+  for (const item of normalized) {
+    const params = new URLSearchParams({
+      version_code: "20800",
+      language: "zh",
+      device_platform: "web",
+      doubao_device_platform: "web",
+      aid: "497858",
+      real_aid: "497858",
+      pkg_type: "release_version",
+      device_id: webId,
+      pc_version: pcVersion,
+      doubao_pc_version: pcVersion,
+      web_id: webId,
+      tea_uuid: webId,
+      region,
+      sys_region: region,
+      samantha_web: "1",
+      web_platform: "browser",
+      "use-olympus-account": "1",
+      web_tab_id: uuid(),
+      fp
+    });
+    const msToken = cookieValue("msToken") || storageFind(/mstoken/i);
+    if (msToken) params.set("msToken", msToken);
+    let requestUrl = `${location.origin}/alice/message/pre_handle_v2_without_conv?${params.toString()}`;
+    const aBogus = trySign(requestUrl);
+    if (aBogus) {
+      params.set("a_bogus", aBogus);
+      requestUrl = `${location.origin}/alice/message/pre_handle_v2_without_conv?${params.toString()}`;
+    }
+    const response = await fetch(requestUrl, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        accept: "application/json, text/plain, */*",
+        "agw-js-conv": "str",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        uplink_entity: {
+          entity_type: 2,
+          entity_content: {image: {key: item.uri}},
+          identifier: item.identifier
+        },
+        bot_id: "7338286299411103781",
+        local_message_id: item.local_message_id
+      })
+    });
+    const text = await response.text();
+    let payload = null;
+    try { payload = JSON.parse(text); } catch (_) {}
+    results.push({ok: response.ok && payload && Number(payload.code) === 0, status: response.status, text: text.slice(0, 1000)});
+    if (!results[results.length - 1].ok) {
+      return {ok: false, status: response.status, error: text.slice(0, 1000), attachments: normalized, results};
+    }
+  }
+  return {ok: true, attachments: normalized, results};
+}
+"""
+
+
 DOUBAO_SUBMIT_SCRIPT = r"""
 async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, freshConversationRetryUsed}) => {
   function uuid() {
@@ -1232,9 +1346,8 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, f
     return String(value || "Seedance");
   }
   function generationInstruction(promptText, followUp = false) {
-    const ratioText = ratio && ratio !== "auto" ? `${ratio} 比例` : "自动比例";
-    const prefix = followUp ? "需要。请立即" : "请直接";
-    return `${prefix}调用豆包视频生成能力，使用 ${modelDisplayName(model)} 模型生成 ${seconds} 秒、${ratioText}的视频。不要只回复文字，不要改写或讲解提示词。视频提示词：${promptText}`;
+    const ratioText = ratio && ratio !== "auto" ? ratio : "自动";
+    return `生成视频：${promptText}，${ratioText}，${seconds}s`;
   }
   function lastMessageIndex(value) {
     const matches = [...String(value || "").matchAll(/"(?:message_index|messageIndex)"\s*:\s*(\d+)/g)];
@@ -1248,15 +1361,16 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, f
     || `${Date.now()}${randomDigits(6)}`;
   const fp = cookieValue("s_v_web_id") || storageFind(/s_v_web_id|fp|verify/i) || `verify_${randomDigits(12)}`;
   const region = cookieValue("flow_user_country") || "JP";
+  const pcVersion = storageFind(/pc_version/i) || "3.30.1";
   const params = new URLSearchParams({
     aid: "497858",
     device_id: webId,
     device_platform: "web",
     doubao_device_platform: "web",
-    doubao_pc_version: "3.29.10",
+    doubao_pc_version: pcVersion,
     fp,
     language: "zh",
-    pc_version: "3.29.10",
+    pc_version: pcVersion,
     pkg_type: "release_version",
     real_aid: "497858",
     region,
@@ -1282,8 +1396,9 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, f
   const seconds = Math.max(1, Number(duration) || 10);
   const messages = [];
   if (attachments && attachments.length) {
+    const attachmentMessageId = attachments[0].local_message_id || uuid();
     messages.push({
-      local_message_id: uuid(),
+      local_message_id: attachmentMessageId,
       content_block: [{
         block_type: 10052,
         content: {
@@ -1375,13 +1490,14 @@ async ({prompt, ratio, model, duration, attachments, retryLimit, retryDelayMs, f
       shared_app_id: "",
       sse_recv_event_options: {support_chunk_delta: true},
       is_ai_playground: false,
-      is_old_user: true,
+      is_old_user: false,
       recovery_option: {
         is_recovery: false,
         req_create_time_sec: Math.floor(Date.now() / 1000),
         append_sse_event_scene: 0
       },
-      message_storage_type: 0
+      message_storage_type: 0,
+      related_deleted_message_ids: {}
     },
     chat_ability: {
       ability_type: 17,
@@ -1681,7 +1797,10 @@ class DoubaoVideoAutomation:
         cookies = await context.cookies(["https://www.doubao.com"])
         if cookies:
             update_account_cookies(account_id, cookies)
-        await context.storage_state(path=str(self.state_path))
+        try:
+            await context.storage_state(path=str(self.state_path), indexed_db=True)
+        except Exception:
+            await context.storage_state(path=str(self.state_path))
         return [dict(item) for item in cookies if isinstance(item, dict)]
 
     @staticmethod
@@ -2009,6 +2128,89 @@ class DoubaoVideoAutomation:
         return any(marker in body[:2000] for marker in ("扫码登录", "手机号登录", "登录豆包"))
 
     async def _submit_via_video_creation_page(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
+        self._set_phase("opening_video_creation_page", "正在建立豆包视频生成会话")
+        await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
+        await page.wait_for_timeout(3000)
+        body = await page.locator("body").inner_text()
+        if self._is_region_restricted(str(page.url), body):
+            return {"ok": False, "status": 0, "accepted": False, "region_restricted": True}
+        if await self._login_required(page, body):
+            return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
+        if self.model not in DOUBAO_MODEL_CODES:
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": f"doubao video model unavailable: {self.model}",
+            }
+        ratio = re.sub(r"\s+", "", str(self.ratio or "auto")).replace("：", ":").lower()
+        if ratio not in DOUBAO_VIDEO_RATIOS:
+            return {
+                "ok": False,
+                "status": 0,
+                "accepted": False,
+                "video_creation_ui_error": f"doubao video ratio unavailable: {ratio}",
+            }
+
+        attachments: list[dict[str, Any]] = []
+        if image_count > 0:
+            self._set_phase("uploading_video_creation_references", "正在通过豆包视频接口上传参考图")
+            uploader = DoubaoReferenceImageUploader(
+                self.task_id,
+                self.prompt,
+                ratio,
+                self.duration,
+                account=self.account,
+                image_upload_slot=self.image_upload_slot,
+                proxy_platform="doubao",
+            )
+            proxy_session = getattr(self, "proxy_session", None)
+            if proxy_session is not None:
+                uploader.active_proxy_source = str(getattr(proxy_session, "active_proxy_source", "") or "")
+                uploader.active_proxy_server = str(getattr(proxy_session, "active_proxy_server", "") or "")
+                uploader.proxy_node_id = str(getattr(proxy_session, "proxy_node_id", "") or "")
+            attachments = await uploader._upload_images_if_needed(page)
+            if len(attachments) < image_count:
+                raise RuntimeError("doubao video reference upload did not return every attachment")
+            prehandled = await page.evaluate(DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT, {"attachments": attachments})
+            if not isinstance(prehandled, dict) or not prehandled.get("ok"):
+                raise RuntimeError(
+                    f"doubao video reference pre-handle failed: {str((prehandled or {}).get('error') if isinstance(prehandled, dict) else prehandled)[:500]}"
+                )
+            attachments = [dict(item) for item in prehandled.get("attachments") or [] if isinstance(item, dict)]
+            if len(attachments) < image_count:
+                raise RuntimeError("doubao video reference pre-handle returned incomplete attachments")
+
+        if self.submission_pacer is not None:
+            await self.submission_pacer()
+        self._set_phase("submitting_video_creation_request", "正在通过豆包视频接口提交任务")
+        result = await page.evaluate(
+            DOUBAO_SUBMIT_SCRIPT,
+            {
+                "prompt": self.prompt,
+                "ratio": ratio,
+                "model": DOUBAO_MODEL_CODES[self.model],
+                "duration": self.duration,
+                "attachments": attachments,
+                "retryLimit": max(0, min(10, int(self.settings.doubao_submit_retry_limit))),
+                "retryDelayMs": 15000,
+                "freshConversationRetryUsed": False,
+            },
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "status": 0, "accepted": False, "video_creation_ui_error": "doubao video request returned invalid response"}
+        result = normalize_doubao_submission_acknowledgement(result)
+        result.update(
+            video_creation_page_used=True,
+            video_creation_selected_model=self.model,
+            video_creation_selected_ratio=ratio,
+            video_creation_selected_duration=self.duration,
+            submitted_with_images=bool(attachments),
+            generation_ack_source=str(result.get("generation_ack_source") or "video_creation_internal_request"),
+        )
+        return result
+
+    async def _submit_via_video_creation_page_ui(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
         self._set_phase("opening_video_creation_page", "正在进入豆包新对话")
         await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)
         await page.wait_for_timeout(3000)
@@ -2310,7 +2512,7 @@ class DoubaoVideoAutomation:
                                 option_center_y = option_box["y"] + option_box["height"] / 2
                                 in_current_panel = (
                                     selector_box["x"] - 300 <= option_center_x <= selector_box["x"] + selector_box["width"] + 300
-                                    and selector_box["y"] - 350 <= option_center_y <= selector_box["y"] + selector_box["height"] + 60
+                                    and selector_box["y"] - 350 <= option_center_y <= selector_box["y"] + selector_box["height"] + 200
                                 )
                                 if not in_current_panel:
                                     continue
@@ -2837,6 +3039,13 @@ class DoubaoVideoAutomation:
                         }
                     return {"success": False, "retryable": True, "reason": error}
                 conversation_id = str(completion_result.get("conversation_id") or "")
+                proxy_session = getattr(self, "proxy_session", None)
+                if proxy_session is not None:
+                    active_node_id = str(getattr(proxy_session, "proxy_node_id", "") or "").strip()
+                    active_source = str(getattr(proxy_session, "active_proxy_source", "") or "").strip()
+                    if active_source == "subscription" and active_node_id:
+                        set_account_pinned_proxy_node(str(self.account.get("id") or ""), active_node_id)
+                        self.account["pinned_proxy_node_id"] = active_node_id
                 refreshed_cookies = await self._refresh_cookies(context)
                 save_result(
                     self.task_id,

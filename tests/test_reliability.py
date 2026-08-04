@@ -1106,6 +1106,63 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(cleaned["removed"], 0)
         self.assertEqual(len(accounts.list_accounts()), 1)
 
+    def test_doubao_account_keeps_verified_proxy_node(self) -> None:
+        created = accounts.add_account("Doubao pinned", "session=pinned", platform="doubao")
+
+        accounts.set_account_pinned_proxy_node(created["id"], "verified-node")
+
+        stored = accounts.list_accounts()[0]
+        selected = accounts.account_for_worker("worker-pinned", platform="doubao")
+        self.assertEqual(stored["pinned_proxy_node_id"], "verified-node")
+        self.assertEqual(selected["pinned_proxy_node_id"], "verified-node")
+
+    def test_doubao_pinned_subscription_node_disables_rotation(self) -> None:
+        runner = DolaFetchAutomation(
+            "missing-task",
+            "prompt",
+            "9:16",
+            account={"id": "doubao-account", "pinned_proxy_node_id": "verified-node"},
+            proxy_platform="doubao",
+        )
+        settings = SimpleNamespace(
+            proxy_enabled=True,
+            platform_proxy_sources={"doubao": "subscription"},
+            platform_proxy_random={"doubao": True},
+            proxy_source="subscription",
+            proxy_subscription_url="https://subscription.example/list",
+            proxy_api_url="",
+            proxy_api_timeout_seconds=20,
+            proxy_subscription_scheme="http",
+            proxy_subscription_refresh_seconds=900,
+            proxy_auto_select=True,
+            proxy_selected_node="other-node",
+            proxy_auto_countries=("日本",),
+            proxy_latency_threshold_ms=5000,
+        )
+        lease = {
+            "server": "http://127.0.0.1:19090",
+            "node_count": "3",
+            "node_id": "verified-node",
+            "node_name": "Verified",
+            "exit_id": "node:verified-node",
+        }
+
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "proxy_source_available", return_value=True
+        ), patch.object(
+            automation, "account_proxy_configured", return_value=False
+        ), patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock(return_value=lease)
+        ) as acquire:
+            proxy = asyncio.run(runner._browser_proxy_config())
+
+        self.assertEqual(proxy["server"], lease["server"])
+        self.assertFalse(acquire.await_args.kwargs["auto_select"])
+        self.assertFalse(acquire.await_args.kwargs["random_select"])
+        self.assertEqual(acquire.await_args.kwargs["selected_node"], "verified-node")
+        self.assertEqual(acquire.await_args.kwargs["selected_countries"], ())
+        self.assertEqual(acquire.await_args.kwargs["excluded_node_ids"], set())
+
     def test_reset_today_restores_only_marked_accounts_for_platform(self) -> None:
         doubao = accounts.add_account("Doubao marked", "session=doubao-marked", platform="doubao")
         dola = accounts.add_account("Dola marked", "session=dola-marked", platform="dola")

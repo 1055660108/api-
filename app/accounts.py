@@ -462,6 +462,7 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(account.get("enabled", True)),
         "account_status": str(account.get("account_status") or "normal"),
         "status_reason": str(account.get("disabled_reason") or account.get("status_reason") or ""),
+        "pinned_proxy_node_id": str(account.get("pinned_proxy_node_id") or ""),
         "slider_verification_date": str(account.get("slider_verification_date") or ""),
         "slider_verification_streak": max(0, int(account.get("slider_verification_streak") or 0)),
         "ten_second_only": bool(account.get("ten_second_only")),
@@ -1009,6 +1010,31 @@ def set_account_cooldown(account_id: str, seconds: int, reason: str) -> None:
             return
 
 
+def set_account_pinned_proxy_node(account_id: str, node_id: str) -> None:
+    account_id = str(account_id or "").strip().lower()
+    node_id = str(node_id or "").strip()
+    if not account_id or not node_id:
+        return
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> None:
+                for account in data.get("accounts") or []:
+                    if str(account.get("id") or "") == account_id:
+                        account.update(pinned_proxy_node_id=node_id, updated_at=utc_now())
+                        return
+
+            postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            return
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") != account_id:
+                continue
+            account["pinned_proxy_node_id"] = node_id
+            account["updated_at"] = utc_now()
+            _write_data(data)
+            return
+
+
 def _account_supports_duration(account: dict[str, Any], platform: str, duration: int) -> bool:
     return not (
         normalize_platform(platform) == "dola"
@@ -1098,6 +1124,7 @@ def _select_account(
         "name": str(account.get("name") or ""),
         "cookies": [dict(item) for item in account.get("cookies") or [] if isinstance(item, dict)],
         "cookie_header": str(account.get("cookie_header") or ""),
+        "pinned_proxy_node_id": str(account.get("pinned_proxy_node_id") or ""),
     }
 
 

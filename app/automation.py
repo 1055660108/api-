@@ -1911,6 +1911,16 @@ class DolaFetchAutomation:
         platform_random = getattr(self.settings, "platform_proxy_random", {})
         selected_source = str(platform_sources.get(self.proxy_platform) or self.settings.proxy_source).strip().lower()
         random_select = bool(platform_random.get(self.proxy_platform))
+        account = getattr(self, "account", {}) or {}
+        pinned_proxy_node_id = (
+            str(account.get("pinned_proxy_node_id") or "").strip()
+            if self.proxy_platform == "doubao"
+            else ""
+        )
+        if pinned_proxy_node_id:
+            excluded_node_ids.clear()
+            avoid_node_id = ""
+            random_select = False
         if selected_source == "direct":
             self._save_result(extra={"proxy_source": "direct", "proxy_platform": self.proxy_platform, "proxy_server": ""})
             return None
@@ -1937,9 +1947,9 @@ class DolaFetchAutomation:
                         timeout_seconds=self.settings.proxy_api_timeout_seconds,
                         scheme=self.settings.proxy_subscription_scheme,
                         refresh_seconds=self.settings.proxy_subscription_refresh_seconds,
-                        auto_select=self.settings.proxy_auto_select,
-                        selected_node=self.settings.proxy_selected_node,
-                        selected_countries=self.settings.proxy_auto_countries,
+                        auto_select=False if pinned_proxy_node_id else self.settings.proxy_auto_select,
+                        selected_node=pinned_proxy_node_id or self.settings.proxy_selected_node,
+                        selected_countries=() if pinned_proxy_node_id else self.settings.proxy_auto_countries,
                         latency_threshold_ms=self.settings.proxy_latency_threshold_ms,
                         excluded_node_ids=excluded_node_ids,
                         random_select=random_select,

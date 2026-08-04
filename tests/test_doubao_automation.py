@@ -364,6 +364,10 @@ class DoubaoAutomationTests(unittest.TestCase):
         ui_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page)
         self.assertIn("await editor.fill(self.prompt)", ui_source)
         self.assertIn("await send_button.click", ui_source)
+        self.assertIn('page.get_by_text("视频生成", exact=True)', ui_source)
+        self.assertIn("page.get_by_text(label, exact=True)", ui_source)
+        self.assertLess(ui_source.index("await editor.fill(self.prompt)"), ui_source.index("await select_video_setting(ratio_label)"))
+        self.assertLess(ui_source.index("await select_video_setting(ratio_label)"), ui_source.index("await send_button.click"))
         self.assertNotIn("generationInstruction", ui_source)
 
     def test_direct_video_is_an_accepted_submission(self) -> None:

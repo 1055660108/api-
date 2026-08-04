@@ -2032,6 +2032,7 @@ class DoubaoVideoAutomation:
             (
                 page.get_by_role("button", name="视频生成", exact=True),
                 page.get_by_role("tab", name="视频生成", exact=True),
+                page.get_by_text("视频生成", exact=True),
             ),
             timeout=3000,
         )
@@ -2117,38 +2118,39 @@ class DoubaoVideoAutomation:
         async def select_video_setting(label: str) -> None:
             selector = await video_settings_button()
             await selector.click(force=True)
-            option = page.locator("button:visible").filter(
-                has_text=re.compile(rf"^{re.escape(label)}$", re.IGNORECASE)
-            ).last
-            try:
-                await option.wait_for(state="visible", timeout=5000)
-            except Exception as exc:
-                raise RuntimeError(f"doubao video setting unavailable: {label}") from exc
-            await option.click(force=True)
+            await page.wait_for_timeout(300)
+            options = (
+                page.get_by_role("button", name=label, exact=True),
+                page.get_by_role("option", name=label, exact=True),
+                page.get_by_role("menuitem", name=label, exact=True),
+                page.get_by_text(label, exact=True),
+            )
+            selected = False
+            for options_locator in options:
+                for index in range(await options_locator.count() - 1, -1, -1):
+                    option = options_locator.nth(index)
+                    try:
+                        if not await option.is_visible():
+                            continue
+                        await option.click(force=True)
+                        selected = True
+                        break
+                    except Exception:
+                        continue
+                if selected:
+                    break
+            if not selected:
+                raise RuntimeError(f"doubao video setting unavailable: {label}")
             await page.wait_for_timeout(500)
 
         try:
-            await select_video_setting(ratio_label)
             settings_button = await video_settings_button()
-            selected_settings = re.sub(r"\s+", " ", (await settings_button.inner_text()).strip())
-            if duration_label not in selected_settings:
-                await select_video_setting(duration_label)
-                settings_button = await video_settings_button()
-                selected_settings = re.sub(r"\s+", " ", (await settings_button.inner_text()).strip())
         except RuntimeError as exc:
             return {
                 "ok": False,
                 "status": 0,
                 "accepted": False,
                 "video_creation_ui_error": str(exc),
-            }
-
-        if ratio_label not in selected_settings or duration_label not in selected_settings:
-            return {
-                "ok": False,
-                "status": 0,
-                "accepted": False,
-                "video_creation_ui_error": f"doubao video settings mismatch: {selected_settings}",
             }
 
         submitted_with_images = False
@@ -2279,6 +2281,29 @@ class DoubaoVideoAutomation:
             self._set_phase("submitting_video_creation_page", "正在通过豆包视频创作页提交任务")
             await editor.fill(self.prompt)
             await page.wait_for_timeout(300)
+
+            try:
+                await select_video_setting(ratio_label)
+                settings_button = await video_settings_button()
+                selected_settings = re.sub(r"\s+", "", (await settings_button.inner_text()).strip())
+                if duration_label not in selected_settings:
+                    await select_video_setting(duration_label)
+                    settings_button = await video_settings_button()
+                    selected_settings = re.sub(r"\s+", "", (await settings_button.inner_text()).strip())
+            except RuntimeError as exc:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": str(exc),
+                }
+            if ratio_label not in selected_settings or duration_label not in selected_settings:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": f"doubao video settings mismatch: {selected_settings}",
+                }
 
             async def find_send_button():
                 named = (

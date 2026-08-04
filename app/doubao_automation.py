@@ -829,6 +829,52 @@ def best_doubao_video_candidate(candidates: dict[str, dict[str, Any]]) -> dict[s
     )
 
 
+def is_doubao_text_only_video_response(value: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or "")).lower()
+    if not text or DOUBAO_SUBMISSION_MARKER in text:
+        return False
+    direct_refusals = (
+        "没办法直接生成视频文件",
+        "无法直接生成视频文件",
+        "不能直接生成视频文件",
+        "没法直接生成视频文件",
+        "无法为你直接生成视频文件",
+        "不能为你直接生成视频文件",
+    )
+    if any(marker in text for marker in direct_refusals):
+        return True
+    prompt_export = any(marker in text for marker in (
+        "直接用于ai视频生成工具的提示词",
+        "用于ai视频生成工具的提示词",
+        "把提示词导入",
+        "将提示词导入",
+        "复制到视频生成工具",
+        "复制到ai视频生成工具",
+        "复制到视频创作工具",
+    ))
+    tool_recommendation = "视频生成工具" in text or any(
+        marker in text for marker in ("剪映ai", "可灵ai", "即梦ai", "海螺ai")
+    )
+    versioned_prompts = (
+        ("版本1" in text or "版本一" in text)
+        and ("版本2" in text or "版本二" in text)
+        and ("提示词" in text or "风格" in text)
+    )
+    explicit_prompt_rewrite = any(marker in text for marker in (
+        "ai视频提示词",
+        "视频生成提示词",
+        "视频创作提示词",
+    )) and any(marker in text for marker in (
+        "提示词如下",
+        "版本1",
+        "版本一",
+        "分镜",
+        "镜头",
+        "可直接使用",
+    ))
+    return explicit_prompt_rewrite or (prompt_export and (tool_recommendation or versioned_prompts))
+
+
 def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
     if result.get("region_restricted"):
         return "doubao region restricted", "region_restricted"
@@ -840,6 +886,8 @@ def classify_doubao_submission(result: dict[str, Any]) -> tuple[str, str]:
         return "doubao verification required", "slider_verification"
     if result.get("quota_insufficient"):
         return "豆包账号额度不足或已耗尽", "quota_insufficient"
+    if result.get("text_only_response"):
+        return "豆包仅返回文本，未提交视频生成", "text_only_response"
     if result.get("video_creation_page_refusal_repeated"):
         return "豆包要求改用视频创作页面", "generation_ack_missing"
     if result.get("video_creation_ui_error"):
@@ -2306,11 +2354,13 @@ class DoubaoVideoAutomation:
 
             conversation_id = str(evidence.get("conversation_id") or "")
             if not acknowledgement_visible:
+                response_preview = last_body[-6000:]
                 return {
                     "ok": True,
                     "status": 200,
                     "accepted": False,
-                    "response_preview": last_body[-6000:],
+                    "response_preview": response_preview,
+                    "text_only_response": is_doubao_text_only_video_response(response_preview),
                     "video_creation_page_used": True,
                     "submitted_with_images": submitted_with_images,
                     "generation_wait_message_detected": marker_visible,
@@ -2523,6 +2573,15 @@ class DoubaoVideoAutomation:
                             "reason": error,
                             "account_fault": True,
                             "account_quota_insufficient": True,
+                            "switch_account": True,
+                        }
+                    if category == "text_only_response":
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "reason": error,
+                            "account_fault": True,
+                            "account_text_only": True,
                             "switch_account": True,
                         }
                     if category == "generation_ack_missing":

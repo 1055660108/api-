@@ -870,6 +870,85 @@ def disable_account_for_login(account_id: str, reason: str) -> dict[str, Any]:
     raise KeyError("account not found")
 
 
+def mark_account_text_only(account_id: str) -> dict[str, Any]:
+    account_id = str(account_id or "").strip().lower()
+    marked_at = utc_now()
+
+    def apply(account: dict[str, Any]) -> dict[str, Any]:
+        account.update(
+            enabled=False,
+            account_status="text_only",
+            status_reason="出文本",
+            disabled_reason="出文本",
+            account_status_marked_at=marked_at,
+            current_task_id="",
+            current_worker_id="",
+            current_started_at="",
+            updated_at=marked_at,
+        )
+        return _public_account(account)
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> dict[str, Any]:
+                for account in data.get("accounts") or []:
+                    if str(account.get("id") or "") == account_id:
+                        return apply(account)
+                raise KeyError("account not found")
+
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") == account_id:
+                result = apply(account)
+                _write_data(data)
+                return result
+    raise KeyError("account not found")
+
+
+def reset_platform_accounts_marked_today(platform: str) -> int:
+    target_platform = normalize_platform(platform)
+    today = local_today()
+    now = utc_now()
+
+    def mutate(data: dict[str, Any]) -> int:
+        updated = 0
+        for account in data.get("accounts") or []:
+            if str(account.get("platform") or DEFAULT_PLATFORM) != target_platform:
+                continue
+            if _account_status_marked_date(account) != today:
+                continue
+            account.update(
+                enabled=True,
+                account_status="normal",
+                status_reason="",
+                current_task_id="",
+                current_worker_id="",
+                current_started_at="",
+                updated_at=now,
+            )
+            for key in (
+                "disabled_reason",
+                "account_status_marked_at",
+                "slider_verification_date",
+                "slider_verification_streak",
+                "cooldown_until",
+                "cooldown_reason",
+            ):
+                account.pop(key, None)
+            updated += 1
+        return updated
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        updated = mutate(data)
+        if updated:
+            _write_data(data)
+        return updated
+
+
 def set_account_cooldown(account_id: str, seconds: int, reason: str) -> None:
     account_id = str(account_id or "").strip().lower()
     with _ACCOUNTS_LOCK:

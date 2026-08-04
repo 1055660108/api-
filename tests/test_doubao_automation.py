@@ -17,7 +17,7 @@ import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 
 
@@ -311,6 +311,28 @@ class DoubaoAutomationTests(unittest.TestCase):
 
         self.assertEqual(error, "doubao generation acknowledgement missing")
         self.assertEqual(category, "generation_ack_missing")
+
+    def test_text_only_video_response_is_classified_for_account_quarantine(self) -> None:
+        responses = (
+            "很抱歉，我目前没办法直接生成视频文件。不过给你两段可以直接用于 AI 视频生成工具的提示词。",
+            "版本 1（卡通梦幻风格）提示词如下。版本 2（奇幻写实风格）提示词如下。你可以把提示词导入剪映 AI、可灵 AI 等视频生成工具。",
+            "我无法为你直接生成视频文件，请复制到 AI 视频生成工具。",
+            "以下是 AI 视频提示词，提示词如下：镜头从城市上空缓慢推进。",
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                self.assertTrue(is_doubao_text_only_video_response(response))
+        for response in (
+            "视频生成已提交\n本次使用 Seedance 2.0 Fast 生成。",
+            "本次使用 Seedance 2.0 Fast 生成，预计等待 5 分钟。",
+            "请生成两个版本的视频，提示词中保留角色一致性。",
+        ):
+            with self.subTest(response=response):
+                self.assertFalse(is_doubao_text_only_video_response(response))
+        self.assertEqual(
+            classify_doubao_submission({"ok": True, "accepted": False, "text_only_response": True}),
+            ("豆包仅返回文本，未提交视频生成", "text_only_response"),
+        )
 
     def test_quota_exhaustion_is_a_terminal_submission_signal(self) -> None:
         for text in ("今日额度不足", "视频生成额度已用完", "当前剩余 0 次", "今日视频生成免费次数用完了"):

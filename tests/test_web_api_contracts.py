@@ -2117,6 +2117,11 @@ class WebAPIContractTests(unittest.TestCase):
         slider = self.client.get("/accounts?page=1&page_size=20&status=slider_verification").json()
         self.assertEqual([item["id"] for item in slider["accounts"]], [slider_account["id"]])
         self.assertEqual(slider["stats"]["slider_verification"], 1)
+        text_only_account = self.client.post("/accounts", json={"name": "出文本账号", "cookie_data": "session=text-only", "platform": "doubao"}).json()["account"]
+        accounts.mark_account_text_only(text_only_account["id"])
+        text_only = self.client.get("/accounts?page=1&page_size=20&status=text_only").json()
+        self.assertEqual([item["id"] for item in text_only["accounts"]], [text_only_account["id"]])
+        self.assertEqual(text_only["stats"]["text_only"], 1)
         ten_second_account = self.client.post("/accounts", json={"name": "10秒账号", "cookie_data": "session=ten-second", "platform": "dola"}).json()["account"]
         accounts.mark_account_ten_second_limit(ten_second_account["id"])
         ten_second = self.client.get("/accounts?page=1&page_size=20&status=ten_second").json()

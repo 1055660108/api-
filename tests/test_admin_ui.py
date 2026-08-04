@@ -84,6 +84,11 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('grid-template-columns: auto minmax(220px, auto) minmax(180px, 1fr) auto;', styles)
         self.assertIn('grid-template-columns: auto minmax(96px, 1fr) auto minmax(112px, 1fr) auto;', styles)
 
+    def test_account_list_supports_text_only_status(self) -> None:
+        self.assertIn('<option value="text_only">出文本</option>', self.html)
+        self.assertIn('item.account_status === "text_only"', self.javascript)
+        self.assertIn('textOnly ? "出文本"', self.javascript)
+
     def test_repository_update_control_is_present(self) -> None:
         for element_id in ("repositoryUpdatePanel", "repositoryUpdateState", "repositoryUpdateError", "repositoryRevision", "updateRepository"):
             self.assertIn(f'id="{element_id}"', self.html)

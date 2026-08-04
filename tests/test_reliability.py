@@ -1049,6 +1049,50 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
 
+    def test_doubao_text_only_account_is_retained_excluded_and_refunded(self) -> None:
+        task = store.create_task("豆包出文本测试", "16:9", platform="doubao", model="Seedance 2.0 Fast")
+        created = accounts.add_account("Doubao text only", "session=text-only", quota_limit=2, platform="doubao")
+        claimed = accounts.claim_account_for_worker("worker-text-only", task["id"], platform="doubao")
+        self.assertEqual(accounts.list_accounts()[0]["quota_used"], 1)
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "doubao",
+            {
+                "retryable": True,
+                "account_fault": True,
+                "account_text_only": True,
+                "switch_account": True,
+            },
+        )
+
+        stored = accounts.list_accounts()[0]
+        self.assertEqual(stored["id"], created["id"])
+        self.assertFalse(stored["enabled"])
+        self.assertEqual(stored["account_status"], "text_only")
+        self.assertEqual(stored["status_reason"], "出文本")
+        self.assertEqual(stored["quota_used"], 0)
+        self.assertIsNone(accounts.account_for_worker("another-worker", platform="doubao"))
+        cleaned = accounts.cleanup_flagged_accounts(datetime.now(accounts.LOCAL_TZ).replace(hour=23, minute=0))
+        self.assertEqual(cleaned["removed"], 0)
+        self.assertEqual(len(accounts.list_accounts()), 1)
+
+    def test_reset_today_restores_only_marked_accounts_for_platform(self) -> None:
+        doubao = accounts.add_account("Doubao marked", "session=doubao-marked", platform="doubao")
+        dola = accounts.add_account("Dola marked", "session=dola-marked", platform="dola")
+        accounts.mark_account_text_only(doubao["id"])
+        accounts.disable_account_for_login(dola["id"], "登录异常")
+
+        self.assertEqual(accounts.reset_platform_accounts_marked_today("doubao"), 1)
+
+        stored = {item["id"]: item for item in accounts.list_accounts()}
+        self.assertTrue(stored[doubao["id"]]["enabled"])
+        self.assertEqual(stored[doubao["id"]]["account_status"], "normal")
+        self.assertEqual(stored[doubao["id"]]["status_reason"], "")
+        self.assertFalse(stored[dola["id"]]["enabled"])
+        self.assertEqual(stored[dola["id"]]["account_status"], "abnormal")
+
     def test_ten_second_dola_account_runs_short_tasks_but_not_fifteen_second_tasks(self) -> None:
         created = accounts.add_account("Ten seconds", "session=ten-seconds", quota_limit=2)
 

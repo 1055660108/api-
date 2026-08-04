@@ -695,6 +695,7 @@ class QianwenVideoAutomation:
                     "reason": "qianwen generation submitted",
                     "account_fault": False,
                     "submitted": True,
+                    "keep_account_claimed": True,
                 }
             finally:
                 if page is not None and response_handler is not None:

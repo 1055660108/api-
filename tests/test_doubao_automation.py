@@ -326,6 +326,21 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(error, "doubao generation acknowledgement missing")
         self.assertEqual(category, "generation_ack_missing")
 
+    def test_missing_video_settings_panel_is_quarantined_as_text_only(self) -> None:
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner._submit_via_video_creation_page_ui = AsyncMock(return_value={
+            "ok": False,
+            "status": 0,
+            "accepted": False,
+            "video_creation_ui_error": "doubao video settings panel unavailable",
+        })
+
+        result = asyncio.run(runner._submit_via_video_creation_page(SimpleNamespace(), image_count=0))
+
+        self.assertTrue(result["text_only_response"])
+        self.assertEqual(classify_doubao_submission(result)[1], "text_only_response")
+        runner._submit_via_video_creation_page_ui.assert_awaited_once()
+
     def test_text_only_video_response_is_classified_for_account_quarantine(self) -> None:
         responses = (
             "很抱歉，我目前没办法直接生成视频文件。不过给你两段可以直接用于 AI 视频生成工具的提示词。",
@@ -376,22 +391,22 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertFalse(doubao_ui_generation_acknowledged(notice, "Seedance 2.0 Mini"))
         self.assertFalse(doubao_ui_generation_acknowledged("视频生成已提交", "Seedance 2.0 Fast"))
 
-    def test_runtime_submission_uses_video_page_internal_request(self) -> None:
+    def test_runtime_submission_uses_native_video_page_controls(self) -> None:
         source = inspect.getsource(DoubaoVideoAutomation._run_browser)
         self.assertIn("_submit_via_video_creation_page", source)
         self.assertNotIn("DOUBAO_SUBMIT_SCRIPT", source)
         self.assertNotIn("page.evaluate", source)
         request_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page)
-        self.assertIn("await page.goto(DOUBAO_VIDEO_CREATION_URL", request_source)
-        self.assertIn("DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT", request_source)
-        self.assertIn("DOUBAO_SUBMIT_SCRIPT", request_source)
-        self.assertIn('"ratio": ratio', request_source)
-        self.assertIn('"model": DOUBAO_MODEL_CODES[self.model]', request_source)
-        self.assertIn('"duration": self.duration', request_source)
-        self.assertIn('"attachments": attachments', request_source)
-        self.assertNotIn("editor.fill", request_source)
-        self.assertNotIn("send_button.click", request_source)
-        self.assertNotIn("select_video_setting", request_source)
+        self.assertIn("_submit_via_video_creation_page_ui", request_source)
+        self.assertIn('result["text_only_response"] = True', request_source)
+        ui_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page_ui)
+        self.assertIn("await page.goto(DOUBAO_URL", ui_source)
+        self.assertIn("editor.fill", ui_source)
+        self.assertIn("send_button.click", ui_source)
+        self.assertIn("select_video_setting", ui_source)
+        self.assertIn("submission_request_seen", ui_source)
+        self.assertIn('editor.press("Enter")', ui_source)
+        self.assertNotIn("DOUBAO_SUBMIT_SCRIPT", request_source)
 
     def test_direct_video_is_an_accepted_submission(self) -> None:
         error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})

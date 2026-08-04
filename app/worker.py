@@ -1083,7 +1083,7 @@ class WorkerManager:
                 if not outcome.get("success"):
                     retry_count = 0
                     if outcome.get("submitted"):
-                        if account:
+                        if account and not outcome.get("keep_account_claimed"):
                             clear_account_current_task(str(account.get("id") or ""), task_id)
                         mark_submitted(task_id, result_poll_delay_seconds=15)
                         await asyncio.sleep(20)

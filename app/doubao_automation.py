@@ -2127,7 +2127,7 @@ class DoubaoVideoAutomation:
             return True
         return any(marker in body[:2000] for marker in ("扫码登录", "手机号登录", "登录豆包"))
 
-    async def _submit_via_video_creation_page(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
+    async def _submit_via_video_creation_internal_request(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
         self._set_phase("opening_video_creation_page", "正在建立豆包视频生成会话")
         await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
         await page.wait_for_timeout(3000)
@@ -2614,6 +2614,7 @@ class DoubaoVideoAutomation:
             submitted_with_images = True
 
         evidence: dict[str, Any] = {"conversation_id": "", "response_preview": "", "network_marker": False}
+        submission_request_seen = asyncio.Event()
         capture_tasks: set[asyncio.Task[Any]] = set()
         capture_enabled = False
 
@@ -2647,7 +2648,16 @@ class DoubaoVideoAutomation:
         def capture_submission(response) -> None:
             create_tracked_task(capture_tasks, capture_submission_response(response))
 
+        def capture_submission_request(request) -> None:
+            if not capture_enabled or str(request.method or "").upper() != "POST":
+                return
+            if urlsplit(str(request.url or "")).path != "/chat/completion":
+                return
+            remember_evidence(request.post_data or "")
+            submission_request_seen.set()
+
         page.on("response", capture_submission)
+        page.on("request", capture_submission_request)
         try:
             editors = page.locator('[contenteditable="true"][role="textbox"]:visible,textarea:visible')
             editor = None
@@ -2755,6 +2765,14 @@ class DoubaoVideoAutomation:
                 await self.submission_pacer()
             capture_enabled = True
             await send_button.click(force=True)
+            try:
+                await asyncio.wait_for(submission_request_seen.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                await editor.press("Enter")
+                try:
+                    await asyncio.wait_for(submission_request_seen.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    pass
 
             deadline = asyncio.get_running_loop().time() + DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS
             marker_visible = False
@@ -2820,7 +2838,17 @@ class DoubaoVideoAutomation:
                 page.remove_listener("response", capture_submission)
             except Exception:
                 pass
+            try:
+                page.remove_listener("request", capture_submission_request)
+            except Exception:
+                pass
             await cancel_tracked_tasks(capture_tasks)
+
+    async def _submit_via_video_creation_page(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
+        result = await self._submit_via_video_creation_page_ui(page, image_count=image_count)
+        if str(result.get("video_creation_ui_error") or "") == "doubao video settings panel unavailable":
+            result["text_only_response"] = True
+        return result
 
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:
         runtime = self.browser_pool.playwright_context() if self.browser_pool is not None else async_playwright()

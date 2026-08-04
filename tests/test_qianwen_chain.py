@@ -112,10 +112,14 @@ class QianwenResultTests(unittest.TestCase):
         self.assertIn(11003, parsed["error_codes"])
 
     def test_worker_watches_qianwen_submitted_tasks(self) -> None:
-        source = (Path(__file__).parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
-        self.assertIn("qianwen_submitted_rows", source)
-        self.assertIn('platform="qianwen"', source)
-        self.assertIn("QIANWEN_RESULT_WATCH_DEADLINE_MINUTES", source)
+        root = Path(__file__).parents[1] / "app"
+        worker_source = (root / "worker.py").read_text(encoding="utf-8")
+        qianwen_source = (root / "qianwen_automation.py").read_text(encoding="utf-8")
+        self.assertIn("qianwen_submitted_rows", worker_source)
+        self.assertIn('platform="qianwen"', worker_source)
+        self.assertIn("QIANWEN_RESULT_WATCH_DEADLINE_MINUTES", worker_source)
+        self.assertIn('"keep_account_claimed": True', qianwen_source)
+        self.assertIn('if account and not outcome.get("keep_account_claimed"):', worker_source)
 
 
 if __name__ == "__main__":

@@ -2247,8 +2247,30 @@ class DoubaoVideoAutomation:
 
         async def select_video_setting(label: str) -> None:
             selector = await video_settings_button()
-            await selector.click(force=True)
-            await page.wait_for_timeout(300)
+            await selector.scroll_into_view_if_needed()
+
+            async def settings_panel_open() -> bool:
+                body_text = re.sub(r"\s+", "", await page.locator("body").inner_text()).replace("：", ":")
+                return all(marker in body_text for marker in ("3:4", "4:3", "9:16", "16:9", "1:1", "21:9"))
+
+            panel_open = False
+            try:
+                await selector.click(timeout=5000)
+            except Exception:
+                await selector.click(force=True)
+            await page.wait_for_timeout(500)
+            panel_open = await settings_panel_open()
+            if not panel_open:
+                await selector.focus()
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(500)
+                panel_open = await settings_panel_open()
+            if not panel_open:
+                await selector.evaluate("element => element.click()")
+                await page.wait_for_timeout(500)
+                panel_open = await settings_panel_open()
+            if not panel_open:
+                raise RuntimeError("doubao video settings panel unavailable")
             selected = False
             option_deadline = asyncio.get_running_loop().time() + 5
             while asyncio.get_running_loop().time() < option_deadline and not selected:

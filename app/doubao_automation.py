@@ -2063,7 +2063,7 @@ class DoubaoVideoAutomation:
             except Exception:
                 return None
 
-        model_button = await visible_model_button(10000) if direct_video_entry else None
+        model_button = await visible_model_button(15000) if direct_video_entry else None
         if model_button is None:
             ai_creation_opened = await click_visible(
                 (
@@ -2085,7 +2085,7 @@ class DoubaoVideoAutomation:
                 )
                 if video_tab_opened:
                     await page.wait_for_timeout(1500)
-                    model_button = await visible_model_button(10000)
+                    model_button = await visible_model_button(20000)
         if model_button is None:
             return {
                 "ok": False,
@@ -2165,26 +2165,34 @@ class DoubaoVideoAutomation:
             selector = await video_settings_button()
             await selector.click(force=True)
             await page.wait_for_timeout(300)
-            options = (
-                page.get_by_role("button", name=label, exact=True),
-                page.get_by_role("option", name=label, exact=True),
-                page.get_by_role("menuitem", name=label, exact=True),
-                page.get_by_text(label, exact=True),
-            )
             selected = False
-            for options_locator in options:
-                for index in range(await options_locator.count() - 1, -1, -1):
-                    option = options_locator.nth(index)
-                    try:
-                        if not await option.is_visible():
+            option_deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < option_deadline and not selected:
+                options = (
+                    page.get_by_role("button", name=label, exact=True),
+                    page.get_by_role("option", name=label, exact=True),
+                    page.get_by_role("menuitem", name=label, exact=True),
+                    page.get_by_text(label, exact=True),
+                )
+                for options_locator in options:
+                    for index in range(await options_locator.count() - 1, -1, -1):
+                        option = options_locator.nth(index)
+                        try:
+                            if not await option.is_visible():
+                                continue
+                            interactive = option.locator(
+                                "xpath=ancestor-or-self::*[self::button or @role='button' or @role='option' or @role='menuitem'][1]"
+                            )
+                            target = interactive.first if await interactive.count() else option
+                            await target.click(force=True)
+                            selected = True
+                            break
+                        except Exception:
                             continue
-                        await option.click(force=True)
-                        selected = True
+                    if selected:
                         break
-                    except Exception:
-                        continue
-                if selected:
-                    break
+                if not selected:
+                    await page.wait_for_timeout(250)
             if not selected:
                 raise RuntimeError(f"doubao video setting unavailable: {label}")
             await page.wait_for_timeout(500)

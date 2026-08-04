@@ -390,6 +390,8 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("await visible_model_button(15000) if direct_video_entry else None", ui_source)
         self.assertIn("await visible_model_button(20000)", ui_source)
         self.assertIn("await visible_model_button(30000)", ui_source)
+        self.assertIn('has_text=re.compile(r"Seedance\\s+\\d", re.IGNORECASE)\n            ).last', ui_source)
+        self.assertIn('has_text=re.compile(r"(?:自动|\\d+:\\d+)\\s*[·•]\\s*\\d+s", re.IGNORECASE)\n            ).last', ui_source)
         self.assertIn("await page.goto(DOUBAO_VIDEO_CREATION_URL", ui_source)
         self.assertIn('click_exact_visible_text("视频生成")', ui_source)
         self.assertIn("selected = await click_exact_visible_text(label)", ui_source)

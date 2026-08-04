@@ -2087,7 +2087,7 @@ class DoubaoVideoAutomation:
         async def visible_model_button(timeout: int):
             selector = page.locator("button:visible").filter(
                 has_text=re.compile(r"Seedance\s+\d", re.IGNORECASE)
-            ).first
+            ).last
             try:
                 await selector.wait_for(state="visible", timeout=timeout)
                 return selector
@@ -2201,7 +2201,7 @@ class DoubaoVideoAutomation:
         async def video_settings_button():
             selector = page.locator("button:visible").filter(
                 has_text=re.compile(r"(?:自动|\d+:\d+)\s*[·•]\s*\d+s", re.IGNORECASE)
-            ).first
+            ).last
             try:
                 await selector.wait_for(state="visible", timeout=10000)
             except Exception as exc:

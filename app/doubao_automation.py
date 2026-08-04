@@ -2031,6 +2031,35 @@ class DoubaoVideoAutomation:
                     return False
                 await page.wait_for_timeout(250)
 
+        async def click_exact_visible_text(label: str) -> bool:
+            return bool(await page.evaluate(
+                r"""label => {
+                    const normalize = value => String(value || "")
+                        .replace(/\s+/g, "")
+                        .replace(/：/g, ":");
+                    const expected = normalize(label);
+                    const candidates = Array.from(document.querySelectorAll("body *"))
+                        .filter(element => normalize(element.textContent) === expected)
+                        .filter(element => {
+                            const style = getComputedStyle(element);
+                            const box = element.getBoundingClientRect();
+                            return style.visibility !== "hidden" && style.display !== "none"
+                                && box.width > 0 && box.height > 0;
+                        })
+                        .sort((left, right) => {
+                            const a = left.getBoundingClientRect();
+                            const b = right.getBoundingClientRect();
+                            return a.width * a.height - b.width * b.height;
+                        });
+                    const element = candidates[0];
+                    if (!element) return false;
+                    const target = element.closest("button,[role=button],[role=tab],[role=option],[role=menuitem],a") || element;
+                    target.click();
+                    return true;
+                }""",
+                label,
+            ))
+
         await click_visible(
             (
                 page.get_by_role("button", name="新对话", exact=True),
@@ -2050,6 +2079,8 @@ class DoubaoVideoAutomation:
             ),
             timeout=8000,
         )
+        if not direct_video_entry:
+            direct_video_entry = await click_exact_visible_text("视频生成")
         if direct_video_entry:
             await page.wait_for_timeout(1500)
 
@@ -2086,6 +2117,22 @@ class DoubaoVideoAutomation:
                 if video_tab_opened:
                     await page.wait_for_timeout(1500)
                     model_button = await visible_model_button(20000)
+        if model_button is None:
+            await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
+            await page.wait_for_timeout(3000)
+            video_tab_opened = await click_visible(
+                (
+                    page.get_by_role("tab", name="视频", exact=True),
+                    page.get_by_role("button", name="视频", exact=True),
+                    page.get_by_text("视频", exact=True),
+                ),
+                timeout=10000,
+            )
+            if not video_tab_opened:
+                video_tab_opened = await click_exact_visible_text("视频")
+            if video_tab_opened:
+                await page.wait_for_timeout(1500)
+                model_button = await visible_model_button(30000)
         if model_button is None:
             return {
                 "ok": False,
@@ -2168,11 +2215,17 @@ class DoubaoVideoAutomation:
             selected = False
             option_deadline = asyncio.get_running_loop().time() + 5
             while asyncio.get_running_loop().time() < option_deadline and not selected:
+                ratio_match = re.fullmatch(r"(\d+)\s*[:：]\s*(\d+)", label)
+                option_pattern = re.compile(
+                    rf"^\s*{ratio_match.group(1)}\s*[:：]\s*{ratio_match.group(2)}\s*$"
+                    if ratio_match else rf"^\s*{re.escape(label)}\s*$",
+                    re.IGNORECASE,
+                )
                 options = (
-                    page.get_by_role("button", name=label, exact=True),
-                    page.get_by_role("option", name=label, exact=True),
-                    page.get_by_role("menuitem", name=label, exact=True),
-                    page.get_by_text(label, exact=True),
+                    page.get_by_role("button", name=option_pattern),
+                    page.get_by_role("option", name=option_pattern),
+                    page.get_by_role("menuitem", name=option_pattern),
+                    page.get_by_text(option_pattern),
                 )
                 for options_locator in options:
                     for index in range(await options_locator.count() - 1, -1, -1):
@@ -2193,6 +2246,8 @@ class DoubaoVideoAutomation:
                         break
                 if not selected:
                     await page.wait_for_timeout(250)
+            if not selected:
+                selected = await click_exact_visible_text(label)
             if not selected:
                 raise RuntimeError(f"doubao video setting unavailable: {label}")
             await page.wait_for_timeout(500)
@@ -2345,11 +2400,11 @@ class DoubaoVideoAutomation:
             try:
                 await select_video_setting(ratio_label)
                 settings_button = await video_settings_button()
-                selected_settings = re.sub(r"\s+", "", (await settings_button.inner_text()).strip())
+                selected_settings = re.sub(r"\s+", "", (await settings_button.inner_text()).strip()).replace("：", ":")
                 if duration_label not in selected_settings:
                     await select_video_setting(duration_label)
                     settings_button = await video_settings_button()
-                    selected_settings = re.sub(r"\s+", "", (await settings_button.inner_text()).strip())
+                    selected_settings = re.sub(r"\s+", "", (await settings_button.inner_text()).strip()).replace("：", ":")
             except RuntimeError as exc:
                 return {
                     "ok": False,

@@ -272,6 +272,7 @@ class QianwenVideoAutomation:
         self.remote_session_id = ""
         self.remote_req_id = ""
         self.remote_submission: dict[str, Any] = {}
+        self.submission_request_event = asyncio.Event()
         self.submission_event = asyncio.Event()
 
     def _account_cookies(self) -> list[dict[str, Any]]:
@@ -348,6 +349,17 @@ class QianwenVideoAutomation:
         return False
 
     async def _open_image_file_chooser(self, page):
+        reference_buttons = page.get_by_role("button", name="参考", exact=True)
+        for index in range(await reference_buttons.count()):
+            button = reference_buttons.nth(index)
+            if not await button.is_visible() or not await button.is_enabled():
+                continue
+            try:
+                async with page.expect_file_chooser(timeout=3000) as chooser_info:
+                    await button.click()
+                return await chooser_info.value
+            except Exception:
+                continue
         triggers = page.locator(
             'button[aria-label*="添加"]:visible, button[aria-label*="附件"]:visible, '
             'button[aria-label*="上传"]:visible, button[title*="添加"]:visible, '
@@ -381,27 +393,43 @@ class QianwenVideoAutomation:
             return image_inputs.last
         return None
 
-    async def _wait_for_reference_upload(self, page, *, timeout_seconds: int = 90) -> bool:
+    @staticmethod
+    async def _reference_preview_count(page) -> int:
+        return int(await page.evaluate(
+            r"""() => {
+                const inputBody = document.querySelector('[data-chat-input-body="true"]');
+                const host = inputBody && inputBody.parentElement;
+                if (!host) return 0;
+                const candidates = host.querySelectorAll('img,canvas,video,[style*="background-image"]');
+                return Array.from(candidates).filter(element => {
+                    const style = getComputedStyle(element);
+                    const box = element.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden'
+                        && box.width >= 24 && box.height >= 24;
+                }).length;
+            }"""
+        ))
+
+    async def _wait_for_reference_upload(self, page, *, baseline_preview_count: int, timeout_seconds: int = 90) -> bool:
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         stable_checks = 0
-        last_preview_count = -1
         while asyncio.get_running_loop().time() < deadline:
             body_tail = (await page.locator("body").inner_text())[-2500:]
             busy_text = any(marker in body_tail for marker in ("上传中", "正在上传", "处理中"))
             progress_visible = await page.locator('[role="progressbar"]:visible').count() > 0
-            preview_count = await page.locator('img:visible').count()
-            if not busy_text and not progress_visible and preview_count == last_preview_count:
+            preview_count = await self._reference_preview_count(page)
+            if not busy_text and not progress_visible and preview_count > baseline_preview_count:
                 stable_checks += 1
                 if stable_checks >= 2:
                     return True
             else:
                 stable_checks = 0
-            last_preview_count = preview_count
             await page.wait_for_timeout(1000)
         return False
 
     async def _upload_reference_images(self, page, paths: list[Any]) -> bool:
         for path in paths:
+            baseline_preview_count = await self._reference_preview_count(page)
             chooser = await self._open_image_file_chooser(page)
             if chooser is None:
                 return False
@@ -410,7 +438,7 @@ class QianwenVideoAutomation:
             else:
                 await chooser.set_input_files(str(path))
             await page.wait_for_timeout(2500)
-            if not await self._wait_for_reference_upload(page):
+            if not await self._wait_for_reference_upload(page, baseline_preview_count=baseline_preview_count):
                 return False
         return True
 
@@ -478,6 +506,18 @@ class QianwenVideoAutomation:
             has_stream_error = "stream_error" in lowered and bool(re.search(r'"error_code"\s*:\s*[1-9]\d*', lowered))
             if response.status == 200 and self.remote_session_id and self.remote_req_id and not has_stream_error:
                 self.submission_event.set()
+
+    def _capture_request(self, request) -> None:
+        if request.method != "POST" or not str(request.url).lower().startswith(QIANWEN_CHAT_API_URL):
+            return
+        submission = parse_qianwen_submission(str(request.post_data or ""))
+        if not submission:
+            return
+        self.remote_submission = submission
+        self.remote_session_id = str(submission.get("session_id") or "")
+        self.remote_req_id = str(submission.get("req_id") or "")
+        if self.remote_session_id and self.remote_req_id:
+            self.submission_request_event.set()
 
     async def _save_diagnostics(self, page, reason: str) -> None:
         task_dir = TASKS_DIR / self.task_id
@@ -556,6 +596,7 @@ class QianwenVideoAutomation:
                 launch_options["proxy"] = proxy_config
             context = await playwright.chromium.launch_persistent_context(str(self.profile_path), **launch_options)
             page = None
+            request_handler = None
             response_handler = None
             response_tasks: set[asyncio.Task[Any]] = set()
             try:
@@ -563,6 +604,8 @@ class QianwenVideoAutomation:
                 if imported_cookies:
                     await context.add_cookies(imported_cookies)
                 page = context.pages[0] if context.pages else await context.new_page()
+                request_handler = self._capture_request
+                page.on("request", request_handler)
                 response_handler = lambda response: create_tracked_task(response_tasks, self._capture_response(response))
                 page.on("response", response_handler)
                 try:
@@ -628,6 +671,7 @@ class QianwenVideoAutomation:
                 self.remote_session_id = ""
                 self.remote_req_id = ""
                 self.remote_submission = {}
+                self.submission_request_event.clear()
                 self.submission_event.clear()
                 await editor.fill(self.prompt)
                 send_button = page.locator('button[aria-label="发送消息"]:visible').first
@@ -639,6 +683,10 @@ class QianwenVideoAutomation:
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
                 await send_button.click(force=True)
+                try:
+                    await asyncio.wait_for(self.submission_request_event.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    await editor.press("Enter")
                 try:
                     await asyncio.wait_for(self.submission_event.wait(), timeout=25)
                 except asyncio.TimeoutError:
@@ -698,6 +746,8 @@ class QianwenVideoAutomation:
                     "keep_account_claimed": True,
                 }
             finally:
+                if page is not None and request_handler is not None:
+                    page.remove_listener("request", request_handler)
                 if page is not None and response_handler is not None:
                     page.remove_listener("response", response_handler)
                 await cancel_tracked_tasks(response_tasks)

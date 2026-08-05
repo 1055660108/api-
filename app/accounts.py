@@ -84,6 +84,18 @@ def _studio_reconciled_quota_used(account: dict[str, Any]) -> int:
     return base + active
 
 
+def _studio_synced_quota_remaining(account: dict[str, Any]) -> int | None:
+    if str(account.get("qianwen_ai_studio_credit_sync_date") or "") != local_today():
+        return None
+    try:
+        available_at_sync = max(0, int(account.get("qianwen_ai_studio_credit_available_at_sync") or 0))
+        used_at_sync = max(0, int(account.get("qianwen_ai_studio_credit_used_at_sync") or 0))
+    except (TypeError, ValueError):
+        return None
+    consumed_since_sync = max(0, _studio_reconciled_quota_used(account) - used_at_sync)
+    return max(0, available_at_sync - consumed_since_sync)
+
+
 def _initialize_studio_quota_ledger(account: dict[str, Any]) -> list[dict[str, Any]]:
     if not bool(account.get("qianwen_ai_studio_quota_ledger_initialized")):
         account["qianwen_ai_studio_quota_ledger_base"] = max(0, int(account.get("qianwen_ai_studio_quota_used") or 0))
@@ -515,6 +527,7 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
     quota_used = max(0, int(account.get("quota_used") or 0))
     studio_quota_limit = max(0, int(account.get("qianwen_ai_studio_quota_limit", DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT) or 0))
     studio_quota_used = max(0, int(account.get("qianwen_ai_studio_quota_used") or 0))
+    studio_synced_remaining = _studio_synced_quota_remaining(account)
     return {
         "id": str(account.get("id") or ""),
         "platform": str(account.get("platform") or DEFAULT_PLATFORM),
@@ -534,8 +547,12 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
         "quota_reset_date": str(account.get("quota_reset_date") or ""),
         "qianwen_ai_studio_quota_limit": studio_quota_limit,
         "qianwen_ai_studio_quota_used": studio_quota_used,
-        "qianwen_ai_studio_quota_remaining": max(0, studio_quota_limit - studio_quota_used) if studio_quota_limit else None,
+        "qianwen_ai_studio_quota_remaining": studio_synced_remaining if studio_synced_remaining is not None else (max(0, studio_quota_limit - studio_quota_used) if studio_quota_limit else None),
         "qianwen_ai_studio_quota_reset_date": str(account.get("qianwen_ai_studio_quota_reset_date") or account.get("quota_reset_date") or ""),
+        "qianwen_ai_studio_credit_sync_date": str(account.get("qianwen_ai_studio_credit_sync_date") or ""),
+        "qianwen_ai_studio_credit_synced_at": str(account.get("qianwen_ai_studio_credit_synced_at") or ""),
+        "qianwen_ai_studio_credit_sign_in": max(0, int(account.get("qianwen_ai_studio_credit_sign_in") or 0)),
+        "qianwen_ai_studio_credit_actual_remaining": studio_synced_remaining,
         "current_task_id": str(account.get("current_task_id") or ""),
         "current_worker_id": str(account.get("current_worker_id") or ""),
         "current_started_at": str(account.get("current_started_at") or ""),
@@ -1208,6 +1225,13 @@ def _select_account(
         except ValueError:
             return True
 
+    def quota_available(item: dict[str, Any]) -> bool:
+        synced_remaining = _studio_synced_quota_remaining(item) if studio_quota else None
+        if synced_remaining is not None:
+            return synced_remaining >= quota_cost
+        quota_limit = int(item.get(quota_limit_key, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT if studio_quota else 0) or 0)
+        return not quota_limit or int(item.get(quota_used_key) or 0) + quota_cost <= quota_limit
+
     enabled_accounts = [
         item for item in accounts
         if item.get("enabled", True)
@@ -1222,11 +1246,7 @@ def _select_account(
         and (not studio_quota or _account_has_qianwen_ai_studio_ticket(item))
         and available(item)
         and str(item.get(exhausted_key) or "") != local_today()
-        and (
-            not int(item.get(quota_limit_key, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT if studio_quota else 0) or 0)
-            or int(item.get(quota_used_key) or 0) + quota_cost
-            <= int(item.get(quota_limit_key, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT if studio_quota else 0) or 0)
-        )
+        and quota_available(item)
     ]
     if not enabled_accounts:
         return None
@@ -1240,7 +1260,8 @@ def _select_account(
         def priority(item: dict[str, Any]) -> tuple[int, int, int, str]:
             quota_limit = max(0, int(item.get(quota_limit_key, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT if studio_quota else 0) or 0))
             quota_used = max(0, int(item.get(quota_used_key) or 0))
-            quota_remaining = max(0, quota_limit - quota_used) if quota_limit else 1000000
+            synced_remaining = _studio_synced_quota_remaining(item) if studio_quota else None
+            quota_remaining = synced_remaining if synced_remaining is not None else (max(0, quota_limit - quota_used) if quota_limit else 1000000)
             source_priority = 0 if str(item.get("account_source") or "admin").lower() == preferred_source else 1
             return (source_priority, -quota_remaining, quota_used, str(item.get("last_used_at") or ""))
 
@@ -1255,6 +1276,9 @@ def _select_account(
         "cookie_header": str(account.get("cookie_header") or ""),
         "pinned_proxy_node_id": str(account.get("pinned_proxy_node_id") or ""),
         "quota_bucket": QIANWEN_AI_STUDIO_QUOTA_BUCKET if studio_quota else "default",
+        "qianwen_ai_studio_credit_sync_date": str(account.get("qianwen_ai_studio_credit_sync_date") or ""),
+        "qianwen_ai_studio_credit_synced_at": str(account.get("qianwen_ai_studio_credit_synced_at") or ""),
+        "qianwen_ai_studio_credit_actual_remaining": _studio_synced_quota_remaining(account),
     }
 
 
@@ -1889,6 +1913,58 @@ def update_account_quota(account_id: str, quota_limit: int | None, qianwen_ai_st
                 _write_data(data)
                 return _public_account(account)
     raise KeyError("account not found")
+
+
+def sync_qianwen_ai_studio_credit(
+    account_id: str,
+    total_amount: int,
+    *,
+    sign_in_amount: int = 0,
+    pending_charge_id: str = "",
+) -> dict[str, Any]:
+    normalized_id = str(account_id or "").strip().lower()
+    available = max(0, int(total_amount or 0))
+    sign_in = max(0, int(sign_in_amount or 0))
+
+    def mutate(account: dict[str, Any]) -> dict[str, Any]:
+        if str(account.get("platform") or DEFAULT_PLATFORM) != "qianwen":
+            raise ValueError("AI Studio credit is only available for qianwen accounts")
+        charges = _initialize_studio_quota_ledger(account)
+        used = _studio_reconciled_quota_used(account)
+        pending_units = 0
+        for charge in charges:
+            if str(charge.get("charge_id") or "") != str(pending_charge_id or ""):
+                continue
+            if str(charge.get("status") or "charged") == "charged":
+                pending_units = max(1, int(charge.get("units") or 1))
+            break
+        used_before_pending = max(0, used - pending_units)
+        now = utc_now()
+        account.update(
+            qianwen_ai_studio_quota_limit=used_before_pending + available,
+            qianwen_ai_studio_quota_used=used,
+            qianwen_ai_studio_quota_charges=charges,
+            qianwen_ai_studio_credit_sync_date=local_today(),
+            qianwen_ai_studio_credit_synced_at=now,
+            qianwen_ai_studio_credit_available_at_sync=available,
+            qianwen_ai_studio_credit_used_at_sync=used_before_pending,
+            qianwen_ai_studio_credit_sign_in=sign_in,
+            updated_at=now,
+        )
+        if available >= pending_units:
+            account.pop("qianwen_ai_studio_quota_exhausted_date", None)
+        return _public_account(account)
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            return postgres.mutate_account(normalized_id, mutate)
+        data = _read_data()
+        account = next((item for item in data["accounts"] if str(item.get("id") or "") == normalized_id), None)
+        if account is None:
+            raise KeyError("account not found")
+        result = mutate(account)
+        _write_data(data)
+        return result
 
 
 def sync_account_default_quotas(defaults: dict[str, int]) -> dict[str, int]:

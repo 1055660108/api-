@@ -101,6 +101,10 @@ class PostgresAccountPriorityTests(unittest.TestCase):
         self.assertIn("jsonb_array_elements(payload->'cookies')", connection.query)
         self.assertIn("tongyi_sso_ticket", connection.query)
         self.assertIn("btrim(COALESCE(cookie->>'value', '')) <> ''", connection.query)
+        self.assertIn("qianwen_ai_studio_credit_sync_date", connection.query)
+        self.assertIn("qianwen_ai_studio_credit_available_at_sync", connection.query)
+        self.assertIn("qianwen_ai_studio_credit_used_at_sync", connection.query)
+        self.assertEqual(connection.query.count("%s"), len(connection.params))
 
     def test_duration_support_uses_one_account_query(self) -> None:
         connection = _RecordingConnection()

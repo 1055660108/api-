@@ -481,6 +481,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('apiFetch("/config/account-quotas", { method: "POST"', self.javascript)
         self.assertIn('data-account-quota-cost', self.javascript)
         self.assertIn('API账号</span>', self.javascript)
+        self.assertIn('qianwen_ai_studio_credit_synced_at', self.javascript)
+        self.assertIn('今日首次使用时自动领取并同步', self.javascript)
 
     def test_account_selection_mode_control_is_bound(self) -> None:
         self.assertIn('id="accountSelectionMode"', self.html)

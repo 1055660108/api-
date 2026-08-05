@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, call, patch
 
 import httpx
 
-from app.qianwen_ai_studio import QianwenAIStudioAutomation, parse_qianwen_ai_studio_result, qianwen_ai_studio_model, qianwen_ai_studio_submission_payload
+from app.accounts import local_today
+from app.qianwen_ai_studio import QianwenAIStudioAutomation, parse_qianwen_ai_studio_credit, parse_qianwen_ai_studio_result, qianwen_ai_studio_model, qianwen_ai_studio_submission_payload
 from app.qianwen_automation import (
     QIANWEN_CHAT_API_URL,
     QIANWEN_CHAT_SNAP_API_URL,
@@ -38,7 +39,7 @@ class QianwenSubmissionTests(unittest.TestCase):
             "16:9",
             "HappyHorse 1.1",
             10,
-            account={"id": "account-id", "cookies": cookie_items},
+            account={"id": "account-id", "cookies": cookie_items, "qianwen_ai_studio_credit_sync_date": local_today()},
         )
 
     @staticmethod
@@ -62,6 +63,14 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertTrue(outcome["account_fault"])
         self.assertTrue(outcome["switch_account"])
         self.assertIn("tongyi_sso_ticket", outcome["reason"])
+
+    def test_ai_studio_credit_info_is_parsed(self) -> None:
+        parsed = parse_qianwen_ai_studio_credit({
+            "code": 0,
+            "data": {"totalAmount": 66, "purchase": 0, "signIn": 66, "gift": 0},
+        })
+
+        self.assertEqual(parsed, {"total_amount": 66, "sign_in_amount": 66})
 
     def test_ai_studio_upstream_missing_ticket_is_an_account_login_failure(self) -> None:
         runner = self._studio_runner()
@@ -110,6 +119,22 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertTrue(outcome["submitted"])
         self.assertEqual(post.await_count, 3)
         self.assertEqual([call.args[0] for call in sleep.await_args_list], [0.5, 1.0])
+
+    def test_ai_studio_first_daily_task_syncs_credit_before_submit(self) -> None:
+        runner = self._studio_runner()
+        runner.account["qianwen_ai_studio_credit_sync_date"] = ""
+        runner.account["quota_cost"] = 25
+        runner._sync_daily_credit = AsyncMock(return_value={"ok": True, "total_amount": 66, "sign_in_amount": 66})
+        context, post = self._studio_client({"code": 0, "data": {"recordId": "record-id"}})
+
+        with patch("app.qianwen_ai_studio.begin_task_submission", return_value=True), patch(
+            "app.qianwen_ai_studio.httpx.AsyncClient", return_value=context
+        ), patch("app.qianwen_ai_studio.save_result"):
+            outcome = asyncio.run(runner._run_locked())
+
+        self.assertTrue(outcome["submitted"])
+        runner._sync_daily_credit.assert_awaited_once()
+        self.assertEqual(post.await_count, 1)
 
     def test_current_qianwen_video_models_require_a_reference(self) -> None:
         for model in ("万相 2.7", "万相 2.6", "HappyHorse 1.0"):

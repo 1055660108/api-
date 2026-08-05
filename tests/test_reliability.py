@@ -1001,6 +1001,54 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(claimed["id"], valid["id"])
         self.assertNotEqual(claimed["id"], missing["id"])
 
+    def test_qianwen_ai_studio_real_credit_preserves_pending_charge(self) -> None:
+        created = accounts.add_account(
+            "Studio credit",
+            "tongyi_sso_ticket=ticket; session=studio-credit",
+            quota_limit=5,
+            platform="qianwen",
+        )
+        claimed = accounts.claim_account_for_worker(
+            "studio-worker",
+            "studio-task",
+            platform="qianwen",
+            quota_cost=25,
+            quota_bucket="qianwen_ai_studio",
+        )
+
+        synced = accounts.sync_qianwen_ai_studio_credit(
+            created["id"],
+            66,
+            sign_in_amount=66,
+            pending_charge_id=claimed["quota_charge_id"],
+        )
+
+        self.assertEqual(synced["qianwen_ai_studio_quota_limit"], 66)
+        self.assertEqual(synced["qianwen_ai_studio_quota_used"], 25)
+        self.assertEqual(synced["qianwen_ai_studio_quota_remaining"], 41)
+        self.assertEqual(synced["qianwen_ai_studio_credit_sign_in"], 66)
+        self.assertEqual(synced["qianwen_ai_studio_credit_sync_date"], accounts.local_today())
+
+    def test_qianwen_ai_studio_selection_uses_real_synced_credit(self) -> None:
+        accounts.add_account(
+            "Studio low credit",
+            "tongyi_sso_ticket=ticket; session=studio-low-credit",
+            quota_limit=5,
+            platform="qianwen",
+        )
+        account_id = accounts.list_accounts(platform="qianwen")[0]["id"]
+        accounts.sync_qianwen_ai_studio_credit(account_id, 20, sign_in_amount=20)
+
+        claimed = accounts.claim_account_for_worker(
+            "studio-worker",
+            "studio-task",
+            platform="qianwen",
+            quota_cost=25,
+            quota_bucket="qianwen_ai_studio",
+        )
+
+        self.assertIsNone(claimed)
+
     def test_qianwen_ai_studio_quota_failure_exhausts_only_studio_quota(self) -> None:
         task = store.create_task("Studio quota", "16:9", platform="qianwen", model="万相 2.7", duration=10)
         created = accounts.add_account(

@@ -639,6 +639,9 @@ def claim_available_account(
     default_limit = 60 if studio_quota else 0
     quota_limit = f"CASE WHEN COALESCE(payload->>'{limit_field}', '') ~ '^[0-9]+$' THEN (payload->>'{limit_field}')::integer ELSE {default_limit} END"
     quota_used = f"CASE WHEN COALESCE(payload->>'{used_field}', '') ~ '^[0-9]+$' THEN (payload->>'{used_field}')::integer ELSE 0 END"
+    studio_available_at_sync = "CASE WHEN COALESCE(payload->>'qianwen_ai_studio_credit_available_at_sync', '') ~ '^[0-9]+$' THEN (payload->>'qianwen_ai_studio_credit_available_at_sync')::integer ELSE 0 END"
+    studio_used_at_sync = "CASE WHEN COALESCE(payload->>'qianwen_ai_studio_credit_used_at_sync', '') ~ '^[0-9]+$' THEN (payload->>'qianwen_ai_studio_credit_used_at_sync')::integer ELSE 0 END"
+    studio_synced_remaining = f"GREATEST(0, {studio_available_at_sync} - GREATEST(0, {quota_used} - {studio_used_at_sync}))"
     excluded = sorted({str(item) for item in excluded_ids if str(item)})
     quota_cost = max(1, int(quota_cost or 1))
     conditions = [
@@ -649,9 +652,19 @@ def claim_available_account(
         "jsonb_typeof(payload->'cookies') = 'array'",
         "jsonb_array_length(payload->'cookies') > 0",
         f"COALESCE(payload->>'{exhausted_field}', '') <> %s",
-        f"({quota_limit} = 0 OR {quota_used} + %s <= {quota_limit})",
-        "(COALESCE(payload->>'cooldown_until', '') = '' OR payload->>'cooldown_until' <= %s)",
     ]
+    params: list[Any] = [platform, today]
+    if studio_quota:
+        conditions.append(
+            f"((COALESCE(payload->>'qianwen_ai_studio_credit_sync_date', '') <> %s AND ({quota_limit} = 0 OR {quota_used} + %s <= {quota_limit})) "
+            f"OR (COALESCE(payload->>'qianwen_ai_studio_credit_sync_date', '') = %s AND {studio_synced_remaining} >= %s))"
+        )
+        params.extend([today, quota_cost, today, quota_cost])
+    else:
+        conditions.append(f"({quota_limit} = 0 OR {quota_used} + %s <= {quota_limit})")
+        params.append(quota_cost)
+    conditions.append("(COALESCE(payload->>'cooldown_until', '') = '' OR payload->>'cooldown_until' <= %s)")
+    params.append(now)
     if platform == "dola" and (int(duration or 0) <= 0 or int(duration or 0) > 10):
         conditions.append("COALESCE(payload->>'ten_second_only', 'false') <> 'true'")
     if studio_quota:
@@ -660,7 +673,6 @@ def claim_available_account(
             "WHERE replace(COALESCE(cookie->>'name', ''), '\\_', '_') = 'tongyi_sso_ticket' "
             "AND btrim(COALESCE(cookie->>'value', '')) <> '')"
         )
-    params: list[Any] = [platform, today, quota_cost, now]
     if excluded:
         conditions.append("NOT (id = ANY(%s))")
         params.append(excluded)
@@ -673,11 +685,19 @@ def claim_available_account(
         order_by = "random()"
     else:
         preferred_source = "admin" if mode == "admin_first" else "api"
+        quota_remaining_order = (
+            f"CASE WHEN COALESCE(payload->>'qianwen_ai_studio_credit_sync_date', '') = %s THEN {studio_synced_remaining} "
+            f"WHEN {quota_limit} = 0 THEN 1000000 ELSE {quota_limit} - {quota_used} END"
+            if studio_quota
+            else f"CASE WHEN {quota_limit} = 0 THEN 1000000 ELSE {quota_limit} - {quota_used} END"
+        )
         order_by = (
             f"CASE WHEN COALESCE(payload->>'account_source', 'admin') = '{preferred_source}' THEN 0 ELSE 1 END, "
-            f"CASE WHEN {quota_limit} = 0 THEN 1000000 ELSE {quota_limit} - {quota_used} END DESC, "
+            f"{quota_remaining_order} DESC, "
             f"{quota_used}, COALESCE(payload->>'last_used_at', ''), id"
         )
+        if studio_quota:
+            params.append(today)
     query = (
         f"SELECT id, payload FROM dola_accounts WHERE {' AND '.join(conditions)} "
         f"ORDER BY {order_by} "

@@ -5038,6 +5038,10 @@ function renderAccountTable() {
     const studioQuotaUsed = Number(item.qianwen_ai_studio_quota_used || 0);
     const studioQuotaRemaining = item.qianwen_ai_studio_quota_remaining === null || item.qianwen_ai_studio_quota_remaining === undefined ? "不限" : String(item.qianwen_ai_studio_quota_remaining);
     const studioQuotaLabel = studioQuotaLimit ? `${studioQuotaUsed} / ${studioQuotaLimit}` : `${studioQuotaUsed} / 不限`;
+    const studioCreditSyncedAt = String(item.qianwen_ai_studio_credit_synced_at || "");
+    const studioCreditSyncText = studioCreditSyncedAt
+      ? `今日领取 ${Number(item.qianwen_ai_studio_credit_sign_in || 0)} · ${formatTime(studioCreditSyncedAt)} 同步`
+      : "今日首次使用时自动领取并同步";
     const currentTaskId = String(item.current_task_id || "");
     const currentWorkerId = String(item.current_worker_id || "");
     const activeTasks = Array.isArray(item.active_tasks) ? item.active_tasks : [];
@@ -5062,7 +5066,7 @@ function renderAccountTable() {
             <span class="account-card-label">额度</span>
             <strong>${escapeHtml(quotaLabel)}</strong>
             <span>${String(item.platform || "") === "qianwen" ? "千问账号剩余" : "本地剩余"} ${escapeHtml(quotaRemaining)}</span>
-            ${String(item.platform || "") === "qianwen" ? `<strong>AI Studio ${escapeHtml(studioQuotaLabel)}</strong><span>Studio 剩余 ${escapeHtml(studioQuotaRemaining)}</span>` : ""}
+            ${String(item.platform || "") === "qianwen" ? `<strong>AI Studio ${escapeHtml(studioQuotaLabel)}</strong><span>Studio 剩余 ${escapeHtml(studioQuotaRemaining)}</span><span>${escapeHtml(studioCreditSyncText)}</span>` : ""}
           </div>
         </td>
         <td>

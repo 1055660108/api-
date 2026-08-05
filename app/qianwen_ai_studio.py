@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
+from playwright.async_api import async_playwright
 
+from .accounts import local_today, sync_qianwen_ai_studio_credit, update_account_cookies
+from .browser_runtime import resolve_browser_executable
 from .config import load_settings
 from .profile_lock import account_profile_lock
 from .store import begin_task_submission, clear_transient_result, is_task_canceled, save_result, task_exists
@@ -16,6 +20,8 @@ QIANWEN_AI_STUDIO_ORIGIN = "https://create.qianwen.com"
 QIANWEN_AI_STUDIO_API = "https://ai-studio-create.qianwen.com/api/web"
 QIANWEN_AI_STUDIO_SUBMIT_URL = f"{QIANWEN_AI_STUDIO_API}/ai/video/function"
 QIANWEN_AI_STUDIO_QUERY_URL = f"{QIANWEN_AI_STUDIO_API}/assets/v1/batch/get"
+QIANWEN_AI_STUDIO_PAGE_URL = f"{QIANWEN_AI_STUDIO_ORIGIN}/r/ai-studio-pc/main/gen?tab=video"
+QIANWEN_AI_STUDIO_CREDIT_INFO_URL = f"{QIANWEN_AI_STUDIO_API}/credit/info"
 QIANWEN_AI_STUDIO_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
@@ -86,6 +92,24 @@ def _request_headers(cookie_header: str, xsrf_token: str = "") -> dict[str, str]
     if xsrf_token:
         headers["x-xsrf-token"] = xsrf_token
     return headers
+
+
+def parse_qianwen_ai_studio_credit(payload: Any) -> dict[str, int] | None:
+    root = payload if isinstance(payload, dict) else {}
+    data = root.get("data") if isinstance(root.get("data"), dict) else {}
+    try:
+        code = int(root.get("code") or 0)
+    except (TypeError, ValueError):
+        return None
+    if code != 0 or "totalAmount" not in data:
+        return None
+    try:
+        return {
+            "total_amount": max(0, int(data.get("totalAmount") or 0)),
+            "sign_in_amount": max(0, int(data.get("signIn") or 0)),
+        }
+    except (TypeError, ValueError):
+        return None
 
 
 def qianwen_ai_studio_submission_payload(
@@ -231,6 +255,111 @@ class QianwenAIStudioAutomation:
         async with lock:
             return await self._run_locked()
 
+    async def _sync_daily_credit(
+        self,
+        cookies: list[dict[str, Any]],
+        proxy_config: dict[str, str] | None,
+    ) -> dict[str, Any]:
+        if str(self.account.get("qianwen_ai_studio_credit_sync_date") or "") == local_today():
+            return {"ok": True, "skipped": True}
+        credit_event = asyncio.Event()
+        credit_payload: dict[str, int] = {}
+        response_tasks: set[asyncio.Task[Any]] = set()
+        browser = None
+        context = None
+
+        async def inspect_credit_response(response) -> None:
+            if "/api/web/credit/info" not in str(response.url):
+                return
+            try:
+                parsed = parse_qianwen_ai_studio_credit(await response.json())
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                credit_payload.update(parsed)
+                credit_event.set()
+
+        try:
+            async with async_playwright() as playwright:
+                launch_options: dict[str, Any] = {
+                    "headless": self.settings.headless,
+                    "executable_path": resolve_browser_executable(self.settings.browser_executable_path),
+                    "args": ["--disable-dev-shm-usage", "--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                }
+                if proxy_config and proxy_config.get("server"):
+                    launch_options["proxy"] = proxy_config
+                browser = await playwright.chromium.launch(**launch_options)
+                context = await browser.new_context(
+                    locale="zh-CN",
+                    user_agent=QIANWEN_AI_STUDIO_UA,
+                    viewport={"width": 1365, "height": 900},
+                )
+                normalized_cookies: list[dict[str, Any]] = []
+                for raw in cookies:
+                    if not isinstance(raw, dict) or not raw.get("name"):
+                        continue
+                    item = dict(raw)
+                    item["domain"] = ".qianwen.com"
+                    item.pop("url", None)
+                    normalized_cookies.append(item)
+                await context.add_cookies(normalized_cookies)
+                page = await context.new_page()
+
+                def response_handler(response) -> None:
+                    task = asyncio.create_task(inspect_credit_response(response))
+                    response_tasks.add(task)
+                    task.add_done_callback(response_tasks.discard)
+
+                page.on("response", response_handler)
+                await page.goto(QIANWEN_AI_STUDIO_PAGE_URL, wait_until="domcontentloaded", timeout=120000)
+                try:
+                    await asyncio.wait_for(credit_event.wait(), timeout=20)
+                except asyncio.TimeoutError:
+                    params = f"biz_id=ai_image&pr=kkpcweb&fr=win&ai_ts={int(time.time() * 1000)}&req_id={uuid.uuid4()}"
+                    response = await context.request.get(
+                        f"{QIANWEN_AI_STUDIO_CREDIT_INFO_URL}?{params}",
+                        headers={"origin": QIANWEN_AI_STUDIO_ORIGIN, "referer": QIANWEN_AI_STUDIO_PAGE_URL},
+                        timeout=30000,
+                    )
+                    if response.ok:
+                        parsed = parse_qianwen_ai_studio_credit(await response.json())
+                        if parsed is not None:
+                            credit_payload.update(parsed)
+                await page.wait_for_timeout(1500)
+                refreshed_cookies = await context.cookies([QIANWEN_AI_STUDIO_ORIGIN, "https://www.qianwen.com/"])
+                if refreshed_cookies:
+                    update_account_cookies(str(self.account.get("id") or ""), refreshed_cookies)
+                page.remove_listener("response", response_handler)
+                if response_tasks:
+                    await asyncio.gather(*list(response_tasks), return_exceptions=True)
+                await context.close()
+                context = None
+                await browser.close()
+                browser = None
+            if "total_amount" not in credit_payload:
+                return {"ok": False, "reason": "qianwen AI Studio daily credit unavailable"}
+            synced = sync_qianwen_ai_studio_credit(
+                str(self.account.get("id") or ""),
+                credit_payload["total_amount"],
+                sign_in_amount=credit_payload.get("sign_in_amount", 0),
+                pending_charge_id=str(self.account.get("quota_charge_id") or ""),
+            )
+            self.account.update(synced)
+            return {"ok": True, **credit_payload, "remaining": synced.get("qianwen_ai_studio_quota_remaining")}
+        except Exception as exc:
+            return {"ok": False, "reason": f"qianwen AI Studio daily credit sync failed: {str(exc)[:300]}"}
+        finally:
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            if browser is not None:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+
     async def _run_locked(self) -> dict[str, Any]:
         cookies = [dict(item) for item in self.account.get("cookies") or [] if isinstance(item, dict)]
         cookie_header = str(self.account.get("cookie_header") or "") or qianwen_ai_studio_cookie_header(cookies)
@@ -256,6 +385,16 @@ class QianwenAIStudioAutomation:
         try:
             if self.proxy_session is not None:
                 proxy_config = await self.proxy_session.acquire_browser_proxy()
+            credit = await self._sync_daily_credit(cookies, proxy_config)
+            if not credit.get("ok"):
+                return self._failure(str(credit.get("reason") or "qianwen AI Studio daily credit sync failed"), infrastructure_fault=True)
+            if not credit.get("skipped") and int(credit.get("total_amount") or 0) < int(self.account.get("quota_cost") or 1):
+                return self._failure(
+                    "鍗冮棶 AI Studio 棰濆害涓嶈冻",
+                    account_fault=True,
+                    account_quota_insufficient=True,
+                    switch_account=True,
+                )
             options: dict[str, Any] = {
                 "headers": _request_headers(cookie_header, _cookie_value(cookies, "XSRF-TOKEN")),
                 "follow_redirects": True,

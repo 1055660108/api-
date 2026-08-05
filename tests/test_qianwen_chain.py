@@ -14,6 +14,7 @@ from app.qianwen_automation import (
     QIANWEN_CHAT_API_URL,
     QIANWEN_CHAT_SNAP_API_URL,
     QianwenVideoAutomation,
+    enable_qianwen_wan27_audio,
     is_qianwen_chat_api_url,
     is_qianwen_account_quota_insufficient,
     parse_qianwen_generation_result,
@@ -134,6 +135,7 @@ class QianwenSubmissionTests(unittest.TestCase):
                             "duration": 10,
                             "resolution": "720P",
                             "size": "16:9",
+                            "audio": False,
                             "attachments": [{"type": "image", "materialId": "material-1"}],
                         },
                     },
@@ -149,7 +151,47 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertEqual(parsed["model"], "HappyHorse 1.0")
         self.assertEqual(parsed["duration"], 10)
         self.assertEqual(parsed["ratio"], "16:9")
+        self.assertFalse(parsed["audio"])
         self.assertEqual(parsed["attachment_ids"], ["material-1"])
+
+    def test_wan27_submission_audio_is_enabled(self) -> None:
+        payload = {
+            "session_id": "session-1",
+            "ai_tool_scene": "zaodian_generate_video",
+            "biz_data": json.dumps({
+                "bizScene": "genVideo",
+                "req": {
+                    "rootModel": "wan27",
+                    "params": {"duration": 10, "size": "16:9", "audio": False},
+                },
+            }),
+        }
+
+        patched, changed = enable_qianwen_wan27_audio(json.dumps(payload))
+        parsed = parse_qianwen_submission(patched)
+
+        self.assertTrue(changed)
+        self.assertTrue(parsed["audio"])
+
+    def test_non_wan27_submission_audio_is_unchanged(self) -> None:
+        payload = {
+            "session_id": "session-1",
+            "ai_tool_scene": "zaodian_generate_video",
+            "biz_data": json.dumps({
+                "bizScene": "genVideo",
+                "req": {
+                    "rootModel": "wan26",
+                    "params": {"duration": 10, "size": "16:9", "audio": False},
+                },
+            }),
+        }
+        original = json.dumps(payload)
+
+        patched, changed = enable_qianwen_wan27_audio(original)
+
+        self.assertFalse(changed)
+        self.assertEqual(patched, original)
+        self.assertFalse(parse_qianwen_submission(patched)["audio"])
 
     def test_rejects_ordinary_chat_submission(self) -> None:
         self.assertEqual(parse_qianwen_submission(json.dumps({"session_id": "chat-only"})), {})

@@ -25,6 +25,7 @@ MEDIA_URL_RE = re.compile(r'https?://[^"\\\s]+(?:\.mp4|mime_type=video|video_mp4
 TASK_KEY_RE = re.compile(r"(?:task|job|request|aigc|generation|message)[_-]?id", re.IGNORECASE)
 QIANWEN_QUERY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 QIANWEN_REFERENCE_REQUIRED_MODELS = {"万相 2.7", "万相 2.6", "HappyHorse 1.0"}
+QIANWEN_CHAT_ROUTE_PATTERNS = ("**/api/v2/chat*", "**/api/v1/chat/snap*")
 
 
 def qianwen_model_requires_reference(model: str) -> bool:
@@ -115,6 +116,7 @@ def parse_qianwen_submission(post_data: str) -> dict[str, Any]:
         "duration": int(params.get("duration") or 0),
         "ratio": str(params.get("size") or ""),
         "resolution": str(params.get("resolution") or ""),
+        "audio": params.get("audio") if isinstance(params.get("audio"), bool) else None,
         "gen_mode": str(request_data.get("genMode") or params.get("gen_mode") or ""),
         "attachment_ids": [
             str(item.get("materialId") or "")
@@ -122,6 +124,35 @@ def parse_qianwen_submission(post_data: str) -> dict[str, Any]:
             if isinstance(item, dict) and item.get("materialId")
         ],
     }
+
+
+def enable_qianwen_wan27_audio(post_data: str) -> tuple[str, bool]:
+    original = str(post_data or "")
+    try:
+        payload = json.loads(original)
+    except (TypeError, json.JSONDecodeError):
+        return original, False
+    if not isinstance(payload, dict):
+        return original, False
+    raw_biz_data = payload.get("biz_data")
+    biz_data = _try_parse_json(raw_biz_data)
+    if not isinstance(biz_data, dict):
+        return original, False
+    request_data = biz_data.get("req") if isinstance(biz_data.get("req"), dict) else {}
+    if str(request_data.get("rootModel") or "").strip().lower() != "wan27":
+        return original, False
+    params = request_data.get("params") if isinstance(request_data.get("params"), dict) else {}
+    if params.get("audio") is True:
+        return original, False
+    params["audio"] = True
+    request_data["params"] = params
+    biz_data["req"] = request_data
+    payload["biz_data"] = (
+        json.dumps(biz_data, ensure_ascii=False, separators=(",", ":"))
+        if isinstance(raw_biz_data, str)
+        else biz_data
+    )
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), True
 
 
 def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
@@ -302,6 +333,7 @@ class QianwenVideoAutomation:
         self.remote_session_id = ""
         self.remote_req_id = ""
         self.remote_submission: dict[str, Any] = {}
+        self.audio_request_patch_count = 0
         self.submission_request_event = asyncio.Event()
         self.submission_event = asyncio.Event()
 
@@ -422,6 +454,43 @@ class QianwenVideoAutomation:
             await page.wait_for_timeout(800)
             return True
         return False
+
+    def _video_mode_entry(self, page):
+        return page.locator('button[aria-label="AI生视频"]:visible').first
+
+    async def _video_mode_active(self, page, entry=None) -> bool:
+        current_entry = entry or self._video_mode_entry(page)
+        if await current_entry.count() and str(await current_entry.get_attribute("aria-pressed") or "").lower() == "true":
+            return True
+        model_buttons = page.locator("button:visible").filter(has_text=re.compile(r"万相|Wan|HappyHorse", re.IGNORECASE))
+        return bool(await model_buttons.count() and await self._video_settings_control(page).count())
+
+    async def _activate_video_mode(self, page) -> bool:
+        for _attempt in range(3):
+            entry = self._video_mode_entry(page)
+            if not await entry.count():
+                await page.wait_for_timeout(1000)
+                continue
+            if await self._video_mode_active(page, entry):
+                return True
+            try:
+                await entry.click(force=True)
+            except Exception:
+                await entry.evaluate("element => element.click()")
+            for _poll in range(12):
+                await page.wait_for_timeout(500)
+                if await self._video_mode_active(page):
+                    return True
+            await page.keyboard.press("Escape")
+        return False
+
+    async def _route_chat_submission(self, route, request) -> None:
+        patched_data, changed = enable_qianwen_wan27_audio(str(request.post_data or ""))
+        if changed:
+            self.audio_request_patch_count += 1
+            await route.continue_(post_data=patched_data)
+            return
+        await route.continue_()
 
     async def _open_image_file_chooser(self, page):
         reference_buttons = page.get_by_role("button", name="参考", exact=True)
@@ -549,7 +618,7 @@ class QianwenVideoAutomation:
         request = response.request
         if request.resource_type not in {"xhr", "fetch"}:
             return
-        post_data = str(request.post_data or "")
+        post_data, _changed = enable_qianwen_wan27_audio(str(request.post_data or ""))
         url = str(response.url)
         lowered_url = url.lower()
         submission = parse_qianwen_submission(post_data) if request.method == "POST" and is_qianwen_chat_api_url(lowered_url) else {}
@@ -586,7 +655,8 @@ class QianwenVideoAutomation:
     def _capture_request(self, request) -> None:
         if request.method != "POST" or not is_qianwen_chat_api_url(str(request.url)):
             return
-        submission = parse_qianwen_submission(str(request.post_data or ""))
+        post_data, _changed = enable_qianwen_wan27_audio(str(request.post_data or ""))
+        submission = parse_qianwen_submission(post_data)
         if not submission:
             return
         self.remote_submission = submission
@@ -686,12 +756,16 @@ class QianwenVideoAutomation:
             page = None
             request_handler = None
             response_handler = None
+            route_handler = None
             response_tasks: set[asyncio.Task[Any]] = set()
             try:
                 imported_cookies = self._account_cookies()
                 if imported_cookies:
                     await context.add_cookies(imported_cookies)
                 page = context.pages[0] if context.pages else await context.new_page()
+                route_handler = self._route_chat_submission
+                for pattern in QIANWEN_CHAT_ROUTE_PATTERNS:
+                    await page.route(pattern, route_handler)
                 request_handler = self._capture_request
                 page.on("request", request_handler)
                 response_handler = lambda response: create_tracked_task(response_tasks, self._capture_response(response))
@@ -719,17 +793,12 @@ class QianwenVideoAutomation:
                         await self._save_diagnostics(page, "login check pending")
                         return self._failure("qianwen login check pending", account_fault=False)
                 await self._refresh_cookies(context)
-                video_entry = page.locator('button[aria-label="AI生视频"]:visible').first
-                if not await video_entry.count():
-                    video_entry = page.get_by_text("AI生视频", exact=True).first
-                await video_entry.evaluate("element => element.click()")
-                await page.wait_for_timeout(3000)
-                if await video_entry.get_attribute("aria-pressed") != "true":
-                    await video_entry.evaluate("element => element.click()")
-                    await page.wait_for_timeout(2000)
-                if await video_entry.get_attribute("aria-pressed") != "true":
-                    await self._save_diagnostics(page, "video mode did not activate")
-                    return self._failure("qianwen video mode not active", account_fault=False)
+                if not await self._activate_video_mode(page):
+                    await page.reload(wait_until="domcontentloaded", timeout=90000)
+                    await page.wait_for_timeout(8000)
+                    if not await self._activate_video_mode(page):
+                        await self._save_diagnostics(page, "video mode did not activate after same-account reload")
+                        return self._failure("qianwen video mode not active", account_fault=False)
                 editor = page.locator('[contenteditable="true"][role="textbox"]:visible').first
                 await editor.wait_for(state="visible", timeout=15000)
                 reference_paths = task_image_paths(self.task_id)
@@ -838,6 +907,8 @@ class QianwenVideoAutomation:
                         "qianwen_actual_model": actual_model,
                         "qianwen_actual_duration": actual_duration,
                         "qianwen_actual_ratio": actual_ratio,
+                        "qianwen_actual_audio": self.remote_submission.get("audio"),
+                        "qianwen_audio_request_patch_count": self.audio_request_patch_count,
                         "qianwen_attachment_ids": list(self.remote_submission.get("attachment_ids") or []),
                         "qianwen_setting_mismatch": setting_mismatch,
                         "qianwen_remote_task_ids": self.remote_task_ids,
@@ -857,5 +928,11 @@ class QianwenVideoAutomation:
                     page.remove_listener("request", request_handler)
                 if page is not None and response_handler is not None:
                     page.remove_listener("response", response_handler)
+                if page is not None and route_handler is not None:
+                    for pattern in QIANWEN_CHAT_ROUTE_PATTERNS:
+                        try:
+                            await page.unroute(pattern, route_handler)
+                        except Exception:
+                            pass
                 await cancel_tracked_tasks(response_tasks)
                 await safe_close(context)

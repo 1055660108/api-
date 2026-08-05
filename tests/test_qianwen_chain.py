@@ -5,7 +5,7 @@ import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, call, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, call, patch
 
 import httpx
 
@@ -21,6 +21,7 @@ from app.qianwen_automation import (
     parse_qianwen_submission,
     qianwen_cookie_value,
     qianwen_model_requires_reference,
+    qianwen_request_post_data,
 )
 
 
@@ -192,6 +193,14 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(patched, original)
         self.assertFalse(parse_qianwen_submission(patched)["audio"])
+
+    def test_binary_request_body_is_ignored(self) -> None:
+        request = Mock()
+        type(request).post_data = PropertyMock(
+            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        )
+
+        self.assertEqual(qianwen_request_post_data(request), "")
 
     def test_rejects_ordinary_chat_submission(self) -> None:
         self.assertEqual(parse_qianwen_submission(json.dumps({"session_id": "chat-only"})), {})

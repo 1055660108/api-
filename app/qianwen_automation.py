@@ -155,6 +155,13 @@ def enable_qianwen_wan27_audio(post_data: str) -> tuple[str, bool]:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), True
 
 
+def qianwen_request_post_data(request: Any) -> str:
+    try:
+        return str(request.post_data or "")
+    except Exception:
+        return ""
+
+
 def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
     unwatermarked_candidates: list[tuple[int, str, str]] = []
     watermarked_download_candidates: list[tuple[str, str]] = []
@@ -485,7 +492,7 @@ class QianwenVideoAutomation:
         return False
 
     async def _route_chat_submission(self, route, request) -> None:
-        patched_data, changed = enable_qianwen_wan27_audio(str(request.post_data or ""))
+        patched_data, changed = enable_qianwen_wan27_audio(qianwen_request_post_data(request))
         if changed:
             self.audio_request_patch_count += 1
             await route.continue_(post_data=patched_data)
@@ -618,9 +625,9 @@ class QianwenVideoAutomation:
         request = response.request
         if request.resource_type not in {"xhr", "fetch"}:
             return
-        post_data, _changed = enable_qianwen_wan27_audio(str(request.post_data or ""))
         url = str(response.url)
         lowered_url = url.lower()
+        post_data, _changed = enable_qianwen_wan27_audio(qianwen_request_post_data(request))
         submission = parse_qianwen_submission(post_data) if request.method == "POST" and is_qianwen_chat_api_url(lowered_url) else {}
         relevant = bool(submission) or self.prompt in post_data or any(item in lowered_url for item in ("/chat", "video", "wanx", "aigc", "generate", "task", "completion"))
         if not relevant:
@@ -655,7 +662,7 @@ class QianwenVideoAutomation:
     def _capture_request(self, request) -> None:
         if request.method != "POST" or not is_qianwen_chat_api_url(str(request.url)):
             return
-        post_data, _changed = enable_qianwen_wan27_audio(str(request.post_data or ""))
+        post_data, _changed = enable_qianwen_wan27_audio(qianwen_request_post_data(request))
         submission = parse_qianwen_submission(post_data)
         if not submission:
             return

@@ -21,7 +21,7 @@ from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BR
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
 from .reference_images import prepare_task_reference_images
-from .semantic_captcha import AntiCaptchaCoordinateSolver, SemanticCaptchaError
+from .semantic_captcha import SemanticCaptchaError, coordinate_solver_from_environment
 from .slider_solver import SliderChallengeSolver, SliderSolveResult, SliderSolverSettings, find_slider_page
 from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists, update_meta
 from .profile_lock import account_profile_lock
@@ -1789,7 +1789,7 @@ class DoubaoVideoAutomation:
                 verify_timeout_seconds=8.0,
             )
         )
-        self.semantic_verification_solver = AntiCaptchaCoordinateSolver.from_environment()
+        self.semantic_verification_solver = coordinate_solver_from_environment()
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
 
@@ -2941,7 +2941,7 @@ class DoubaoVideoAutomation:
             await cancel_tracked_tasks(capture_tasks)
 
     @staticmethod
-    def _semantic_captcha_comment(text: str, *, drag: bool) -> str:
+    def _semantic_captcha_comment(text: str, *, drag: bool, rectangles: bool = True) -> str:
         normalized = re.sub(r"\s+", "", str(text or ""))
         translations = (
             ("属于动物的", "objects that are animals"),
@@ -2963,8 +2963,9 @@ class DoubaoVideoAutomation:
                 description = translated
                 break
         if drag:
+            coordinate_type = "rectangle around" if rectangles else "click point at the center of"
             return (
-                f"Return one rectangle around every picture tile showing {description}. "
+                f"Return one {coordinate_type} every picture tile showing {description}. "
                 "Do not select instruction text, buttons, or the drop area."
             )
         return (
@@ -2983,10 +2984,17 @@ class DoubaoVideoAutomation:
         body = frame.locator("body")
         try:
             screenshot = await body.screenshot(type="png", animations="disabled", timeout=10000)
+            rectangle_mode = drag_mode and bool(
+                getattr(self.semantic_verification_solver, "supports_rectangles", False)
+            )
             solution = await self.semantic_verification_solver.solve(
                 screenshot,
-                comment=self._semantic_captcha_comment(semantic_text, drag=drag_mode),
-                mode="rectangles" if drag_mode else "points",
+                comment=self._semantic_captcha_comment(
+                    semantic_text,
+                    drag=drag_mode,
+                    rectangles=rectangle_mode,
+                ),
+                mode="rectangles" if rectangle_mode else "points",
             )
             body_box = await body.bounding_box()
             if not body_box:
@@ -3008,9 +3016,14 @@ class DoubaoVideoAutomation:
                 destination_x = drop_box["x"] + drop_box["width"] / 2
                 destination_y = drop_box["y"] + drop_box["height"] / 2
                 for coordinate_index, coordinate in enumerate(solution.coordinates):
-                    x1, y1, x2, y2 = coordinate
-                    source_x = body_box["x"] + (x1 + x2) / 2
-                    source_y = body_box["y"] + (y1 + y2) / 2
+                    if len(coordinate) == 4:
+                        x1, y1, x2, y2 = coordinate
+                        source_x = body_box["x"] + (x1 + x2) / 2
+                        source_y = body_box["y"] + (y1 + y2) / 2
+                    else:
+                        x, y = coordinate
+                        source_x = body_box["x"] + x
+                        source_y = body_box["y"] + y
                     target_x = destination_x + ((coordinate_index % 3) - 1) * min(24, drop_box["width"] / 8)
                     target_y = destination_y + (coordinate_index // 3) * min(16, drop_box["height"] / 8)
                     await page.mouse.move(source_x, source_y)

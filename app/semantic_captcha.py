@@ -20,6 +20,8 @@ class CoordinateSolution:
 
 
 class AntiCaptchaCoordinateSolver:
+    supports_rectangles = True
+
     def __init__(
         self,
         api_key: str = "",
@@ -145,3 +147,107 @@ class AntiCaptchaCoordinateSolver:
         if not result:
             raise SemanticCaptchaError("semantic captcha service returned invalid coordinates")
         return result
+
+
+class TwoCaptchaCoordinateSolver(AntiCaptchaCoordinateSolver):
+    supports_rectangles = False
+
+    def __init__(
+        self,
+        api_key: str = "",
+        *,
+        base_url: str = "https://api.2captcha.com",
+        timeout_seconds: float = 120.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        super().__init__(
+            api_key,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            transport=transport,
+        )
+
+    async def solve(
+        self,
+        image: bytes,
+        *,
+        comment: str,
+        mode: str,
+    ) -> CoordinateSolution:
+        if not self.enabled:
+            raise SemanticCaptchaError("semantic captcha API key is not configured")
+        if not image:
+            raise SemanticCaptchaError("semantic captcha screenshot is empty")
+        created = await self._post(
+            "/createTask",
+            {
+                "clientKey": self.api_key,
+                "task": {
+                    "type": "CoordinatesTask",
+                    "body": base64.b64encode(image).decode("ascii"),
+                    "comment": str(comment or "Follow the instruction shown in the image")[:1000],
+                    "minClicks": 1,
+                    "maxClicks": 6,
+                },
+            },
+        )
+        task_id = int(created.get("taskId") or 0)
+        if task_id <= 0:
+            raise SemanticCaptchaError("semantic captcha service did not return a task id")
+
+        deadline = asyncio.get_running_loop().time() + self.timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(2)
+            result = await self._post(
+                "/getTaskResult",
+                {"clientKey": self.api_key, "taskId": task_id},
+            )
+            if str(result.get("status") or "") == "processing":
+                continue
+            if str(result.get("status") or "") != "ready":
+                raise SemanticCaptchaError("semantic captcha service returned an invalid status")
+            solution = result.get("solution")
+            coordinates = solution.get("coordinates") if isinstance(solution, dict) else None
+            normalized: list[list[float]] = []
+            if isinstance(coordinates, list):
+                for item in coordinates[:12]:
+                    if isinstance(item, dict):
+                        item = [item.get("x"), item.get("y")]
+                    if not isinstance(item, (list, tuple)) or len(item) != 2:
+                        continue
+                    try:
+                        point = [float(item[0]), float(item[1])]
+                    except (TypeError, ValueError):
+                        continue
+                    if all(part >= 0 for part in point):
+                        normalized.append(point)
+            if not normalized:
+                raise SemanticCaptchaError("semantic captcha service returned invalid coordinates")
+            return CoordinateSolution(normalized, str(result.get("cost") or ""))
+        raise SemanticCaptchaError("semantic captcha service timed out")
+
+
+def coordinate_solver_from_environment() -> AntiCaptchaCoordinateSolver:
+    provider = str(
+        os.environ.get("DOUBAO_SEMANTIC_CAPTCHA_PROVIDER") or "2captcha"
+    ).strip().lower()
+    api_key = os.environ.get("DOUBAO_SEMANTIC_CAPTCHA_API_KEY", "")
+    base_url = str(os.environ.get("DOUBAO_SEMANTIC_CAPTCHA_API_BASE_URL") or "").strip()
+    raw_timeout = str(os.environ.get("DOUBAO_SEMANTIC_CAPTCHA_TIMEOUT_SECONDS") or "120")
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        timeout = 120.0
+    if provider in {"2captcha", "two_captcha", "twocaptcha"}:
+        return TwoCaptchaCoordinateSolver(
+            api_key,
+            base_url=base_url or "https://api.2captcha.com",
+            timeout_seconds=timeout,
+        )
+    if provider in {"anti_captcha", "anticaptcha", "anti-captcha"}:
+        return AntiCaptchaCoordinateSolver(
+            api_key,
+            base_url=base_url or "https://api.anti-captcha.com",
+            timeout_seconds=timeout,
+        )
+    raise SemanticCaptchaError(f"unsupported semantic captcha provider: {provider}")

@@ -159,6 +159,13 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("objects that are animals", comment)
         self.assertIn("rectangle", comment)
 
+        point_comment = DoubaoVideoAutomation._semantic_captcha_comment(
+            "属于动物的，请拖拽到下方",
+            drag=True,
+            rectangles=False,
+        )
+        self.assertIn("click point at the center", point_comment)
+
     def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={

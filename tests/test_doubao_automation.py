@@ -166,6 +166,13 @@ class DoubaoAutomationTests(unittest.TestCase):
         )
         self.assertIn("click point at the center", point_comment)
 
+        combined_comment = DoubaoVideoAutomation._semantic_captcha_comment(
+            "谷物和蔬菜\n请选择所有符合上文描述的图片，并拖拽到下方",
+            drag=True,
+            rectangles=False,
+        )
+        self.assertIn("objects that are grains or vegetables", combined_comment)
+
     def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={

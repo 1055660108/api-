@@ -2945,6 +2945,8 @@ class DoubaoVideoAutomation:
     def _semantic_captcha_comment(text: str, *, drag: bool, rectangles: bool = True) -> str:
         normalized = re.sub(r"\s+", "", str(text or ""))
         translations = (
+            ("谷物和蔬菜", "objects that are grains or vegetables"),
+            ("水果和蔬菜", "objects that are fruits or vegetables"),
             ("属于动物的", "objects that are animals"),
             ("属于植物的", "objects that are plants"),
             ("属于水果的", "objects that are fruits"),
@@ -2963,6 +2965,31 @@ class DoubaoVideoAutomation:
             if marker in normalized:
                 description = translated
                 break
+        if description == "objects matching the instruction shown at the top":
+            categories = []
+            for marker, translated in (
+                ("谷物", "grains"),
+                ("蔬菜", "vegetables"),
+                ("水果", "fruits"),
+                ("动物", "animals"),
+                ("植物", "plants"),
+                ("食物", "food"),
+                ("饮料", "drinks"),
+                ("甜点", "desserts"),
+                ("肉类", "meat"),
+                ("海鲜", "seafood"),
+                ("交通工具", "vehicles"),
+                ("家具", "furniture"),
+                ("电器", "electrical appliances"),
+                ("乐器", "musical instruments"),
+                ("工具", "tools"),
+                ("文具", "stationery"),
+                ("服装", "clothing"),
+            ):
+                if marker in normalized and translated not in categories:
+                    categories.append(translated)
+            if categories:
+                description = f"objects that are {' or '.join(categories)}"
         if drag:
             coordinate_type = "rectangle around" if rectangles else "click point at the center of"
             return (
@@ -2984,7 +3011,20 @@ class DoubaoVideoAutomation:
         drag_mode = bool(re.search(r"拖拽|拖动|drag", semantic_text, flags=re.IGNORECASE))
         body = frame.locator("body")
         try:
-            screenshot = await body.screenshot(type="png", animations="disabled", timeout=10000)
+            coordinate_target = body
+            coordinate_target_name = "body"
+            image_container = frame.locator(".img-container").first
+            try:
+                if await image_container.count() and await image_container.is_visible():
+                    coordinate_target = image_container
+                    coordinate_target_name = "img-container"
+            except Exception:
+                pass
+            screenshot = await coordinate_target.screenshot(
+                type="png",
+                animations="disabled",
+                timeout=10000,
+            )
             rectangle_mode = drag_mode and bool(
                 getattr(self.semantic_verification_solver, "supports_rectangles", False)
             )
@@ -3005,15 +3045,17 @@ class DoubaoVideoAutomation:
                     "doubao_verification_solver_cost": solution.cost,
                 })
             body_box = await body.bounding_box()
-            if not body_box:
-                raise SemanticCaptchaError("semantic captcha body position is unavailable")
+            coordinate_box = await coordinate_target.bounding_box()
+            if not body_box or not coordinate_box:
+                raise SemanticCaptchaError("semantic captcha image position is unavailable")
             screenshot_width = 0
             screenshot_height = 0
             if screenshot.startswith(b"\x89PNG\r\n\x1a\n") and len(screenshot) >= 24:
                 screenshot_width, screenshot_height = struct.unpack(">II", screenshot[16:24])
-            coordinate_scale_x = body_box["width"] / screenshot_width if screenshot_width else 1.0
-            coordinate_scale_y = body_box["height"] / screenshot_height if screenshot_height else 1.0
+            coordinate_scale_x = coordinate_box["width"] / screenshot_width if screenshot_width else 1.0
+            coordinate_scale_y = coordinate_box["height"] / screenshot_height if screenshot_height else 1.0
             replay_diagnostics: list[dict[str, Any]] = []
+            replayed_coordinates = 0
 
             if drag_mode:
                 drop_box = None
@@ -3053,12 +3095,12 @@ class DoubaoVideoAutomation:
                 for coordinate_index, coordinate in enumerate(solution.coordinates):
                     if len(coordinate) == 4:
                         x1, y1, x2, y2 = coordinate
-                        source_x = body_box["x"] + ((x1 + x2) / 2) * coordinate_scale_x
-                        source_y = body_box["y"] + ((y1 + y2) / 2) * coordinate_scale_y
+                        source_x = coordinate_box["x"] + ((x1 + x2) / 2) * coordinate_scale_x
+                        source_y = coordinate_box["y"] + ((y1 + y2) / 2) * coordinate_scale_y
                     else:
                         x, y = coordinate
-                        source_x = body_box["x"] + x * coordinate_scale_x
-                        source_y = body_box["y"] + y * coordinate_scale_y
+                        source_x = coordinate_box["x"] + x * coordinate_scale_x
+                        source_y = coordinate_box["y"] + y * coordinate_scale_y
                     local_x = source_x - body_box["x"]
                     local_y = source_y - body_box["y"]
                     source_elements_before = await body.evaluate(
@@ -3072,6 +3114,18 @@ class DoubaoVideoAutomation:
                             }))""",
                         {"x": local_x, "y": local_y},
                     )
+                    valid_source = any(
+                        str(item.get("tag") or "") in {"canvas", "img"}
+                        or "canvas-container" in str(item.get("className") or "")
+                        for item in source_elements_before
+                    )
+                    if not valid_source:
+                        replay_diagnostics.append({
+                            "coordinate": [round(float(part), 2) for part in coordinate],
+                            "source_before": source_elements_before,
+                            "skipped": "outside_image_tile",
+                        })
+                        continue
                     target_x = destination_x + ((coordinate_index % 3) - 1) * min(24, drop_box["width"] / 8)
                     target_y = destination_y + (coordinate_index // 3) * min(16, drop_box["height"] / 8)
                     await page.mouse.move(source_x, source_y)
@@ -3087,6 +3141,7 @@ class DoubaoVideoAutomation:
                     finally:
                         await page.mouse.up()
                     await page.wait_for_timeout(250)
+                    replayed_coordinates += 1
                     source_elements_after = await body.evaluate(
                         """(element, point) => document.elementsFromPoint(point.x, point.y)
                             .slice(0, 6)
@@ -3103,16 +3158,20 @@ class DoubaoVideoAutomation:
                         "source_before": source_elements_before,
                         "source_after": source_elements_after,
                     })
+                if replayed_coordinates <= 0:
+                    raise SemanticCaptchaError("semantic captcha solver returned no image tile coordinates")
                 if task_exists(self.task_id):
                     save_result(self.task_id, extra={
                         "doubao_verification_drag_replay": replay_diagnostics,
                         "doubao_verification_drop_diagnostics": drop_diagnostics,
+                        "doubao_verification_replayed_coordinate_count": replayed_coordinates,
+                        "doubao_verification_coordinate_target": coordinate_target_name,
                     })
             else:
                 for x, y in solution.coordinates:
                     await page.mouse.click(
-                        body_box["x"] + x * coordinate_scale_x,
-                        body_box["y"] + y * coordinate_scale_y,
+                        coordinate_box["x"] + x * coordinate_scale_x,
+                        coordinate_box["y"] + y * coordinate_scale_y,
                     )
                     await page.wait_for_timeout(200)
 

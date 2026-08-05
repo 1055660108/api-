@@ -2467,11 +2467,20 @@ class DoubaoVideoAutomation:
             selector = await video_settings_button()
             await selector.scroll_into_view_if_needed()
             selector_box = await selector.bounding_box()
+            current_setting = re.sub(r"\s+", "", str(await selector.inner_text() or "")).replace("：", ":").lower()
+            expected_setting = re.sub(r"\s+", "", label).replace("：", ":").lower()
+            if expected_setting and expected_setting in current_setting:
+                return
 
             async def settings_panel_open() -> bool:
-                body_text = re.sub(r"\s+", "", await page.locator("body").inner_text()).replace("：", ":")
-                visible_ratios = sum(marker in body_text for marker in ("3:4", "4:3", "9:16", "16:9", "1:1", "21:9"))
-                return visible_ratios >= 2 and "时长" in body_text
+                option_pattern = re.compile(r"(?:^|\D)(?:3\s*[:：]\s*4|4\s*[:：]\s*3|9\s*[:：]\s*16|16\s*[:：]\s*9|1\s*[:：]\s*1|21\s*[:：]\s*9)(?:\D|$)")
+                options = page.locator(
+                    '[role="dialog"]:visible button, [role="dialog"]:visible [role="option"], '
+                    '[role="menu"]:visible button, [role="menu"]:visible [role="menuitem"], '
+                    '[data-radix-popper-content-wrapper]:visible button, '
+                    'button:visible, [role="option"]:visible, [role="menuitem"]:visible'
+                ).filter(has_text=option_pattern)
+                return await options.count() >= 2
 
             panel_open = False
             try:
@@ -2494,11 +2503,16 @@ class DoubaoVideoAutomation:
             while asyncio.get_running_loop().time() < option_deadline and not selected:
                 ratio_match = re.fullmatch(r"(\d+)\s*[:：]\s*(\d+)", label)
                 option_pattern = re.compile(
-                    rf"^\s*{ratio_match.group(1)}\s*[:：]\s*{ratio_match.group(2)}\s*$"
-                    if ratio_match else rf"^\s*{re.escape(label)}\s*$",
+                    rf"(?:^|\D){ratio_match.group(1)}\s*[:：]\s*{ratio_match.group(2)}(?:\D|$)"
+                    if ratio_match else rf"(?:^|\D){re.escape(label)}(?:\D|$)",
                     re.IGNORECASE,
                 )
                 options = (
+                    page.locator(
+                        '[role="dialog"]:visible button, [role="dialog"]:visible [role="option"], '
+                        '[role="menu"]:visible button, [role="menu"]:visible [role="menuitem"], '
+                        '[data-radix-popper-content-wrapper]:visible button'
+                    ).filter(has_text=option_pattern),
                     page.get_by_role("button", name=option_pattern),
                     page.get_by_role("option", name=option_pattern),
                     page.get_by_role("menuitem", name=option_pattern),
@@ -2853,8 +2867,18 @@ class DoubaoVideoAutomation:
 
     async def _submit_via_video_creation_page(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
         result = await self._submit_via_video_creation_page_ui(page, image_count=image_count)
-        if str(result.get("video_creation_ui_error") or "") == "doubao video settings panel unavailable":
-            result["text_only_response"] = True
+        ui_error = str(result.get("video_creation_ui_error") or "")
+        settings_ui_error = any(marker in ui_error for marker in (
+            "video ratio and duration selector unavailable",
+            "video settings panel unavailable",
+            "video setting unavailable",
+            "video settings mismatch",
+        ))
+        if settings_ui_error:
+            fallback = await self._submit_via_video_creation_internal_request(page, image_count=image_count)
+            fallback["native_submission_fallback_used"] = True
+            fallback["native_video_creation_ui_error"] = ui_error[:500]
+            return fallback
         terminal_keys = (
             "video_creation_ui_error",
             "text_only_response",
@@ -3006,6 +3030,9 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_page_refusal_repeated": bool(completion_result.get("video_creation_page_refusal_repeated")),
                         "doubao_video_creation_page_used": bool(completion_result.get("video_creation_page_used")),
                         "doubao_video_creation_ui_error": str(completion_result.get("video_creation_ui_error") or "")[:500],
+                        "doubao_native_video_creation_ui_error": str(completion_result.get("native_video_creation_ui_error") or "")[:500],
+                        "doubao_native_submission_request_seen": bool(completion_result.get("native_submission_request_seen")),
+                        "doubao_native_submission_fallback_used": bool(completion_result.get("native_submission_fallback_used")),
                         "doubao_direct_submission_response_preview": str(completion_result.get("direct_submission_response_preview") or "")[:6000],
                     })
                     if category == "service_frequent":
@@ -3132,6 +3159,9 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_selected_model": str(completion_result.get("video_creation_selected_model") or "")[:100],
                         "doubao_video_creation_selected_ratio": str(completion_result.get("video_creation_selected_ratio") or "")[:20],
                         "doubao_video_creation_selected_duration": int(completion_result.get("video_creation_selected_duration") or 0),
+                        "doubao_native_video_creation_ui_error": str(completion_result.get("native_video_creation_ui_error") or "")[:500],
+                        "doubao_native_submission_request_seen": bool(completion_result.get("native_submission_request_seen")),
+                        "doubao_native_submission_fallback_used": bool(completion_result.get("native_submission_fallback_used")),
                         "doubao_direct_submission_response_preview": str(completion_result.get("direct_submission_response_preview") or "")[:6000],
                         "doubao_result_mode": "interface_poll" if conversation_id else "browser_fallback",
                     },

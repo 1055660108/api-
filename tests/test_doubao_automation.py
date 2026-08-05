@@ -326,7 +326,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(error, "doubao generation acknowledgement missing")
         self.assertEqual(category, "generation_ack_missing")
 
-    def test_missing_video_settings_panel_is_quarantined_as_text_only(self) -> None:
+    def test_missing_video_settings_panel_uses_internal_request_fallback(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={
             "ok": False,
@@ -334,12 +334,21 @@ class DoubaoAutomationTests(unittest.TestCase):
             "accepted": False,
             "video_creation_ui_error": "doubao video settings panel unavailable",
         })
+        runner._submit_via_video_creation_internal_request = AsyncMock(return_value={
+            "ok": True,
+            "status": 200,
+            "accepted": True,
+            "conversation_id": "38436759004541698",
+        })
 
         result = asyncio.run(runner._submit_via_video_creation_page(SimpleNamespace(), image_count=0))
 
-        self.assertTrue(result["text_only_response"])
-        self.assertEqual(classify_doubao_submission(result)[1], "text_only_response")
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["native_submission_fallback_used"])
+        self.assertEqual(result["native_video_creation_ui_error"], "doubao video settings panel unavailable")
+        self.assertEqual(classify_doubao_submission(result), ("", ""))
         runner._submit_via_video_creation_page_ui.assert_awaited_once()
+        runner._submit_via_video_creation_internal_request.assert_awaited_once()
 
     def test_native_submit_without_network_request_uses_captured_internal_fallback(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
@@ -434,7 +443,8 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertNotIn("page.evaluate", source)
         request_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page)
         self.assertIn("_submit_via_video_creation_page_ui", request_source)
-        self.assertIn('result["text_only_response"] = True', request_source)
+        self.assertIn("settings_ui_error", request_source)
+        self.assertIn("native_video_creation_ui_error", request_source)
         ui_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page_ui)
         self.assertIn("await page.goto(DOUBAO_URL", ui_source)
         self.assertIn("editor.fill", ui_source)

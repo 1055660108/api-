@@ -1733,6 +1733,43 @@ def clear_account_current_task(account_id: str, task_id: str = "") -> None:
                 return
 
 
+def restore_account_current_task(account_id: str, task_id: str, worker_id: str = "", charge_id: str = "") -> bool:
+    account_id = str(account_id or "").strip().lower()
+    task_id = str(task_id or "").strip().lower()
+    if not account_id or not task_id:
+        return False
+
+    def restore(account: dict[str, Any]) -> bool:
+        current_task_id = str(account.get("current_task_id") or "")
+        if current_task_id and current_task_id != task_id:
+            return False
+        now = utc_now()
+        account.update(
+            current_task_id=task_id,
+            current_worker_id=str(worker_id or "result-watch"),
+            current_started_at=str(account.get("current_started_at") or now),
+            current_quota_charge_id=str(charge_id or account.get("current_quota_charge_id") or ""),
+            updated_at=now,
+        )
+        return True
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            try:
+                return bool(postgres.mutate_account(account_id, restore))
+            except KeyError:
+                return False
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") != account_id:
+                continue
+            restored = restore(account)
+            if restored:
+                _write_data(data)
+            return restored
+    return False
+
+
 def account_for_current_task(task_id: str) -> dict[str, Any] | None:
     task_id = str(task_id or "")
     if not task_id:

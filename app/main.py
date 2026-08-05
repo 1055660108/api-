@@ -4597,7 +4597,11 @@ def _build_account_list_snapshot() -> dict:
         current_task_id = str(account.get("current_task_id") or "")
         current_meta, current_result = current_tasks.get(current_task_id, ({}, {}))
         current_status = str(current_meta.get("status") or "")
-        keep_current = current_status == "running" or (current_status == "success" and not current_result.get("decoded_main_url"))
+        keep_current = (
+            current_status == "running"
+            or (str(account.get("platform") or "") == "qianwen" and current_status == "submitted")
+            or (current_status == "success" and not current_result.get("decoded_main_url"))
+        )
         if current_task_id and not keep_current:
             clear_account_current_task(str(account.get("id") or ""), current_task_id)
             account = {**account, "current_task_id": "", "current_worker_id": "", "current_started_at": ""}

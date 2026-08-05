@@ -2219,6 +2219,21 @@ class WebAPIContractTests(unittest.TestCase):
         finally:
             main._clear_account_list_cache()
 
+    def test_account_list_snapshot_keeps_qianwen_submitted_account_locked(self) -> None:
+        account = accounts.add_account("千问锁定账号", "session=qianwen-locked", quota_limit=5, platform="qianwen")
+        task = store.create_task("千问锁定测试", "16:9", platform="qianwen", model="万相 2.7", duration=10)
+        claimed = accounts.claim_account_for_worker("qianwen-worker", task["id"], platform="qianwen")
+        self.assertIsNotNone(claimed)
+        self.assertTrue(store.mark_running(task["id"], "qianwen-worker"))
+        store.mark_submitted(task["id"])
+
+        snapshot = main._build_account_list_snapshot()
+
+        listed = next(item for item in snapshot["accounts"] if item["id"] == account["id"])
+        self.assertEqual(listed["current_task_id"], task["id"])
+        persisted = next(item for item in accounts.list_accounts(platform="qianwen") if item["id"] == account["id"])
+        self.assertEqual(persisted["current_task_id"], task["id"])
+
     def test_account_list_maintenance_is_rate_limited(self) -> None:
         previous_due = main._ACCOUNT_LIST_MAINTENANCE_AT
         main._ACCOUNT_LIST_MAINTENANCE_AT = 0

@@ -7,7 +7,7 @@ import socket
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_region_restricted, mark_account_slider_verification, mark_account_text_only, refund_account_quota, reset_daily_account_quotas_if_needed, settle_account_quota
+from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_region_restricted, mark_account_slider_verification, mark_account_text_only, refund_account_quota, reset_daily_account_quotas_if_needed, restore_account_current_task, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, exception_reason, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, ReusableBrowserPool
@@ -232,6 +232,7 @@ class WorkerManager:
         if queue_backend() != "file":
             self._queue.recover()
         reset_running_tasks()
+        self._restore_qianwen_submitted_account_claims()
         self._platform_guard.record_success("dola")
         self._queue.reconcile()
         self._requeue_stale_dola_guard_tasks()
@@ -240,6 +241,19 @@ class WorkerManager:
         await self._dola_browser_pool.start()
         self._supervisor = asyncio.create_task(self._supervise())
         self._watchdog = asyncio.create_task(self._watch_running_tasks())
+
+    def _restore_qianwen_submitted_account_claims(self) -> None:
+        for task_id, meta in list_task_metas_by_statuses({STATUS_SUBMITTED}, platform="qianwen", limit=2000):
+            result = load_result(task_id)
+            account_id = str(result.get("account_id") or "")
+            if not account_id:
+                continue
+            restore_account_current_task(
+                account_id,
+                task_id,
+                str(meta.get("worker_id") or "result-watch"),
+                str(result.get("account_quota_charge_id") or ""),
+            )
 
     def _requeue_stale_dola_guard_tasks(self) -> None:
         for task_id, meta in list_task_metas_by_statuses({"pending"}, platform="dola", limit=2000):

@@ -944,6 +944,25 @@ class ReliabilityTests(unittest.TestCase):
         current = accounts.list_accounts(platform="qianwen")[0]
         self.assertEqual((current["quota_used"], current["qianwen_ai_studio_quota_used"]), (0, 0))
 
+    def test_worker_restores_submitted_qianwen_account_claim_after_restart(self) -> None:
+        account = accounts.add_account("千问恢复锁", "session=qianwen-restore", quota_limit=5, platform="qianwen")
+        task = store.create_task("千问恢复锁测试", "16:9", platform="qianwen", model="万相 2.7", duration=10)
+        claimed = accounts.claim_account_for_worker("qianwen-worker", task["id"], platform="qianwen")
+        self.assertIsNotNone(claimed)
+        self.assertTrue(store.mark_running(task["id"], "qianwen-worker"))
+        store.save_result(
+            task["id"],
+            extra={"account_id": account["id"], "account_quota_charge_id": claimed["quota_charge_id"]},
+        )
+        store.mark_submitted(task["id"])
+        accounts.clear_account_current_task(account["id"], task["id"])
+
+        WorkerManager()._restore_qianwen_submitted_account_claims()
+
+        restored = accounts.list_accounts(platform="qianwen")[0]
+        self.assertEqual(restored["current_task_id"], task["id"])
+        self.assertEqual(restored["current_quota_charge_id"], claimed["quota_charge_id"])
+
     def test_bulk_account_import_is_single_write_and_deduplicated(self) -> None:
         raw = "\n".join([f"账号 {index}----session=value-{index}" for index in range(500)] + ["重复账号----session=value-10"])
         with patch.object(accounts, "_write_data", wraps=accounts._write_data) as write_data:

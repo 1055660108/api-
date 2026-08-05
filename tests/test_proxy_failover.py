@@ -52,6 +52,8 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         proxy_manager._PROXY_SOURCE_FAILURES.clear()
         proxy_manager._NODE_COOLDOWNS.clear()
         proxy_manager._NODE_GATEWAY_FAILURES.clear()
+        proxy_manager._NODE_DOUBAO_VERIFICATIONS.clear()
+        proxy_manager._NODE_DOUBAO_VERIFICATION_STRIKES.clear()
         proxy_manager._NODE_DELAYS.clear()
         proxy_manager._NODE_DOLA_HEALTH.clear()
 
@@ -100,6 +102,28 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         pin.assert_called_once_with("account-1", "node-jp")
         self.assertEqual(instance.account["pinned_proxy_node_id"], "node-jp")
         self.assertEqual(instance.proxy_timezone_id, "Asia/Tokyo")
+
+    async def test_task_avoidance_clears_conflicting_doubao_pinned_node(self) -> None:
+        instance = automation_instance()
+        instance.proxy_platform = "doubao"
+        instance.account = {"id": "account-1", "pinned_proxy_node_id": "failed-node"}
+        instance._task_exists = lambda: True
+        settings = proxy_settings("subscription")
+        proxy = {"server": "http://127.0.0.1:7890", "node_id": "replacement-node", "node_name": "JP", "node_count": "2"}
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "get_meta", return_value={"proxy_retry_avoid_node_id": "failed-node"}
+        ), patch.object(
+            automation, "update_meta"
+        ), patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock(return_value=proxy)
+        ) as subscription, patch("app.accounts.clear_account_pinned_proxy_node") as clear, patch(
+            "app.accounts.set_account_pinned_proxy_node"
+        ):
+            await instance._browser_proxy_config()
+
+        clear.assert_called_once_with("account-1", "failed-node")
+        self.assertIn("failed-node", subscription.await_args.kwargs["excluded_node_ids"])
+        self.assertEqual(instance.account["pinned_proxy_node_id"], "replacement-node")
 
     async def test_random_subscription_selection_ignores_fixed_node_without_auto_select(self) -> None:
         nodes = (

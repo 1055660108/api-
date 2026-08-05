@@ -52,6 +52,8 @@ _NODE_LAST_GOOD: dict[str, tuple[int, float]] = {}
 _NODE_DOLA_HEALTH: dict[str, tuple[bool, float]] = {}
 _NODE_COOLDOWNS: dict[str, tuple[float, str]] = {}
 _NODE_GATEWAY_FAILURES: dict[str, tuple[int, float]] = {}
+_NODE_DOUBAO_VERIFICATIONS: dict[str, dict[str, float]] = {}
+_NODE_DOUBAO_VERIFICATION_STRIKES: dict[str, tuple[int, float]] = {}
 _PROXY_SOURCE_FAILURES: dict[str, float] = {}
 _NODE_DELAYS_LOADED = False
 NODE_DELAYS_PATH = DATA_DIR / "proxy_node_delays.json"
@@ -61,6 +63,10 @@ NODE_SERVICE_FREQUENT_COOLDOWN_SECONDS = 600
 NODE_GATEWAY_FAILURE_COOLDOWN_SECONDS = 300
 NODE_GATEWAY_FAILURE_WINDOW_SECONDS = 300
 NODE_GATEWAY_FAILURE_THRESHOLD = 2
+NODE_DOUBAO_VERIFICATION_WINDOW_SECONDS = 600
+NODE_DOUBAO_VERIFICATION_FIRST_COOLDOWN_SECONDS = 600
+NODE_DOUBAO_VERIFICATION_REPEAT_COOLDOWN_SECONDS = 1800
+NODE_DOUBAO_VERIFICATION_STRIKE_TTL_SECONDS = 86400
 PROXY_SOURCE_FAILURE_COOLDOWN_SECONDS = 90
 DOLA_HEALTH_TTL_SECONDS = 300
 DOLA_HEALTHCHECK_URL = "https://www.dola.com/"
@@ -240,6 +246,55 @@ def record_node_success(node_id: str) -> None:
     normalized = str(node_id or "").strip()
     if normalized:
         _NODE_GATEWAY_FAILURES.pop(normalized, None)
+
+
+def record_node_doubao_verification(node_id: str, account_id: str) -> int:
+    normalized_node = str(node_id or "").strip()
+    normalized_account = str(account_id or "").strip()
+    if not normalized_node or not normalized_account:
+        return 0
+    now = time.monotonic()
+    events = {
+        key: occurred_at
+        for key, occurred_at in _NODE_DOUBAO_VERIFICATIONS.get(normalized_node, {}).items()
+        if now - occurred_at <= NODE_DOUBAO_VERIFICATION_WINDOW_SECONDS
+    }
+    events[normalized_account] = now
+    _NODE_DOUBAO_VERIFICATIONS[normalized_node] = events
+    previous_strikes, previous_at = _NODE_DOUBAO_VERIFICATION_STRIKES.get(normalized_node, (0, 0.0))
+    if now - previous_at > NODE_DOUBAO_VERIFICATION_STRIKE_TTL_SECONDS:
+        previous_strikes = 0
+    if previous_strikes <= 0 and len(events) < 2:
+        return 0
+    strikes = previous_strikes + 1
+    cooldown = (
+        NODE_DOUBAO_VERIFICATION_FIRST_COOLDOWN_SECONDS
+        if strikes == 1
+        else NODE_DOUBAO_VERIFICATION_REPEAT_COOLDOWN_SECONDS
+    )
+    _NODE_DOUBAO_VERIFICATION_STRIKES[normalized_node] = (strikes, now)
+    _NODE_DOUBAO_VERIFICATIONS.pop(normalized_node, None)
+    mark_node_unavailable(
+        normalized_node,
+        cooldown_seconds=cooldown,
+        reason="doubao_verification_required",
+    )
+    return cooldown
+
+
+def record_node_doubao_success(node_id: str) -> None:
+    normalized = str(node_id or "").strip()
+    if not normalized:
+        return
+    _NODE_DOUBAO_VERIFICATIONS.pop(normalized, None)
+    _NODE_DOUBAO_VERIFICATION_STRIKES.pop(normalized, None)
+    _NODE_COOLDOWNS.pop(normalized, None)
+    last_good = _NODE_LAST_GOOD.get(normalized)
+    if last_good:
+        _NODE_DELAYS[normalized] = (last_good[0], time.monotonic())
+    else:
+        _NODE_DELAYS.pop(normalized, None)
+    _NODE_DOLA_HEALTH[normalized] = (True, time.monotonic())
 
 
 def mark_proxy_source_unavailable(source: str) -> None:

@@ -37,6 +37,8 @@ from .proxy_manager import (
     proxy_exit_identity,
     proxy_source_available,
     proxy_source_retry_after,
+    record_node_doubao_success,
+    record_node_doubao_verification,
     record_node_gateway_failure,
     record_node_success,
     release_dola_subscription_proxy,
@@ -1377,6 +1379,24 @@ class DolaFetchAutomation:
         if str(self.account.get("pinned_proxy_node_id") or "").strip() == node_id:
             self.account["pinned_proxy_node_id"] = ""
 
+    def mark_doubao_verification_proxy(self) -> int:
+        self._clear_doubao_pinned_proxy_node()
+        self._remember_failed_proxy_node()
+        if self.active_proxy_source == "api":
+            if getattr(self, "api_proxy_lease", None) is not None:
+                self.api_proxy_lease.cooldown(60)
+            return 60
+        if not self.proxy_node_id:
+            return 0
+        return record_node_doubao_verification(
+            self.proxy_node_id,
+            str((getattr(self, "account", {}) or {}).get("id") or ""),
+        )
+
+    def record_doubao_proxy_success(self) -> None:
+        if self.active_proxy_source == "subscription" and self.proxy_node_id:
+            record_node_doubao_success(self.proxy_node_id)
+
     def _discard_active_api_proxy_transport(self) -> None:
         if self.active_proxy_source != "api":
             self._cooldown_active_proxy_transport()
@@ -1959,6 +1979,13 @@ class DolaFetchAutomation:
             if self.proxy_platform == "doubao"
             else ""
         )
+        if pinned_proxy_node_id and pinned_proxy_node_id in excluded_node_ids:
+            from .accounts import clear_account_pinned_proxy_node
+
+            clear_account_pinned_proxy_node(str(account.get("id") or ""), pinned_proxy_node_id)
+            if isinstance(account, dict):
+                account["pinned_proxy_node_id"] = ""
+            pinned_proxy_node_id = ""
         if pinned_proxy_node_id:
             excluded_node_ids.clear()
             avoid_node_id = ""

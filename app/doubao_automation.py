@@ -3112,6 +3112,13 @@ class DoubaoVideoAutomation:
                         }
                     if category == "slider_verification":
                         set_account_cooldown(str(self.account.get("id") or ""), 86400, "豆包触发网页人机验证")
+                        proxy_cooldown_seconds = 0
+                        if self.proxy_session is not None:
+                            proxy_cooldown_seconds = self.proxy_session.mark_doubao_verification_proxy()
+                        save_result(self.task_id, extra={
+                            "doubao_verification_proxy_cooldown_seconds": proxy_cooldown_seconds,
+                            "doubao_verification_proxy_node_id": str(getattr(self.proxy_session, "proxy_node_id", "") or ""),
+                        })
                         return {
                             "success": False,
                             "retryable": True,
@@ -3187,6 +3194,7 @@ class DoubaoVideoAutomation:
                 conversation_id = str(completion_result.get("conversation_id") or "")
                 proxy_session = getattr(self, "proxy_session", None)
                 if proxy_session is not None:
+                    proxy_session.record_doubao_proxy_success()
                     active_node_id = str(getattr(proxy_session, "proxy_node_id", "") or "").strip()
                     active_source = str(getattr(proxy_session, "active_proxy_source", "") or "").strip()
                     if active_source == "subscription" and active_node_id:

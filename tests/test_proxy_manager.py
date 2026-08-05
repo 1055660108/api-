@@ -26,6 +26,8 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         proxy_manager._NODE_DOLA_HEALTH.clear()
         proxy_manager._NODE_COOLDOWNS.clear()
         proxy_manager._NODE_GATEWAY_FAILURES.clear()
+        proxy_manager._NODE_DOUBAO_VERIFICATIONS.clear()
+        proxy_manager._NODE_DOUBAO_VERIFICATION_STRIKES.clear()
         proxy_manager._NODE_DELAYS_LOADED = True
 
     def test_parses_native_proxy_subscription(self) -> None:
@@ -424,6 +426,28 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         proxy_manager.record_node_success(node_id)
         self.assertFalse(proxy_manager.record_node_gateway_failure(node_id, 502))
         self.assertEqual(proxy_manager.node_retry_after(node_id), 0)
+
+    def test_doubao_verification_requires_two_distinct_accounts_before_cooldown(self) -> None:
+        node_id = "node-doubao-verify"
+
+        self.assertEqual(proxy_manager.record_node_doubao_verification(node_id, "account-1"), 0)
+        self.assertEqual(proxy_manager.record_node_doubao_verification(node_id, "account-1"), 0)
+        cooldown = proxy_manager.record_node_doubao_verification(node_id, "account-2")
+
+        self.assertEqual(cooldown, proxy_manager.NODE_DOUBAO_VERIFICATION_FIRST_COOLDOWN_SECONDS)
+        self.assertGreater(proxy_manager.node_retry_after(node_id), 0)
+
+    def test_doubao_verification_repeat_extends_cooldown_and_success_resets_it(self) -> None:
+        node_id = "node-doubao-repeat"
+        proxy_manager.record_node_doubao_verification(node_id, "account-1")
+        proxy_manager.record_node_doubao_verification(node_id, "account-2")
+
+        repeated = proxy_manager.record_node_doubao_verification(node_id, "account-3")
+        self.assertEqual(repeated, proxy_manager.NODE_DOUBAO_VERIFICATION_REPEAT_COOLDOWN_SECONDS)
+
+        proxy_manager.record_node_doubao_success(node_id)
+        self.assertEqual(proxy_manager.node_retry_after(node_id), 0)
+        self.assertEqual(proxy_manager.record_node_doubao_verification(node_id, "account-4"), 0)
 
     def test_service_frequency_can_apply_extended_node_cooldown(self) -> None:
         node_id = "node-frequent"

@@ -324,6 +324,47 @@ class DolaQueryTests(unittest.TestCase):
         self.assertNotIn("bearer-token", diagnostic["last_query_error"])
         self.assertNotIn("signature", diagnostic["last_query_error"])
 
+    def test_qianwen_ai_studio_query_uses_configured_qianwen_route(self) -> None:
+        task_id = "a" * 32
+        meta = {"status": query.STATUS_SUBMITTED, "platform": "qianwen"}
+        result = {
+            "qianwen_result_chain": "ai_studio",
+            "qianwen_ai_studio_record_id": "record-id",
+            "qianwen_ai_studio_scene": "wan27_t2v",
+            "cookie_string": "XSRF-TOKEN=xsrf; tongyi_sso_ticket=ticket",
+            "account_id": "account-id",
+        }
+        proxy_session = SimpleNamespace(
+            acquire_browser_proxy=AsyncMock(return_value={
+                "server": "http://proxy.example:8080",
+                "username": "proxy-user",
+                "password": "proxy-pass",
+            }),
+            release_browser_proxy=AsyncMock(),
+        )
+        fetch = AsyncMock(return_value={"state": "generating", "text": ""})
+
+        with patch.object(query, "expire_task_if_timeout"), patch.object(
+            query, "get_meta", return_value=meta
+        ), patch.object(query, "load_result", return_value=result), patch.object(
+            query, "DolaFetchAutomation", return_value=proxy_session
+        ) as proxy_factory, patch(
+            "app.qianwen_ai_studio.fetch_qianwen_ai_studio_result", new=fetch
+        ), patch.object(query, "save_result"):
+            response = asyncio.run(query._query_task_once(task_id, background_poll=True))
+
+        self.assertEqual(response["code"], "1")
+        self.assertEqual(fetch.await_args.kwargs["proxy_server"], "http://proxy-user:proxy-pass@proxy.example:8080")
+        proxy_factory.assert_called_once_with(
+            task_id,
+            "",
+            "",
+            account={"id": "account-id"},
+            proxy_platform="qianwen",
+        )
+        proxy_session.acquire_browser_proxy.assert_awaited_once()
+        proxy_session.release_browser_proxy.assert_awaited_once()
+
     def test_ambiguous_submission_diagnostic_keeps_safe_response_context(self) -> None:
         diagnostic = query.ambiguous_submission_diagnostic(
             {

@@ -5,9 +5,11 @@ import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call, patch
 
-from app.qianwen_ai_studio import parse_qianwen_ai_studio_result, qianwen_ai_studio_submission_payload
+import httpx
+
+from app.qianwen_ai_studio import QianwenAIStudioAutomation, parse_qianwen_ai_studio_result, qianwen_ai_studio_submission_payload
 from app.qianwen_automation import (
     QIANWEN_CHAT_API_URL,
     QIANWEN_CHAT_SNAP_API_URL,
@@ -22,6 +24,91 @@ from app.qianwen_automation import (
 
 
 class QianwenSubmissionTests(unittest.TestCase):
+    @staticmethod
+    def _studio_runner(cookies: list[dict] | None = None) -> QianwenAIStudioAutomation:
+        cookie_items = cookies if cookies is not None else [
+            {"name": "tongyi_sso_ticket", "value": "ticket-value"},
+            {"name": "XSRF-TOKEN", "value": "xsrf-value"},
+        ]
+        return QianwenAIStudioAutomation(
+            "task-id",
+            "test prompt",
+            "16:9",
+            "HappyHorse 1.1",
+            10,
+            account={"id": "account-id", "cookies": cookie_items},
+        )
+
+    @staticmethod
+    def _studio_client(response_payload: dict, side_effect: list | None = None) -> tuple[Mock, AsyncMock]:
+        response = Mock()
+        response.raise_for_status = Mock()
+        response.json.return_value = response_payload
+        post = AsyncMock(side_effect=side_effect or [response])
+        client = SimpleNamespace(post=post)
+        context = Mock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=None)
+        return context, post
+
+    def test_ai_studio_missing_ticket_is_an_account_login_failure(self) -> None:
+        runner = self._studio_runner([{"name": "XSRF-TOKEN", "value": "xsrf-value"}])
+
+        outcome = asyncio.run(runner._run_locked())
+
+        self.assertTrue(outcome["account_login_invalid"])
+        self.assertTrue(outcome["account_fault"])
+        self.assertTrue(outcome["switch_account"])
+        self.assertIn("tongyi_sso_ticket", outcome["reason"])
+
+    def test_ai_studio_upstream_missing_ticket_is_an_account_login_failure(self) -> None:
+        runner = self._studio_runner()
+        context, _post = self._studio_client({"code": 1003, "msg": "cookie中tongyi_sso_ticket不能为空"})
+
+        with patch("app.qianwen_ai_studio.begin_task_submission", return_value=True), patch(
+            "app.qianwen_ai_studio.httpx.AsyncClient", return_value=context
+        ):
+            outcome = asyncio.run(runner._run_locked())
+
+        self.assertTrue(outcome["account_login_invalid"])
+        self.assertTrue(outcome["account_fault"])
+        self.assertTrue(outcome["switch_account"])
+
+    def test_ai_studio_15001_marks_account_quota_insufficient(self) -> None:
+        runner = self._studio_runner()
+        context, _post = self._studio_client({"code": 15001, "msg": "积分不足"})
+
+        with patch("app.qianwen_ai_studio.begin_task_submission", return_value=True), patch(
+            "app.qianwen_ai_studio.httpx.AsyncClient", return_value=context
+        ):
+            outcome = asyncio.run(runner._run_locked())
+
+        self.assertTrue(outcome["account_quota_insufficient"])
+        self.assertTrue(outcome["account_fault"])
+        self.assertTrue(outcome["switch_account"])
+
+    def test_ai_studio_connect_failure_retries_three_times(self) -> None:
+        runner = self._studio_runner()
+        request = httpx.Request("POST", "https://ai-studio-create.qianwen.com/api/web/ai/video/function")
+        response = Mock()
+        response.raise_for_status = Mock()
+        response.json.return_value = {"code": 0, "data": {"recordId": "record-id"}}
+        context, post = self._studio_client(
+            {},
+            [httpx.ConnectError("connect-1", request=request), httpx.ConnectTimeout("connect-2", request=request), response],
+        )
+
+        with patch("app.qianwen_ai_studio.begin_task_submission", return_value=True), patch(
+            "app.qianwen_ai_studio.httpx.AsyncClient", return_value=context
+        ), patch("app.qianwen_ai_studio.save_result"), patch(
+            "app.qianwen_ai_studio.asyncio.sleep", new=AsyncMock()
+        ) as sleep:
+            outcome = asyncio.run(runner._run_locked())
+
+        self.assertTrue(outcome["submitted"])
+        self.assertEqual(post.await_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [0.5, 1.0])
+
     def test_current_qianwen_video_models_require_a_reference(self) -> None:
         for model in ("万相 2.7", "万相 2.6", "HappyHorse 1.0"):
             self.assertTrue(qianwen_model_requires_reference(model))

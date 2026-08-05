@@ -13,7 +13,7 @@ import httpx
 
 from .account_proxies import account_proxy_entries, account_proxy_url
 from .accounts import clear_account_current_task, disable_account_for_login, exhaust_account_quota, exhaust_timed_out_account, mark_account_slider_verification, mark_account_ten_second_limit, refund_account_quota, settle_account_quota
-from .automation import invalidate_reference_attachment_keys, is_final_generation_failure
+from .automation import DolaFetchAutomation, invalidate_reference_attachment_keys, is_final_generation_failure
 from .config import load_settings
 from .proxy_manager import acquire_dola_subscription_proxy, fetch_proxy_from_api, release_dola_subscription_proxy
 from .store import AMBIGUOUS_PROXY_RETRIES_PER_ACCOUNT, STATUS_FAILED, STATUS_SUBMITTED, STATUS_SUCCESS, clear_transient_result, expire_task_if_timeout, get_meta, load_result, mark_account_refund_once, mark_failed, mark_late_result_success, mark_result_once, mark_success, parse_time, record_failed_account, retry_ambiguous_proxy_task, retry_ambiguous_submitted_task, retry_submitted_task, save_result, task_retry_limit, task_video_path, update_meta
@@ -1005,15 +1005,27 @@ async def _query_task_once(
                 )
                 return {"code": "1", "text": "千问 AI Studio 正在恢复结果查询，请稍候...", "url": "", "retry_after": 30}
             try:
-                from .qianwen_ai_studio import fetch_qianwen_ai_studio_result
+                from .qianwen_ai_studio import _httpx_proxy_url, fetch_qianwen_ai_studio_result
                 from .qianwen_automation import qianwen_cookie_value
 
-                query_result = await fetch_qianwen_ai_studio_result(
-                    cookie,
-                    record_id,
-                    scene,
-                    xsrf_token=qianwen_cookie_value(cookie, "XSRF-TOKEN"),
+                proxy_session = DolaFetchAutomation(
+                    task_id,
+                    "",
+                    "",
+                    account={"id": str(result.get("account_id") or "")},
+                    proxy_platform="qianwen",
                 )
+                try:
+                    proxy_config = await proxy_session.acquire_browser_proxy()
+                    query_result = await fetch_qianwen_ai_studio_result(
+                        cookie,
+                        record_id,
+                        scene,
+                        xsrf_token=qianwen_cookie_value(cookie, "XSRF-TOKEN"),
+                        proxy_server=_httpx_proxy_url(proxy_config),
+                    )
+                finally:
+                    await proxy_session.release_browser_proxy()
             except Exception as exc:
                 save_result(task_id, extra=query_error_diagnostic(exc))
                 return {"code": "1", "text": "千问 AI Studio 正在生成视频，请稍候...", "url": "", "retry_after": 30}

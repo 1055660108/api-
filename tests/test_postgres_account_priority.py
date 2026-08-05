@@ -81,6 +81,27 @@ class PostgresAccountPriorityTests(unittest.TestCase):
             postgres.claim_available_account("dola", set(), "2026-08-01", "2026-08-01T00:00:00+00:00", lambda account: account, duration=15)
         self.assertIn("COALESCE(payload->>'ten_second_only', 'false') <> 'true'", connection.query)
 
+    def test_qianwen_ai_studio_claim_requires_nonempty_ticket(self) -> None:
+        connection = _RecordingConnection()
+
+        @contextmanager
+        def fake_connection():
+            yield connection
+
+        with patch.object(postgres, "connection", fake_connection):
+            postgres.claim_available_account(
+                "qianwen",
+                set(),
+                "2026-08-01",
+                "2026-08-01T00:00:00+00:00",
+                lambda account: account,
+                quota_bucket="qianwen_ai_studio",
+            )
+
+        self.assertIn("jsonb_array_elements(payload->'cookies')", connection.query)
+        self.assertIn("tongyi_sso_ticket", connection.query)
+        self.assertIn("btrim(COALESCE(cookie->>'value', '')) <> ''", connection.query)
+
     def test_duration_support_uses_one_account_query(self) -> None:
         connection = _RecordingConnection()
 

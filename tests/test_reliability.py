@@ -960,7 +960,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual({item["platform"]: item["quota_limit"] for item in accounts.list_accounts()}, {"dola": 2, "doubao": 3, "qianwen": 4})
 
     def test_qianwen_ai_studio_quota_is_independent_and_locks_the_cookie(self) -> None:
-        created = accounts.add_account("千问", "session=qianwen-studio", quota_limit=5, platform="qianwen")
+        created = accounts.add_account("千问", "tongyi_sso_ticket=ticket; session=qianwen-studio", quota_limit=5, platform="qianwen")
         settings = config.load_settings()
         self.assertEqual(config.qianwen_ai_studio_quota_cost_units("HappyHorse 1.1", 10, settings), 60)
         self.assertEqual(config.qianwen_ai_studio_quota_cost_units("万相 2.7", 10, settings), 25)
@@ -984,6 +984,55 @@ class ReliabilityTests(unittest.TestCase):
         self.assertTrue(accounts.refund_account_quota(created["id"], claimed["quota_charge_id"]))
         current = accounts.list_accounts(platform="qianwen")[0]
         self.assertEqual((current["quota_used"], current["qianwen_ai_studio_quota_used"]), (0, 0))
+
+    def test_qianwen_ai_studio_selection_skips_accounts_without_ticket(self) -> None:
+        missing = accounts.add_account("Missing ticket", "session=missing", quota_limit=5, platform="qianwen")
+        valid = accounts.add_account("Valid ticket", "tongyi_sso_ticket=valid; session=valid", quota_limit=5, platform="qianwen")
+
+        claimed = accounts.claim_account_for_worker(
+            "studio-worker",
+            "studio-task",
+            platform="qianwen",
+            quota_cost=25,
+            quota_bucket="qianwen_ai_studio",
+        )
+
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["id"], valid["id"])
+        self.assertNotEqual(claimed["id"], missing["id"])
+
+    def test_qianwen_ai_studio_quota_failure_exhausts_only_studio_quota(self) -> None:
+        task = store.create_task("Studio quota", "16:9", platform="qianwen", model="万相 2.7", duration=10)
+        created = accounts.add_account(
+            "Studio quota account",
+            "tongyi_sso_ticket=ticket; session=studio-quota",
+            quota_limit=5,
+            platform="qianwen",
+        )
+        claimed = accounts.claim_account_for_worker(
+            "studio-worker",
+            task["id"],
+            platform="qianwen",
+            quota_cost=25,
+            quota_bucket="qianwen_ai_studio",
+        )
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "qianwen",
+            {
+                "retryable": True,
+                "account_fault": True,
+                "account_quota_insufficient": True,
+                "switch_account": True,
+            },
+        )
+
+        stored = accounts.list_accounts(platform="qianwen")[0]
+        self.assertEqual(stored["id"], created["id"])
+        self.assertEqual(stored["quota_used"], 0)
+        self.assertEqual(stored["qianwen_ai_studio_quota_remaining"], 0)
 
     def test_worker_restores_submitted_qianwen_account_claim_after_restart(self) -> None:
         account = accounts.add_account("千问恢复锁", "session=qianwen-restore", quota_limit=5, platform="qianwen")

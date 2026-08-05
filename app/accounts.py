@@ -1169,6 +1169,16 @@ def account_for_worker(worker_id: str, exclude_ids: set[str] | None = None, plat
         return _select_account(_read_data()["accounts"], exclude_ids, platform, duration=duration)
 
 
+def _account_has_qianwen_ai_studio_ticket(account: dict[str, Any]) -> bool:
+    for cookie in account.get("cookies") or []:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get("name") or "").replace("\\_", "_")
+        if name == "tongyi_sso_ticket" and str(cookie.get("value") or "").strip():
+            return True
+    return False
+
+
 def _select_account(
     accounts: list[dict[str, Any]],
     exclude_ids: set[str] | None = None,
@@ -1209,6 +1219,7 @@ def _select_account(
         and not str(item.get("current_task_id") or "")
         and isinstance(item.get("cookies"), list)
         and item.get("cookies")
+        and (not studio_quota or _account_has_qianwen_ai_studio_ticket(item))
         and available(item)
         and str(item.get(exhausted_key) or "") != local_today()
         and (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -19,6 +20,8 @@ QIANWEN_AI_STUDIO_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 )
+QIANWEN_AI_STUDIO_CONNECT_ATTEMPTS = 3
+QIANWEN_AI_STUDIO_CONNECT_BACKOFF_SECONDS = 0.5
 
 QIANWEN_AI_STUDIO_MODELS: dict[str, dict[str, str]] = {
     "HappyHorse 1.1": {"root_model": "happyhorse11", "scene": "hh11_t2v"},
@@ -48,6 +51,11 @@ def _cookie_value(cookies: list[dict[str, Any]], name: str) -> str:
         if isinstance(item, dict) and str(item.get("name") or "").replace("\\_", "_") == name:
             return str(item.get("value") or "")
     return ""
+
+
+def _missing_ticket_message(value: Any) -> bool:
+    text = str(value or "").replace("\\_", "_").casefold()
+    return "tongyi_sso_ticket" in text and any(marker in text for marker in ("empty", "missing", "required", "cannot be empty", "不能为空", "缺失"))
 
 
 def _httpx_proxy_url(proxy_config: dict[str, str] | None) -> str:
@@ -228,6 +236,13 @@ class QianwenAIStudioAutomation:
         cookie_header = str(self.account.get("cookie_header") or "") or qianwen_ai_studio_cookie_header(cookies)
         if not cookie_header:
             return self._failure("千问 AI Studio Cookie 为空", account_login_invalid=True, account_fault=True, switch_account=True)
+        if not _cookie_value(cookies, "tongyi_sso_ticket").strip():
+            return self._failure(
+                "用户未登录错误, cookie中tongyi_sso_ticket不能为空",
+                account_login_invalid=True,
+                account_fault=True,
+                switch_account=True,
+            )
         try:
             payload, scene = qianwen_ai_studio_submission_payload(
                 self.prompt,
@@ -254,12 +269,27 @@ class QianwenAIStudioAutomation:
                 canceled = is_task_canceled(self.task_id)
                 return self._failure("用户取消生成" if canceled else "任务提交状态已变化，正在重试", retryable=not canceled)
             async with httpx.AsyncClient(**options) as client:
-                response = await client.post(QIANWEN_AI_STUDIO_SUBMIT_URL, json=payload)
+                for attempt in range(1, QIANWEN_AI_STUDIO_CONNECT_ATTEMPTS + 1):
+                    try:
+                        response = await client.post(QIANWEN_AI_STUDIO_SUBMIT_URL, json=payload)
+                        break
+                    except (httpx.ConnectError, httpx.ConnectTimeout):
+                        if attempt >= QIANWEN_AI_STUDIO_CONNECT_ATTEMPTS:
+                            raise
+                        await asyncio.sleep(QIANWEN_AI_STUDIO_CONNECT_BACKOFF_SECONDS * attempt)
                 response.raise_for_status()
                 body = response.json()
             code = int(body.get("code") or 0) if isinstance(body, dict) else -1
             data = body.get("data") if isinstance(body, dict) and isinstance(body.get("data"), dict) else {}
             record_id = str(data.get("recordId") or "")
+            message = str(body.get("msg") or body.get("message") or "") if isinstance(body, dict) else ""
+            if _missing_ticket_message(message):
+                return self._failure(
+                    "用户未登录错误, cookie中tongyi_sso_ticket不能为空",
+                    account_login_invalid=True,
+                    account_fault=True,
+                    switch_account=True,
+                )
             if code == 15001:
                 return self._failure(
                     "千问 AI Studio 额度不足",
@@ -268,7 +298,7 @@ class QianwenAIStudioAutomation:
                     switch_account=True,
                 )
             if code != 0 or not record_id:
-                message = str(body.get("msg") or "千问 AI Studio 提交失败") if isinstance(body, dict) else "千问 AI Studio 提交失败"
+                message = message or "千问 AI Studio 提交失败"
                 retryable = code not in {1018}
                 return self._failure(message[:500], retryable=retryable, account_fault=code in {401, 403}, switch_account=code in {401, 403, 1003, 429})
             save_result(

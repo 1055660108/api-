@@ -654,6 +654,12 @@ def claim_available_account(
     ]
     if platform == "dola" and (int(duration or 0) <= 0 or int(duration or 0) > 10):
         conditions.append("COALESCE(payload->>'ten_second_only', 'false') <> 'true'")
+    if studio_quota:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(payload->'cookies') AS cookie "
+            "WHERE replace(COALESCE(cookie->>'name', ''), '\\_', '_') = 'tongyi_sso_ticket' "
+            "AND btrim(COALESCE(cookie->>'value', '')) <> '')"
+        )
     params: list[Any] = [platform, today, quota_cost, now]
     if excluded:
         conditions.append("NOT (id = ANY(%s))")

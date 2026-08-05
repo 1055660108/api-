@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+import struct
 from pathlib import Path
 from typing import Any, AsyncContextManager, Awaitable, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -2996,9 +2997,22 @@ class DoubaoVideoAutomation:
                 ),
                 mode="rectangles" if rectangle_mode else "points",
             )
+            if task_exists(self.task_id):
+                save_result(self.task_id, extra={
+                    "doubao_verification_solver_status": "coordinates_received",
+                    "doubao_verification_solver_attempts": 1,
+                    "doubao_verification_coordinate_count": len(solution.coordinates),
+                    "doubao_verification_solver_cost": solution.cost,
+                })
             body_box = await body.bounding_box()
             if not body_box:
                 raise SemanticCaptchaError("semantic captcha body position is unavailable")
+            screenshot_width = 0
+            screenshot_height = 0
+            if screenshot.startswith(b"\x89PNG\r\n\x1a\n") and len(screenshot) >= 24:
+                screenshot_width, screenshot_height = struct.unpack(">II", screenshot[16:24])
+            coordinate_scale_x = body_box["width"] / screenshot_width if screenshot_width else 1.0
+            coordinate_scale_y = body_box["height"] / screenshot_height if screenshot_height else 1.0
 
             if drag_mode:
                 drop_box = None
@@ -3018,12 +3032,12 @@ class DoubaoVideoAutomation:
                 for coordinate_index, coordinate in enumerate(solution.coordinates):
                     if len(coordinate) == 4:
                         x1, y1, x2, y2 = coordinate
-                        source_x = body_box["x"] + (x1 + x2) / 2
-                        source_y = body_box["y"] + (y1 + y2) / 2
+                        source_x = body_box["x"] + ((x1 + x2) / 2) * coordinate_scale_x
+                        source_y = body_box["y"] + ((y1 + y2) / 2) * coordinate_scale_y
                     else:
                         x, y = coordinate
-                        source_x = body_box["x"] + x
-                        source_y = body_box["y"] + y
+                        source_x = body_box["x"] + x * coordinate_scale_x
+                        source_y = body_box["y"] + y * coordinate_scale_y
                     target_x = destination_x + ((coordinate_index % 3) - 1) * min(24, drop_box["width"] / 8)
                     target_y = destination_y + (coordinate_index // 3) * min(16, drop_box["height"] / 8)
                     await page.mouse.move(source_x, source_y)
@@ -3041,27 +3055,80 @@ class DoubaoVideoAutomation:
                     await page.wait_for_timeout(250)
             else:
                 for x, y in solution.coordinates:
-                    await page.mouse.click(body_box["x"] + x, body_box["y"] + y)
+                    await page.mouse.click(
+                        body_box["x"] + x * coordinate_scale_x,
+                        body_box["y"] + y * coordinate_scale_y,
+                    )
                     await page.wait_for_timeout(200)
 
-            submit = None
-            preferred = frame.get_by_role(
-                "button",
-                name=re.compile(r"提交|确认|验证|Submit|Confirm|Verify", re.IGNORECASE),
+            await page.wait_for_timeout(500)
+            submit_pattern = re.compile(
+                r"^\s*(提交|确认|验证|Submit|Confirm|Verify)\s*$",
+                re.IGNORECASE,
             )
-            for locator in (preferred, frame.locator("button")):
+            submit = None
+            submit_diagnostics: list[dict[str, Any]] = []
+            preferred = frame.get_by_role("button", name=submit_pattern)
+            exact_text = frame.get_by_text(submit_pattern)
+            candidate_locators = (
+                preferred,
+                frame.locator("button"),
+                frame.locator("[role='button']"),
+                frame.locator("[tabindex]"),
+                exact_text,
+            )
+            for locator in candidate_locators:
                 for index in range(await locator.count() - 1, -1, -1):
                     candidate = locator.nth(index)
                     try:
-                        if await candidate.is_visible() and await candidate.is_enabled():
-                            submit = candidate
-                            break
+                        text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())[:80]
+                        if locator not in (preferred, exact_text) and not submit_pattern.fullmatch(text):
+                            continue
+                        visible = await candidate.is_visible()
+                        enabled = await candidate.is_enabled()
+                        diagnostic = await candidate.evaluate(
+                            """element => ({
+                                tag: element.tagName.toLowerCase(),
+                                className: String(element.className || '').slice(0, 160),
+                                role: element.getAttribute('role') || '',
+                                tabIndex: element.getAttribute('tabindex') || '',
+                                ariaDisabled: element.getAttribute('aria-disabled') || '',
+                                disabled: Boolean(element.disabled || element.hasAttribute('disabled')),
+                                parentTag: element.parentElement ? element.parentElement.tagName.toLowerCase() : '',
+                                parentClass: element.parentElement ? String(element.parentElement.className || '').slice(0, 160) : '',
+                                cursor: getComputedStyle(element).cursor,
+                            })"""
+                        )
+                        diagnostic.update({"text": text, "visible": visible, "enabled": enabled})
+                        submit_diagnostics.append(diagnostic)
+                        if not visible or not enabled or diagnostic.get("disabled") or diagnostic.get("ariaDisabled") == "true":
+                            continue
+                        submit = candidate
+                        break
                     except Exception:
                         continue
                 if submit is not None:
                     break
             if submit is None:
-                raise SemanticCaptchaError("semantic captcha submit button is unavailable")
+                if task_exists(self.task_id):
+                    save_result(self.task_id, extra={
+                        "doubao_verification_submit_diagnostics": submit_diagnostics[-12:],
+                        "doubao_verification_coordinate_scale": [
+                            round(coordinate_scale_x, 4),
+                            round(coordinate_scale_y, 4),
+                        ],
+                    })
+                if submit_diagnostics:
+                    raise SemanticCaptchaError("semantic captcha submit control is disabled after replay")
+                raise SemanticCaptchaError("semantic captcha submit control is unavailable")
+            if task_exists(self.task_id):
+                save_result(self.task_id, extra={
+                    "doubao_verification_submit_diagnostics": submit_diagnostics[-12:],
+                    "doubao_verification_coordinate_scale": [
+                        round(coordinate_scale_x, 4),
+                        round(coordinate_scale_y, 4),
+                    ],
+                })
             await submit.click(force=True)
 
             deadline = asyncio.get_running_loop().time() + 20

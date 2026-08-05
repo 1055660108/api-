@@ -1097,7 +1097,7 @@ def mark_success(task_id: str) -> None:
     result = load_result(task_id)
     if not result.get("decoded_main_url"):
         return
-    updated = update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED, STATUS_SUCCESS}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now())
+    updated = update_meta_if(task_id, {STATUS_RUNNING, STATUS_SUBMITTED}, status=STATUS_SUCCESS, worker_id="", finished_at=utc_now(), error="", execution_phase="completed", status_reason="视频生成成功", phase_updated_at=utc_now())
     if updated is not None:
         try:
             compact_task_reference_images(task_id)

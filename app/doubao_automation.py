@@ -669,7 +669,17 @@ def parse_doubao_generation_result(body: str) -> dict[str, Any]:
         return {"state": "completed", "text": text, "candidate": candidate}
     if is_doubao_account_quota_insufficient(text):
         return {"state": "quota_insufficient", "text": text or "豆包账号额度不足或已耗尽"}
-    if any(marker in text for marker in ("生成失败", "无法生成", "内容违规")):
+    if any(
+        marker in text
+        for marker in (
+            "生成失败",
+            "无法生成",
+            "内容违规",
+            "疑似包含侵权/违规",
+            "无法返回该内容",
+            "生成额度未扣除",
+        )
+    ):
         return {"state": "failed", "text": text or "豆包视频生成失败"}
     if any(marker in text for marker in ("扫码登录", "手机号登录", "登录豆包")):
         return {"state": "login_invalid", "text": text or "豆包登录状态失效"}

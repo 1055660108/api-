@@ -956,6 +956,7 @@ async def _query_doubao_task_once(
             clear_account_current_task(account_id, task_id)
         reason = text or "豆包视频生成失败"
         mark_failed(task_id, reason)
+        refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
         return {"code": "0", "text": reason, "url": ""}
     if state == "rate_limited":
         update_meta(task_id, next_result_poll_at=(datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat())

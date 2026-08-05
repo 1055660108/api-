@@ -230,6 +230,47 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_SUBMITTED)
         clear.assert_not_called()
 
+    def test_doubao_policy_rejection_fails_immediately_and_refunds_user(self) -> None:
+        task = store.create_task(
+            "豆包内容拒绝",
+            "9:16",
+            owner_token_hash="owner-policy",
+            platform="doubao",
+            model="Seedance 2.0 Mini",
+        )
+        store.mark_running(task["id"], "worker-doubao")
+        store.save_result(task["id"], extra={
+            "doubao_result_mode": "interface_poll",
+            "doubao_conversation_id": "12345678901234567",
+            "cookie_string": "session=value",
+            "proxy_source": "direct",
+        })
+        store.mark_submitted(task["id"], result_poll_delay_seconds=0)
+        store.update_meta(task["id"], next_result_poll_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+        rejection = "生成内容中疑似包含侵权/违规内容，无法返回该内容，换个主题再试试，生成额度未扣除。"
+
+        with patch(
+            "app.doubao_automation.fetch_doubao_generation_result",
+            new=AsyncMock(return_value={"state": "failed", "text": rejection}),
+        ), patch("app.query.refund_temp_quota_once") as refund_user:
+            outcome = asyncio.run(query.query_task(task["id"], background_poll=True))
+
+        self.assertEqual(outcome, {"code": "0", "text": rejection, "url": ""})
+        self.assertEqual(store.get_meta(task["id"])["status"], store.STATUS_FAILED)
+        refund_user.assert_called_once_with(task["id"], "owner-policy")
+
+    def test_mark_success_preserves_the_first_completion_time(self) -> None:
+        task = store.create_task("完成时间测试", "9:16")
+        store.mark_running(task["id"], "worker-success")
+        store.save_result(task["id"], extra={"decoded_main_url": "https://media.example/video.mp4"})
+        store.mark_success(task["id"])
+        first_finished_at = store.get_meta(task["id"])["finished_at"]
+
+        with patch("app.store.utc_now", return_value="2099-01-01T00:00:00+00:00"):
+            store.mark_success(task["id"])
+
+        self.assertEqual(store.get_meta(task["id"])["finished_at"], first_finished_at)
+
     def test_doubao_web_video_cache_still_queries_unwatermarked_interface_result(self) -> None:
         task = store.create_task("豆包网页缓存升级", "9:16", platform="doubao", model="Seedance 2.0 Mini")
         store.mark_running(task["id"], "worker-doubao")

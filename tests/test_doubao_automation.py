@@ -494,6 +494,23 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result["state"], "quota_insufficient")
         self.assertIn("额度已耗尽", result["text"])
 
+    def test_interface_result_parser_recognizes_policy_rejection_as_terminal(self) -> None:
+        body = json.dumps({
+            "downlink_body": {
+                "pull_singe_chain_downlink_body": {
+                    "messages": [{
+                        "message_index": 5,
+                        "tts_content": "生成内容中疑似包含侵权/违规内容，无法返回该内容，换个主题再试试，生成额度未扣除。",
+                    }]
+                }
+            }
+        }, ensure_ascii=False)
+
+        result = parse_doubao_generation_result(body)
+
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("无法返回该内容", result["text"])
+
     def test_interface_result_parser_requires_real_submission_marker(self) -> None:
         text_only = json.dumps({
             "downlink_body": {

@@ -2970,6 +2970,56 @@ class DoubaoVideoAutomation:
                 })
             return SliderSolveResult(status="not_present", attempts=0)
 
+        verification_frames = target_page.locator(
+            self.verification_solver.settings.iframe_selector
+        )
+        frame = None
+        for index in range(await verification_frames.count()):
+            try:
+                if await verification_frames.nth(index).is_visible():
+                    frame = target_page.frame_locator(
+                        self.verification_solver.settings.iframe_selector
+                    ).nth(index)
+                    break
+            except Exception:
+                continue
+
+        if frame is not None:
+            semantic_text = ""
+            semantic_detected = False
+            inspection_deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < inspection_deadline:
+                try:
+                    semantic_detected = await frame.locator(
+                        "#captcha_click_image, .captcha-prompt-bar"
+                    ).count() > 0
+                    if semantic_detected:
+                        semantic_text = str(
+                            await frame.locator("body").inner_text(timeout=2000) or ""
+                        )
+                        break
+                    if await frame.locator("img[alt='basicImg']").count() > 0:
+                        break
+                except Exception:
+                    pass
+                await page.wait_for_timeout(200)
+            if semantic_detected:
+                if task_exists(self.task_id):
+                    save_result(self.task_id, extra={
+                        "doubao_verification_solver_status": "semantic_challenge",
+                        "doubao_verification_solver_attempts": 0,
+                        "doubao_verification_challenge_type": "semantic_reasoning",
+                        "doubao_verification_challenge_text": semantic_text[:1000],
+                        "doubao_verification_solver_error": (
+                            "semantic reasoning verification requires a vision solver"
+                        ),
+                    })
+                return SliderSolveResult(
+                    status="semantic_challenge",
+                    attempts=0,
+                    error="semantic reasoning verification requires a vision solver",
+                )
+
         self._set_phase("resolving_doubao_verification", "正在完成豆包人机验证")
         result = await self.verification_solver.solve(target_page)
         if task_exists(self.task_id):

@@ -109,6 +109,46 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("rmc.bytedance.com/verifycenter/captcha", selector)
         self.assertIn("bdcaptcha.html", selector)
 
+    def test_semantic_verification_is_not_sent_to_gap_slider_solver(self) -> None:
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner.task_id = "task"
+        runner._set_phase = Mock()
+        runner.verification_solver = SimpleNamespace(
+            settings=SimpleNamespace(iframe_selector="iframe[src*='verifycenter/captcha']"),
+            solve=AsyncMock(),
+        )
+        semantic = SimpleNamespace(count=AsyncMock(return_value=1))
+        body = SimpleNamespace(inner_text=AsyncMock(return_value="Tap all matching objects"))
+        basic = SimpleNamespace(count=AsyncMock(return_value=0))
+        frame = SimpleNamespace(
+            locator=Mock(side_effect=lambda selector: {
+                "#captcha_click_image, .captcha-prompt-bar": semantic,
+                "body": body,
+                "img[alt='basicImg']": basic,
+            }[selector])
+        )
+        frames = SimpleNamespace(
+            count=AsyncMock(return_value=1),
+            nth=Mock(return_value=SimpleNamespace(is_visible=AsyncMock(return_value=True))),
+        )
+        frame_selector = SimpleNamespace(nth=Mock(return_value=frame))
+        page = SimpleNamespace(
+            context=SimpleNamespace(pages=[]),
+            locator=Mock(return_value=frames),
+            frame_locator=Mock(return_value=frame_selector),
+            wait_for_timeout=AsyncMock(),
+        )
+        page.context.pages = [page]
+
+        with patch("app.doubao_automation.find_slider_page", new=AsyncMock(return_value=page)), patch(
+            "app.doubao_automation.task_exists", return_value=False
+        ):
+            result = asyncio.run(runner._resolve_submission_verification(page))
+
+        self.assertEqual(result.status, "semantic_challenge")
+        self.assertEqual(result.attempts, 0)
+        runner.verification_solver.solve.assert_not_awaited()
+
     def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={

@@ -397,13 +397,14 @@ class QianwenVideoAutomation:
     async def _reference_preview_count(page) -> int:
         return int(await page.evaluate(
             r"""() => {
-                const inputBody = document.querySelector('[data-chat-input-body="true"]');
-                const host = inputBody && inputBody.parentElement;
+                const host = document.querySelector('[data-chat-input-top-content="true"]');
                 if (!host) return 0;
                 const candidates = host.querySelectorAll('img,canvas,video,[style*="background-image"]');
                 return Array.from(candidates).filter(element => {
                     const style = getComputedStyle(element);
                     const box = element.getBoundingClientRect();
+                    const button = element.closest('button');
+                    if (button && button.innerText.trim() === '参考') return false;
                     return style.display !== 'none' && style.visibility !== 'hidden'
                         && box.width >= 24 && box.height >= 24;
                 }).length;
@@ -648,9 +649,6 @@ class QianwenVideoAutomation:
                 if self.task_type == "video" and self.model == "HappyHorse 1.0" and not reference_paths:
                     await self._save_diagnostics(page, "HappyHorse requires a reference image")
                     return self._failure("qianwen HappyHorse requires a reference image", account_fault=False, retryable=False)
-                if reference_paths and not await self._upload_reference_images(page, reference_paths):
-                    await self._save_diagnostics(page, "reference image upload unavailable")
-                    return self._failure("qianwen reference image upload failed", account_fault=False)
                 if not await self._ensure_video_model(page):
                     await self._save_diagnostics(page, "model unavailable")
                     return self._failure("qianwen model unavailable", account_fault=False, retryable=False)
@@ -662,6 +660,15 @@ class QianwenVideoAutomation:
                     return self._failure("qianwen duration unavailable", account_fault=False, retryable=False)
                 await page.keyboard.press("Escape")
                 await page.wait_for_timeout(300)
+                uploaded_reference_count = 0
+                if reference_paths:
+                    if not await self._upload_reference_images(page, reference_paths):
+                        await self._save_diagnostics(page, "reference image upload unavailable")
+                        return self._failure("qianwen reference image upload failed", account_fault=False)
+                    uploaded_reference_count = await self._reference_preview_count(page)
+                    if uploaded_reference_count < len(reference_paths):
+                        await self._save_diagnostics(page, "reference image preview missing after upload")
+                        return self._failure("qianwen reference image upload failed", account_fault=False)
                 self.network_events.clear()
                 self.remote_task_ids.clear()
                 self.remote_video_urls.clear()
@@ -674,6 +681,9 @@ class QianwenVideoAutomation:
                 self.submission_request_event.clear()
                 self.submission_event.clear()
                 await editor.fill(self.prompt)
+                if reference_paths and await self._reference_preview_count(page) < uploaded_reference_count:
+                    await self._save_diagnostics(page, "reference image preview lost before submit")
+                    return self._failure("qianwen reference image lost before submit", account_fault=False)
                 send_button = page.locator('button[aria-label="发送消息"]:visible').first
                 await send_button.wait_for(state="visible", timeout=15000)
                 if await send_button.is_disabled():

@@ -168,6 +168,9 @@ class QianwenResultTests(unittest.TestCase):
         self.assertIn('if account and not outcome.get("keep_account_claimed"):', worker_source)
         self.assertIn('get_by_role("button", name="参考", exact=True)', qianwen_source)
         self.assertIn("preview_count > baseline_preview_count", qianwen_source)
+        browser_flow = qianwen_source.split("async def _run_browser", 1)[1]
+        self.assertLess(browser_flow.index("await self._ensure_video_duration(page)"), browser_flow.index("await self._upload_reference_images(page, reference_paths)"))
+        self.assertIn("reference image preview lost before submit", browser_flow)
         self.assertIn('await editor.press("Enter")', qianwen_source)
 
 

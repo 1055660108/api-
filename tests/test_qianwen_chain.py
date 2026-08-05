@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock, call, patch
 
 import httpx
 
-from app.qianwen_ai_studio import QianwenAIStudioAutomation, parse_qianwen_ai_studio_result, qianwen_ai_studio_submission_payload
+from app.qianwen_ai_studio import QianwenAIStudioAutomation, parse_qianwen_ai_studio_result, qianwen_ai_studio_model, qianwen_ai_studio_submission_payload
 from app.qianwen_automation import (
     QIANWEN_CHAT_API_URL,
     QIANWEN_CHAT_SNAP_API_URL,
@@ -176,6 +176,10 @@ class QianwenSubmissionTests(unittest.TestCase):
             self.assertEqual(payload["genMode"], "vid_gen")
             self.assertEqual(payload["params"], {"size": "16:9", "resolution": "720P", "duration": 10, "attachmentType": 0, "attachments": []})
             self.assertEqual((payload["req_id"], payload["chid"], result_scene), ("request", "channel", scene))
+
+    def test_happyhorse_1_0_is_not_routed_to_ai_studio_without_a_reference(self) -> None:
+        self.assertIsNone(qianwen_ai_studio_model("HappyHorse 1.0"))
+        self.assertIsNotNone(qianwen_ai_studio_model("HappyHorse 1.1"))
 
     def test_submission_request_is_captured_before_response_arrives(self) -> None:
         runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)

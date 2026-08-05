@@ -73,6 +73,7 @@ from .platforms import DEFAULT_PLATFORM, PLATFORM_LABELS, PLATFORM_VIDEO_DURATIO
 from .query import query_task
 from .reference_images import compress_reference_image
 from .qianwen_models import fetch_qianwen_video_models
+from .qianwen_ai_studio import qianwen_ai_studio_model
 from .platform_model_sync import fetch_platform_video_models
 from .proxy_manager import activate_mihomo_node, fetch_proxy_from_api, fetch_subscription_node_list, measure_node_delays, node_payload, probe_dola_proxy, rebuild_mihomo_from_snapshot
 from .resilience import PlatformGuard, adaptive_worker_limit, fair_owner_capacity_limits, queue_admission
@@ -5662,6 +5663,14 @@ async def submit_task(
             ]
         elif batch_reference_image_count:
             raise HTTPException(status_code=400, detail="批量共用参考图参数无效")
+        if (
+            platform == "qianwen"
+            and task_type == "video"
+            and not uploads
+            and not shared_reference_paths
+            and qianwen_ai_studio_model(model) is None
+        ):
+            raise HTTPException(status_code=400, detail=f"千问 {model} 需要上传参考图")
         await _rate_limit(request, "task-create-batch" if batch else "task-create", 2400 if batch else 30, 60, access.token_hash)
         key = _idempotency_key(idempotency_key)
         fingerprint = _request_fingerprint("tasks", access.token_hash, {"prompt": prompt, "ratio": ratio, "duration": duration or 0, "platform": platform, "model": model, "task_type": task_type, "batch_id": batch_id, "batch_index": batch_index, "batch_row": batch_row, "batch_reference_id": batch_reference_id, "batch_reference_task_id": batch_reference_task_id, "batch_reference_image_count": batch_reference_image_count, "reference_is_real_person": reference_is_real_person, "preferred_account_id": preferred_account_id, "images": [Path(item.filename or "").name for item in uploads]})

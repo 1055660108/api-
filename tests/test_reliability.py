@@ -15,7 +15,7 @@ import httpx
 from app import accounts, automation, config, query, store, task_queue, temp_access
 from app.automation import DolaFetchAutomation, dola_service_frequent_abnormal_outcome, is_infrastructure_failure
 from app.resilience import fair_owner_capacity_limits
-from app.worker import IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
+from app.worker import IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, normalize_qianwen_retry_outcome, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -1688,6 +1688,32 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(meta.get("retry_count", 0), 0)
         self.assertEqual(meta["queue_category"], "remote_limit")
         self.assertEqual(meta["error"], "")
+
+    def test_qianwen_quota_exhaustion_switches_account_without_consuming_retry(self) -> None:
+        task = self.create_task("qianwen-quota-switch")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        outcome = normalize_qianwen_retry_outcome(
+            "qianwen",
+            {"retryable": True, "account_quota_insufficient": True, "switch_account": True},
+        )
+
+        self.assertTrue(defer_non_counting_retry(task["id"], outcome))
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_PENDING)
+        self.assertEqual(meta.get("retry_count", 0), 0)
+        self.assertEqual(meta["queue_category"], "account_quota")
+
+    def test_retry_limit_terminal_state_keeps_real_reason(self) -> None:
+        task = self.create_task("retry-terminal")
+        self.assertTrue(store.mark_running(task["id"], "worker-1"))
+        with patch.object(store, "load_settings", return_value=SimpleNamespace(task_retry_limit=0)):
+            self.assertEqual(store.record_retry(task["id"], "千问 AI Studio 额度不足"), 1)
+
+        meta = store.get_meta(task["id"])
+        self.assertEqual(meta["status"], store.STATUS_FAILED)
+        self.assertEqual(meta["execution_phase"], "failed")
+        self.assertEqual(meta["status_reason"], "千问 AI Studio 额度不足")
+        self.assertEqual(meta["error"], "千问 AI Studio 额度不足")
 
     def test_infrastructure_retry_has_separate_budget_and_queue_state(self) -> None:
         task = self.create_task("owner")

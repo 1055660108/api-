@@ -760,6 +760,21 @@ def record_failed_account(task_id: str, account_id: str) -> None:
         _write_storage_json(meta_path(task_id), meta)
 
 
+def _set_retry_terminal(meta: dict[str, Any], reason: str) -> None:
+    now = utc_now()
+    terminal_reason = str(reason or meta.get("error") or "生成失败，请重试！")[:500]
+    meta.update(
+        status=STATUS_FAILED,
+        finished_at=now,
+        error=terminal_reason,
+        execution_phase="failed",
+        status_reason=terminal_reason,
+        phase_updated_at=now,
+        queue_reason="",
+        queue_category="",
+    )
+
+
 def record_retry(task_id: str, reason: str = "") -> int:
     retry_limit = task_retry_limit()
     with task_lock(task_id):
@@ -773,7 +788,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
                 meta.update(retry_count=count, worker_id="", error=normalized_reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > retry_limit:
-                    meta.update(status=STATUS_FAILED, finished_at=utc_now())
+                    _set_retry_terminal(meta, normalized_reason)
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
                 meta["updated_at"] = utc_now()
@@ -793,7 +808,7 @@ def record_retry(task_id: str, reason: str = "") -> int:
         meta.update(retry_count=count, worker_id="", error=reason, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > retry_limit:
-            meta.update(status=STATUS_FAILED, finished_at=utc_now())
+            _set_retry_terminal(meta, reason)
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=10 * (3 ** (count - 1)))).isoformat())
         meta["updated_at"] = utc_now()
@@ -822,13 +837,7 @@ def record_infrastructure_retry(task_id: str, reason: str = "") -> int:
             )
             meta.setdefault("infrastructure_retry_started_at", now)
             if count > MAX_INFRASTRUCTURE_RETRIES:
-                meta.update(
-                    status=STATUS_FAILED,
-                    finished_at=now,
-                    error="可用节点连续连接失败，请稍后重新提交",
-                    queue_reason="",
-                    queue_category="",
-                )
+                _set_retry_terminal(meta, "可用节点连续连接失败，请稍后重新提交")
             else:
                 delay = min(120, 10 * (2 ** (count - 1)))
                 meta.update(
@@ -874,7 +883,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int | None = No
                 meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
-                    meta.update(status=STATUS_FAILED, finished_at=utc_now())
+                    _set_retry_terminal(meta, str(reason or ""))
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
                 meta["updated_at"] = utc_now()
@@ -892,7 +901,7 @@ def retry_submitted_task(task_id: str, reason: str, max_retries: int | None = No
         meta.update(retry_count=count, worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
-            meta.update(status=STATUS_FAILED, finished_at=utc_now())
+            _set_retry_terminal(meta, str(reason or ""))
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
         meta["updated_at"] = utc_now()
@@ -980,7 +989,7 @@ def retry_ambiguous_submitted_task(task_id: str, reason: str, max_retries: int |
             )
             meta.setdefault("infrastructure_retry_started_at", now)
             if count > max_retries:
-                meta.update(status=STATUS_FAILED, finished_at=now, error="生成失败，请重试！", queue_reason="", queue_category="")
+                _set_retry_terminal(meta, "生成失败，请重试！")
             else:
                 meta.update(
                     status=STATUS_PENDING,
@@ -1018,7 +1027,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int |
                 meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
                 meta.setdefault("retry_started_at", utc_now())
                 if count > max_retries:
-                    meta.update(status=STATUS_FAILED, finished_at=utc_now())
+                    _set_retry_terminal(meta, str(reason or ""))
                 else:
                     meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
                 meta["updated_at"] = utc_now()
@@ -1038,7 +1047,7 @@ def retry_timed_out_submitted_task(task_id: str, reason: str, max_retries: int |
         meta.update(retry_count=count, result_timeout_retry_count=timeout_count, retry_queued_at=utc_now(), worker_id="", error=reason, result_watch_miss_count=0, execution_phase="retry_queued", status_reason="正在重试中，请稍等！", phase_updated_at=utc_now())
         meta.setdefault("retry_started_at", utc_now())
         if count > max_retries:
-            meta.update(status=STATUS_FAILED, finished_at=utc_now())
+            _set_retry_terminal(meta, str(reason or ""))
         else:
             meta.update(status=STATUS_PENDING, finished_at="", next_attempt_at=(datetime.now(timezone.utc) + timedelta(seconds=delay_seconds * count)).isoformat())
         meta["updated_at"] = utc_now()
@@ -1056,7 +1065,8 @@ def record_execution_miss(task_id: str, reason: str = "任务未执行，重新�
             count = max(0, int(meta.get("retry_count") or 0)) + 1
             meta.setdefault("retry_started_at", utc_now())
             if count > retry_limit:
-                meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
+                meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="")
+                _set_retry_terminal(meta, "任务超时未执行")
             else:
                 meta.update(retry_count=count, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
             meta["updated_at"] = utc_now()
@@ -1068,7 +1078,22 @@ def record_execution_miss(task_id: str, reason: str = "任务未执行，重新�
     count = max(0, int(meta.get("retry_count") or 0)) + 1
     retry_started_at = str(meta.get("retry_started_at") or utc_now())
     if count > retry_limit:
-        update_meta(task_id, retry_count=count, retry_started_at=retry_started_at, execution_miss_count=miss_count, worker_id="", error="任务超时未执行", status=STATUS_FAILED, finished_at=utc_now())
+        now = utc_now()
+        update_meta(
+            task_id,
+            retry_count=count,
+            retry_started_at=retry_started_at,
+            execution_miss_count=miss_count,
+            worker_id="",
+            error="任务超时未执行",
+            status=STATUS_FAILED,
+            finished_at=now,
+            execution_phase="failed",
+            status_reason="任务超时未执行",
+            phase_updated_at=now,
+            queue_reason="",
+            queue_category="",
+        )
     else:
         update_meta(task_id, retry_count=count, retry_started_at=retry_started_at, execution_miss_count=miss_count, worker_id="", error=reason, status=STATUS_PENDING)
     return count

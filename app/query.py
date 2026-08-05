@@ -1036,8 +1036,9 @@ async def _query_task_once(
                 task_id,
                 extra={
                     "decoded_main_url": video_url,
-                    "qianwen_result_source": "download_video",
+                    "qianwen_result_source": "display_video_unwatermarked",
                     "qianwen_video_source_path": str(query_result.get("video_source") or ""),
+                    "qianwen_watermark_status": "original",
                 },
                 remove={"cookie_string", "cookies"},
             )

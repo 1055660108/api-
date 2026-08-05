@@ -99,7 +99,8 @@ def parse_qianwen_submission(post_data: str) -> dict[str, Any]:
 
 
 def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
-    download_candidates: list[tuple[int, str, str]] = []
+    unwatermarked_candidates: list[tuple[int, str, str]] = []
+    watermarked_download_candidates: list[tuple[str, str]] = []
     status_values: list[tuple[str, Any]] = []
     error_codes: list[int] = []
     messages: list[str] = []
@@ -120,16 +121,17 @@ def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
         if isinstance(value, str) and value.startswith(("http://", "https://")):
             lowered = path.lower()
             score = 0
-            if "download_video" in lowered:
-                score += 1000
             if any(marker in lowered for marker in ("without_watermark", "no_watermark", "unwatermarked", "original")):
-                score += 500
-            if "download" in lowered:
-                score += 250
+                score += 3000
+            if ".display_list[" in lowered and re.search(r"\.video\[\d+\]\.url$", lowered):
+                score += 2000
+            if "download_video" in lowered:
+                watermarked_download_candidates.append((path, value))
+                score = 0
             if score:
-                download_candidates.append((score, path, value))
-    download_candidates.sort(reverse=True)
-    video_url = download_candidates[0][2] if download_candidates and download_candidates[0][0] >= 1000 else ""
+                unwatermarked_candidates.append((score, path, value))
+    unwatermarked_candidates.sort(reverse=True)
+    video_url = unwatermarked_candidates[0][2] if unwatermarked_candidates else ""
     text = "\n".join(dict.fromkeys(messages))[:2000]
     lowered_text = text.lower()
     failed = any(code not in {0} for code in error_codes)
@@ -152,7 +154,9 @@ def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
     return {
         "state": state,
         "video_url": video_url,
-        "video_source": download_candidates[0][1] if video_url else "",
+        "video_source": unwatermarked_candidates[0][1] if video_url else "",
+        "watermarked_download_available": bool(watermarked_download_candidates),
+        "watermarked_download_sources": [path for path, _url in watermarked_download_candidates[-5:]],
         "text": text,
         "task_ids": task_ids,
         "statuses": status_values[-20:],

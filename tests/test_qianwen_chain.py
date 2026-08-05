@@ -99,7 +99,7 @@ class QianwenSubmissionTests(unittest.TestCase):
 
 
 class QianwenResultTests(unittest.TestCase):
-    def test_prefers_download_video_over_web_playback_video(self) -> None:
+    def test_prefers_unwatermarked_display_video_over_branded_download(self) -> None:
         payload = {
             "data": {
                 "response_messages": [
@@ -112,8 +112,8 @@ class QianwenResultTests(unittest.TestCase):
                                         "status": "complete",
                                         "display_list": [
                                             {
-                                                "video": [{"url": "https://cdn.example/watermarked.mp4"}],
-                                                "download_video": [{"url": "https://cdn.example/original.mp4"}],
+                                                "video": [{"url": "https://cdn.example/original.mp4"}],
+                                                "download_video": [{"url": "https://cdn.example/watermarked.mp4"}],
                                             }
                                         ],
                                     }
@@ -130,7 +130,28 @@ class QianwenResultTests(unittest.TestCase):
 
         self.assertEqual(parsed["state"], "succeeded")
         self.assertEqual(parsed["video_url"], "https://cdn.example/original.mp4")
-        self.assertIn("download_video", parsed["video_source"])
+        self.assertRegex(parsed["video_source"], r"\.display_list\[0\]\.video\[0\]\.url$")
+        self.assertTrue(parsed["watermarked_download_available"])
+
+    def test_watermarked_download_without_original_stays_pending(self) -> None:
+        payload = {
+            "data": {
+                "response_messages": [{
+                    "status": "complete",
+                    "meta_data": {"multi_load": [{"content": {
+                        "status": "complete",
+                        "display_list": [{"download_video": [{"url": "https://cdn.example/watermarked.mp4"}]}],
+                    }}]},
+                }],
+                "error_code": 0,
+            }
+        }
+
+        parsed = parse_qianwen_generation_result(payload)
+
+        self.assertEqual(parsed["state"], "generating")
+        self.assertEqual(parsed["video_url"], "")
+        self.assertTrue(parsed["watermarked_download_available"])
 
     def test_processing_result_stays_generating_without_download_video(self) -> None:
         payload = {
@@ -161,6 +182,7 @@ class QianwenResultTests(unittest.TestCase):
         root = Path(__file__).parents[1] / "app"
         worker_source = (root / "worker.py").read_text(encoding="utf-8")
         qianwen_source = (root / "qianwen_automation.py").read_text(encoding="utf-8")
+        query_source = (root / "query.py").read_text(encoding="utf-8")
         self.assertIn("qianwen_submitted_rows", worker_source)
         self.assertIn('platform="qianwen"', worker_source)
         self.assertIn("QIANWEN_RESULT_WATCH_DEADLINE_MINUTES", worker_source)
@@ -172,6 +194,8 @@ class QianwenResultTests(unittest.TestCase):
         self.assertLess(browser_flow.index("await self._ensure_video_duration(page)"), browser_flow.index("await self._upload_reference_images(page, reference_paths)"))
         self.assertIn("reference image preview lost before submit", browser_flow)
         self.assertIn('await editor.press("Enter")', qianwen_source)
+        self.assertIn('"qianwen_result_source": "display_video_unwatermarked"', query_source)
+        self.assertIn('"qianwen_watermark_status": "original"', query_source)
 
 
 if __name__ == "__main__":

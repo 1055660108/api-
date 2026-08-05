@@ -101,6 +101,14 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(runner._submit_via_video_creation_page_ui.await_count, 2)
         runner._refresh_cookies.assert_awaited_once_with(page.context)
 
+    def test_doubao_solver_supports_current_rmc_captcha_iframe(self) -> None:
+        with patch("app.doubao_automation.load_settings", return_value=SimpleNamespace()):
+            runner = DoubaoVideoAutomation("task", "prompt", "16:9", "Seedance 2.0 Fast")
+
+        selector = runner.verification_solver.settings.iframe_selector
+        self.assertIn("rmc.bytedance.com/verifycenter/captcha", selector)
+        self.assertIn("bdcaptcha.html", selector)
+
     def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={

@@ -1779,7 +1779,14 @@ class DoubaoVideoAutomation:
         self.image_preparation_done = image_preparation_done
         self.settings = load_settings()
         self.verification_solver = SliderChallengeSolver(
-            SliderSolverSettings(max_attempts=3, verify_timeout_seconds=8.0)
+            SliderSolverSettings(
+                iframe_selector=(
+                    "iframe[src*='rmc.bytedance.com/verifycenter/captcha'],"
+                    "iframe[src*='bdcaptcha.html']"
+                ),
+                max_attempts=3,
+                verify_timeout_seconds=8.0,
+            )
         )
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"

@@ -23,6 +23,11 @@ VIDEO_URL_RE = re.compile(r'https?://[^"\\\s]+\.mp4(?:\?[^"\\\s]*)?', re.IGNOREC
 MEDIA_URL_RE = re.compile(r'https?://[^"\\\s]+(?:\.mp4|mime_type=video|video_mp4|\.m3u8)(?:\?[^"\\\s]*)?', re.IGNORECASE)
 TASK_KEY_RE = re.compile(r"(?:task|job|request|aigc|generation|message)[_-]?id", re.IGNORECASE)
 QIANWEN_QUERY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+QIANWEN_REFERENCE_REQUIRED_MODELS = {"万相 2.7", "万相 2.6", "HappyHorse 1.0"}
+
+
+def qianwen_model_requires_reference(model: str) -> bool:
+    return str(model or "").strip() in QIANWEN_REFERENCE_REQUIRED_MODELS
 
 
 def _try_parse_json(value: Any) -> Any:
@@ -695,9 +700,10 @@ class QianwenVideoAutomation:
                 editor = page.locator('[contenteditable="true"][role="textbox"]:visible').first
                 await editor.wait_for(state="visible", timeout=15000)
                 reference_paths = task_image_paths(self.task_id)
-                if self.task_type == "video" and self.model == "HappyHorse 1.0" and not reference_paths:
-                    await self._save_diagnostics(page, "HappyHorse requires a reference image")
-                    return self._failure("qianwen HappyHorse requires a reference image", account_fault=False, retryable=False)
+                if self.task_type == "video" and qianwen_model_requires_reference(self.model) and not reference_paths:
+                    reason = f"qianwen {self.model} requires a reference image"
+                    await self._save_diagnostics(page, reason)
+                    return self._failure(reason, account_fault=False, retryable=False)
                 if not await self._ensure_video_model(page):
                     await self._save_diagnostics(page, "model unavailable")
                     return self._failure("qianwen model unavailable", account_fault=False, retryable=False)

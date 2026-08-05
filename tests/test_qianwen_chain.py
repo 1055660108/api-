@@ -13,10 +13,16 @@ from app.qianwen_automation import (
     parse_qianwen_generation_result,
     parse_qianwen_submission,
     qianwen_cookie_value,
+    qianwen_model_requires_reference,
 )
 
 
 class QianwenSubmissionTests(unittest.TestCase):
+    def test_current_qianwen_video_models_require_a_reference(self) -> None:
+        for model in ("万相 2.7", "万相 2.6", "HappyHorse 1.0"):
+            self.assertTrue(qianwen_model_requires_reference(model))
+        self.assertFalse(qianwen_model_requires_reference("AI生图"))
+
     def test_parses_real_video_submission_fields(self) -> None:
         payload = {
             "session_id": "session-1",

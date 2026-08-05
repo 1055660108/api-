@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_payload_has_submission_marker, doubao_reference_upload_progress_visible, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
+from app.slider_solver import SliderSolveResult
 
 
 class DoubaoAutomationTests(unittest.TestCase):
@@ -79,6 +80,47 @@ class DoubaoAutomationTests(unittest.TestCase):
 
         session.release_browser_proxy.assert_awaited_once()
         session.mark_browser_proxy_unavailable.assert_called_once_with(reason="doubao_browser_failure")
+
+    def test_video_creation_retries_same_context_after_verification_is_solved(self) -> None:
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner._submit_via_video_creation_page_ui = AsyncMock(side_effect=[
+            {"ok": True, "accepted": False, "slider_verification": True},
+            {"ok": True, "accepted": True, "conversation_id": "12345678901234567"},
+        ])
+        runner._resolve_submission_verification = AsyncMock(
+            return_value=SliderSolveResult(status="success", attempts=1)
+        )
+        runner._refresh_cookies = AsyncMock()
+        page = SimpleNamespace(context=SimpleNamespace())
+
+        result = asyncio.run(runner._submit_via_video_creation_page(page, image_count=0))
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["verification_recovery_attempted"])
+        self.assertEqual(result["verification_solver_status"], "success")
+        self.assertEqual(runner._submit_via_video_creation_page_ui.await_count, 2)
+        runner._refresh_cookies.assert_awaited_once_with(page.context)
+
+    def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner._submit_via_video_creation_page_ui = AsyncMock(return_value={
+            "ok": True,
+            "accepted": False,
+            "slider_verification": True,
+        })
+        runner._resolve_submission_verification = AsyncMock(
+            return_value=SliderSolveResult(status="not_present", attempts=0)
+        )
+        runner._refresh_cookies = AsyncMock()
+
+        result = asyncio.run(
+            runner._submit_via_video_creation_page(SimpleNamespace(), image_count=0)
+        )
+
+        self.assertTrue(result["slider_verification"])
+        self.assertEqual(result["verification_solver_status"], "not_present")
+        runner._submit_via_video_creation_page_ui.assert_awaited_once()
+        runner._refresh_cookies.assert_not_awaited()
 
     def test_proxy_refresh_defers_without_consuming_normal_retry(self) -> None:
         class ProxyRefreshError(RuntimeError):

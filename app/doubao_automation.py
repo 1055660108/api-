@@ -21,6 +21,7 @@ from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BR
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
 from .reference_images import prepare_task_reference_images
+from .slider_solver import SliderChallengeSolver, SliderSolveResult, SliderSolverSettings, find_slider_page
 from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists, update_meta
 from .profile_lock import account_profile_lock
 
@@ -59,6 +60,7 @@ DOUBAO_WEB_DIRECT_RESULT_SOURCES = {
 DOUBAO_PREPARE_UPLOAD_BODY = {"tenant_id": "5", "scene_id": "5", "resource_type": 2}
 DOUBAO_SUBMISSION_MARKER = "视频生成已提交"
 DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS = 75
+DOUBAO_VERIFICATION_RENDER_WAIT_SECONDS = 15
 DOUBAO_VIDEO_CACHE_MAX_BYTES = 512 * 1024 * 1024
 DOUBAO_REFERENCE_UPLOAD_STABLE_CHECKS = 2
 DOUBAO_CONVERSATION_ID_RE = re.compile(
@@ -1776,6 +1778,9 @@ class DoubaoVideoAutomation:
         self.image_upload_slot = image_upload_slot
         self.image_preparation_done = image_preparation_done
         self.settings = load_settings()
+        self.verification_solver = SliderChallengeSolver(
+            SliderSolverSettings(max_attempts=3, verify_timeout_seconds=8.0)
+        )
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
 
@@ -2926,8 +2931,66 @@ class DoubaoVideoAutomation:
                 pass
             await cancel_tracked_tasks(capture_tasks)
 
+    async def _resolve_submission_verification(self, page: Page) -> SliderSolveResult:
+        self._set_phase("waiting_doubao_verification", "正在等待豆包人机验证")
+        deadline = asyncio.get_running_loop().time() + DOUBAO_VERIFICATION_RENDER_WAIT_SECONDS
+        target_page: Page | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            target_page = await find_slider_page(
+                [page.context],
+                self.verification_solver.settings.iframe_selector,
+            )
+            if target_page is not None:
+                break
+            await page.wait_for_timeout(250)
+
+        if target_page is None:
+            iframe_sources: list[str] = []
+            for candidate_page in page.context.pages:
+                try:
+                    frames = candidate_page.locator("iframe")
+                    for index in range(min(await frames.count(), 20)):
+                        source = str(await frames.nth(index).get_attribute("src") or "").strip()
+                        if source:
+                            iframe_sources.append(source[:300])
+                except Exception:
+                    continue
+            if task_exists(self.task_id):
+                save_result(self.task_id, extra={
+                    "doubao_verification_solver_status": "not_present",
+                    "doubao_verification_solver_attempts": 0,
+                    "doubao_verification_iframe_sources": iframe_sources[:10],
+                })
+            return SliderSolveResult(status="not_present", attempts=0)
+
+        self._set_phase("resolving_doubao_verification", "正在完成豆包人机验证")
+        result = await self.verification_solver.solve(target_page)
+        if task_exists(self.task_id):
+            save_result(self.task_id, extra={
+                "doubao_verification_solver_status": result.status,
+                "doubao_verification_solver_attempts": result.attempts,
+                "doubao_verification_solver_confidence": (
+                    round(result.confidence, 4) if result.confidence is not None else None
+                ),
+                "doubao_verification_solver_error": str(result.error or "")[:300],
+            })
+        if result.status == "success":
+            await page.wait_for_timeout(1200)
+        return result
+
     async def _submit_via_video_creation_page(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
         result = await self._submit_via_video_creation_page_ui(page, image_count=image_count)
+        if result.get("slider_verification"):
+            verification_result = await self._resolve_submission_verification(page)
+            result["verification_solver_status"] = verification_result.status
+            result["verification_solver_attempts"] = verification_result.attempts
+            if verification_result.status == "success":
+                await self._refresh_cookies(page.context)
+                retried = await self._submit_via_video_creation_page_ui(page, image_count=image_count)
+                retried["verification_recovery_attempted"] = True
+                retried["verification_solver_status"] = verification_result.status
+                retried["verification_solver_attempts"] = verification_result.attempts
+                return retried
         ui_error = str(result.get("video_creation_ui_error") or "")
         settings_ui_error = any(marker in ui_error for marker in (
             "video ratio and duration selector unavailable",

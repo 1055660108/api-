@@ -31,6 +31,21 @@ def qianwen_model_requires_reference(model: str) -> bool:
     return str(model or "").strip() in QIANWEN_REFERENCE_REQUIRED_MODELS
 
 
+def is_qianwen_account_quota_insufficient(text: str) -> bool:
+    value = re.sub(r"\s+", "", str(text or "")).lower()
+    return any(
+        marker in value
+        for marker in (
+            "额度不足",
+            "当前剩余",
+            "不足以完成本次视频生成",
+            "购买获得更多额度",
+            "creditnotenough",
+            "insufficientcredit",
+        )
+    )
+
+
 def is_qianwen_chat_api_url(url: str) -> bool:
     value = str(url or "").strip().lower()
     return value.startswith((QIANWEN_CHAT_API_URL.lower(), QIANWEN_CHAT_SNAP_API_URL.lower()))
@@ -597,8 +612,20 @@ class QianwenVideoAutomation:
         diagnostic = {"reason": reason, "remote_task_ids": self.remote_task_ids, "remote_error": self.remote_error, "events": self.network_events[-20:]}
         (task_dir / "qianwen_network.json").write_text(json.dumps(diagnostic, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _failure(self, reason: str, *, account_fault: bool = False, retryable: bool = True) -> dict[str, Any]:
-        return {"success": False, "retryable": retryable, "reason": reason, "account_fault": account_fault}
+    async def _wait_for_submission_or_quota(self, page, timeout_seconds: int = 25) -> bool:
+        quota_title = page.get_by_text(re.compile(r"^额度不足$"))
+        deadline = time.monotonic() + max(1, int(timeout_seconds))
+        while time.monotonic() < deadline:
+            if self.submission_event.is_set():
+                return False
+            for index in range(await quota_title.count() - 1, -1, -1):
+                if await quota_title.nth(index).is_visible():
+                    return True
+            await page.wait_for_timeout(500)
+        return False
+
+    def _failure(self, reason: str, *, account_fault: bool = False, retryable: bool = True, **extra: Any) -> dict[str, Any]:
+        return {"success": False, "retryable": retryable, "reason": reason, "account_fault": account_fault, **extra}
 
     async def run(self) -> dict[str, Any]:
         try:
@@ -758,11 +785,20 @@ class QianwenVideoAutomation:
                     await asyncio.wait_for(self.submission_request_event.wait(), timeout=3)
                 except asyncio.TimeoutError:
                     await editor.press("Enter")
-                try:
-                    await asyncio.wait_for(self.submission_event.wait(), timeout=25)
-                except asyncio.TimeoutError:
-                    pass
+                quota_dialog_visible = await self._wait_for_submission_or_quota(page, 25)
                 await page.wait_for_timeout(2000)
+                try:
+                    page_text = await page.locator("body").inner_text(timeout=5000)
+                except Exception:
+                    page_text = ""
+                if quota_dialog_visible or is_qianwen_account_quota_insufficient(page_text):
+                    await self._save_diagnostics(page, "account quota insufficient")
+                    return self._failure(
+                        "千问账号额度不足",
+                        account_fault=True,
+                        account_quota_insufficient=True,
+                        switch_account=True,
+                    )
                 if self.remote_error:
                     reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "model_unavailable": "qianwen model unavailable"}
                     reason = reasons[self.remote_error]

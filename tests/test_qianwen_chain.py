@@ -7,11 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+from app.qianwen_ai_studio import parse_qianwen_ai_studio_result, qianwen_ai_studio_submission_payload
 from app.qianwen_automation import (
     QIANWEN_CHAT_API_URL,
     QIANWEN_CHAT_SNAP_API_URL,
     QianwenVideoAutomation,
     is_qianwen_chat_api_url,
+    is_qianwen_account_quota_insufficient,
     parse_qianwen_generation_result,
     parse_qianwen_submission,
     qianwen_cookie_value,
@@ -68,6 +70,25 @@ class QianwenSubmissionTests(unittest.TestCase):
     def test_cookie_value_accepts_escaped_cookie_name(self) -> None:
         cookie = "XSRF-TOKEN=csrf; b-user-id=user-1; *samesite\\_flag*=true"
         self.assertEqual(qianwen_cookie_value(cookie, "b-user-id"), "user-1")
+
+    def test_quota_insufficient_dialog_is_detected(self) -> None:
+        self.assertTrue(is_qianwen_account_quota_insufficient("额度不足 当前剩余 1 额度，不足以完成本次视频生成"))
+        self.assertFalse(is_qianwen_account_quota_insufficient("视频生成已提交"))
+
+    def test_ai_studio_text_video_payloads_use_native_model_keys(self) -> None:
+        cases = {
+            "HappyHorse 1.1": ("happyhorse11", "hh11_t2v"),
+            "万相 2.7": ("wan27", "wan27_t2v"),
+            "万相 2.6": ("wan26", "wan26_t2v"),
+        }
+        for model, (root_model, scene) in cases.items():
+            payload, result_scene = qianwen_ai_studio_submission_payload("测试提示词", model, "16:9", 10, req_id="request", chid="channel")
+            self.assertEqual(payload["model"], root_model)
+            self.assertEqual(payload["rootModel"], root_model)
+            self.assertEqual(payload["scene"], "gen_video")
+            self.assertEqual(payload["genMode"], "vid_gen")
+            self.assertEqual(payload["params"], {"size": "16:9", "resolution": "720P", "duration": 10, "attachmentType": 0, "attachments": []})
+            self.assertEqual((payload["req_id"], payload["chid"], result_scene), ("request", "channel", scene))
 
     def test_submission_request_is_captured_before_response_arrives(self) -> None:
         runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
@@ -138,6 +159,27 @@ class QianwenSubmissionTests(unittest.TestCase):
 
 
 class QianwenResultTests(unittest.TestCase):
+    def test_ai_studio_result_prefers_original_oss_url(self) -> None:
+        payload = {
+            "code": 0,
+            "data": {"list": [{"content": {"status": 1, "task_id": "remote", "extra": {
+                "model_name": "HappyHorse 1.1",
+                "params": {"duration": 10, "size": "16:9"},
+                "result_videos": [{
+                    "url": "http://oss.example/original.mp4",
+                    "cdn_url": "https://cdn.example/video.mp4",
+                    "download_url": "https://cdn.example/download.mp4",
+                }],
+            }}}]},
+        }
+
+        parsed = parse_qianwen_ai_studio_result(payload)
+
+        self.assertEqual(parsed["state"], "succeeded")
+        self.assertEqual(parsed["video_url"], "https://oss.example/original.mp4")
+        self.assertEqual(parsed["video_source"], "url")
+        self.assertEqual((parsed["duration"], parsed["ratio"]), (10, "16:9"))
+
     def test_prefers_unwatermarked_display_video_over_branded_download(self) -> None:
         payload = {
             "data": {
@@ -235,6 +277,8 @@ class QianwenResultTests(unittest.TestCase):
         self.assertIn('await editor.press("Enter")', qianwen_source)
         self.assertIn('"qianwen_result_source": "display_video_unwatermarked"', query_source)
         self.assertIn('"qianwen_watermark_status": "original"', query_source)
+        self.assertIn("QianwenAIStudioAutomation", worker_source)
+        self.assertIn('"qianwen_result_chain": "ai_studio"', (root / "qianwen_ai_studio.py").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

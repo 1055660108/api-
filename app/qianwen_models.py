@@ -9,6 +9,7 @@ from .accounts import claim_account_for_maintenance, clear_account_current_task,
 from .browser_runtime import resolve_browser_executable
 from .config import QIANWEN_PROFILES_DIR, load_settings
 from .profile_lock import account_profile_lock
+from .qianwen_ai_studio import QIANWEN_AI_STUDIO_MODELS
 
 
 QIANWEN_URL = "https://www.qianwen.com/"
@@ -55,6 +56,9 @@ async def fetch_qianwen_video_models() -> list[str]:
                     value = line.strip()
                     if MODEL_RE.fullmatch(value) and value not in models:
                         models.append(value)
+                for model in QIANWEN_AI_STUDIO_MODELS:
+                    if model not in models:
+                        models.append(model)
                 update_account_cookies(str(account["id"]), await context.cookies([QIANWEN_URL]))
                 return models
             finally:

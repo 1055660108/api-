@@ -10,6 +10,7 @@ MODEL_COST_UNITS = {
     "万相 2.7": 8,
     "万相 2.6": 5,
     "happyhorse 1.0": 8,
+    "happyhorse 1.1": 8,
 }
 
 

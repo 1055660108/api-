@@ -46,7 +46,7 @@ _CONFIG_LOCK = threading.Lock()
 DEFAULT_MODEL_COSTS = {
     "dola": {"Seedance 2.0": 1},
     "doubao": {"Seedance 2.0 Mini": 1, "Seedance 2.0 Fast": 1},
-    "qianwen": {"万相 2.7": 0.8, "万相 2.6": 0.5, "HappyHorse 1.0": 0.8},
+    "qianwen": {"万相 2.7": 0.8, "万相 2.6": 0.5, "HappyHorse 1.1": 0.8, "HappyHorse 1.0": 0.8},
 }
 DEFAULT_MODEL_DURATIONS = {
     platform: {model: list(PLATFORM_VIDEO_DURATIONS[platform]) for model in models}
@@ -76,6 +76,12 @@ DEFAULT_ACCOUNT_QUOTA_COSTS = {
         for model, durations in models.items()
     }
     for platform, models in DEFAULT_MODEL_DURATIONS.items()
+}
+DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT = 60
+DEFAULT_QIANWEN_AI_STUDIO_QUOTA_COSTS = {
+    "HappyHorse 1.1": {"5": 30, "10": 60, "15": 90},
+    "万相 2.7": {"5": 15, "10": 25, "15": 40},
+    "万相 2.6": {"5": 15, "10": 25, "15": 40},
 }
 
 
@@ -140,6 +146,8 @@ def default_config() -> dict[str, Any]:
         "model_duration_quota_costs": DEFAULT_MODEL_DURATION_QUOTA_COSTS,
         "account_default_quotas": DEFAULT_ACCOUNT_QUOTA_LIMITS,
         "account_quota_costs": DEFAULT_ACCOUNT_QUOTA_COSTS,
+        "qianwen_ai_studio_default_quota": DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT,
+        "qianwen_ai_studio_quota_costs": DEFAULT_QIANWEN_AI_STUDIO_QUOTA_COSTS,
         "account_quota_policy_version": 0,
         "account_selection_mode": "api_first",
         "proxy_api_url": "",
@@ -388,6 +396,8 @@ class Settings:
     model_duration_quota_costs: dict[str, dict[str, dict[int, int | float]]]
     account_default_quotas: dict[str, int]
     account_quota_costs: dict[str, dict[str, dict[int, int]]]
+    qianwen_ai_studio_default_quota: int
+    qianwen_ai_studio_quota_costs: dict[str, dict[int, int]]
     account_selection_mode: str
     proxy_api_url: str
     proxy_api_scheme: str
@@ -468,6 +478,23 @@ def load_settings() -> Settings:
     raw_duration_quota_costs = data.get("model_duration_quota_costs") if isinstance(data.get("model_duration_quota_costs"), dict) else {}
     raw_account_default_quotas = data.get("account_default_quotas") if isinstance(data.get("account_default_quotas"), dict) else {}
     raw_account_quota_costs = data.get("account_quota_costs") if isinstance(data.get("account_quota_costs"), dict) else {}
+    try:
+        qianwen_ai_studio_default_quota = int(data.get("qianwen_ai_studio_default_quota", DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT))
+    except (TypeError, ValueError):
+        qianwen_ai_studio_default_quota = DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT
+    qianwen_ai_studio_default_quota = max(0, min(1_000_000, qianwen_ai_studio_default_quota))
+    raw_studio_costs = data.get("qianwen_ai_studio_quota_costs") if isinstance(data.get("qianwen_ai_studio_quota_costs"), dict) else {}
+    qianwen_ai_studio_quota_costs: dict[str, dict[int, int]] = {}
+    for model, defaults in DEFAULT_QIANWEN_AI_STUDIO_QUOTA_COSTS.items():
+        configured = raw_studio_costs.get(model, {}) if isinstance(raw_studio_costs.get(model), dict) else {}
+        qianwen_ai_studio_quota_costs[model] = {}
+        for duration in PLATFORM_VIDEO_DURATIONS["qianwen"]:
+            fallback = int(defaults.get(str(duration), 1))
+            try:
+                cost = int(configured.get(str(duration), configured.get(duration, fallback)))
+            except (TypeError, ValueError):
+                cost = fallback
+            qianwen_ai_studio_quota_costs[model][duration] = max(1, min(1000, cost))
     account_selection_mode = str(data.get("account_selection_mode") or "api_first").strip().lower()
     if account_selection_mode not in {"api_first", "admin_first", "random"}:
         account_selection_mode = "api_first"
@@ -584,6 +611,8 @@ def load_settings() -> Settings:
         model_duration_quota_costs=model_duration_quota_costs,
         account_default_quotas=account_default_quotas,
         account_quota_costs=account_quota_costs,
+        qianwen_ai_studio_default_quota=qianwen_ai_studio_default_quota,
+        qianwen_ai_studio_quota_costs=qianwen_ai_studio_quota_costs,
         account_selection_mode=account_selection_mode,
         proxy_api_url=str(data.get("proxy_api_url") or "").strip(),
         proxy_api_scheme=proxy_api_scheme,
@@ -634,6 +663,20 @@ def account_quota_cost_units(
     model_costs = current.account_quota_costs.get(target_platform, {}).get(str(model or ""), {})
     default_cost = 2 if target_platform == "dola" and int(duration or 0) == 15 else 1
     return max(1, min(1000, int(model_costs.get(int(duration or 0), default_cost))))
+
+
+def qianwen_ai_studio_quota_cost_units(
+    model: str,
+    duration: int,
+    settings: Settings | None = None,
+) -> int:
+    current = settings or load_settings()
+    normalized_model = str(model or "").strip().casefold()
+    for configured_model, duration_costs in current.qianwen_ai_studio_quota_costs.items():
+        if configured_model.casefold() != normalized_model:
+            continue
+        return max(1, min(1000, int(duration_costs.get(int(duration or 0), 1))))
+    return 1
 
 
 def normalize_proxy_server(server: str, default_scheme: str = "http") -> str:

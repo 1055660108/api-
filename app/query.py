@@ -991,6 +991,77 @@ async def _query_task_once(
         if not background_poll:
             return {"code": "1", "text": "千问正在生成视频，请稍候...", "url": ""}
         cookie = str(result.get("cookie_string") or "")
+        if str(result.get("qianwen_result_chain") or "") == "ai_studio":
+            record_id = str(result.get("qianwen_ai_studio_record_id") or "")
+            scene = str(result.get("qianwen_ai_studio_scene") or "")
+            if not cookie or not record_id or not scene:
+                save_result(
+                    task_id,
+                    extra={
+                        "last_query_error": "qianwen AI Studio result query identifiers are missing",
+                        "last_query_error_category": "missing_qianwen_ai_studio_query_identifiers",
+                    },
+                )
+                return {"code": "1", "text": "千问 AI Studio 正在恢复结果查询，请稍候...", "url": "", "retry_after": 30}
+            try:
+                from .qianwen_ai_studio import fetch_qianwen_ai_studio_result
+                from .qianwen_automation import qianwen_cookie_value
+
+                query_result = await fetch_qianwen_ai_studio_result(
+                    cookie,
+                    record_id,
+                    scene,
+                    xsrf_token=qianwen_cookie_value(cookie, "XSRF-TOKEN"),
+                )
+            except Exception as exc:
+                save_result(task_id, extra=query_error_diagnostic(exc))
+                return {"code": "1", "text": "千问 AI Studio 正在生成视频，请稍候...", "url": "", "retry_after": 30}
+            state = str(query_result.get("state") or "generating")
+            text = str(query_result.get("text") or "")[:1000]
+            save_result(
+                task_id,
+                extra={
+                    "qianwen_result_state": state,
+                    "qianwen_ai_studio_task_id": str(query_result.get("task_id") or ""),
+                    "qianwen_ai_studio_status": query_result.get("status"),
+                    "qianwen_ai_studio_actual_model": str(query_result.get("model") or ""),
+                    "qianwen_ai_studio_actual_duration": int(query_result.get("duration") or 0),
+                    "qianwen_ai_studio_actual_ratio": str(query_result.get("ratio") or ""),
+                    "qianwen_result_text": sanitize_query_diagnostic(text),
+                    "last_query_error": "",
+                    "last_query_error_category": "",
+                },
+            )
+            account_id = str(result.get("account_id") or "")
+            charge_id = str(result.get("account_quota_charge_id") or "")
+            if state == "succeeded":
+                video_url = str(query_result.get("video_url") or "").strip()
+                if not video_url:
+                    return {"code": "1", "text": "千问视频已生成，正在获取无水印地址...", "url": "", "retry_after": 30}
+                if account_id:
+                    settle_account_quota(account_id, charge_id)
+                    clear_account_current_task(account_id, task_id)
+                save_result(
+                    task_id,
+                    extra={
+                        "decoded_main_url": video_url,
+                        "qianwen_result_source": "ai_studio_original_oss",
+                        "qianwen_video_source_path": str(query_result.get("video_source") or ""),
+                        "qianwen_watermark_status": "original",
+                    },
+                    remove={"cookie_string", "cookies"},
+                )
+                mark_late_result_success(task_id) if late_watch_active else mark_success(task_id)
+                return {"code": "2", "text": SUCCESS_TEXT, "url": video_url}
+            if state == "failed":
+                reason = text or "千问 AI Studio 视频生成失败"
+                if account_id:
+                    clear_account_current_task(account_id, task_id)
+                    refund_account_quota_once(task_id, account_id, charge_id)
+                mark_failed(task_id, reason[:500])
+                refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+                return {"code": "0", "text": reason[:500], "url": ""}
+            return {"code": "1", "text": "千问 AI Studio 正在生成视频，请稍候...", "url": ""}
         session_id = str(result.get("qianwen_session_id") or "")
         req_id = str(result.get("qianwen_req_id") or "")
         if not cookie or not session_id or not req_id:

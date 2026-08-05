@@ -918,6 +918,32 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(synced, {"dola": 1, "doubao": 1, "qianwen": 1})
         self.assertEqual({item["platform"]: item["quota_limit"] for item in accounts.list_accounts()}, {"dola": 2, "doubao": 3, "qianwen": 4})
 
+    def test_qianwen_ai_studio_quota_is_independent_and_locks_the_cookie(self) -> None:
+        created = accounts.add_account("千问", "session=qianwen-studio", quota_limit=5, platform="qianwen")
+        settings = config.load_settings()
+        self.assertEqual(config.qianwen_ai_studio_quota_cost_units("HappyHorse 1.1", 10, settings), 60)
+        self.assertEqual(config.qianwen_ai_studio_quota_cost_units("万相 2.7", 10, settings), 25)
+        self.assertEqual(config.qianwen_ai_studio_quota_cost_units("万相 2.7", 15, settings), 40)
+        self.assertEqual(config.qianwen_ai_studio_quota_cost_units("万相 2.6", 10, settings), 25)
+
+        claimed = accounts.claim_account_for_worker(
+            "studio-worker",
+            "studio-task",
+            platform="qianwen",
+            quota_cost=60,
+            quota_bucket="qianwen_ai_studio",
+        )
+
+        self.assertIsNotNone(claimed)
+        self.assertTrue(str(claimed["quota_charge_id"]).startswith("studio:"))
+        current = accounts.list_accounts(platform="qianwen")[0]
+        self.assertEqual((current["quota_used"], current["qianwen_ai_studio_quota_used"]), (0, 60))
+        self.assertIsNone(accounts.claim_account_for_worker("normal-worker", "normal-task", platform="qianwen"))
+        accounts.clear_account_current_task(created["id"], "studio-task")
+        self.assertTrue(accounts.refund_account_quota(created["id"], claimed["quota_charge_id"]))
+        current = accounts.list_accounts(platform="qianwen")[0]
+        self.assertEqual((current["quota_used"], current["qianwen_ai_studio_quota_used"]), (0, 0))
+
     def test_bulk_account_import_is_single_write_and_deduplicated(self) -> None:
         raw = "\n".join([f"账号 {index}----session=value-{index}" for index in range(500)] + ["重复账号----session=value-10"])
         with patch.object(accounts, "_write_data", wraps=accounts._write_data) as write_data:

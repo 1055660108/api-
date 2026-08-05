@@ -2249,6 +2249,11 @@ class WebAPIContractTests(unittest.TestCase):
         current = self.client.get("/config/account-quotas").json()
         self.assertEqual(current["default_quotas"], {"dola": 2, "doubao": 2, "qianwen": 5})
         self.assertEqual(current["quota_costs"]["dola"]["Seedance 2.0"], {"5": 1, "10": 1, "15": 2})
+        self.assertEqual(current["qianwen_ai_studio"]["default_quota"], 60)
+        self.assertEqual(current["qianwen_ai_studio"]["quota_costs"]["HappyHorse 1.1"]["10"], 60)
+        self.assertEqual(current["qianwen_ai_studio"]["quota_costs"]["万相 2.7"]["10"], 25)
+        self.assertEqual(current["qianwen_ai_studio"]["quota_costs"]["万相 2.7"]["15"], 40)
+        self.assertEqual(current["qianwen_ai_studio"]["quota_costs"]["万相 2.6"]["10"], 25)
         current["default_quotas"]["dola"] = 3
         current["quota_costs"]["dola"]["Seedance 2.0"]["15"] = 3
         updated = self.client.post(
@@ -2296,7 +2301,10 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(cookie_export.headers["cache-control"], "no-store")
         accounts_payload = self.client.get("/accounts").json()
         self.assertEqual(set(accounts_payload), {"accounts", "quota_summary", "next_quota_reset_at"})
-        self.assertEqual(set(accounts_payload["quota_summary"]), {"total_limit", "total_used", "total_remaining", "unlimited_count"})
+        self.assertEqual(set(accounts_payload["quota_summary"]), {
+            "total_limit", "total_used", "total_remaining", "unlimited_count",
+            "qianwen_ai_studio_total_limit", "qianwen_ai_studio_total_used", "qianwen_ai_studio_total_remaining",
+        })
         users_payload = self.client.get("/users?page=1&page_size=20").json()
         self.assertEqual(set(users_payload), {"users", "online", "total", "page", "page_size", "total_pages"})
         user = users_payload["users"][0]

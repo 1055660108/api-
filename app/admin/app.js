@@ -4048,11 +4048,15 @@ function renderAccountQuotaSummary() {
   const used = Number(summary.total_used || 0);
   const remaining = Number(summary.total_remaining || 0);
   const unlimited = Number(summary.unlimited_count || 0);
+  const studioTotal = Number(summary.qianwen_ai_studio_total_limit || 0);
+  const studioUsed = Number(summary.qianwen_ai_studio_total_used || 0);
+  const studioRemaining = Number(summary.qianwen_ai_studio_total_remaining || 0);
   els.accountQuotaSummary.innerHTML = `
     <span>总额度 <strong>${escapeHtml(total || "不限")}</strong></span>
     <span>已用 <strong>${escapeHtml(used)}</strong></span>
     <span>剩余 <strong>${escapeHtml(total ? remaining : "不限")}</strong></span>
     ${unlimited ? `<span>不限账号 <strong>${escapeHtml(unlimited)}</strong></span>` : ""}
+    ${studioTotal ? `<span>千问 AI Studio <strong>${escapeHtml(studioUsed)} / ${escapeHtml(studioTotal)}</strong></span><span>Studio 剩余 <strong>${escapeHtml(studioRemaining)}</strong></span>` : ""}
   `;
 }
 
@@ -4314,7 +4318,7 @@ function renderAccountQuotaConfig() {
   const defaults = state.accountQuotaConfig.default_quotas || {};
   const costs = state.accountQuotaConfig.quota_costs || {};
   const platforms = Array.isArray(state.accountQuotaConfig.platforms) ? state.accountQuotaConfig.platforms : [];
-  els.accountQuotaConfigList.innerHTML = platforms.map((platform) => `
+  const platformHtml = platforms.map((platform) => `
     <section class="account-quota-platform" data-account-quota-platform="${escapeHtml(platform.id)}">
       <div class="account-quota-platform-head">
         <div><strong>${escapeHtml(platform.name || platform.id)}</strong><span>${escapeHtml((platform.models || []).length)} 个模型</span></div>
@@ -4332,6 +4336,27 @@ function renderAccountQuotaConfig() {
       </div>
     </section>
   `).join("");
+  const studio = state.accountQuotaConfig.qianwen_ai_studio || {};
+  const studioCosts = studio.quota_costs || {};
+  const studioHtml = `
+    <section class="account-quota-platform account-quota-studio" data-qianwen-ai-studio-quota>
+      <div class="account-quota-platform-head">
+        <div><strong>千问 AI Studio</strong><span>文生视频独立额度</span></div>
+        <label class="field"><span>账号每日默认额度</span><input type="number" min="0" max="1000000" step="1" value="${escapeHtml(studio.default_quota ?? 60)}" data-studio-default-quota /></label>
+      </div>
+      <div class="account-quota-models">
+        ${(studio.models || []).map((model) => `
+          <article class="account-quota-model" data-studio-quota-model="${escapeHtml(model.name)}">
+            <strong>${escapeHtml(model.name)}</strong>
+            <div class="account-quota-duration-grid">
+              ${(model.durations || []).map((duration) => `<label><span>${escapeHtml(duration)} 秒消耗</span><input type="number" min="1" max="1000" step="1" value="${escapeHtml(studioCosts?.[model.name]?.[String(duration)] ?? 1)}" data-studio-quota-cost data-duration="${escapeHtml(duration)}" /></label>`).join("")}
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+  els.accountQuotaConfigList.innerHTML = platformHtml + studioHtml;
 }
 
 async function openAccountQuotaSettings() {
@@ -4367,14 +4392,27 @@ async function saveAccountQuotaSettings() {
       }
     }
   }
+  const studioSection = els.accountQuotaConfigList.querySelector("[data-qianwen-ai-studio-quota]");
+  const studioDefault = Number.parseInt(studioSection?.querySelector("[data-studio-default-quota]")?.value || "", 10);
+  if (!Number.isInteger(studioDefault) || studioDefault < 0 || studioDefault > 1000000) return toast("千问 AI Studio 默认额度需为 0 - 1000000", "error");
+  const studioQuotaCosts = {};
+  for (const modelRow of studioSection?.querySelectorAll("[data-studio-quota-model]") || []) {
+    const model = modelRow.dataset.studioQuotaModel;
+    studioQuotaCosts[model] = {};
+    for (const input of modelRow.querySelectorAll("[data-studio-quota-cost]")) {
+      const cost = Number.parseInt(input.value || "", 10);
+      if (!Number.isInteger(cost) || cost < 1 || cost > 1000) return toast(`千问 AI Studio ${model} ${input.dataset.duration} 秒消耗额度需为 1 - 1000`, "error");
+      studioQuotaCosts[model][input.dataset.duration] = cost;
+    }
+  }
   setBusy(els.saveAccountQuotaSettings, true, "保存中");
   try {
-    const data = await apiFetch("/config/account-quotas", { method: "POST", body: { default_quotas: defaultQuotas, quota_costs: quotaCosts } });
+    const data = await apiFetch("/config/account-quotas", { method: "POST", body: { default_quotas: defaultQuotas, quota_costs: quotaCosts, qianwen_ai_studio: { default_quota: studioDefault, quota_costs: studioQuotaCosts } } });
     state.accountQuotaConfig = data;
     if (els.accountQuotaLimit) els.accountQuotaLimit.value = String(accountDefaultQuota(els.accountPlatform?.value || "dola"));
     els.accountQuotaSettingsModal.classList.add("hidden");
     els.accountQuotaSettingsModal.setAttribute("aria-hidden", "true");
-    const synced = Object.values(data.synced_accounts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+    const synced = Object.values(data.synced_accounts || {}).reduce((sum, value) => sum + Number(value || 0), 0) + Number(data.synced_qianwen_ai_studio_accounts || 0);
     toast(`额度设定已保存，同步 ${synced} 个账号`);
     await refreshAccounts({ quiet: true });
   } catch (error) {
@@ -4996,6 +5034,10 @@ function renderAccountTable() {
     const quotaUsed = Number(item.quota_used || 0);
     const quotaRemaining = item.quota_remaining === null || item.quota_remaining === undefined ? "不限" : String(item.quota_remaining);
     const quotaLabel = quotaLimit ? `${quotaUsed} / ${quotaLimit}` : `${quotaUsed} / 不限`;
+    const studioQuotaLimit = Number(item.qianwen_ai_studio_quota_limit || 0);
+    const studioQuotaUsed = Number(item.qianwen_ai_studio_quota_used || 0);
+    const studioQuotaRemaining = item.qianwen_ai_studio_quota_remaining === null || item.qianwen_ai_studio_quota_remaining === undefined ? "不限" : String(item.qianwen_ai_studio_quota_remaining);
+    const studioQuotaLabel = studioQuotaLimit ? `${studioQuotaUsed} / ${studioQuotaLimit}` : `${studioQuotaUsed} / 不限`;
     const currentTaskId = String(item.current_task_id || "");
     const currentWorkerId = String(item.current_worker_id || "");
     const activeTasks = Array.isArray(item.active_tasks) ? item.active_tasks : [];
@@ -5019,7 +5061,8 @@ function renderAccountTable() {
           <div class="account-quota-cell">
             <span class="account-card-label">额度</span>
             <strong>${escapeHtml(quotaLabel)}</strong>
-            <span>本地剩余 ${escapeHtml(quotaRemaining)}</span>
+            <span>${String(item.platform || "") === "qianwen" ? "千问账号剩余" : "本地剩余"} ${escapeHtml(quotaRemaining)}</span>
+            ${String(item.platform || "") === "qianwen" ? `<strong>AI Studio ${escapeHtml(studioQuotaLabel)}</strong><span>Studio 剩余 ${escapeHtml(studioQuotaRemaining)}</span>` : ""}
           </div>
         </td>
         <td>
@@ -5183,10 +5226,18 @@ async function editAccountQuota(accountId) {
     toast("额度必须是大于等于 0 的整数", "error");
     return;
   }
-  await apiFetch(`/accounts/${encodeURIComponent(accountId)}`, {
-    method: "PATCH",
-    body: { quota_limit: quotaLimit },
-  });
+  const body = { quota_limit: quotaLimit };
+  if (String(item.platform || "") === "qianwen") {
+    const studioValue = window.prompt("请输入千问 AI Studio 额度上限，0 表示不限", String(item.qianwen_ai_studio_quota_limit ?? 60));
+    if (studioValue === null) return;
+    const studioQuotaLimit = Number.parseInt(studioValue, 10);
+    if (!Number.isInteger(studioQuotaLimit) || studioQuotaLimit < 0) {
+      toast("AI Studio 额度必须是大于等于 0 的整数", "error");
+      return;
+    }
+    body.qianwen_ai_studio_quota_limit = studioQuotaLimit;
+  }
+  await apiFetch(`/accounts/${encodeURIComponent(accountId)}`, { method: "PATCH", body });
   toast("账号额度已更新");
   await refreshAccounts({ quiet: true });
 }

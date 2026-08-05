@@ -32,7 +32,7 @@ from .account_access import generate_key as generate_account_access_key, revoke_
 from .admin_audit import list_admin_actions, prune_admin_actions, record_admin_action
 from .admin_auth import SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, create_session, delete_session, delete_user_sessions, hash_password, session_username, validate_password, verify_password
 from .client_auth import CLIENT_SESSION_COOKIE_NAME, CLIENT_SESSION_TTL_SECONDS, client_session_token_hash, create_client_session, delete_client_session
-from .accounts import account_cookie_export, account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, migrate_ten_second_accounts_to_api, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, update_account_details, update_account_quota
+from .accounts import account_cookie_export, account_for_current_task, add_account, add_accounts_bulk_result, cleanup_flagged_accounts, clear_account_current_task, delete_account, list_account_deletion_history, list_accounts, migrate_ten_second_accounts_to_api, reconcile_account_quotas, refund_account_quota, reset_account_quota, reset_daily_account_quotas_if_needed, set_account_enabled, sync_account_default_quotas, sync_qianwen_ai_studio_default_quota, update_account_details, update_account_quota
 from .account_proxies import account_proxy_entries, account_proxy_url, delete_account_proxies, import_account_proxies, list_account_proxies, select_account_proxies, set_account_proxies_enabled, update_account_proxy_latencies
 from .billing import model_cost_points, model_cost_units, model_video_quota_cost, model_video_quota_cost_units, nonnegative_points_to_units, points_to_units, units_to_points
 from .data_backup import MAX_BACKUP_BYTES, create_backup, restore_backup
@@ -1177,9 +1177,20 @@ async def lifespan(app: FastAPI):
     validate_startup_credentials(startup_config)
     if postgres_enabled():
         ensure_postgres_schema()
-    if int(startup_config.get("account_quota_policy_version") or 0) < 1:
+    account_quota_policy_version = int(startup_config.get("account_quota_policy_version") or 0)
+    if account_quota_policy_version < 1:
         sync_account_default_quotas(load_settings().account_default_quotas)
-        update_config({"account_quota_policy_version": 1})
+    if account_quota_policy_version < 2:
+        quota_settings = load_settings()
+        sync_qianwen_ai_studio_default_quota(quota_settings.qianwen_ai_studio_default_quota)
+        from .qianwen_ai_studio import QIANWEN_AI_STUDIO_MODELS
+
+        platform_models = {platform: list(models) for platform, models in quota_settings.platform_models.items()}
+        qianwen_models = platform_models.setdefault("qianwen", [])
+        for model in QIANWEN_AI_STUDIO_MODELS:
+            if model not in qianwen_models:
+                qianwen_models.append(model)
+        update_config({"platform_models": platform_models, "account_quota_policy_version": 2})
     migrate_ten_second_accounts_to_api()
     purge_legacy_cards()
     running_marker = DATA_DIR / ".service-running"
@@ -4218,6 +4229,7 @@ def _account_access_public_account(account: dict) -> dict:
         for key in (
             "id", "platform", "account_source", "name", "enabled", "account_status", "status_reason",
             "quota_limit", "quota_used", "quota_remaining", "quota_reset_date",
+            "qianwen_ai_studio_quota_limit", "qianwen_ai_studio_quota_used", "qianwen_ai_studio_quota_remaining", "qianwen_ai_studio_quota_reset_date",
             "created_at", "updated_at",
         )
     }
@@ -4297,6 +4309,13 @@ async def account_access_create_account(
             platform,
             "api",
         )
+        if platform == "qianwen":
+            account = await asyncio.to_thread(
+                update_account_quota,
+                str(account.get("id") or ""),
+                quota_limit,
+                load_settings().qianwen_ai_studio_default_quota,
+            )
         _clear_account_list_cache()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -4322,6 +4341,17 @@ async def account_quota_config():
                 for model, costs in platform_costs.items()
             }
             for platform, platform_costs in settings.account_quota_costs.items()
+        },
+        "qianwen_ai_studio": {
+            "default_quota": settings.qianwen_ai_studio_default_quota,
+            "quota_costs": {
+                model: {str(duration): cost for duration, cost in costs.items()}
+                for model, costs in settings.qianwen_ai_studio_quota_costs.items()
+            },
+            "models": [
+                {"name": model, "durations": list(PLATFORM_VIDEO_DURATIONS["qianwen"])}
+                for model in settings.qianwen_ai_studio_quota_costs
+            ],
         },
         "platforms": [
             {
@@ -4365,8 +4395,16 @@ async def update_account_quota_config(request: Request):
     settings = load_settings()
     raw_defaults = payload.get("default_quotas")
     raw_costs = payload.get("quota_costs")
+    raw_studio = payload.get("qianwen_ai_studio")
     if not isinstance(raw_defaults, dict) or not isinstance(raw_costs, dict):
         raise HTTPException(status_code=400, detail="default_quotas and quota_costs are required")
+    if raw_studio is None:
+        raw_studio = {
+            "default_quota": settings.qianwen_ai_studio_default_quota,
+            "quota_costs": settings.qianwen_ai_studio_quota_costs,
+        }
+    if not isinstance(raw_studio, dict):
+        raise HTTPException(status_code=400, detail="qianwen_ai_studio is invalid")
 
     defaults: dict[str, int] = {}
     costs: dict[str, dict[str, dict[str, int]]] = {}
@@ -4394,8 +4432,37 @@ async def update_account_quota_config(request: Request):
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    update_config({"account_default_quotas": defaults, "account_quota_costs": costs, "account_quota_policy_version": 1})
+    try:
+        studio_default = int(raw_studio.get("default_quota", settings.qianwen_ai_studio_default_quota))
+        if studio_default < 0 or studio_default > 1_000_000:
+            raise ValueError("千问 AI Studio 默认额度需为 0-1000000")
+        raw_studio_costs = raw_studio.get("quota_costs")
+        if not isinstance(raw_studio_costs, dict):
+            raise ValueError("千问 AI Studio 额度消耗配置无效")
+        studio_costs: dict[str, dict[str, int]] = {}
+        for model, current_costs in settings.qianwen_ai_studio_quota_costs.items():
+            model_payload = raw_studio_costs.get(model, {})
+            if not isinstance(model_payload, dict):
+                raise ValueError(f"千问 AI Studio {model} 额度消耗配置无效")
+            studio_costs[model] = {}
+            for duration in PLATFORM_VIDEO_DURATIONS["qianwen"]:
+                fallback = current_costs.get(duration, 1)
+                cost = int(model_payload.get(str(duration), model_payload.get(duration, fallback)))
+                if cost < 1 or cost > 1000:
+                    raise ValueError(f"千问 AI Studio {model} {duration}秒消耗额度需为 1-1000")
+                studio_costs[model][str(duration)] = cost
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    update_config({
+        "account_default_quotas": defaults,
+        "account_quota_costs": costs,
+        "qianwen_ai_studio_default_quota": studio_default,
+        "qianwen_ai_studio_quota_costs": studio_costs,
+        "account_quota_policy_version": 2,
+    })
     synced = await asyncio.to_thread(sync_account_default_quotas, defaults)
+    synced_studio = await asyncio.to_thread(sync_qianwen_ai_studio_default_quota, studio_default)
     _clear_account_list_cache()
     await _record_admin_action_safe(
         "account_quota_setting",
@@ -4403,7 +4470,7 @@ async def update_account_quota_config(request: Request):
         detail="；".join(f"{PLATFORM_LABELS[platform]} 默认 {defaults[platform]}，同步 {synced.get(platform, 0)} 个账号" for platform in PLATFORM_LABELS),
         ip_address=_request_client_key(request),
     )
-    return {**(await account_quota_config()), "ok": True, "synced_accounts": synced}
+    return {**(await account_quota_config()), "ok": True, "synced_accounts": synced, "synced_qianwen_ai_studio_accounts": synced_studio}
 
 
 @app.patch("/account-access/accounts/{account_id}")
@@ -4550,6 +4617,9 @@ def _build_account_list_snapshot() -> dict:
     total_limit = sum(max(0, int(item.get("quota_limit") or 0)) for item in normalized_accounts)
     total_used = sum(max(0, int(item.get("quota_used") or 0)) for item in normalized_accounts)
     unlimited_count = sum(1 for item in normalized_accounts if not int(item.get("quota_limit") or 0))
+    studio_accounts = [item for item in normalized_accounts if str(item.get("platform") or DEFAULT_PLATFORM) == "qianwen"]
+    studio_total_limit = sum(max(0, int(item.get("qianwen_ai_studio_quota_limit") or 0)) for item in studio_accounts)
+    studio_total_used = sum(max(0, int(item.get("qianwen_ai_studio_quota_used") or 0)) for item in studio_accounts)
     return {
         "accounts": normalized_accounts,
         "quota_summary": {
@@ -4557,6 +4627,9 @@ def _build_account_list_snapshot() -> dict:
             "total_used": total_used,
             "total_remaining": max(0, total_limit - total_used),
             "unlimited_count": unlimited_count,
+            "qianwen_ai_studio_total_limit": studio_total_limit,
+            "qianwen_ai_studio_total_used": studio_total_used,
+            "qianwen_ai_studio_total_remaining": max(0, studio_total_limit - studio_total_used),
         },
         "next_quota_reset_at": next_quota_reset_at(),
     }
@@ -4729,6 +4802,8 @@ async def accounts_create(request: Request):
         enabled = str(payload.get("enabled") if payload.get("enabled") is not None else "true").lower() not in {"0", "false", "no", "off"}
         if bulk:
             result = await asyncio.to_thread(add_accounts_bulk_result, cookie_data, quota_limit, enabled, platform, account_source)
+            if platform == "qianwen":
+                await asyncio.to_thread(sync_qianwen_ai_studio_default_quota, load_settings().qianwen_ai_studio_default_quota)
             _clear_account_list_cache()
             return {"ok": True, **result}
         account = await asyncio.to_thread(
@@ -4740,6 +4815,8 @@ async def accounts_create(request: Request):
             platform,
             account_source,
         )
+        if platform == "qianwen":
+            account = await asyncio.to_thread(update_account_quota, str(account.get("id") or ""), quota_limit, load_settings().qianwen_ai_studio_default_quota)
         _clear_account_list_cache()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -4753,8 +4830,10 @@ async def accounts_update(account_id: str, request: Request):
     try:
         if "reset_quota" in payload and str(payload.get("reset_quota") or "").strip().lower() in {"1", "true", "yes", "y", "on"}:
             account = await asyncio.to_thread(reset_account_quota, account_id)
-        elif "quota_limit" in payload:
-            account = await asyncio.to_thread(update_account_quota, account_id, int(payload.get("quota_limit") or 0))
+        elif "quota_limit" in payload or "qianwen_ai_studio_quota_limit" in payload:
+            quota_limit = int(payload.get("quota_limit") or 0) if "quota_limit" in payload else None
+            studio_quota_limit = int(payload.get("qianwen_ai_studio_quota_limit") or 0) if "qianwen_ai_studio_quota_limit" in payload else None
+            account = await asyncio.to_thread(update_account_quota, account_id, quota_limit, studio_quota_limit)
         elif "enabled" in payload:
             enabled = str(payload.get("enabled") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
             account = await asyncio.to_thread(set_account_enabled, account_id, enabled)

@@ -11,7 +11,7 @@ DEFAULT_PLATFORM = "dola"
 DEFAULT_MODELS = {
     "dola": ["Seedance 2.0"],
     "doubao": ["Seedance 2.0 Mini", "Seedance 2.0 Fast"],
-    "qianwen": ["万相 2.7"],
+    "qianwen": ["万相 2.7", "万相 2.6", "HappyHorse 1.1", "HappyHorse 1.0"],
 }
 PLATFORM_VIDEO_DURATIONS = {
     "dola": [5, 10, 15],

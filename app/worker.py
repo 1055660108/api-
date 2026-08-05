@@ -12,9 +12,10 @@ from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, exception_reason, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, ReusableBrowserPool
 from .doubao_automation import DoubaoVideoAutomation
+from .qianwen_ai_studio import QianwenAIStudioAutomation
 from .qianwen_automation import QianwenVideoAutomation
 from .proxy_manager import shutdown_task_mihomo_pool, task_mihomo_pool_snapshot
-from .config import account_quota_cost_units, load_settings
+from .config import account_quota_cost_units, load_settings, qianwen_ai_studio_quota_cost_units
 from .memory import reclaim_memory_after_task
 from .store import (
     claim_next_pending,
@@ -950,6 +951,11 @@ class WorkerManager:
                     continue
                 failed_account_ids = set(str(item) for item in meta.get("failed_account_ids") or [] if item)
                 platform = str(meta.get("platform") or "dola")
+                qianwen_ai_studio = (
+                    platform == "qianwen"
+                    and str(meta.get("task_type") or "video") == "video"
+                    and int(meta.get("image_count") or 0) == 0
+                )
                 preferred_account_id = str(meta.get("preferred_account_id") or "").strip().lower()
                 duration = int(meta.get("duration") or 10)
                 if preferred_account_id and not account_supports_duration(preferred_account_id, platform, duration):
@@ -967,20 +973,21 @@ class WorkerManager:
                         continue
                     set_execution_phase(task_id, "preparing_submission_slot", "正在准备生成资源")
                 account_settings = load_settings()
+                account_quota_cost = (
+                    qianwen_ai_studio_quota_cost_units(str(meta.get("model") or ""), duration, account_settings)
+                    if qianwen_ai_studio
+                    else account_quota_cost_units(platform, str(meta.get("model") or ""), duration, account_settings)
+                )
                 account = claim_account_for_worker(
                     worker_id,
                     task_id,
                     exclude_ids=failed_account_ids,
                     platform=platform,
                     preferred_id=preferred_account_id,
-                    quota_cost=account_quota_cost_units(
-                        platform,
-                        str(meta.get("model") or ""),
-                        duration,
-                        account_settings,
-                    ),
+                    quota_cost=account_quota_cost,
                     duration=duration,
                     selection_mode=account_settings.account_selection_mode,
+                    quota_bucket="qianwen_ai_studio" if qianwen_ai_studio else "default",
                 )
                 if not account:
                     if preferred_account_id:
@@ -1041,16 +1048,27 @@ class WorkerManager:
                         api_proxy_pool=self._api_proxy_pool,
                         proxy_platform="qianwen",
                     )
-                    runner = QianwenVideoAutomation(
-                        task_id,
-                        str(meta.get("prompt") or ""),
-                        str(meta.get("ratio") or "9:16"),
-                        str(meta.get("model") or "万相 2.7"),
-                        str(meta.get("task_type") or "video"),
-                        int(meta.get("duration") or 10),
-                        account=account,
-                        proxy_session=proxy_session,
-                    )
+                    if qianwen_ai_studio:
+                        runner = QianwenAIStudioAutomation(
+                            task_id,
+                            str(meta.get("prompt") or ""),
+                            str(meta.get("ratio") or "9:16"),
+                            str(meta.get("model") or "万相 2.7"),
+                            int(meta.get("duration") or 10),
+                            account=account,
+                            proxy_session=proxy_session,
+                        )
+                    else:
+                        runner = QianwenVideoAutomation(
+                            task_id,
+                            str(meta.get("prompt") or ""),
+                            str(meta.get("ratio") or "9:16"),
+                            str(meta.get("model") or "万相 2.7"),
+                            str(meta.get("task_type") or "video"),
+                            int(meta.get("duration") or 10),
+                            account=account,
+                            proxy_session=proxy_session,
+                        )
                 else:
                     runner = DolaFetchAutomation(
                         task_id,

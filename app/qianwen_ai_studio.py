@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import uuid
+from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
+
+import httpx
+
+from .config import load_settings
+from .profile_lock import account_profile_lock
+from .store import begin_task_submission, clear_transient_result, is_task_canceled, save_result, task_exists
+
+
+QIANWEN_AI_STUDIO_ORIGIN = "https://create.qianwen.com"
+QIANWEN_AI_STUDIO_API = "https://ai-studio-create.qianwen.com/api/web"
+QIANWEN_AI_STUDIO_SUBMIT_URL = f"{QIANWEN_AI_STUDIO_API}/ai/video/function"
+QIANWEN_AI_STUDIO_QUERY_URL = f"{QIANWEN_AI_STUDIO_API}/assets/v1/batch/get"
+QIANWEN_AI_STUDIO_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+)
+
+QIANWEN_AI_STUDIO_MODELS: dict[str, dict[str, str]] = {
+    "HappyHorse 1.1": {"root_model": "happyhorse11", "scene": "hh11_t2v"},
+    "万相 2.7": {"root_model": "wan27", "scene": "wan27_t2v"},
+    "万相 2.6": {"root_model": "wan26", "scene": "wan26_t2v"},
+}
+
+
+def qianwen_ai_studio_model(model: str) -> dict[str, str] | None:
+    expected = str(model or "").strip().casefold()
+    for name, config in QIANWEN_AI_STUDIO_MODELS.items():
+        if name.casefold() == expected:
+            return {"name": name, **config}
+    return None
+
+
+def qianwen_ai_studio_cookie_header(cookies: list[dict[str, Any]]) -> str:
+    return "; ".join(
+        f"{item['name']}={item['value']}"
+        for item in cookies
+        if isinstance(item, dict) and item.get("name") and item.get("value") is not None
+    )
+
+
+def _cookie_value(cookies: list[dict[str, Any]], name: str) -> str:
+    for item in cookies:
+        if isinstance(item, dict) and str(item.get("name") or "").replace("\\_", "_") == name:
+            return str(item.get("value") or "")
+    return ""
+
+
+def _httpx_proxy_url(proxy_config: dict[str, str] | None) -> str:
+    if not proxy_config or not proxy_config.get("server"):
+        return ""
+    server = str(proxy_config["server"])
+    username = str(proxy_config.get("username") or "")
+    password = str(proxy_config.get("password") or "")
+    if not username:
+        return server
+    parsed = urlsplit(server if "://" in server else f"http://{server}")
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
+    return urlunsplit((parsed.scheme or "http", f"{auth}{host}", parsed.path, parsed.query, parsed.fragment))
+
+
+def _request_headers(cookie_header: str, xsrf_token: str = "") -> dict[str, str]:
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json",
+        "cookie": cookie_header,
+        "origin": QIANWEN_AI_STUDIO_ORIGIN,
+        "referer": f"{QIANWEN_AI_STUDIO_ORIGIN}/r/ai-studio-pc/main/gen?tab=video",
+        "user-agent": QIANWEN_AI_STUDIO_UA,
+    }
+    if xsrf_token:
+        headers["x-xsrf-token"] = xsrf_token
+    return headers
+
+
+def qianwen_ai_studio_submission_payload(
+    prompt: str,
+    model: str,
+    ratio: str,
+    duration: int,
+    *,
+    req_id: str = "",
+    chid: str = "",
+) -> tuple[dict[str, Any], str]:
+    model_config = qianwen_ai_studio_model(model)
+    if model_config is None:
+        raise ValueError(f"千问 AI Studio 暂不支持 {model} 文生视频")
+    normalized_ratio = str(ratio or "").strip()
+    if normalized_ratio not in {"16:9", "9:16", "1:1", "4:3", "3:4"}:
+        raise ValueError(f"千问 AI Studio 不支持画面比例 {normalized_ratio}")
+    normalized_duration = int(duration or 10)
+    if normalized_duration not in {5, 10, 15}:
+        raise ValueError(f"千问 AI Studio 不支持 {normalized_duration} 秒")
+    request_id = req_id or uuid.uuid4().hex
+    payload = {
+        "model": model_config["root_model"],
+        "rootModel": model_config["root_model"],
+        "prompt": str(prompt or "").strip(),
+        "originPrompt": str(prompt or "").strip(),
+        "scene": "gen_video",
+        "genMode": "vid_gen",
+        "params": {
+            "size": normalized_ratio,
+            "resolution": "720P",
+            "duration": normalized_duration,
+            "attachmentType": 0,
+            "attachments": [],
+        },
+        "req_id": request_id,
+        "chid": chid or uuid.uuid4().hex,
+    }
+    return payload, model_config["scene"]
+
+
+def parse_qianwen_ai_studio_result(payload: Any) -> dict[str, Any]:
+    root = payload if isinstance(payload, dict) else {}
+    data = root.get("data") if isinstance(root.get("data"), dict) else {}
+    items = data.get("list") if isinstance(data.get("list"), list) else []
+    item = items[0] if items and isinstance(items[0], dict) else {}
+    content = item.get("content") if isinstance(item.get("content"), dict) else {}
+    extra = content.get("extra") if isinstance(content.get("extra"), dict) else {}
+    videos = extra.get("result_videos") if isinstance(extra.get("result_videos"), list) else []
+    if not videos and isinstance(data.get("resultVideos"), list):
+        videos = data.get("resultVideos") or []
+    candidates: list[tuple[int, str, str]] = []
+    for video in videos:
+        if not isinstance(video, dict):
+            continue
+        for key, score in (("url", 500), ("cdn_url", 400), ("cdnUrl", 400), ("download_url", 300), ("downloadUrl", 300), ("play_url", 200), ("playUrl", 200)):
+            value = str(video.get(key) or "").strip()
+            if value:
+                candidates.append((score, key, value.replace("http://", "https://", 1)))
+    candidates.sort(reverse=True)
+    status = content.get("status", data.get("status", ""))
+    error_text = str(content.get("error_msg") or data.get("errorMsg") or root.get("msg") or "").strip()
+    failed = status in {3, 4, "failed", "auditFailed"}
+    failed = failed or any(marker in error_text.lower() for marker in ("失败", "违规", "审核", "failed", "audit"))
+    if candidates:
+        state = "succeeded"
+    elif failed:
+        state = "failed"
+    else:
+        state = "generating"
+    return {
+        "state": state,
+        "video_url": candidates[0][2] if candidates else "",
+        "video_source": candidates[0][1] if candidates else "",
+        "status": status,
+        "text": error_text,
+        "task_id": str(content.get("task_id") or data.get("taskId") or ""),
+        "model": str(extra.get("model_name") or extra.get("model") or ""),
+        "duration": int((extra.get("params") or {}).get("duration") or 0) if isinstance(extra.get("params"), dict) else 0,
+        "ratio": str((extra.get("params") or {}).get("size") or "") if isinstance(extra.get("params"), dict) else "",
+    }
+
+
+async def fetch_qianwen_ai_studio_result(
+    cookie_header: str,
+    record_id: str,
+    scene: str,
+    *,
+    xsrf_token: str = "",
+    proxy_server: str = "",
+) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "headers": _request_headers(cookie_header, xsrf_token),
+        "follow_redirects": True,
+        "timeout": httpx.Timeout(45.0, connect=15.0),
+        "trust_env": False,
+    }
+    if proxy_server:
+        options["proxy"] = proxy_server
+    payload = {
+        "items": [{"recordId": str(record_id or ""), "scene": str(scene or "")}],
+        "req_id": uuid.uuid4().hex,
+        "chid": uuid.uuid4().hex,
+    }
+    async with httpx.AsyncClient(**options) as client:
+        response = await client.post(QIANWEN_AI_STUDIO_QUERY_URL, json=payload)
+        response.raise_for_status()
+        parsed = parse_qianwen_ai_studio_result(response.json())
+        parsed["http_status"] = response.status_code
+        return parsed
+
+
+class QianwenAIStudioAutomation:
+    def __init__(
+        self,
+        task_id: str,
+        prompt: str,
+        ratio: str,
+        model: str,
+        duration: int,
+        *,
+        account: dict[str, Any],
+        proxy_session: Any | None = None,
+    ) -> None:
+        self.task_id = task_id
+        self.prompt = prompt
+        self.ratio = ratio
+        self.model = model
+        self.duration = max(1, int(duration or 10))
+        self.account = account
+        self.proxy_session = proxy_session
+        self.settings = load_settings()
+
+    def _failure(self, reason: str, *, retryable: bool = True, **extra: Any) -> dict[str, Any]:
+        return {"success": False, "retryable": retryable, "reason": reason, **extra}
+
+    async def run(self) -> dict[str, Any]:
+        if not task_exists(self.task_id):
+            return {"success": True, "retryable": False, "reason": ""}
+        clear_transient_result(self.task_id)
+        account_id = str(self.account.get("id") or "")
+        lock = await account_profile_lock("qianwen", account_id)
+        async with lock:
+            return await self._run_locked()
+
+    async def _run_locked(self) -> dict[str, Any]:
+        cookies = [dict(item) for item in self.account.get("cookies") or [] if isinstance(item, dict)]
+        cookie_header = str(self.account.get("cookie_header") or "") or qianwen_ai_studio_cookie_header(cookies)
+        if not cookie_header:
+            return self._failure("千问 AI Studio Cookie 为空", account_login_invalid=True, account_fault=True, switch_account=True)
+        try:
+            payload, scene = qianwen_ai_studio_submission_payload(
+                self.prompt,
+                self.model,
+                self.ratio,
+                self.duration,
+            )
+        except ValueError as exc:
+            return self._failure(str(exc), retryable=False)
+        proxy_config = None
+        try:
+            if self.proxy_session is not None:
+                proxy_config = await self.proxy_session.acquire_browser_proxy()
+            options: dict[str, Any] = {
+                "headers": _request_headers(cookie_header, _cookie_value(cookies, "XSRF-TOKEN")),
+                "follow_redirects": True,
+                "timeout": httpx.Timeout(60.0, connect=20.0),
+                "trust_env": False,
+            }
+            proxy_url = _httpx_proxy_url(proxy_config)
+            if proxy_url:
+                options["proxy"] = proxy_url
+            if not begin_task_submission(self.task_id):
+                canceled = is_task_canceled(self.task_id)
+                return self._failure("用户取消生成" if canceled else "任务提交状态已变化，正在重试", retryable=not canceled)
+            async with httpx.AsyncClient(**options) as client:
+                response = await client.post(QIANWEN_AI_STUDIO_SUBMIT_URL, json=payload)
+                response.raise_for_status()
+                body = response.json()
+            code = int(body.get("code") or 0) if isinstance(body, dict) else -1
+            data = body.get("data") if isinstance(body, dict) and isinstance(body.get("data"), dict) else {}
+            record_id = str(data.get("recordId") or "")
+            if code == 15001:
+                return self._failure(
+                    "千问 AI Studio 额度不足",
+                    account_fault=True,
+                    account_quota_insufficient=True,
+                    switch_account=True,
+                )
+            if code != 0 or not record_id:
+                message = str(body.get("msg") or "千问 AI Studio 提交失败") if isinstance(body, dict) else "千问 AI Studio 提交失败"
+                retryable = code not in {1018}
+                return self._failure(message[:500], retryable=retryable, account_fault=code in {401, 403}, switch_account=code in {401, 403, 1003, 429})
+            save_result(
+                self.task_id,
+                cookie_string=cookie_header,
+                cookies=cookies,
+                extra={
+                    "platform": "qianwen",
+                    "model": self.model,
+                    "account_id": str(self.account.get("id") or ""),
+                    "account_name": str(self.account.get("name") or ""),
+                    "account_quota_charge_id": str(self.account.get("quota_charge_id") or ""),
+                    "account_quota_bucket": "qianwen_ai_studio",
+                    "qianwen_submit_confirmed": True,
+                    "qianwen_result_chain": "ai_studio",
+                    "qianwen_ai_studio_record_id": record_id,
+                    "qianwen_ai_studio_scene": scene,
+                    "qianwen_ai_studio_req_id": str(payload.get("req_id") or ""),
+                    "qianwen_actual_model": self.model,
+                    "qianwen_actual_duration": self.duration,
+                    "qianwen_actual_ratio": self.ratio,
+                },
+            )
+            return {
+                "success": False,
+                "retryable": True,
+                "reason": "qianwen AI Studio generation submitted",
+                "submitted": True,
+                "keep_account_claimed": True,
+                "account_fault": False,
+            }
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            if self.proxy_session is not None:
+                self.proxy_session.mark_browser_proxy_unavailable(reason="qianwen_ai_studio_transport_failure")
+            return self._failure(f"千问 AI Studio 连接异常：{str(exc)[:300]}", infrastructure_fault=True)
+        except (ValueError, TypeError) as exc:
+            return self._failure(f"千问 AI Studio 返回异常：{str(exc)[:300]}")
+        finally:
+            if self.proxy_session is not None:
+                await self.proxy_session.release_browser_proxy()

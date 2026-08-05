@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from typing import Any
 
-from .config import ACCOUNTS_PATH, ensure_dirs
+from .config import ACCOUNTS_PATH, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT, ensure_dirs
 from .platforms import DEFAULT_PLATFORM, normalize_platform
 from . import postgres
 
@@ -18,6 +18,8 @@ ACCOUNT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 LOCAL_TZ = timezone(timedelta(hours=8))
 _ACCOUNTS_LOCK = threading.RLock()
 AUTO_DELETE_ACCOUNT_STATUSES = {"slider_verification", "abnormal"}
+QIANWEN_AI_STUDIO_QUOTA_BUCKET = "qianwen_ai_studio"
+QIANWEN_AI_STUDIO_CHARGE_PREFIX = "studio:"
 
 
 def utc_now() -> str:
@@ -63,6 +65,49 @@ def _reconcile_account(account: dict[str, Any]) -> bool:
     account["quota_charges"] = charges
     account["quota_used"] = expected
     return changed
+
+
+def _studio_quota_charges(account: dict[str, Any]) -> list[dict[str, Any]]:
+    charges = account.get("qianwen_ai_studio_quota_charges")
+    if not isinstance(charges, list):
+        return []
+    return [item for item in charges if isinstance(item, dict) and str(item.get("charge_id") or "")]
+
+
+def _studio_reconciled_quota_used(account: dict[str, Any]) -> int:
+    base = max(0, int(account.get("qianwen_ai_studio_quota_ledger_base") or 0))
+    active = sum(
+        max(1, int(item.get("units") or 1))
+        for item in _studio_quota_charges(account)
+        if str(item.get("status") or "charged") in {"charged", "settled"}
+    )
+    return base + active
+
+
+def _initialize_studio_quota_ledger(account: dict[str, Any]) -> list[dict[str, Any]]:
+    if not bool(account.get("qianwen_ai_studio_quota_ledger_initialized")):
+        account["qianwen_ai_studio_quota_ledger_base"] = max(0, int(account.get("qianwen_ai_studio_quota_used") or 0))
+        account["qianwen_ai_studio_quota_ledger_initialized"] = True
+    charges = _studio_quota_charges(account)
+    account["qianwen_ai_studio_quota_charges"] = charges
+    return charges
+
+
+def _reconcile_studio_quota(account: dict[str, Any]) -> bool:
+    if str(account.get("platform") or DEFAULT_PLATFORM) != "qianwen":
+        return False
+    if not bool(account.get("qianwen_ai_studio_quota_ledger_initialized")):
+        return False
+    charges = _studio_quota_charges(account)
+    expected = _studio_reconciled_quota_used(account)
+    changed = account.get("qianwen_ai_studio_quota_charges") != charges or max(0, int(account.get("qianwen_ai_studio_quota_used") or 0)) != expected
+    account["qianwen_ai_studio_quota_charges"] = charges
+    account["qianwen_ai_studio_quota_used"] = expected
+    return changed
+
+
+def _is_studio_charge(charge_id: str) -> bool:
+    return str(charge_id or "").startswith(QIANWEN_AI_STUDIO_CHARGE_PREFIX)
 
 
 def _atomic_write(path, text: str) -> None:
@@ -137,7 +182,7 @@ def reset_daily_account_quotas_if_needed() -> bool:
                 changed = False
                 for account in data.get("accounts") or []:
                     if str(account.get("quota_reset_date") or "") == today:
-                        if _reconcile_account(account):
+                        if _reconcile_account(account) or _reconcile_studio_quota(account):
                             account["updated_at"] = utc_now()
                             changed = True
                         continue
@@ -147,6 +192,13 @@ def reset_daily_account_quotas_if_needed() -> bool:
                     account["quota_ledger_initialized"] = True
                     account.pop("quota_exhausted_date", None)
                     account["quota_reset_date"] = today
+                    if str(account.get("platform") or DEFAULT_PLATFORM) == "qianwen":
+                        account["qianwen_ai_studio_quota_used"] = 0
+                        account["qianwen_ai_studio_quota_ledger_base"] = 0
+                        account["qianwen_ai_studio_quota_charges"] = []
+                        account["qianwen_ai_studio_quota_ledger_initialized"] = True
+                        account.pop("qianwen_ai_studio_quota_exhausted_date", None)
+                        account["qianwen_ai_studio_quota_reset_date"] = today
                     account["updated_at"] = utc_now()
                     changed = True
                 return changed
@@ -157,7 +209,7 @@ def reset_daily_account_quotas_if_needed() -> bool:
         changed = False
         for account in data["accounts"]:
             if str(account.get("quota_reset_date") or "") == today:
-                if _reconcile_account(account):
+                if _reconcile_account(account) or _reconcile_studio_quota(account):
                     account["updated_at"] = utc_now()
                     changed = True
                 continue
@@ -167,6 +219,13 @@ def reset_daily_account_quotas_if_needed() -> bool:
             account["quota_ledger_initialized"] = True
             account.pop("quota_exhausted_date", None)
             account["quota_reset_date"] = today
+            if str(account.get("platform") or DEFAULT_PLATFORM) == "qianwen":
+                account["qianwen_ai_studio_quota_used"] = 0
+                account["qianwen_ai_studio_quota_ledger_base"] = 0
+                account["qianwen_ai_studio_quota_charges"] = []
+                account["qianwen_ai_studio_quota_ledger_initialized"] = True
+                account.pop("qianwen_ai_studio_quota_exhausted_date", None)
+                account["qianwen_ai_studio_quota_reset_date"] = today
             account["updated_at"] = utc_now()
             changed = True
         if changed:
@@ -454,6 +513,8 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
     cookie_names = [str(item.get("name") or "") for item in cookies if isinstance(item, dict) and item.get("name")]
     quota_limit = max(0, int(account.get("quota_limit") or 0))
     quota_used = max(0, int(account.get("quota_used") or 0))
+    studio_quota_limit = max(0, int(account.get("qianwen_ai_studio_quota_limit", DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT) or 0))
+    studio_quota_used = max(0, int(account.get("qianwen_ai_studio_quota_used") or 0))
     return {
         "id": str(account.get("id") or ""),
         "platform": str(account.get("platform") or DEFAULT_PLATFORM),
@@ -471,6 +532,10 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
         "quota_used": quota_used,
         "quota_remaining": max(0, quota_limit - quota_used) if quota_limit else None,
         "quota_reset_date": str(account.get("quota_reset_date") or ""),
+        "qianwen_ai_studio_quota_limit": studio_quota_limit,
+        "qianwen_ai_studio_quota_used": studio_quota_used,
+        "qianwen_ai_studio_quota_remaining": max(0, studio_quota_limit - studio_quota_used) if studio_quota_limit else None,
+        "qianwen_ai_studio_quota_reset_date": str(account.get("qianwen_ai_studio_quota_reset_date") or account.get("quota_reset_date") or ""),
         "current_task_id": str(account.get("current_task_id") or ""),
         "current_worker_id": str(account.get("current_worker_id") or ""),
         "current_started_at": str(account.get("current_started_at") or ""),
@@ -550,13 +615,23 @@ def _new_account(
     account_source: str = "admin",
 ) -> dict[str, Any]:
     now = utc_now()
-    return {
+    account = {
         "id": secrets.token_hex(8), "platform": platform, "account_source": "api" if str(account_source).lower() == "api" else "admin", "name": str(name or "").strip() or f"账号 {len(accounts) + 1}",
         "enabled": bool(enabled), "quota_limit": max(0, int(quota_limit or 0)), "quota_used": 0,
         "quota_reset_date": local_today(), "cookies": cookies, "cookie_header": _cookie_header_from_items(cookies),
         "cookie_fingerprint": _account_fingerprint(platform, cookies),
         "created_at": now, "updated_at": now, "last_used_worker_id": "", "last_used_at": "",
     }
+    if platform == "qianwen":
+        account.update(
+            qianwen_ai_studio_quota_limit=DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT,
+            qianwen_ai_studio_quota_used=0,
+            qianwen_ai_studio_quota_reset_date=local_today(),
+            qianwen_ai_studio_quota_ledger_base=0,
+            qianwen_ai_studio_quota_charges=[],
+            qianwen_ai_studio_quota_ledger_initialized=True,
+        )
+    return account
 
 
 def add_account(
@@ -1068,11 +1143,16 @@ def _select_account(
     quota_cost: int = 1,
     duration: int = 0,
     selection_mode: str = "",
+    quota_bucket: str = "default",
 ) -> dict[str, Any] | None:
     excluded = exclude_ids or set()
     target_platform = normalize_platform(platform)
     preferred_id = str(preferred_id or "").strip().lower()
     quota_cost = max(1, int(quota_cost or 1))
+    studio_quota = target_platform == "qianwen" and str(quota_bucket or "") == QIANWEN_AI_STUDIO_QUOTA_BUCKET
+    quota_limit_key = "qianwen_ai_studio_quota_limit" if studio_quota else "quota_limit"
+    quota_used_key = "qianwen_ai_studio_quota_used" if studio_quota else "quota_used"
+    exhausted_key = "qianwen_ai_studio_quota_exhausted_date" if studio_quota else "quota_exhausted_date"
     now = datetime.now(timezone.utc)
 
     def available(item: dict[str, Any]) -> bool:
@@ -1096,8 +1176,12 @@ def _select_account(
         and isinstance(item.get("cookies"), list)
         and item.get("cookies")
         and available(item)
-        and str(item.get("quota_exhausted_date") or "") != local_today()
-        and (not int(item.get("quota_limit") or 0) or int(item.get("quota_used") or 0) + quota_cost <= int(item.get("quota_limit") or 0))
+        and str(item.get(exhausted_key) or "") != local_today()
+        and (
+            not int(item.get(quota_limit_key, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT if studio_quota else 0) or 0)
+            or int(item.get(quota_used_key) or 0) + quota_cost
+            <= int(item.get(quota_limit_key, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT if studio_quota else 0) or 0)
+        )
     ]
     if not enabled_accounts:
         return None
@@ -1109,8 +1193,8 @@ def _select_account(
         preferred_source = "admin" if mode == "admin_first" else "api"
 
         def priority(item: dict[str, Any]) -> tuple[int, int, int, str]:
-            quota_limit = max(0, int(item.get("quota_limit") or 0))
-            quota_used = max(0, int(item.get("quota_used") or 0))
+            quota_limit = max(0, int(item.get(quota_limit_key, DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT if studio_quota else 0) or 0))
+            quota_used = max(0, int(item.get(quota_used_key) or 0))
             quota_remaining = max(0, quota_limit - quota_used) if quota_limit else 1000000
             source_priority = 0 if str(item.get("account_source") or "admin").lower() == preferred_source else 1
             return (source_priority, -quota_remaining, quota_used, str(item.get("last_used_at") or ""))
@@ -1125,6 +1209,7 @@ def _select_account(
         "cookies": [dict(item) for item in account.get("cookies") or [] if isinstance(item, dict)],
         "cookie_header": str(account.get("cookie_header") or ""),
         "pinned_proxy_node_id": str(account.get("pinned_proxy_node_id") or ""),
+        "quota_bucket": QIANWEN_AI_STUDIO_QUOTA_BUCKET if studio_quota else "default",
     }
 
 
@@ -1137,37 +1222,47 @@ def claim_account_for_worker(
     quota_cost: int = 1,
     duration: int = 0,
     selection_mode: str = "api_first",
+    quota_bucket: str = "default",
 ) -> dict[str, Any] | None:
     preferred_id = str(preferred_id or "").strip().lower()
     quota_cost = max(1, int(quota_cost or 1))
     selection_mode = str(selection_mode or "api_first").strip().lower()
+    studio_quota = normalize_platform(platform) == "qianwen" and str(quota_bucket or "") == QIANWEN_AI_STUDIO_QUOTA_BUCKET
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(account: dict[str, Any]) -> dict[str, Any]:
-                selected = _select_account([account], platform=platform, preferred_id=preferred_id, quota_cost=quota_cost, duration=duration, selection_mode=selection_mode)
+                selected = _select_account([account], platform=platform, preferred_id=preferred_id, quota_cost=quota_cost, duration=duration, selection_mode=selection_mode, quota_bucket=quota_bucket)
                 if selected is None:
                     raise RuntimeError("selected account became unavailable")
                 now = utc_now()
-                charge_id = f"{task_id}:{secrets.token_hex(8)}"
-                charges = _initialize_quota_ledger(account)
+                charge_id = f"{QIANWEN_AI_STUDIO_CHARGE_PREFIX if studio_quota else ''}{task_id}:{secrets.token_hex(8)}"
+                charges = _initialize_studio_quota_ledger(account) if studio_quota else _initialize_quota_ledger(account)
                 charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "units": quota_cost, "status": "charged", "charged_at": now})
-                account.update(last_used_worker_id=str(worker_id or ""), last_used_at=now, current_task_id=str(task_id or ""), current_worker_id=str(worker_id or ""), current_started_at=now, current_quota_charge_id=charge_id, quota_charges=charges, quota_used=_reconciled_quota_used(account), updated_at=now)
+                if studio_quota:
+                    account.update(qianwen_ai_studio_quota_charges=charges, qianwen_ai_studio_quota_used=_studio_reconciled_quota_used(account))
+                else:
+                    account.update(quota_charges=charges, quota_used=_reconciled_quota_used(account))
+                account.update(last_used_worker_id=str(worker_id or ""), last_used_at=now, current_task_id=str(task_id or ""), current_worker_id=str(worker_id or ""), current_started_at=now, current_quota_charge_id=charge_id, updated_at=now)
                 selected["quota_charge_id"] = charge_id
                 selected["quota_cost"] = quota_cost
                 return selected
 
-            return postgres.claim_available_account(
-                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate, preferred_id, quota_cost, duration, selection_mode
+            claim_args = (
+                normalize_platform(platform), exclude_ids or set(), local_today(), utc_now(), mutate,
+                preferred_id, quota_cost, duration, selection_mode,
             )
+            if studio_quota:
+                return postgres.claim_available_account(*claim_args, quota_bucket)
+            return postgres.claim_available_account(*claim_args)
         data = _read_data()
-        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id, quota_cost, duration, selection_mode)
+        selected = _select_account(data["accounts"], exclude_ids, platform, preferred_id, quota_cost, duration, selection_mode, quota_bucket)
         if not selected:
             return None
         now = utc_now()
-        charge_id = f"{task_id}:{secrets.token_hex(8)}"
+        charge_id = f"{QIANWEN_AI_STUDIO_CHARGE_PREFIX if studio_quota else ''}{task_id}:{secrets.token_hex(8)}"
         for account in data["accounts"]:
             if str(account.get("id") or "") == selected["id"]:
-                charges = _initialize_quota_ledger(account)
+                charges = _initialize_studio_quota_ledger(account) if studio_quota else _initialize_quota_ledger(account)
                 charges.append({"charge_id": charge_id, "task_id": str(task_id or ""), "units": quota_cost, "status": "charged", "charged_at": now})
                 account["last_used_worker_id"] = str(worker_id or "")
                 account["last_used_at"] = now
@@ -1175,8 +1270,12 @@ def claim_account_for_worker(
                 account["current_worker_id"] = str(worker_id or "")
                 account["current_started_at"] = now
                 account["current_quota_charge_id"] = charge_id
-                account["quota_charges"] = charges
-                account["quota_used"] = _reconciled_quota_used(account)
+                if studio_quota:
+                    account["qianwen_ai_studio_quota_charges"] = charges
+                    account["qianwen_ai_studio_quota_used"] = _studio_reconciled_quota_used(account)
+                else:
+                    account["quota_charges"] = charges
+                    account["quota_used"] = _reconciled_quota_used(account)
                 account["updated_at"] = now
                 _write_data(data)
                 selected["quota_charge_id"] = charge_id
@@ -1248,28 +1347,41 @@ def mark_account_used(account_id: str, worker_id: str, task_id: str = "") -> Non
 def refund_account_quota(account_id: str, refund_id: str = "") -> bool:
     if not account_id:
         return False
-    with _ACCOUNTS_LOCK:
-        if postgres.enabled():
-            def mutate(account: dict[str, Any]) -> bool:
-                if bool(account.get("quota_ledger_initialized")):
-                    for charge in _quota_charges(account):
-                        if str(charge.get("charge_id") or "") != str(refund_id or "") or str(charge.get("status") or "charged") != "charged":
-                            continue
-                        charge.update(status="refunded", refunded_at=utc_now())
-                        account["quota_used"] = _reconciled_quota_used(account)
-                        account["updated_at"] = utc_now()
-                        return True
-                    return False
-                refunded = [str(item) for item in account.get("quota_refund_ids") or [] if item]
-                if refund_id and refund_id in refunded:
-                    return False
-                account["quota_used"] = max(0, int(account.get("quota_used") or 0) - 1)
-                if refund_id:
-                    refunded.append(refund_id)
-                    account["quota_refund_ids"] = refunded[-1000:]
+    studio_quota = _is_studio_charge(refund_id)
+
+    def mutate(account: dict[str, Any]) -> bool:
+        if studio_quota:
+            if not bool(account.get("qianwen_ai_studio_quota_ledger_initialized")):
+                return False
+            for charge in _studio_quota_charges(account):
+                if str(charge.get("charge_id") or "") != str(refund_id or "") or str(charge.get("status") or "charged") != "charged":
+                    continue
+                charge.update(status="refunded", refunded_at=utc_now())
+                account["qianwen_ai_studio_quota_used"] = _studio_reconciled_quota_used(account)
                 account["updated_at"] = utc_now()
                 return True
+            return False
+        if bool(account.get("quota_ledger_initialized")):
+            for charge in _quota_charges(account):
+                if str(charge.get("charge_id") or "") != str(refund_id or "") or str(charge.get("status") or "charged") != "charged":
+                    continue
+                charge.update(status="refunded", refunded_at=utc_now())
+                account["quota_used"] = _reconciled_quota_used(account)
+                account["updated_at"] = utc_now()
+                return True
+            return False
+        refunded = [str(item) for item in account.get("quota_refund_ids") or [] if item]
+        if refund_id and refund_id in refunded:
+            return False
+        account["quota_used"] = max(0, int(account.get("quota_used") or 0) - 1)
+        if refund_id:
+            refunded.append(refund_id)
+            account["quota_refund_ids"] = refunded[-1000:]
+        account["updated_at"] = utc_now()
+        return True
 
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
             try:
                 return postgres.mutate_account(account_id, mutate)
             except KeyError:
@@ -1277,26 +1389,10 @@ def refund_account_quota(account_id: str, refund_id: str = "") -> bool:
         data = _read_data()
         for account in data["accounts"]:
             if str(account.get("id") or "") == str(account_id):
-                if bool(account.get("quota_ledger_initialized")):
-                    for charge in _quota_charges(account):
-                        if str(charge.get("charge_id") or "") != str(refund_id or "") or str(charge.get("status") or "charged") != "charged":
-                            continue
-                        charge.update(status="refunded", refunded_at=utc_now())
-                        account["quota_used"] = _reconciled_quota_used(account)
-                        account["updated_at"] = utc_now()
-                        _write_data(data)
-                        return True
-                    return False
-                refunded = [str(item) for item in account.get("quota_refund_ids") or [] if item]
-                if refund_id and refund_id in refunded:
-                    return False
-                account["quota_used"] = max(0, int(account.get("quota_used") or 0) - 1)
-                if refund_id:
-                    refunded.append(refund_id)
-                    account["quota_refund_ids"] = refunded[-1000:]
-                account["updated_at"] = utc_now()
-                _write_data(data)
-                return True
+                changed = mutate(account)
+                if changed:
+                    _write_data(data)
+                return changed
     return False
 
 
@@ -1307,7 +1403,7 @@ def reconcile_account_quotas() -> dict[str, int]:
             repaired = 0
             for account in data.get("accounts") or []:
                 checked += 1
-                if _reconcile_account(account):
+                if _reconcile_account(account) or _reconcile_studio_quota(account):
                     account["updated_at"] = utc_now()
                     repaired += 1
             return {"checked": checked, "repaired": repaired}
@@ -1416,15 +1512,21 @@ def settle_account_quota(account_id: str, charge_id: str) -> bool:
     if not account_id or not charge_id:
         return False
     with _ACCOUNTS_LOCK:
+        studio_quota = _is_studio_charge(charge_id)
+
         def mutate(data: dict[str, Any]) -> bool:
             for account in data.get("accounts") or []:
                 if str(account.get("id") or "") != str(account_id):
                     continue
-                for charge in _quota_charges(account):
+                charges = _studio_quota_charges(account) if studio_quota else _quota_charges(account)
+                for charge in charges:
                     if str(charge.get("charge_id") or "") != str(charge_id) or str(charge.get("status") or "charged") != "charged":
                         continue
                     charge.update(status="settled", settled_at=utc_now())
-                    account["quota_used"] = _reconciled_quota_used(account)
+                    if studio_quota:
+                        account["qianwen_ai_studio_quota_used"] = _studio_reconciled_quota_used(account)
+                    else:
+                        account["quota_used"] = _reconciled_quota_used(account)
                     account["updated_at"] = utc_now()
                     return True
                 return False
@@ -1442,10 +1544,61 @@ def settle_account_quota(account_id: str, charge_id: str) -> bool:
         return settled
 
 
+def _exhaust_studio_account_quota(account_id: str, charge_id: str, *, timed_out: bool) -> bool:
+    def mutate(account: dict[str, Any]) -> bool:
+        now = utc_now()
+        quota_limit = max(1, int(account.get("qianwen_ai_studio_quota_limit", DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT) or 1))
+        charges = _initialize_studio_quota_ledger(account)
+        matching = next((item for item in charges if str(item.get("charge_id") or "") == str(charge_id or "")), None)
+        if charge_id:
+            if matching is None:
+                matching = {"charge_id": str(charge_id), "status": "settled" if timed_out else "refunded"}
+                charges.append(matching)
+            if timed_out:
+                matching.update(status="settled", settled_at=now, settle_reason="result_timeout")
+                matching.pop("refunded_at", None)
+                matching.pop("refund_reason", None)
+            elif str(matching.get("status") or "charged") == "charged":
+                matching.update(status="refunded", refunded_at=now, refund_reason="quota_insufficient")
+        active_units = sum(
+            max(1, int(item.get("units") or 1))
+            for item in charges
+            if str(item.get("status") or "charged") in {"charged", "settled"}
+        )
+        if not timed_out:
+            account["qianwen_ai_studio_quota_ledger_base"] = max(0, quota_limit - active_units)
+        account["qianwen_ai_studio_quota_limit"] = quota_limit
+        account["qianwen_ai_studio_quota_charges"] = charges
+        account["qianwen_ai_studio_quota_used"] = max(
+            quota_limit if not timed_out else 1,
+            _studio_reconciled_quota_used(account),
+        )
+        account["qianwen_ai_studio_quota_exhausted_date"] = local_today()
+        account["updated_at"] = now
+        return True
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            try:
+                return postgres.mutate_account(account_id, mutate)
+            except KeyError:
+                return False
+        data = _read_data()
+        account = next((item for item in data["accounts"] if str(item.get("id") or "") == str(account_id)), None)
+        if not account:
+            return False
+        changed = mutate(account)
+        if changed:
+            _write_data(data)
+        return changed
+
+
 def exhaust_timed_out_account(account_id: str, charge_id: str = "") -> bool:
     """Keep a timed-out generation charged and exclude its account for today."""
     if not account_id:
         return False
+    if _is_studio_charge(charge_id):
+        return _exhaust_studio_account_quota(account_id, charge_id, timed_out=True)
     with _ACCOUNTS_LOCK:
         def mutate(data: dict[str, Any]) -> bool:
             for account in data.get("accounts") or []:
@@ -1491,6 +1644,8 @@ def exhaust_timed_out_account(account_id: str, charge_id: str = "") -> bool:
 def exhaust_account_quota(account_id: str, charge_id: str = "") -> bool:
     if not account_id:
         return False
+    if _is_studio_charge(charge_id):
+        return _exhaust_studio_account_quota(account_id, charge_id, timed_out=False)
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(data: dict[str, Any]) -> bool:
@@ -1598,6 +1753,9 @@ def reset_account_quota(account_id: str) -> dict[str, Any]:
                     if str(account.get("id") or "") == account_id:
                         account.update(quota_used=0, quota_ledger_base=0, quota_charges=[], quota_ledger_initialized=True, updated_at=utc_now())
                         account.pop("quota_exhausted_date", None)
+                        if str(account.get("platform") or DEFAULT_PLATFORM) == "qianwen":
+                            account.update(qianwen_ai_studio_quota_used=0, qianwen_ai_studio_quota_ledger_base=0, qianwen_ai_studio_quota_charges=[], qianwen_ai_studio_quota_ledger_initialized=True)
+                            account.pop("qianwen_ai_studio_quota_exhausted_date", None)
                         return _public_account(account)
                 raise KeyError("account not found")
 
@@ -1610,20 +1768,30 @@ def reset_account_quota(account_id: str) -> dict[str, Any]:
                 account["quota_charges"] = []
                 account["quota_ledger_initialized"] = True
                 account.pop("quota_exhausted_date", None)
+                if str(account.get("platform") or DEFAULT_PLATFORM) == "qianwen":
+                    account["qianwen_ai_studio_quota_used"] = 0
+                    account["qianwen_ai_studio_quota_ledger_base"] = 0
+                    account["qianwen_ai_studio_quota_charges"] = []
+                    account["qianwen_ai_studio_quota_ledger_initialized"] = True
+                    account.pop("qianwen_ai_studio_quota_exhausted_date", None)
                 account["updated_at"] = utc_now()
                 _write_data(data)
                 return _public_account(account)
     raise KeyError("account not found")
 
 
-def update_account_quota(account_id: str, quota_limit: int) -> dict[str, Any]:
+def update_account_quota(account_id: str, quota_limit: int | None, qianwen_ai_studio_quota_limit: int | None = None) -> dict[str, Any]:
     account_id = str(account_id or "").strip().lower()
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(data: dict[str, Any]) -> dict[str, Any]:
                 for account in data.get("accounts") or []:
                     if str(account.get("id") or "") == account_id:
-                        account.update(quota_limit=max(0, int(quota_limit or 0)), updated_at=utc_now())
+                        if quota_limit is not None:
+                            account["quota_limit"] = max(0, int(quota_limit or 0))
+                        if qianwen_ai_studio_quota_limit is not None and str(account.get("platform") or DEFAULT_PLATFORM) == "qianwen":
+                            account["qianwen_ai_studio_quota_limit"] = max(0, int(qianwen_ai_studio_quota_limit or 0))
+                        account["updated_at"] = utc_now()
                         return _public_account(account)
                 raise KeyError("account not found")
 
@@ -1631,7 +1799,10 @@ def update_account_quota(account_id: str, quota_limit: int) -> dict[str, Any]:
         data = _read_data()
         for account in data["accounts"]:
             if str(account.get("id") or "") == account_id:
-                account["quota_limit"] = max(0, int(quota_limit or 0))
+                if quota_limit is not None:
+                    account["quota_limit"] = max(0, int(quota_limit or 0))
+                if qianwen_ai_studio_quota_limit is not None and str(account.get("platform") or DEFAULT_PLATFORM) == "qianwen":
+                    account["qianwen_ai_studio_quota_limit"] = max(0, int(qianwen_ai_studio_quota_limit or 0))
                 account["updated_at"] = utc_now()
                 _write_data(data)
                 return _public_account(account)
@@ -1663,6 +1834,31 @@ def sync_account_default_quotas(defaults: dict[str, int]) -> dict[str, int]:
         if any(result.values()):
             _write_data(data)
         return result
+
+
+def sync_qianwen_ai_studio_default_quota(default_limit: int) -> int:
+    normalized = max(0, min(1_000_000, int(default_limit)))
+    with _ACCOUNTS_LOCK:
+        def mutate(data: dict[str, Any]) -> int:
+            changed = 0
+            now = utc_now()
+            for account in data.get("accounts") or []:
+                if str(account.get("platform") or DEFAULT_PLATFORM) != "qianwen":
+                    continue
+                if int(account.get("qianwen_ai_studio_quota_limit", DEFAULT_QIANWEN_AI_STUDIO_QUOTA_LIMIT) or 0) == normalized:
+                    continue
+                account["qianwen_ai_studio_quota_limit"] = normalized
+                account["updated_at"] = now
+                changed += 1
+            return changed
+
+        if postgres.enabled():
+            return postgres.mutate_document("accounts", {"accounts": []}, mutate)
+        data = _read_data()
+        changed = mutate(data)
+        if changed:
+            _write_data(data)
+        return changed
 
 
 def mark_account_slider_verification(account_id: str) -> dict[str, Any]:

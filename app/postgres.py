@@ -628,11 +628,17 @@ def claim_available_account(
     quota_cost: int = 1,
     duration: int = 0,
     selection_mode: str = "api_first",
+    quota_bucket: str = "default",
 ) -> T | None:
     from psycopg.types.json import Jsonb
 
-    quota_limit = "CASE WHEN COALESCE(payload->>'quota_limit', '') ~ '^[0-9]+$' THEN (payload->>'quota_limit')::integer ELSE 0 END"
-    quota_used = "CASE WHEN COALESCE(payload->>'quota_used', '') ~ '^[0-9]+$' THEN (payload->>'quota_used')::integer ELSE 0 END"
+    studio_quota = platform == "qianwen" and str(quota_bucket or "") == "qianwen_ai_studio"
+    limit_field = "qianwen_ai_studio_quota_limit" if studio_quota else "quota_limit"
+    used_field = "qianwen_ai_studio_quota_used" if studio_quota else "quota_used"
+    exhausted_field = "qianwen_ai_studio_quota_exhausted_date" if studio_quota else "quota_exhausted_date"
+    default_limit = 60 if studio_quota else 0
+    quota_limit = f"CASE WHEN COALESCE(payload->>'{limit_field}', '') ~ '^[0-9]+$' THEN (payload->>'{limit_field}')::integer ELSE {default_limit} END"
+    quota_used = f"CASE WHEN COALESCE(payload->>'{used_field}', '') ~ '^[0-9]+$' THEN (payload->>'{used_field}')::integer ELSE 0 END"
     excluded = sorted({str(item) for item in excluded_ids if str(item)})
     quota_cost = max(1, int(quota_cost or 1))
     conditions = [
@@ -642,7 +648,7 @@ def claim_available_account(
         "COALESCE(payload->>'current_task_id', '') = ''",
         "jsonb_typeof(payload->'cookies') = 'array'",
         "jsonb_array_length(payload->'cookies') > 0",
-        "COALESCE(payload->>'quota_exhausted_date', '') <> %s",
+        f"COALESCE(payload->>'{exhausted_field}', '') <> %s",
         f"({quota_limit} = 0 OR {quota_used} + %s <= {quota_limit})",
         "(COALESCE(payload->>'cooldown_until', '') = '' OR payload->>'cooldown_until' <= %s)",
     ]

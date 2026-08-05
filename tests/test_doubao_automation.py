@@ -1219,17 +1219,48 @@ class QianwenProxyAutomationTests(unittest.TestCase):
         session.acquire_browser_proxy.assert_awaited_once()
         session.release_browser_proxy.assert_awaited_once()
 
-    def test_qianwen_duration_is_explicitly_limited_to_ten_seconds(self) -> None:
+    def test_qianwen_duration_accepts_supported_video_lengths(self) -> None:
         runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
         control = SimpleNamespace(count=AsyncMock(return_value=0))
         filtered = SimpleNamespace(last=control)
         page = SimpleNamespace(locator=Mock(return_value=SimpleNamespace(filter=Mock(return_value=filtered))))
-        runner.duration = 15
-        self.assertFalse(asyncio.run(runner._ensure_video_duration(page)))
-        page.locator.assert_not_called()
+        runner._select_video_setting = AsyncMock(return_value=False)
+        for duration in (5, 10, 15):
+            runner.duration = duration
+            self.assertFalse(asyncio.run(runner._ensure_video_duration(page)))
+        self.assertEqual(runner._select_video_setting.await_count, 3)
 
-        runner.duration = 10
+        runner.duration = 20
         self.assertFalse(asyncio.run(runner._ensure_video_duration(page)))
+        self.assertEqual(runner._select_video_setting.await_count, 3)
+
+    def test_qianwen_duration_clicks_enabled_outer_button_and_confirms_control(self) -> None:
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+        runner.duration = 15
+        control = SimpleNamespace(
+            count=AsyncMock(return_value=1),
+            inner_text=AsyncMock(side_effect=["720P·5s", "720P·15s"]),
+        )
+        control_filtered = SimpleNamespace(last=control)
+        option = SimpleNamespace(
+            is_visible=AsyncMock(return_value=True),
+            is_enabled=AsyncMock(return_value=True),
+            inner_text=AsyncMock(return_value="15秒"),
+            click=AsyncMock(),
+        )
+        options = SimpleNamespace(count=AsyncMock(return_value=1), nth=Mock(return_value=option))
+        page = SimpleNamespace(
+            locator=Mock(side_effect=lambda selector: (
+                SimpleNamespace(filter=Mock(return_value=control_filtered))
+                if selector == "button:visible"
+                else SimpleNamespace(filter=Mock(return_value=options))
+            )),
+            wait_for_timeout=AsyncMock(),
+        )
+
+        self.assertTrue(asyncio.run(runner._ensure_video_duration(page)))
+        self.assertIn("button:visible:not([disabled])", [call.args[0] for call in page.locator.call_args_list])
+        option.click.assert_awaited_once_with(force=True)
 
 
 DOUBAO_CHAT_URL = "https://www.doubao.com/chat/"

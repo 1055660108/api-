@@ -301,35 +301,80 @@ class QianwenVideoAutomation:
         pattern = re.compile(r"(?:480|720|1080)P\s*[·•.\-/]\s*(?:5|10|15)\s*s", re.IGNORECASE)
         return page.locator("button:visible").filter(has_text=pattern).last
 
-    async def _select_video_setting(self, page, pattern: re.Pattern[str]) -> bool:
-        control = self._video_settings_control(page)
-        if not await control.count():
-            return False
-        await control.click(force=True)
-        await page.wait_for_timeout(500)
-        options = page.get_by_text(pattern)
+    def _video_setting_options(self, page, pattern: re.Pattern[str]):
+        return page.locator("button:visible:not([disabled])").filter(has_text=pattern)
+
+    async def _visible_video_setting_option(self, page, pattern: re.Pattern[str]):
+        options = self._video_setting_options(page, pattern)
         for index in range(await options.count() - 1, -1, -1):
             option = options.nth(index)
-            if not await option.is_visible():
+            if not await option.is_visible() or not await option.is_enabled():
                 continue
-            await option.click(force=True)
+            text = str(await option.inner_text() or "").strip()
+            if pattern.fullmatch(text):
+                return option
+        return None
+
+    async def _select_video_setting(self, page, pattern: re.Pattern[str]) -> bool:
+        # Ratio selection leaves this panel open on some Qianwen builds. Reusing
+        # an already visible option avoids toggling the panel closed before the
+        # duration is selected.
+        option = await self._visible_video_setting_option(page, pattern)
+        if option is None:
+            control = self._video_settings_control(page)
+            if not await control.count():
+                return False
+            await control.click(force=True)
             await page.wait_for_timeout(500)
-            return True
-        return False
+            option = await self._visible_video_setting_option(page, pattern)
+        if option is None:
+            return False
+        await option.click(force=True)
+        await page.wait_for_timeout(500)
+        return True
+
+    async def _video_setting_is_selected(self, page, pattern: re.Pattern[str]) -> bool:
+        option = await self._visible_video_setting_option(page, pattern)
+        if option is None:
+            control = self._video_settings_control(page)
+            if not await control.count():
+                return False
+            await control.click(force=True)
+            await page.wait_for_timeout(300)
+            option = await self._visible_video_setting_option(page, pattern)
+        if option is None:
+            return False
+        class_name = str(await option.get_attribute("class") or "")
+        state_values: list[str] = []
+        for name in ("aria-checked", "aria-pressed", "aria-selected", "data-state"):
+            state_values.append(str(await option.get_attribute(name) or ""))
+        state = " ".join(state_values)
+        return bool(re.search(r"active|selected|checked", class_name, re.IGNORECASE) or re.search(r"\b(?:true|on|checked)\b", state, re.IGNORECASE))
 
     async def _ensure_video_duration(self, page) -> bool:
-        if self.duration != 10:
+        if self.duration not in {5, 10, 15}:
             return False
+        duration_pattern = re.compile(rf"^{self.duration}\s*(?:秒|s)$", re.IGNORECASE)
         control = self._video_settings_control(page)
-        if await control.count() and re.search(r"10\s*s", str(await control.inner_text() or ""), re.IGNORECASE):
+        if await control.count() and re.search(rf"{self.duration}\s*s", str(await control.inner_text() or ""), re.IGNORECASE):
             return True
-        return await self._select_video_setting(page, re.compile(r"^10\s*(?:秒|s)$", re.IGNORECASE))
+        if not await self._select_video_setting(page, duration_pattern):
+            return False
+        for _ in range(4):
+            control = self._video_settings_control(page)
+            if await control.count() and re.search(rf"{self.duration}\s*s", str(await control.inner_text() or ""), re.IGNORECASE):
+                return True
+            await page.wait_for_timeout(250)
+        return False
 
     async def _ensure_video_ratio(self, page) -> bool:
         ratio = str(self.ratio or "").strip()
         if ratio not in {"16:9", "9:16", "1:1", "4:3", "3:4"}:
             return False
-        return await self._select_video_setting(page, re.compile(rf"^{re.escape(ratio)}$"))
+        ratio_pattern = re.compile(rf"^{re.escape(ratio)}$")
+        if not await self._select_video_setting(page, ratio_pattern):
+            return False
+        return await self._video_setting_is_selected(page, ratio_pattern)
 
     async def _ensure_video_model(self, page) -> bool:
         if self.task_type != "video" or not self.model:

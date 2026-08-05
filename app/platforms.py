@@ -16,7 +16,7 @@ DEFAULT_MODELS = {
 PLATFORM_VIDEO_DURATIONS = {
     "dola": [5, 10, 15],
     "doubao": [10],
-    "qianwen": [10],
+    "qianwen": [5, 10, 15],
 }
 
 

@@ -117,6 +117,7 @@ class DoubaoAutomationTests(unittest.TestCase):
             settings=SimpleNamespace(iframe_selector="iframe[src*='verifycenter/captcha']"),
             solve=AsyncMock(),
         )
+        runner.semantic_verification_solver = SimpleNamespace(enabled=False)
         semantic = SimpleNamespace(count=AsyncMock(return_value=1))
         body = SimpleNamespace(inner_text=AsyncMock(return_value="Tap all matching objects"))
         basic = SimpleNamespace(count=AsyncMock(return_value=0))
@@ -148,6 +149,15 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result.status, "semantic_challenge")
         self.assertEqual(result.attempts, 0)
         runner.verification_solver.solve.assert_not_awaited()
+
+    def test_semantic_drag_comment_translates_known_category(self) -> None:
+        comment = DoubaoVideoAutomation._semantic_captcha_comment(
+            "属于动物的\n请选择所有符合上文描述的图片，并拖拽到下方",
+            drag=True,
+        )
+
+        self.assertIn("objects that are animals", comment)
+        self.assertIn("rectangle", comment)
 
     def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)

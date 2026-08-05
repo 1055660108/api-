@@ -21,6 +21,7 @@ from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BR
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
 from .reference_images import prepare_task_reference_images
+from .semantic_captcha import AntiCaptchaCoordinateSolver, SemanticCaptchaError
 from .slider_solver import SliderChallengeSolver, SliderSolveResult, SliderSolverSettings, find_slider_page
 from .store import STATUS_SUBMITTED, begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, mark_submitted, mark_success, release_task_submission, save_result, set_execution_phase, task_exists, update_meta
 from .profile_lock import account_profile_lock
@@ -1788,6 +1789,7 @@ class DoubaoVideoAutomation:
                 verify_timeout_seconds=8.0,
             )
         )
+        self.semantic_verification_solver = AntiCaptchaCoordinateSolver.from_environment()
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
 
@@ -2938,6 +2940,151 @@ class DoubaoVideoAutomation:
                 pass
             await cancel_tracked_tasks(capture_tasks)
 
+    @staticmethod
+    def _semantic_captcha_comment(text: str, *, drag: bool) -> str:
+        normalized = re.sub(r"\s+", "", str(text or ""))
+        translations = (
+            ("属于动物的", "objects that are animals"),
+            ("属于植物的", "objects that are plants"),
+            ("属于水果的", "objects that are fruits"),
+            ("属于蔬菜的", "objects that are vegetables"),
+            ("属于食物的", "objects that are food"),
+            ("属于交通工具的", "objects that are vehicles"),
+            ("属于家具的", "objects that are furniture"),
+            ("属于电器的", "objects that are electrical appliances"),
+            ("属于乐器的", "objects that are musical instruments"),
+            ("会飞的", "objects that can fly"),
+            ("水里的", "objects that live in water"),
+            ("可以吃的", "objects that are edible"),
+        )
+        description = "objects matching the instruction shown at the top"
+        for marker, translated in translations:
+            if marker in normalized:
+                description = translated
+                break
+        if drag:
+            return (
+                f"Return one rectangle around every picture tile showing {description}. "
+                "Do not select instruction text, buttons, or the drop area."
+            )
+        return (
+            f"Return one click point on every picture tile showing {description}. "
+            "Do not select instruction text or buttons."
+        )
+
+    async def _solve_semantic_submission_verification(
+        self,
+        page: Page,
+        frame: Any,
+        frame_element: Any,
+        semantic_text: str,
+    ) -> SliderSolveResult:
+        drag_mode = bool(re.search(r"拖拽|拖动|drag", semantic_text, flags=re.IGNORECASE))
+        body = frame.locator("body")
+        try:
+            screenshot = await body.screenshot(type="png", animations="disabled", timeout=10000)
+            solution = await self.semantic_verification_solver.solve(
+                screenshot,
+                comment=self._semantic_captcha_comment(semantic_text, drag=drag_mode),
+                mode="rectangles" if drag_mode else "points",
+            )
+            body_box = await body.bounding_box()
+            if not body_box:
+                raise SemanticCaptchaError("semantic captcha body position is unavailable")
+
+            if drag_mode:
+                drop_box = None
+                drop_candidates = frame.get_by_text(
+                    re.compile(r"拖拽到这里|拖动到这里|Drop here", re.IGNORECASE)
+                )
+                for index in range(await drop_candidates.count() - 1, -1, -1):
+                    candidate = drop_candidates.nth(index)
+                    if await candidate.is_visible():
+                        drop_box = await candidate.bounding_box()
+                        if drop_box:
+                            break
+                if not drop_box:
+                    raise SemanticCaptchaError("semantic captcha drop target is unavailable")
+                destination_x = drop_box["x"] + drop_box["width"] / 2
+                destination_y = drop_box["y"] + drop_box["height"] / 2
+                for coordinate_index, coordinate in enumerate(solution.coordinates):
+                    x1, y1, x2, y2 = coordinate
+                    source_x = body_box["x"] + (x1 + x2) / 2
+                    source_y = body_box["y"] + (y1 + y2) / 2
+                    target_x = destination_x + ((coordinate_index % 3) - 1) * min(24, drop_box["width"] / 8)
+                    target_y = destination_y + (coordinate_index // 3) * min(16, drop_box["height"] / 8)
+                    await page.mouse.move(source_x, source_y)
+                    await page.mouse.down()
+                    try:
+                        for step in range(1, 25):
+                            progress = step / 24
+                            await page.mouse.move(
+                                source_x + (target_x - source_x) * progress,
+                                source_y + (target_y - source_y) * progress,
+                            )
+                            await asyncio.sleep(0.012)
+                    finally:
+                        await page.mouse.up()
+                    await page.wait_for_timeout(250)
+            else:
+                for x, y in solution.coordinates:
+                    await page.mouse.click(body_box["x"] + x, body_box["y"] + y)
+                    await page.wait_for_timeout(200)
+
+            submit = None
+            preferred = frame.get_by_role(
+                "button",
+                name=re.compile(r"提交|确认|验证|Submit|Confirm|Verify", re.IGNORECASE),
+            )
+            for locator in (preferred, frame.locator("button")):
+                for index in range(await locator.count() - 1, -1, -1):
+                    candidate = locator.nth(index)
+                    try:
+                        if await candidate.is_visible() and await candidate.is_enabled():
+                            submit = candidate
+                            break
+                    except Exception:
+                        continue
+                if submit is not None:
+                    break
+            if submit is None:
+                raise SemanticCaptchaError("semantic captcha submit button is unavailable")
+            await submit.click(force=True)
+
+            deadline = asyncio.get_running_loop().time() + 20
+            while asyncio.get_running_loop().time() < deadline:
+                await page.wait_for_timeout(250)
+                try:
+                    if not await frame_element.is_visible():
+                        if task_exists(self.task_id):
+                            save_result(self.task_id, extra={
+                                "doubao_verification_solver_status": "success",
+                                "doubao_verification_solver_attempts": 1,
+                                "doubao_verification_coordinate_count": len(solution.coordinates),
+                                "doubao_verification_solver_cost": solution.cost,
+                            })
+                        return SliderSolveResult(status="success", attempts=1)
+                except Exception:
+                    return SliderSolveResult(status="success", attempts=1)
+            raise SemanticCaptchaError("semantic captcha remained visible after submission")
+        except SemanticCaptchaError as exc:
+            if task_exists(self.task_id):
+                save_result(self.task_id, extra={
+                    "doubao_verification_solver_status": "semantic_challenge",
+                    "doubao_verification_solver_attempts": 1,
+                    "doubao_verification_solver_error": str(exc)[:300],
+                })
+            return SliderSolveResult(status="semantic_challenge", attempts=1, error=str(exc))
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:300]
+            if task_exists(self.task_id):
+                save_result(self.task_id, extra={
+                    "doubao_verification_solver_status": "semantic_challenge",
+                    "doubao_verification_solver_attempts": 1,
+                    "doubao_verification_solver_error": error,
+                })
+            return SliderSolveResult(status="semantic_challenge", attempts=1, error=error)
+
     async def _resolve_submission_verification(self, page: Page) -> SliderSolveResult:
         self._set_phase("waiting_doubao_verification", "正在等待豆包人机验证")
         deadline = asyncio.get_running_loop().time() + DOUBAO_VERIFICATION_RENDER_WAIT_SECONDS
@@ -2974,9 +3121,11 @@ class DoubaoVideoAutomation:
             self.verification_solver.settings.iframe_selector
         )
         frame = None
+        frame_element = None
         for index in range(await verification_frames.count()):
             try:
                 if await verification_frames.nth(index).is_visible():
+                    frame_element = verification_frames.nth(index)
                     frame = target_page.frame_locator(
                         self.verification_solver.settings.iframe_selector
                     ).nth(index)
@@ -3004,6 +3153,13 @@ class DoubaoVideoAutomation:
                     pass
                 await page.wait_for_timeout(200)
             if semantic_detected:
+                if self.semantic_verification_solver.enabled and frame_element is not None:
+                    return await self._solve_semantic_submission_verification(
+                        target_page,
+                        frame,
+                        frame_element,
+                        semantic_text,
+                    )
                 if task_exists(self.task_id):
                     save_result(self.task_id, extra={
                         "doubao_verification_solver_status": "semantic_challenge",

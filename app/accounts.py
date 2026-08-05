@@ -1110,6 +1110,40 @@ def set_account_pinned_proxy_node(account_id: str, node_id: str) -> None:
             return
 
 
+def clear_account_pinned_proxy_node(account_id: str, expected_node_id: str = "") -> None:
+    account_id = str(account_id or "").strip().lower()
+    expected_node_id = str(expected_node_id or "").strip()
+    if not account_id:
+        return
+
+    def clear(account: dict[str, Any]) -> bool:
+        current = str(account.get("pinned_proxy_node_id") or "").strip()
+        if expected_node_id and current != expected_node_id:
+            return False
+        if not current:
+            return False
+        account.update(pinned_proxy_node_id="", updated_at=utc_now())
+        return True
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            def mutate(data: dict[str, Any]) -> None:
+                for account in data.get("accounts") or []:
+                    if str(account.get("id") or "") == account_id:
+                        clear(account)
+                        return
+
+            postgres.mutate_document("accounts", {"accounts": []}, mutate)
+            return
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") != account_id:
+                continue
+            if clear(account):
+                _write_data(data)
+            return
+
+
 def _account_supports_duration(account: dict[str, Any], platform: str, duration: int) -> bool:
     return not (
         normalize_platform(platform) == "dola"

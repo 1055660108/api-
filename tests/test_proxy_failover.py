@@ -85,6 +85,22 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(subscription.await_args.kwargs["random_select"])
 
+    async def test_doubao_subscription_node_is_pinned_on_first_acquisition(self) -> None:
+        instance = automation_instance()
+        instance.proxy_platform = "doubao"
+        instance.account = {"id": "account-1"}
+        settings = proxy_settings("subscription")
+        settings.proxy_auto_countries = ["日本"]
+        proxy = {"server": "http://127.0.0.1:7890", "node_id": "node-jp", "node_name": "JP", "node_count": "2"}
+        with patch.object(automation, "load_settings", return_value=settings), patch.object(
+            automation, "acquire_dola_subscription_proxy", new=AsyncMock(return_value=proxy)
+        ), patch("app.accounts.set_account_pinned_proxy_node") as pin:
+            await instance._browser_proxy_config()
+
+        pin.assert_called_once_with("account-1", "node-jp")
+        self.assertEqual(instance.account["pinned_proxy_node_id"], "node-jp")
+        self.assertEqual(instance.proxy_timezone_id, "Asia/Tokyo")
+
     async def test_random_subscription_selection_ignores_fixed_node_without_auto_select(self) -> None:
         nodes = (
             proxy_manager.ProxyNode(id="fixed", name="fixed", country="JP", protocol="http", server="fixed.example", port=8001, uri="http://fixed.example:8001"),

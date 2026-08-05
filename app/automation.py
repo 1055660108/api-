@@ -81,6 +81,29 @@ SLIDER_RECOVERY_SUBMIT_ATTEMPTS = 2
 SLIDER_RECOVERY_OBSERVE_SECONDS = 15.0
 PROXY_TRANSPORT_COOLDOWN_SECONDS = 60
 
+DOUBAO_PROXY_TIMEZONES = {
+    "jp": "Asia/Tokyo",
+    "japan": "Asia/Tokyo",
+    "日本": "Asia/Tokyo",
+    "hk": "Asia/Hong_Kong",
+    "hong kong": "Asia/Hong_Kong",
+    "香港": "Asia/Hong_Kong",
+    "sg": "Asia/Singapore",
+    "singapore": "Asia/Singapore",
+    "新加坡": "Asia/Singapore",
+    "tw": "Asia/Taipei",
+    "taiwan": "Asia/Taipei",
+    "台湾": "Asia/Taipei",
+    "台湾省": "Asia/Taipei",
+}
+
+
+def doubao_proxy_timezone_id(countries: Any) -> str:
+    selected = [str(item or "").strip().lower() for item in countries or () if str(item or "").strip()]
+    if len(selected) != 1:
+        return ""
+    return DOUBAO_PROXY_TIMEZONES.get(selected[0], "")
+
 
 def dola_service_frequent_abnormal_outcome(state: str) -> dict[str, Any]:
     return {
@@ -986,6 +1009,7 @@ class DolaFetchAutomation:
         self.subscription_proxy: dict[str, str] | None = None
         self.account_proxy_bridge: dict[str, str] | None = None
         self.proxy_exit_id = "direct"
+        self.proxy_timezone_id = ""
         self.slider_enabled = _environment_bool("DOLA_SLIDER_ENABLED", True)
         self.slider_solver = SliderChallengeSolver(
             SliderSolverSettings(
@@ -1310,6 +1334,7 @@ class DolaFetchAutomation:
         cooldown_seconds: int | None = None,
         reason: str = "runtime_failure",
     ) -> None:
+        self._clear_doubao_pinned_proxy_node()
         if self.active_proxy_source == "api":
             self._remember_failed_proxy_node()
             if getattr(self, "api_proxy_lease", None) is not None:
@@ -1325,6 +1350,7 @@ class DolaFetchAutomation:
             mark_proxy_source_unavailable(self.active_proxy_source)
 
     def _cooldown_active_proxy_transport(self) -> None:
+        self._clear_doubao_pinned_proxy_node()
         if self.active_proxy_source == "api":
             self._remember_failed_proxy_node()
             if getattr(self, "api_proxy_lease", None) is not None:
@@ -1337,6 +1363,19 @@ class DolaFetchAutomation:
                 cooldown_seconds=PROXY_TRANSPORT_COOLDOWN_SECONDS,
             )
             self._remember_failed_proxy_node()
+
+    def _clear_doubao_pinned_proxy_node(self) -> None:
+        if getattr(self, "proxy_platform", "dola") != "doubao" or self.active_proxy_source != "subscription":
+            return
+        account_id = str((getattr(self, "account", {}) or {}).get("id") or "").strip()
+        node_id = str(self.proxy_node_id or "").strip()
+        if not account_id or not node_id:
+            return
+        from .accounts import clear_account_pinned_proxy_node
+
+        clear_account_pinned_proxy_node(account_id, node_id)
+        if str(self.account.get("pinned_proxy_node_id") or "").strip() == node_id:
+            self.account["pinned_proxy_node_id"] = ""
 
     def _discard_active_api_proxy_transport(self) -> None:
         if self.active_proxy_source != "api":
@@ -1895,6 +1934,7 @@ class DolaFetchAutomation:
         self.active_proxy_server = ""
         self.proxy_node_id = ""
         self.proxy_exit_id = "direct"
+        self.proxy_timezone_id = ""
         meta = get_meta(self.task_id) if self._task_exists() else {}
         avoid_node_id = str(meta.get("proxy_retry_avoid_node_id") or "").strip()
         excluded_node_ids = {
@@ -1912,6 +1952,8 @@ class DolaFetchAutomation:
         selected_source = str(platform_sources.get(self.proxy_platform) or self.settings.proxy_source).strip().lower()
         random_select = bool(platform_random.get(self.proxy_platform))
         account = getattr(self, "account", {}) or {}
+        if self.proxy_platform == "doubao" and selected_source == "subscription":
+            self.proxy_timezone_id = doubao_proxy_timezone_id(self.settings.proxy_auto_countries)
         pinned_proxy_node_id = (
             str(account.get("pinned_proxy_node_id") or "").strip()
             if self.proxy_platform == "doubao"
@@ -1959,6 +2001,11 @@ class DolaFetchAutomation:
                     self.active_proxy_source = source
                     self.active_proxy_server = str(proxy.get("server") or "")
                     self.proxy_exit_id = str(proxy.get("exit_id") or f"node:{self.proxy_node_id}")
+                    if self.proxy_platform == "doubao" and self.proxy_node_id and str(account.get("id") or "").strip():
+                        from .accounts import set_account_pinned_proxy_node
+
+                        set_account_pinned_proxy_node(str(account.get("id") or ""), self.proxy_node_id)
+                        account["pinned_proxy_node_id"] = self.proxy_node_id
                     mark_proxy_source_available(source)
                     if avoid_node_id and self.proxy_node_id != avoid_node_id:
                         update_meta(self.task_id, proxy_retry_avoid_node_id="")
@@ -2027,7 +2074,10 @@ class DolaFetchAutomation:
             except ProxyCoolingDownError:
                 raise
             except Exception as exc:
-                mark_proxy_source_unavailable(source)
+                if source == "subscription" and pinned_proxy_node_id:
+                    self._clear_doubao_pinned_proxy_node()
+                else:
+                    mark_proxy_source_unavailable(source)
                 errors.append(f"{source}: {str(exc)[:160]}")
                 if source == "subscription":
                     await release_dola_subscription_proxy(self.subscription_proxy)

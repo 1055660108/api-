@@ -326,6 +326,18 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(error, "doubao generation acknowledgement missing")
         self.assertEqual(category, "generation_ack_missing")
 
+    def test_verify_stream_error_is_classified_without_waiting_for_ack(self) -> None:
+        response = 'event: STREAM_ERROR\ndata: {"error_code":710022004,"error_msg":"rate limited"}\n\n'
+        result = normalize_doubao_submission_acknowledgement({
+            "ok": True,
+            "accepted": False,
+            "response_preview": response,
+        })
+
+        self.assertTrue(result["slider_verification"])
+        self.assertEqual(result["upstream_error_code"], "710022004")
+        self.assertEqual(classify_doubao_submission(result), ("doubao verification required", "slider_verification"))
+
     def test_missing_video_settings_panel_uses_internal_request_fallback(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={

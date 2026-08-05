@@ -1019,11 +1019,24 @@ def should_use_doubao_video_creation_page(result: dict[str, Any]) -> bool:
 def normalize_doubao_submission_acknowledgement(result: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict) or result.get("accepted") or not result.get("ok"):
         return result
+    response_text = "\n".join(
+        str(result.get(key) or "")
+        for key in ("initial_response_preview", "response_preview", "direct_submission_response_preview")
+    )
+    if "710022004" in response_text:
+        result["slider_verification"] = True
+        result["upstream_error_code"] = "710022004"
+        result["upstream_error_message"] = "rate limited"
+        return result
+    if "710022002" in response_text:
+        result["service_frequent"] = True
+        result["upstream_error_code"] = "710022002"
+        return result
+    if "event: STREAM_ERROR" in response_text:
+        result["stream_error"] = True
+        return result
     acknowledgement = detect_doubao_generation_acknowledgement(
-        "\n".join(
-            str(result.get(key) or "")
-            for key in ("initial_response_preview", "response_preview")
-        )
+        response_text
     )
     if not acknowledgement:
         return result
@@ -2646,14 +2659,14 @@ class DoubaoVideoAutomation:
         capture_tasks: set[asyncio.Task[Any]] = set()
         capture_enabled = False
 
-        def remember_evidence(value: Any) -> None:
+        def remember_evidence(value: Any, *, force_preview: bool = False) -> None:
             text = str(value or "")
             conversation_id = extract_doubao_conversation_id(text)
             if conversation_id:
                 evidence["conversation_id"] = conversation_id
             if DOUBAO_SUBMISSION_MARKER in text:
                 evidence["network_marker"] = True
-            if text and any(marker in text for marker in (DOUBAO_SUBMISSION_MARKER, "conversation_id", "conversationId")):
+            if text and (force_preview or any(marker in text for marker in (DOUBAO_SUBMISSION_MARKER, "conversation_id", "conversationId"))):
                 evidence["response_preview"] = text[-6000:]
 
         async def capture_submission_response(response) -> None:
@@ -2663,6 +2676,8 @@ class DoubaoVideoAutomation:
                 request = response.request
                 if request.resource_type not in {"xhr", "fetch"}:
                     return
+                if urlsplit(str(response.url or "")).path != "/chat/completion":
+                    return
                 remember_evidence(request.post_data or "")
                 remember_evidence(response.url)
                 content_length = int(response.headers.get("content-length") or 0)
@@ -2671,7 +2686,7 @@ class DoubaoVideoAutomation:
                 response_body = await response.text()
             except Exception:
                 return
-            remember_evidence(response_body[:2 * 1024 * 1024])
+            remember_evidence(response_body[:2 * 1024 * 1024], force_preview=True)
 
         def capture_submission(response) -> None:
             create_tracked_task(capture_tasks, capture_submission_response(response))
@@ -2800,7 +2815,15 @@ class DoubaoVideoAutomation:
                 try:
                     await asyncio.wait_for(submission_request_seen.wait(), timeout=3)
                 except asyncio.TimeoutError:
-                    pass
+                    return {
+                        "ok": True,
+                        "status": 200,
+                        "accepted": False,
+                        "response_preview": str(evidence.get("response_preview") or ""),
+                        "video_creation_page_used": True,
+                        "submitted_with_images": submitted_with_images,
+                        "native_submission_request_seen": False,
+                    }
 
             deadline = asyncio.get_running_loop().time() + DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS
             marker_visible = False
@@ -2817,6 +2840,34 @@ class DoubaoVideoAutomation:
                     return {"ok": True, "status": 200, "accepted": False, "service_frequent": True}
                 if is_doubao_account_quota_insufficient(last_body[-2500:]):
                     return {"ok": True, "status": 200, "accepted": False, "quota_insufficient": True}
+                network_preview = str(evidence.get("response_preview") or "")
+                if "710022004" in network_preview:
+                    return {
+                        "ok": True,
+                        "status": 200,
+                        "accepted": False,
+                        "slider_verification": True,
+                        "response_preview": network_preview,
+                        "native_submission_request_seen": submission_request_seen.is_set(),
+                    }
+                if "710022002" in network_preview:
+                    return {
+                        "ok": True,
+                        "status": 200,
+                        "accepted": False,
+                        "service_frequent": True,
+                        "response_preview": network_preview,
+                        "native_submission_request_seen": submission_request_seen.is_set(),
+                    }
+                if "event: STREAM_ERROR" in network_preview:
+                    return {
+                        "ok": True,
+                        "status": 200,
+                        "accepted": False,
+                        "stream_error": True,
+                        "response_preview": network_preview,
+                        "native_submission_request_seen": submission_request_seen.is_set(),
+                    }
                 marker_visible = last_body.count(DOUBAO_SUBMISSION_MARKER) > baseline_ack_count
                 acknowledgement_visible = marker_visible and doubao_ui_generation_acknowledged(last_body, self.model)
                 remember_evidence(page.url)
@@ -2929,6 +2980,11 @@ class DoubaoVideoAutomation:
                     "extra_http_headers": BROWSER_EXTRA_HTTP_HEADERS,
                     "accept_downloads": False,
                 }
+                proxy_timezone_id = str(
+                    getattr(getattr(self, "proxy_session", None), "proxy_timezone_id", "") or ""
+                ).strip()
+                if proxy_timezone_id:
+                    context_options["timezone_id"] = proxy_timezone_id
                 storage_state = self._context_storage_state()
                 if storage_state is not None:
                     context_options["storage_state"] = storage_state

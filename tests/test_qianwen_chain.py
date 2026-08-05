@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, Mock
 
 from app.qianwen_automation import (
     QIANWEN_CHAT_API_URL,
+    QIANWEN_CHAT_SNAP_API_URL,
     QianwenVideoAutomation,
+    is_qianwen_chat_api_url,
     parse_qianwen_generation_result,
     parse_qianwen_submission,
     qianwen_cookie_value,
@@ -22,6 +24,11 @@ class QianwenSubmissionTests(unittest.TestCase):
         for model in ("万相 2.7", "万相 2.6", "HappyHorse 1.0"):
             self.assertTrue(qianwen_model_requires_reference(model))
         self.assertFalse(qianwen_model_requires_reference("AI生图"))
+
+    def test_accepts_both_live_qianwen_submission_endpoints(self) -> None:
+        self.assertTrue(is_qianwen_chat_api_url(QIANWEN_CHAT_API_URL))
+        self.assertTrue(is_qianwen_chat_api_url(QIANWEN_CHAT_SNAP_API_URL))
+        self.assertFalse(is_qianwen_chat_api_url("https://chat2.qianwen.com/api/v1/session/req/detail"))
 
     def test_parses_real_video_submission_fields(self) -> None:
         payload = {
@@ -87,6 +94,32 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertTrue(runner.submission_request_event.is_set())
         self.assertEqual(runner.remote_session_id, "session-1")
         self.assertEqual(runner.remote_req_id, "request-1")
+
+    def test_snap_submission_request_is_captured(self) -> None:
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+        runner.remote_submission = {}
+        runner.remote_session_id = ""
+        runner.remote_req_id = ""
+        runner.submission_request_event = asyncio.Event()
+        request = SimpleNamespace(
+            method="POST",
+            url=QIANWEN_CHAT_SNAP_API_URL,
+            post_data=json.dumps({
+                "session_id": "snap-session",
+                "req_id": "snap-request",
+                "ai_tool_scene": "zaodian_generate_video",
+                "biz_data": json.dumps({
+                    "bizScene": "genVideo",
+                    "req": {"rootModel": "wan27", "params": {"duration": 15, "size": "16:9"}},
+                }),
+            }),
+        )
+
+        runner._capture_request(request)
+
+        self.assertTrue(runner.submission_request_event.is_set())
+        self.assertEqual(runner.remote_session_id, "snap-session")
+        self.assertEqual(runner.remote_req_id, "snap-request")
 
     def test_reference_upload_requires_a_new_composer_preview(self) -> None:
         runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)

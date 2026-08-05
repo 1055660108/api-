@@ -18,6 +18,7 @@ from .profile_lock import account_profile_lock
 
 QIANWEN_URL = "https://www.qianwen.com/"
 QIANWEN_CHAT_API_URL = "https://chat2.qianwen.com/api/v2/chat"
+QIANWEN_CHAT_SNAP_API_URL = "https://chat2.qianwen.com/api/v1/chat/snap"
 QIANWEN_DETAIL_API_URL = "https://chat2-api.qianwen.com/api/v1/session/req/detail"
 VIDEO_URL_RE = re.compile(r'https?://[^"\\\s]+\.mp4(?:\?[^"\\\s]*)?', re.IGNORECASE)
 MEDIA_URL_RE = re.compile(r'https?://[^"\\\s]+(?:\.mp4|mime_type=video|video_mp4|\.m3u8)(?:\?[^"\\\s]*)?', re.IGNORECASE)
@@ -28,6 +29,11 @@ QIANWEN_REFERENCE_REQUIRED_MODELS = {"万相 2.7", "万相 2.6", "HappyHorse 1.0
 
 def qianwen_model_requires_reference(model: str) -> bool:
     return str(model or "").strip() in QIANWEN_REFERENCE_REQUIRED_MODELS
+
+
+def is_qianwen_chat_api_url(url: str) -> bool:
+    value = str(url or "").strip().lower()
+    return value.startswith((QIANWEN_CHAT_API_URL.lower(), QIANWEN_CHAT_SNAP_API_URL.lower()))
 
 
 def _try_parse_json(value: Any) -> Any:
@@ -531,7 +537,7 @@ class QianwenVideoAutomation:
         post_data = str(request.post_data or "")
         url = str(response.url)
         lowered_url = url.lower()
-        submission = parse_qianwen_submission(post_data) if request.method == "POST" and lowered_url.startswith(QIANWEN_CHAT_API_URL) else {}
+        submission = parse_qianwen_submission(post_data) if request.method == "POST" and is_qianwen_chat_api_url(lowered_url) else {}
         relevant = bool(submission) or self.prompt in post_data or any(item in lowered_url for item in ("/chat", "video", "wanx", "aigc", "generate", "task", "completion"))
         if not relevant:
             return
@@ -563,7 +569,7 @@ class QianwenVideoAutomation:
                 self.submission_event.set()
 
     def _capture_request(self, request) -> None:
-        if request.method != "POST" or not str(request.url).lower().startswith(QIANWEN_CHAT_API_URL):
+        if request.method != "POST" or not is_qianwen_chat_api_url(str(request.url)):
             return
         submission = parse_qianwen_submission(str(request.post_data or ""))
         if not submission:

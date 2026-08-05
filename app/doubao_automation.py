@@ -3013,9 +3013,11 @@ class DoubaoVideoAutomation:
                 screenshot_width, screenshot_height = struct.unpack(">II", screenshot[16:24])
             coordinate_scale_x = body_box["width"] / screenshot_width if screenshot_width else 1.0
             coordinate_scale_y = body_box["height"] / screenshot_height if screenshot_height else 1.0
+            replay_diagnostics: list[dict[str, Any]] = []
 
             if drag_mode:
                 drop_box = None
+                drop_diagnostics: list[dict[str, Any]] = []
                 drop_candidates = frame.get_by_text(
                     re.compile(r"拖拽到这里|拖动到这里|Drop here", re.IGNORECASE)
                 )
@@ -3024,6 +3026,25 @@ class DoubaoVideoAutomation:
                     if await candidate.is_visible():
                         drop_box = await candidate.bounding_box()
                         if drop_box:
+                            drop_diagnostics = await candidate.evaluate(
+                                """element => {
+                                    const items = [];
+                                    let current = element;
+                                    for (let depth = 0; current && depth < 5; depth += 1, current = current.parentElement) {
+                                        const rect = current.getBoundingClientRect();
+                                        items.push({
+                                            depth,
+                                            tag: current.tagName.toLowerCase(),
+                                            className: String(current.className || '').slice(0, 160),
+                                            role: current.getAttribute('role') || '',
+                                            childCount: current.children.length,
+                                            width: Math.round(rect.width),
+                                            height: Math.round(rect.height),
+                                        });
+                                    }
+                                    return items;
+                                }"""
+                            )
                             break
                 if not drop_box:
                     raise SemanticCaptchaError("semantic captcha drop target is unavailable")
@@ -3038,6 +3059,19 @@ class DoubaoVideoAutomation:
                         x, y = coordinate
                         source_x = body_box["x"] + x * coordinate_scale_x
                         source_y = body_box["y"] + y * coordinate_scale_y
+                    local_x = source_x - body_box["x"]
+                    local_y = source_y - body_box["y"]
+                    source_elements_before = await body.evaluate(
+                        """(element, point) => document.elementsFromPoint(point.x, point.y)
+                            .slice(0, 6)
+                            .map(item => ({
+                                tag: item.tagName.toLowerCase(),
+                                className: String(item.className || '').slice(0, 160),
+                                role: item.getAttribute('role') || '',
+                                draggable: item.getAttribute('draggable') || '',
+                            }))""",
+                        {"x": local_x, "y": local_y},
+                    )
                     target_x = destination_x + ((coordinate_index % 3) - 1) * min(24, drop_box["width"] / 8)
                     target_y = destination_y + (coordinate_index // 3) * min(16, drop_box["height"] / 8)
                     await page.mouse.move(source_x, source_y)
@@ -3053,6 +3087,27 @@ class DoubaoVideoAutomation:
                     finally:
                         await page.mouse.up()
                     await page.wait_for_timeout(250)
+                    source_elements_after = await body.evaluate(
+                        """(element, point) => document.elementsFromPoint(point.x, point.y)
+                            .slice(0, 6)
+                            .map(item => ({
+                                tag: item.tagName.toLowerCase(),
+                                className: String(item.className || '').slice(0, 160),
+                                role: item.getAttribute('role') || '',
+                                draggable: item.getAttribute('draggable') || '',
+                            }))""",
+                        {"x": local_x, "y": local_y},
+                    )
+                    replay_diagnostics.append({
+                        "coordinate": [round(float(part), 2) for part in coordinate],
+                        "source_before": source_elements_before,
+                        "source_after": source_elements_after,
+                    })
+                if task_exists(self.task_id):
+                    save_result(self.task_id, extra={
+                        "doubao_verification_drag_replay": replay_diagnostics,
+                        "doubao_verification_drop_diagnostics": drop_diagnostics,
+                    })
             else:
                 for x, y in solution.coordinates:
                     await page.mouse.click(
@@ -3071,18 +3126,28 @@ class DoubaoVideoAutomation:
             preferred = frame.get_by_role("button", name=submit_pattern)
             exact_text = frame.get_by_text(submit_pattern)
             candidate_locators = (
-                preferred,
-                frame.locator("button"),
-                frame.locator("[role='button']"),
-                frame.locator("[tabindex]"),
-                exact_text,
+                (preferred, False),
+                (
+                    frame.locator(
+                        "[class*='verify'][class*='button']:not([class*='text']), "
+                        "[class*='submit']:not([class*='text'])"
+                    ),
+                    True,
+                ),
+                (
+                    frame.locator(
+                        "button, [role='button'], [tabindex], [class*='button'], [class*='submit']"
+                    ),
+                    True,
+                ),
+                (exact_text, False),
             )
-            for locator in candidate_locators:
+            for locator, require_exact_text in candidate_locators:
                 for index in range(await locator.count() - 1, -1, -1):
                     candidate = locator.nth(index)
                     try:
                         text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())[:80]
-                        if locator not in (preferred, exact_text) and not submit_pattern.fullmatch(text):
+                        if require_exact_text and not submit_pattern.fullmatch(text):
                             continue
                         visible = await candidate.is_visible()
                         enabled = await candidate.is_enabled()
@@ -3146,6 +3211,14 @@ class DoubaoVideoAutomation:
                         return SliderSolveResult(status="success", attempts=1)
                 except Exception:
                     return SliderSolveResult(status="success", attempts=1)
+            if task_exists(self.task_id):
+                try:
+                    remaining_text = str(await body.inner_text(timeout=2000) or "")
+                except Exception:
+                    remaining_text = ""
+                save_result(self.task_id, extra={
+                    "doubao_verification_remaining_text": remaining_text[:1200],
+                })
             raise SemanticCaptchaError("semantic captcha remained visible after submission")
         except SemanticCaptchaError as exc:
             if task_exists(self.task_id):

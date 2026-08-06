@@ -723,6 +723,9 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("积分减免", self.html + self.javascript)
         self.assertNotIn("单任务积分减免", self.html + self.javascript)
         self.assertNotIn("单任务减免", self.html + self.javascript)
+        self.assertIn(".user-model-discount-list::-webkit-scrollbar", styles)
+        self.assertIn("overflow-y: scroll", styles)
+        self.assertIn("scrollbar-gutter: stable", styles)
 
     def test_client_home_prompt_cards_and_user_actions_match_122_contract(self) -> None:
         for text in ("用户首页", "我的视频", "提示词库", "会员订阅", "购买积分", "当前积分"):

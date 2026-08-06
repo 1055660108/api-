@@ -18,7 +18,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, set_account_pinned_proxy_node, update_account_cookies
 from .automation import DolaFetchAutomation, PREPARE_UPLOAD_SCRIPT, PREPARE_UPLOAD_TIMEOUT_SECONDS, ReferenceUploadCapacityError, is_reference_upload_failure, is_reference_upload_phase
-from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
+from .browser_runtime import BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
 from .reference_images import prepare_task_reference_images
@@ -31,6 +31,10 @@ from .profile_lock import account_profile_lock
 DOUBAO_URL = "https://www.doubao.com/chat/"
 DOUBAO_VIDEO_CREATION_URL = "https://www.doubao.com/chat/create-image"
 DOUBAO_SINGLE_CHAIN_URL = "https://www.doubao.com/im/chain/single"
+DOUBAO_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+)
 VIDEO_URL_RE = re.compile(r'https?://[^"\\\s]+(?:mime_type=video_mp4|\.mp4(?:\?[^"\\\s]*)?)', re.IGNORECASE)
 REGION_RESTRICTION_MARKERS = (
     "doubao-region-ban",
@@ -149,7 +153,7 @@ async def fetch_doubao_generation_result(
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json; encoding=utf-8",
         "Cookie": str(cookie_header or ""),
-        "User-Agent": BROWSER_USER_AGENT,
+        "User-Agent": DOUBAO_BROWSER_USER_AGENT,
         "agw-js-conv": "str",
     }
     async with httpx.AsyncClient(
@@ -253,7 +257,7 @@ async def cache_doubao_video(
         "Cookie": str(cookie_header or ""),
         "Origin": "https://www.doubao.com",
         "Referer": DOUBAO_URL,
-        "User-Agent": BROWSER_USER_AGENT,
+        "User-Agent": DOUBAO_BROWSER_USER_AGENT,
     }
     total = 0
     try:
@@ -560,7 +564,7 @@ async def fetch_doubao_unwatermarked_result(
         "Cookie": str(cookie_header or ""),
         "Origin": "https://www.doubao.com",
         "Referer": DOUBAO_URL,
-        "User-Agent": BROWSER_USER_AGENT,
+        "User-Agent": DOUBAO_BROWSER_USER_AGENT,
     }
     for fallback_api in fallback_apis:
         attempts += 1
@@ -3542,8 +3546,7 @@ class DoubaoVideoAutomation:
                 context_options: dict[str, Any] = {
                     "locale": "zh-CN",
                     "viewport": {"width": 1365, "height": 900},
-                    "user_agent": BROWSER_USER_AGENT,
-                    "extra_http_headers": BROWSER_EXTRA_HTTP_HEADERS,
+                    "user_agent": DOUBAO_BROWSER_USER_AGENT,
                     "accept_downloads": False,
                 }
                 proxy_timezone_id = str(
@@ -3574,7 +3577,6 @@ class DoubaoVideoAutomation:
                         args=browser_args,
                     )
                     context = await browser.new_context(**context_options)
-                await context.add_init_script(BROWSER_INIT_SCRIPT)
                 page = context.pages[0] if context.pages else await context.new_page()
                 self._set_phase("opening_generation_page", "正在打开豆包生成页面")
                 await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)

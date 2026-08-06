@@ -2943,8 +2943,30 @@ class DoubaoVideoAutomation:
 
     @staticmethod
     def _semantic_captcha_comment(text: str, *, drag: bool, rectangles: bool = True) -> str:
-        normalized = re.sub(r"\s+", "", str(text or ""))
+        raw_text = str(text or "")
+        normalized = re.sub(r"\s+", "", raw_text)
+        instruction = next(
+            (
+                re.sub(r"\s+", " ", line).strip()
+                for line in raw_text.splitlines()
+                if line.strip()
+                and not re.search(r"请选择所有|拖拽到|拖动到|刷新|反馈|提交", line)
+                and not re.fullmatch(r"[0-9A-F]{20,}", line.strip(), flags=re.IGNORECASE)
+            ),
+            "",
+        )[:160]
         translations = (
+            ("可以在天空中观察到的东西", "objects that can be seen in the sky"),
+            ("天空中可以观察到的东西", "objects that can be seen in the sky"),
+            ("可以在水中观察到的东西", "objects that can be seen in water"),
+            ("可以在地面上观察到的东西", "objects that can be seen on the ground"),
+            ("有轮子的", "objects that have wheels"),
+            ("有翅膀的", "objects that have wings"),
+            ("圆形的", "objects that are round"),
+            ("方形的", "objects that are square"),
+            ("红色的", "objects that are red"),
+            ("蓝色的", "objects that are blue"),
+            ("绿色的", "objects that are green"),
             ("谷物和蔬菜", "objects that are grains or vegetables"),
             ("水果和蔬菜", "objects that are fruits or vegetables"),
             ("属于动物的", "objects that are animals"),
@@ -2990,15 +3012,18 @@ class DoubaoVideoAutomation:
                     categories.append(translated)
             if categories:
                 description = f"objects that are {' or '.join(categories)}"
+        instruction_context = (
+            f' The original Chinese instruction is: "{instruction}".' if instruction else ""
+        )
         if drag:
             coordinate_type = "rectangle around" if rectangles else "click point at the center of"
             return (
                 f"Return one {coordinate_type} every picture tile showing {description}. "
-                "Do not select instruction text, buttons, or the drop area."
+                f"Do not select instruction text, buttons, or the drop area.{instruction_context}"
             )
         return (
             f"Return one click point on every picture tile showing {description}. "
-            "Do not select instruction text or buttons."
+            f"Do not select instruction text or buttons.{instruction_context}"
         )
 
     async def _solve_semantic_submission_verification(

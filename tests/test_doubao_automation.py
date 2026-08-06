@@ -150,6 +150,71 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result.attempts, 0)
         runner.verification_solver.solve.assert_not_awaited()
 
+    def test_semantic_verification_refreshes_after_incorrect_coordinate_answer(self) -> None:
+        runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+        runner.task_id = "task"
+        runner._set_phase = Mock()
+        runner.verification_solver = SimpleNamespace(
+            settings=SimpleNamespace(
+                iframe_selector="iframe[src*='verifycenter/captcha']",
+                max_attempts=3,
+            ),
+            solve=AsyncMock(),
+        )
+        runner.semantic_verification_solver = SimpleNamespace(enabled=True)
+        runner._solve_semantic_submission_verification = AsyncMock(side_effect=[
+            SliderSolveResult(
+                status="semantic_challenge",
+                attempts=1,
+                error="semantic captcha remained visible after submission",
+            ),
+            SliderSolveResult(status="success", attempts=2),
+        ])
+        semantic = SimpleNamespace(count=AsyncMock(return_value=1))
+        body = SimpleNamespace(inner_text=AsyncMock(return_value="可以在天空中观察到的东西"))
+        basic = SimpleNamespace(count=AsyncMock(return_value=0))
+        refresh_parent = SimpleNamespace(
+            is_visible=AsyncMock(return_value=True),
+            click=AsyncMock(),
+        )
+        refresh_candidate = SimpleNamespace(
+            is_visible=AsyncMock(return_value=True),
+            locator=Mock(return_value=refresh_parent),
+        )
+        refresh_text = SimpleNamespace(
+            count=AsyncMock(return_value=1),
+            nth=Mock(return_value=refresh_candidate),
+        )
+        frame = SimpleNamespace(
+            locator=Mock(side_effect=lambda selector: {
+                "#captcha_click_image, .captcha-prompt-bar": semantic,
+                "body": body,
+                "img[alt='basicImg']": basic,
+            }[selector]),
+            get_by_text=Mock(return_value=refresh_text),
+        )
+        frame_element = SimpleNamespace(is_visible=AsyncMock(return_value=True))
+        frames = SimpleNamespace(
+            count=AsyncMock(return_value=1),
+            nth=Mock(return_value=frame_element),
+        )
+        frame_selector = SimpleNamespace(nth=Mock(return_value=frame))
+        page = SimpleNamespace(
+            context=SimpleNamespace(pages=[]),
+            locator=Mock(return_value=frames),
+            frame_locator=Mock(return_value=frame_selector),
+            wait_for_timeout=AsyncMock(),
+        )
+        page.context.pages = [page]
+
+        with patch("app.doubao_automation.find_slider_page", new=AsyncMock(return_value=page)):
+            result = asyncio.run(runner._resolve_submission_verification(page))
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(runner._solve_semantic_submission_verification.await_count, 2)
+        refresh_parent.click.assert_awaited_once_with(force=True)
+
     def test_semantic_drag_comment_translates_known_category(self) -> None:
         comment = DoubaoVideoAutomation._semantic_captcha_comment(
             "属于动物的\n请选择所有符合上文描述的图片，并拖拽到下方",

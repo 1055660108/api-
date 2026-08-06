@@ -3032,7 +3032,10 @@ class DoubaoVideoAutomation:
         frame: Any,
         frame_element: Any,
         semantic_text: str,
+        *,
+        solver_attempt: int = 1,
     ) -> SliderSolveResult:
+        solver_attempt = max(1, int(solver_attempt or 1))
         drag_mode = bool(re.search(r"拖拽|拖动|drag", semantic_text, flags=re.IGNORECASE))
         body = frame.locator("body")
         try:
@@ -3065,9 +3068,10 @@ class DoubaoVideoAutomation:
             if task_exists(self.task_id):
                 save_result(self.task_id, extra={
                     "doubao_verification_solver_status": "coordinates_received",
-                    "doubao_verification_solver_attempts": 1,
+                    "doubao_verification_solver_attempts": solver_attempt,
                     "doubao_verification_coordinate_count": len(solution.coordinates),
                     "doubao_verification_solver_cost": solution.cost,
+                    f"doubao_verification_solver_cost_attempt_{solver_attempt}": solution.cost,
                 })
             body_box = await body.bounding_box()
             coordinate_box = await coordinate_target.bounding_box()
@@ -3288,13 +3292,13 @@ class DoubaoVideoAutomation:
                         if task_exists(self.task_id):
                             save_result(self.task_id, extra={
                                 "doubao_verification_solver_status": "success",
-                                "doubao_verification_solver_attempts": 1,
+                                "doubao_verification_solver_attempts": solver_attempt,
                                 "doubao_verification_coordinate_count": len(solution.coordinates),
                                 "doubao_verification_solver_cost": solution.cost,
                             })
-                        return SliderSolveResult(status="success", attempts=1)
+                        return SliderSolveResult(status="success", attempts=solver_attempt)
                 except Exception:
-                    return SliderSolveResult(status="success", attempts=1)
+                    return SliderSolveResult(status="success", attempts=solver_attempt)
             if task_exists(self.task_id):
                 try:
                     remaining_text = str(await body.inner_text(timeout=2000) or "")
@@ -3308,19 +3312,19 @@ class DoubaoVideoAutomation:
             if task_exists(self.task_id):
                 save_result(self.task_id, extra={
                     "doubao_verification_solver_status": "semantic_challenge",
-                    "doubao_verification_solver_attempts": 1,
+                    "doubao_verification_solver_attempts": solver_attempt,
                     "doubao_verification_solver_error": str(exc)[:300],
                 })
-            return SliderSolveResult(status="semantic_challenge", attempts=1, error=str(exc))
+            return SliderSolveResult(status="semantic_challenge", attempts=solver_attempt, error=str(exc))
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"[:300]
             if task_exists(self.task_id):
                 save_result(self.task_id, extra={
                     "doubao_verification_solver_status": "semantic_challenge",
-                    "doubao_verification_solver_attempts": 1,
+                    "doubao_verification_solver_attempts": solver_attempt,
                     "doubao_verification_solver_error": error,
                 })
-            return SliderSolveResult(status="semantic_challenge", attempts=1, error=error)
+            return SliderSolveResult(status="semantic_challenge", attempts=solver_attempt, error=error)
 
     async def _resolve_submission_verification(self, page: Page) -> SliderSolveResult:
         self._set_phase("waiting_doubao_verification", "正在等待豆包人机验证")
@@ -3391,12 +3395,59 @@ class DoubaoVideoAutomation:
                 await page.wait_for_timeout(200)
             if semantic_detected:
                 if self.semantic_verification_solver.enabled and frame_element is not None:
-                    return await self._solve_semantic_submission_verification(
-                        target_page,
-                        frame,
-                        frame_element,
-                        semantic_text,
+                    semantic_attempt_limit = min(
+                        3,
+                        max(1, int(self.verification_solver.settings.max_attempts or 1)),
                     )
+                    last_result = SliderSolveResult(
+                        status="semantic_challenge",
+                        attempts=0,
+                        error="semantic captcha was not attempted",
+                    )
+                    for semantic_attempt in range(1, semantic_attempt_limit + 1):
+                        last_result = await self._solve_semantic_submission_verification(
+                            target_page,
+                            frame,
+                            frame_element,
+                            semantic_text,
+                            solver_attempt=semantic_attempt,
+                        )
+                        if last_result.status == "success":
+                            return last_result
+                        if (
+                            "remained visible after submission" not in str(last_result.error or "")
+                            or semantic_attempt >= semantic_attempt_limit
+                        ):
+                            return last_result
+                        refresh_pattern = re.compile(r"^\s*(刷新|Refresh)\s*$", re.IGNORECASE)
+                        refresh_text = frame.get_by_text(refresh_pattern)
+                        refreshed = False
+                        for refresh_index in range(await refresh_text.count() - 1, -1, -1):
+                            refresh_candidate = refresh_text.nth(refresh_index)
+                            try:
+                                if not await refresh_candidate.is_visible():
+                                    continue
+                                refresh_parent = refresh_candidate.locator("xpath=..")
+                                if await refresh_parent.is_visible():
+                                    await refresh_parent.click(force=True)
+                                else:
+                                    await refresh_candidate.click(force=True)
+                                refreshed = True
+                                break
+                            except Exception:
+                                continue
+                        if not refreshed:
+                            return SliderSolveResult(
+                                status="semantic_challenge",
+                                attempts=semantic_attempt,
+                                error="semantic captcha refresh control is unavailable",
+                            )
+                        await target_page.wait_for_timeout(1200)
+                        try:
+                            semantic_text = str(await frame.locator("body").inner_text(timeout=2000) or "")
+                        except Exception:
+                            pass
+                    return last_result
                 if task_exists(self.task_id):
                     save_result(self.task_id, extra={
                         "doubao_verification_solver_status": "semantic_challenge",

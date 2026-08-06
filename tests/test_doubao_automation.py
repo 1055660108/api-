@@ -530,7 +530,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result["upstream_error_code"], "710022004")
         self.assertEqual(classify_doubao_submission(result), ("doubao verification required", "slider_verification"))
 
-    def test_missing_video_settings_panel_uses_internal_request_fallback(self) -> None:
+    def test_missing_video_settings_panel_never_uses_internal_request_fallback(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={
             "ok": False,
@@ -547,14 +547,15 @@ class DoubaoAutomationTests(unittest.TestCase):
 
         result = asyncio.run(runner._submit_via_video_creation_page(SimpleNamespace(), image_count=0))
 
-        self.assertTrue(result["accepted"])
-        self.assertTrue(result["native_submission_fallback_used"])
-        self.assertEqual(result["native_video_creation_ui_error"], "doubao video settings panel unavailable")
-        self.assertEqual(classify_doubao_submission(result), ("", ""))
+        self.assertFalse(result["accepted"])
+        self.assertEqual(
+            classify_doubao_submission(result),
+            ("doubao video settings panel unavailable", "video_creation_ui_error"),
+        )
         runner._submit_via_video_creation_page_ui.assert_awaited_once()
-        runner._submit_via_video_creation_internal_request.assert_awaited_once()
+        runner._submit_via_video_creation_internal_request.assert_not_awaited()
 
-    def test_native_submit_without_network_request_uses_captured_internal_fallback(self) -> None:
+    def test_native_submit_without_network_request_stays_unconfirmed(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner._submit_via_video_creation_page_ui = AsyncMock(return_value={
             "ok": True,
@@ -571,9 +572,9 @@ class DoubaoAutomationTests(unittest.TestCase):
 
         result = asyncio.run(runner._submit_via_video_creation_page(SimpleNamespace(), image_count=0))
 
-        self.assertTrue(result["accepted"])
-        self.assertTrue(result["native_submission_fallback_used"])
-        runner._submit_via_video_creation_internal_request.assert_awaited_once()
+        self.assertFalse(result["accepted"])
+        self.assertEqual(classify_doubao_submission(result), ("doubao generation acknowledgement missing", "generation_ack_missing"))
+        runner._submit_via_video_creation_internal_request.assert_not_awaited()
 
     def test_native_submit_with_network_request_never_duplicates_submission(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
@@ -647,8 +648,8 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertNotIn("page.evaluate", source)
         request_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page)
         self.assertIn("_submit_via_video_creation_page_ui", request_source)
-        self.assertIn("settings_ui_error", request_source)
-        self.assertIn("native_video_creation_ui_error", request_source)
+        self.assertIn("_resolve_submission_verification", request_source)
+        self.assertIn("verification_recovery_attempted", request_source)
         ui_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page_ui)
         self.assertIn("await page.goto(DOUBAO_URL", ui_source)
         self.assertIn('name="AI 创作"', ui_source)
@@ -660,7 +661,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("submission_request_seen", ui_source)
         self.assertIn('editor.press("Enter")', ui_source)
         self.assertIn('await editor.fill("生成")', ui_source)
-        self.assertIn("_submit_via_video_creation_internal_request", request_source)
+        self.assertNotIn("_submit_via_video_creation_internal_request", request_source)
 
     def test_direct_video_is_an_accepted_submission(self) -> None:
         error, category = classify_doubao_submission({"ok": True, "accepted": True, "video_url": "https://example.com/video.mp4"})

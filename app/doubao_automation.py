@@ -3502,36 +3502,6 @@ class DoubaoVideoAutomation:
                 retried["verification_solver_status"] = verification_result.status
                 retried["verification_solver_attempts"] = verification_result.attempts
                 return retried
-        ui_error = str(result.get("video_creation_ui_error") or "")
-        settings_ui_error = any(marker in ui_error for marker in (
-            "video ratio and duration selector unavailable",
-            "video settings panel unavailable",
-            "video setting unavailable",
-            "video settings mismatch",
-        ))
-        if settings_ui_error:
-            fallback = await self._submit_via_video_creation_internal_request(page, image_count=image_count)
-            fallback["native_submission_fallback_used"] = True
-            fallback["native_video_creation_ui_error"] = ui_error[:500]
-            return fallback
-        terminal_keys = (
-            "video_creation_ui_error",
-            "text_only_response",
-            "service_frequent",
-            "slider_verification",
-            "quota_insufficient",
-            "region_restricted",
-            "login_invalid",
-        )
-        if (
-            result.get("ok")
-            and not result.get("accepted")
-            and not result.get("native_submission_request_seen")
-            and not any(result.get(key) for key in terminal_keys)
-        ):
-            fallback = await self._submit_via_video_creation_internal_request(page, image_count=image_count)
-            fallback["native_submission_fallback_used"] = True
-            return fallback
         return result
 
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:

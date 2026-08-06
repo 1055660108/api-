@@ -769,7 +769,7 @@ async def account_flagged_cleanup_loop() -> None:
         if now.hour == 23:
             try:
                 result = await asyncio.to_thread(cleanup_flagged_accounts, now)
-                if result.get("removed"):
+                if result.get("removed") or result.get("restored"):
                     _clear_account_list_cache()
             except asyncio.CancelledError:
                 raise

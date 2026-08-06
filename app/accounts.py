@@ -18,6 +18,8 @@ ACCOUNT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 LOCAL_TZ = timezone(timedelta(hours=8))
 _ACCOUNTS_LOCK = threading.RLock()
 AUTO_DELETE_ACCOUNT_STATUSES = {"slider_verification", "abnormal"}
+DOUBAO_AUTO_DELETE_ACCOUNT_STATUSES = {"abnormal", "region_restricted"}
+DOUBAO_AUTO_RESET_ACCOUNT_STATUSES = {"slider_verification"}
 QIANWEN_AI_STUDIO_QUOTA_BUCKET = "qianwen_ai_studio"
 QIANWEN_AI_STUDIO_CHARGE_PREFIX = "studio:"
 
@@ -347,10 +349,14 @@ def cleanup_flagged_accounts(now: datetime | None = None) -> dict[str, Any]:
     def mutate(data: dict[str, Any]) -> dict[str, Any]:
         kept: list[dict[str, Any]] = []
         removed: list[dict[str, Any]] = []
+        restored: list[dict[str, Any]] = []
         skipped_active = 0
         for account in data.get("accounts") or []:
             status = str(account.get("account_status") or "normal")
-            if status not in AUTO_DELETE_ACCOUNT_STATUSES:
+            platform = str(account.get("platform") or DEFAULT_PLATFORM)
+            delete_statuses = DOUBAO_AUTO_DELETE_ACCOUNT_STATUSES if platform == "doubao" else AUTO_DELETE_ACCOUNT_STATUSES
+            reset_statuses = DOUBAO_AUTO_RESET_ACCOUNT_STATUSES if platform == "doubao" else set()
+            if status not in delete_statuses and status not in reset_statuses:
                 kept.append(account)
                 continue
             marked_date = _account_status_marked_date(account)
@@ -362,9 +368,31 @@ def cleanup_flagged_accounts(now: datetime | None = None) -> dict[str, Any]:
                 skipped_active += 1
                 kept.append(account)
                 continue
+            if status in reset_statuses:
+                account.update(
+                    enabled=True,
+                    account_status="normal",
+                    status_reason="",
+                    current_task_id="",
+                    current_worker_id="",
+                    current_started_at="",
+                    updated_at=run_at,
+                )
+                for key in (
+                    "disabled_reason",
+                    "account_status_marked_at",
+                    "slider_verification_date",
+                    "slider_verification_streak",
+                    "cooldown_until",
+                    "cooldown_reason",
+                ):
+                    account.pop(key, None)
+                restored.append(dict(account))
+                kept.append(account)
+                continue
             removed.append(dict(account))
         data["accounts"] = kept
-        return {"removed": removed, "skipped_active": skipped_active}
+        return {"removed": removed, "restored": restored, "skipped_active": skipped_active}
 
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
@@ -372,7 +400,7 @@ def cleanup_flagged_accounts(now: datetime | None = None) -> dict[str, Any]:
         else:
             data = _read_data()
             result = mutate(data)
-            if result["removed"]:
+            if result["removed"] or result["restored"]:
                 _write_data(data)
         should_record = current.hour >= 23 or bool(result["removed"])
         history = (
@@ -386,8 +414,13 @@ def cleanup_flagged_accounts(now: datetime | None = None) -> dict[str, Any]:
         "removed_ids": [str(item.get("id") or "") for item in result["removed"]],
         "by_status": {
             status: sum(str(item.get("account_status") or "") == status for item in result["removed"])
-            for status in sorted(AUTO_DELETE_ACCOUNT_STATUSES)
+            for status in sorted(
+                AUTO_DELETE_ACCOUNT_STATUSES
+                | {str(item.get("account_status") or "abnormal") for item in result["removed"]}
+            )
         },
+        "restored": len(result["restored"]),
+        "restored_ids": [str(item.get("id") or "") for item in result["restored"]],
         "skipped_active": result["skipped_active"],
         "history": history,
     }
@@ -2025,7 +2058,8 @@ def mark_account_slider_verification(account_id: str) -> dict[str, Any]:
     marked_at = utc_now()
 
     def apply(account: dict[str, Any]) -> dict[str, Any]:
-        reason = "跳验证（当日 23:00 自动删除）"
+        platform = str(account.get("platform") or DEFAULT_PLATFORM)
+        reason = "跳验证（当日 23:00 自动恢复）" if platform == "doubao" else "跳验证（当日 23:00 自动删除）"
         account.update(
             account_status="slider_verification",
             status_reason=reason,

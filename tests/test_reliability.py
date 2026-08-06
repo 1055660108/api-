@@ -1261,7 +1261,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(cleaned["removed"], 0)
         self.assertEqual(len(accounts.list_accounts()), 1)
 
-    def test_doubao_region_restricted_account_is_retained_excluded_and_refunded(self) -> None:
+    def test_doubao_region_restricted_account_is_deleted_at_23_and_refunded(self) -> None:
         task = store.create_task("豆包区域限制测试", "16:9", platform="doubao", model="Seedance 2.0 Fast")
         created = accounts.add_account("Doubao region restricted", "session=region", quota_limit=2, platform="doubao")
         claimed = accounts.claim_account_for_worker("worker-region", task["id"], platform="doubao")
@@ -1286,8 +1286,38 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(stored["quota_used"], 0)
         self.assertIsNone(accounts.account_for_worker("another-worker", platform="doubao"))
         cleaned = accounts.cleanup_flagged_accounts(datetime.now(accounts.LOCAL_TZ).replace(hour=23, minute=0))
+        self.assertEqual(cleaned["removed"], 1)
+        self.assertEqual(cleaned["by_status"].get("region_restricted"), 1)
+        self.assertEqual(len(accounts.list_accounts()), 0)
+
+    def test_doubao_slider_verification_is_restored_at_23(self) -> None:
+        created = accounts.add_account("Doubao verification", "session=verification", quota_limit=2, platform="doubao")
+        marked = accounts.mark_account_slider_verification(created["id"])
+
+        self.assertEqual(marked["account_status"], "slider_verification")
+        self.assertIn("23:00", marked["status_reason"])
+        self.assertIsNone(accounts.account_for_worker("before-reset", platform="doubao"))
+
+        cleaned = accounts.cleanup_flagged_accounts(datetime.now(accounts.LOCAL_TZ).replace(hour=23, minute=0))
+
         self.assertEqual(cleaned["removed"], 0)
-        self.assertEqual(len(accounts.list_accounts()), 1)
+        self.assertEqual(cleaned["restored"], 1)
+        self.assertEqual(cleaned["restored_ids"], [created["id"]])
+        stored = accounts.list_accounts()[0]
+        self.assertTrue(stored["enabled"])
+        self.assertEqual(stored["account_status"], "normal")
+        self.assertEqual(stored["status_reason"], "")
+        self.assertIsNotNone(accounts.account_for_worker("after-reset", platform="doubao"))
+
+    def test_doubao_login_invalid_account_is_deleted_at_23(self) -> None:
+        created = accounts.add_account("Doubao login invalid", "session=login-invalid", quota_limit=2, platform="doubao")
+        accounts.disable_account_for_login(created["id"], "Doubao login invalid")
+
+        cleaned = accounts.cleanup_flagged_accounts(datetime.now(accounts.LOCAL_TZ).replace(hour=23, minute=0))
+
+        self.assertEqual(cleaned["removed"], 1)
+        self.assertEqual(cleaned["by_status"], {"abnormal": 1, "slider_verification": 0})
+        self.assertEqual(accounts.list_accounts(), [])
 
     def test_doubao_account_keeps_verified_proxy_node(self) -> None:
         created = accounts.add_account("Doubao pinned", "session=pinned", platform="doubao")

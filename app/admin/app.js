@@ -3989,26 +3989,27 @@ async function openAccountDeletionHistory() {
   els.accountDeletionHistoryModal.classList.remove("hidden");
   els.accountDeletionHistoryModal.setAttribute("aria-hidden", "false");
   if (els.accountDeletionSummary) els.accountDeletionSummary.innerHTML = "<span>正在读取删除记录</span>";
-  if (els.accountDeletionHistoryBody) els.accountDeletionHistoryBody.innerHTML = '<tr><td colspan="6"><div class="empty-state">加载中</div></td></tr>';
+  if (els.accountDeletionHistoryBody) els.accountDeletionHistoryBody.innerHTML = '<tr><td colspan="7"><div class="empty-state">加载中</div></td></tr>';
   try {
     const data = await apiFetch("/accounts/deletion-history?limit=90");
     const days = Array.isArray(data.days) ? data.days : [];
     const total = days.reduce((sum, item) => sum + Number(item.total || 0), 0);
     const slider = days.reduce((sum, item) => sum + Number(item.by_status?.slider_verification || 0), 0);
     const abnormal = days.reduce((sum, item) => sum + Number(item.by_status?.abnormal || 0), 0);
+    const regionRestricted = days.reduce((sum, item) => sum + Number(item.by_status?.region_restricted || 0), 0);
     if (els.accountDeletionSummary) {
-      els.accountDeletionSummary.innerHTML = `<span>保留最近 ${escapeHtml(data.retention_days || 180)} 天</span><strong>共删除 ${escapeHtml(total)} 个</strong><span>跳验证 ${escapeHtml(slider)} 个</span><span>异常 ${escapeHtml(abnormal)} 个</span>`;
+      els.accountDeletionSummary.innerHTML = `<span>保留最近 ${escapeHtml(data.retention_days || 180)} 天</span><strong>共删除 ${escapeHtml(total)} 个</strong><span>跳验证 ${escapeHtml(slider)} 个</span><span>登录异常 ${escapeHtml(abnormal)} 个</span><span>区域限制 ${escapeHtml(regionRestricted)} 个</span>`;
     }
     if (els.accountDeletionHistoryBody) {
       els.accountDeletionHistoryBody.innerHTML = days.length ? days.map((item) => {
         const statuses = item.by_status || {};
         const platforms = item.by_platform || {};
-        return `<tr><td><strong>${escapeHtml(item.date || "-")}</strong></td><td>${escapeHtml(item.total || 0)}</td><td>${escapeHtml(statuses.slider_verification || 0)}</td><td>${escapeHtml(statuses.abnormal || 0)}</td><td>${escapeHtml(platforms.dola || 0)} / ${escapeHtml(platforms.doubao || 0)} / ${escapeHtml(platforms.qianwen || 0)}</td><td>${escapeHtml(formatTime(item.last_run_at))}</td></tr>`;
-      }).join("") : '<tr><td colspan="6"><div class="empty-state">暂无自动删除记录</div></td></tr>';
+        return `<tr><td><strong>${escapeHtml(item.date || "-")}</strong></td><td>${escapeHtml(item.total || 0)}</td><td>${escapeHtml(statuses.slider_verification || 0)}</td><td>${escapeHtml(statuses.abnormal || 0)}</td><td>${escapeHtml(statuses.region_restricted || 0)}</td><td>${escapeHtml(platforms.dola || 0)} / ${escapeHtml(platforms.doubao || 0)} / ${escapeHtml(platforms.qianwen || 0)}</td><td>${escapeHtml(formatTime(item.last_run_at))}</td></tr>`;
+      }).join("") : '<tr><td colspan="7"><div class="empty-state">暂无自动删除记录</div></td></tr>';
     }
   } catch (error) {
     if (els.accountDeletionSummary) els.accountDeletionSummary.innerHTML = `<span>读取失败：${escapeHtml(error.message)}</span>`;
-    if (els.accountDeletionHistoryBody) els.accountDeletionHistoryBody.innerHTML = '<tr><td colspan="6"><div class="empty-state">无法读取删除记录</div></td></tr>';
+    if (els.accountDeletionHistoryBody) els.accountDeletionHistoryBody.innerHTML = '<tr><td colspan="7"><div class="empty-state">无法读取删除记录</div></td></tr>';
   }
 }
 

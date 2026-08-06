@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.90" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.91" />
   </head>
   <body>
     <script>
@@ -1385,10 +1385,10 @@
     </div>
     <div class="modal-backdrop hidden" id="accountDeletionHistoryModal" aria-hidden="true">
       <section class="modal-panel account-deletion-history-modal" role="dialog" aria-modal="true" aria-labelledby="accountDeletionHistoryTitle">
-        <div class="modal-header"><div><h2 id="accountDeletionHistoryTitle">账号自动删除详情</h2><p>每天北京时间 23:00 删除跳验证和登录异常账号。</p></div><button class="modal-close" id="closeAccountDeletionHistory" type="button" aria-label="关闭">×</button></div>
+        <div class="modal-header"><div><h2 id="accountDeletionHistoryTitle">账号自动处理详情</h2><p>每天北京时间 23:00：豆包跳验证账号恢复正常，豆包登录异常和区域限制账号删除；其他平台保持原规则。</p></div><button class="modal-close" id="closeAccountDeletionHistory" type="button" aria-label="关闭">×</button></div>
         <div class="account-deletion-summary" id="accountDeletionSummary"><span>正在读取删除记录</span></div>
         <div class="table-wrap account-deletion-table-wrap">
-          <table class="account-deletion-table"><thead><tr><th>日期</th><th>删除总数</th><th>跳验证</th><th>异常</th><th>Dola / 豆包 / 千问</th><th>最后执行</th></tr></thead><tbody id="accountDeletionHistoryBody"></tbody></table>
+          <table class="account-deletion-table"><thead><tr><th>日期</th><th>删除总数</th><th>跳验证</th><th>登录异常</th><th>区域限制</th><th>Dola / 豆包 / 千问</th><th>最后执行</th></tr></thead><tbody id="accountDeletionHistoryBody"></tbody></table>
         </div>
         <div class="modal-actions"><button class="primary-button" id="confirmAccountDeletionHistory" type="button">关闭</button></div>
       </section>
@@ -1500,6 +1500,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.90"></script>
+    <script src="/admin/assets/app.js?v=1.10.91"></script>
   </body>
 </html>

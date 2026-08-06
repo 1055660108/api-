@@ -92,6 +92,11 @@ class AdminUITests(unittest.TestCase):
     def test_account_list_supports_region_restricted_status(self) -> None:
         self.assertIn('<option value="region_restricted">区域限制</option>', self.html)
         self.assertIn('item.account_status === "region_restricted"', self.javascript)
+
+    def test_doubao_flagged_account_cleanup_policy_is_explained(self) -> None:
+        self.assertIn("豆包跳验证账号恢复正常", self.html)
+        self.assertIn("豆包登录异常和区域限制账号删除", self.html)
+        self.assertIn("statuses.region_restricted", self.javascript)
         self.assertIn('regionRestricted ? "区域限制"', self.javascript)
 
     def test_repository_update_control_is_present(self) -> None:

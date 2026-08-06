@@ -3295,6 +3295,8 @@ class DoubaoVideoAutomation:
                                 "doubao_verification_solver_attempts": solver_attempt,
                                 "doubao_verification_coordinate_count": len(solution.coordinates),
                                 "doubao_verification_solver_cost": solution.cost,
+                                "doubao_verification_solver_error": "",
+                                "doubao_verification_remaining_text": "",
                             })
                         return SliderSolveResult(status="success", attempts=solver_attempt)
                 except Exception:

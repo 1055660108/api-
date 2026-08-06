@@ -653,6 +653,20 @@ def doubao_ui_generation_acknowledged(text: str, model: str) -> bool:
     )
 
 
+def doubao_confirmation_prompt_detected(text: str) -> bool:
+    """Return whether the assistant is waiting for a user confirmation to generate."""
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    if not normalized:
+        return False
+    patterns = (
+        r"(?:确认|确定|是否|要不要|需要不需要|需不需要).{0,80}(?:生成|创建).{0,20}(?:吗|么|？|\?)",
+        r"(?:是否|要不要|需要不需要|需不需要).{0,80}(?:生成|创建)",
+        r"(?:按这版|按这个方案|按上述方案).{0,30}(?:生成|创建).{0,20}(?:吗|么|？|\?)",
+        r"(?:确认|确定).{0,40}(?:就|后).{0,20}(?:生成|创建)",
+    )
+    return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+
+
 def parse_doubao_generation_result(body: str) -> dict[str, Any]:
     body = str(body or "")
     if "710022002" in body or "当前服务访问频繁" in body or "服务访问频繁" in body:
@@ -2312,28 +2326,18 @@ class DoubaoVideoAutomation:
                 label,
             ))
 
-        await click_visible(
+        self._set_phase("opening_video_creation_page", "正在进入豆包 AI 创作")
+        ai_creation_opened = await click_visible(
             (
-                page.get_by_role("button", name="新对话", exact=True),
-                page.get_by_role("link", name="新对话", exact=True),
-                page.get_by_text("新对话", exact=True),
-            ),
-            timeout=5000,
-        )
-        await page.wait_for_timeout(1200)
-
-        self._set_phase("opening_video_creation_page", "正在打开豆包视频生成")
-        direct_video_entry = await click_visible(
-            (
-                page.get_by_role("button", name="视频生成", exact=True),
-                page.get_by_role("tab", name="视频生成", exact=True),
-                page.get_by_text("视频生成", exact=True),
+                page.get_by_role("button", name="AI 创作", exact=True),
+                page.get_by_role("link", name="AI 创作", exact=True),
+                page.get_by_text("AI 创作", exact=True),
             ),
             timeout=8000,
         )
-        if not direct_video_entry:
-            direct_video_entry = await click_exact_visible_text("视频生成")
-        if direct_video_entry:
+        if not ai_creation_opened:
+            ai_creation_opened = await click_exact_visible_text("AI 创作")
+        if ai_creation_opened:
             await page.wait_for_timeout(1500)
 
         async def visible_model_button(timeout: int):
@@ -2346,32 +2350,8 @@ class DoubaoVideoAutomation:
             except Exception:
                 return None
 
-        model_button = await visible_model_button(15000) if direct_video_entry else None
-        if model_button is None:
-            ai_creation_opened = await click_visible(
-                (
-                    page.get_by_role("button", name="AI 创作", exact=True),
-                    page.get_by_role("link", name="AI 创作", exact=True),
-                    page.get_by_text("AI 创作", exact=True),
-                ),
-                timeout=5000,
-            )
-            if ai_creation_opened:
-                await page.wait_for_timeout(1500)
-                video_tab_opened = await click_visible(
-                    (
-                        page.get_by_role("tab", name="视频", exact=True),
-                        page.get_by_role("button", name="视频", exact=True),
-                        page.get_by_text("视频", exact=True),
-                    ),
-                    timeout=8000,
-                )
-                if video_tab_opened:
-                    await page.wait_for_timeout(1500)
-                    model_button = await visible_model_button(20000)
-        if model_button is None:
-            await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
-            await page.wait_for_timeout(3000)
+        model_button = None
+        if ai_creation_opened:
             video_tab_opened = await click_visible(
                 (
                     page.get_by_role("tab", name="视频", exact=True),
@@ -2847,6 +2827,8 @@ class DoubaoVideoAutomation:
             deadline = asyncio.get_running_loop().time() + DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS
             marker_visible = False
             acknowledgement_visible = False
+            confirmation_prompt_detected = False
+            auto_confirmation_sent = False
             last_body = ""
             while asyncio.get_running_loop().time() < deadline:
                 await page.wait_for_timeout(500)
@@ -2887,6 +2869,24 @@ class DoubaoVideoAutomation:
                         "response_preview": network_preview,
                         "native_submission_request_seen": submission_request_seen.is_set(),
                     }
+                confirmation_text = f"{last_body}\n{network_preview}"
+                if (
+                    not auto_confirmation_sent
+                    and doubao_confirmation_prompt_detected(confirmation_text)
+                ):
+                    confirmation_prompt_detected = True
+                    confirmation_button = await find_send_button()
+                    if confirmation_button is not None:
+                        await editor.fill("生成")
+                        await page.wait_for_timeout(300)
+                        submission_request_seen.clear()
+                        await confirmation_button.click(force=True)
+                        auto_confirmation_sent = True
+                        try:
+                            await asyncio.wait_for(submission_request_seen.wait(), timeout=3)
+                        except asyncio.TimeoutError:
+                            await editor.press("Enter")
+                        deadline = asyncio.get_running_loop().time() + DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS
                 marker_visible = last_body.count(DOUBAO_SUBMISSION_MARKER) > baseline_ack_count
                 acknowledgement_visible = marker_visible and doubao_ui_generation_acknowledged(last_body, self.model)
                 remember_evidence(page.url)
@@ -2907,6 +2907,8 @@ class DoubaoVideoAutomation:
                     "generation_wait_message_detected": marker_visible,
                     "generation_wait_message": DOUBAO_SUBMISSION_MARKER if marker_visible else "",
                     "native_submission_request_seen": submission_request_seen.is_set(),
+                    "confirmation_prompt_detected": confirmation_prompt_detected,
+                    "auto_confirmation_sent": auto_confirmation_sent,
                 }
             if not conversation_id:
                 return {
@@ -2933,6 +2935,8 @@ class DoubaoVideoAutomation:
                 "video_creation_selected_duration": self.duration,
                 "submitted_with_images": submitted_with_images,
                 "native_submission_request_seen": submission_request_seen.is_set(),
+                "confirmation_prompt_detected": confirmation_prompt_detected,
+                "auto_confirmation_sent": auto_confirmation_sent,
             }
         finally:
             try:

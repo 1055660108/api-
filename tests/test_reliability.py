@@ -15,7 +15,7 @@ import httpx
 from app import accounts, automation, config, query, store, task_queue, temp_access
 from app.automation import DolaFetchAutomation, dola_service_frequent_abnormal_outcome, is_infrastructure_failure
 from app.resilience import fair_owner_capacity_limits
-from app.worker import IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, normalize_qianwen_retry_outcome, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota
+from app.worker import BROWSER_TASK_CONCURRENCY, IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, QIANWEN_REFERENCE_CONCURRENCY, TASK_WORKER_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, normalize_qianwen_retry_outcome, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota, task_browser_resource_class
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -1231,6 +1231,24 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(restored["account_status"], "normal")
         self.assertEqual(restored["status_reason"], "")
         self.assertIsNotNone(accounts.account_for_worker("worker-1"))
+
+    def test_cookie_merge_preserves_existing_session_and_updates_matching_cookie(self) -> None:
+        created = accounts.add_account("Qianwen", "tongyi_sso_ticket=old; retained=value", platform="qianwen")
+
+        merged = accounts.merge_account_cookies(
+            created["id"],
+            [
+                {"name": "tongyi_sso_ticket", "value": "new", "domain": ".qianwen.com", "path": "/"},
+                {"name": "studio_session", "value": "studio", "domain": ".qianwen.com", "path": "/"},
+            ],
+        )
+        exported = accounts.account_cookie_export(created["id"])["cookie_data"]
+
+        self.assertEqual(merged["account_status"], "normal")
+        self.assertIn("tongyi_sso_ticket=new", exported)
+        self.assertIn("retained=value", exported)
+        self.assertIn("studio_session=studio", exported)
+        self.assertNotIn("tongyi_sso_ticket=old", exported)
 
     def test_doubao_text_only_account_is_retained_excluded_and_refunded(self) -> None:
         task = store.create_task("豆包出文本测试", "16:9", platform="doubao", model="Seedance 2.0 Fast")
@@ -2511,6 +2529,14 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(manager._image_submission_semaphore._value, 10)
         self.assertEqual(manager._image_submission_reservations, {})
         snapshot = manager.health_snapshot()
+        self.assertEqual(TASK_WORKER_CONCURRENCY, 24)
+        self.assertEqual(BROWSER_TASK_CONCURRENCY, 20)
+        self.assertEqual(QIANWEN_REFERENCE_CONCURRENCY, 16)
+        self.assertEqual(snapshot["worker_configured"], 24)
+        self.assertEqual(snapshot["browser_task_limit"], 20)
+        self.assertEqual(snapshot["qianwen_ai_studio_limit"], 24)
+        self.assertEqual(snapshot["qianwen_reference_limit"], 16)
+        self.assertEqual(snapshot["result_poll_concurrency"], 16)
         self.assertEqual(snapshot["image_upload_concurrency"], 10)
         self.assertEqual(snapshot["image_upload_reserved"], 0)
         self.assertEqual(snapshot["image_submission_claimed"], 0)
@@ -2523,6 +2549,15 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(snapshot["api_proxy_pool"]["contexts_per_endpoint"], 1)
         self.assertEqual(snapshot["api_proxy_pool"]["capacity"], 20)
         self.assertEqual(snapshot["api_proxy_pool"]["refresh_concurrency_limit"], 2)
+
+    def test_qianwen_task_types_use_separate_concurrency_classes(self) -> None:
+        ai_studio = {"platform": "qianwen", "task_type": "video", "model": "HappyHorse 1.1", "image_count": 0}
+        qianwen_reference = {"platform": "qianwen", "task_type": "video", "model": "万相 2.7", "image_count": 1}
+        doubao = {"platform": "doubao", "task_type": "video", "model": "Seedance 2.0 Fast", "image_count": 0}
+
+        self.assertEqual(task_browser_resource_class(ai_studio), (False, False))
+        self.assertEqual(task_browser_resource_class(qianwen_reference), (True, True))
+        self.assertEqual(task_browser_resource_class(doubao), (True, False))
 
     def test_reference_preparation_releases_before_submission_and_only_once(self) -> None:
         manager = WorkerManager()

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, PropertyMock, call, patch
 import httpx
 
 from app.accounts import local_today
-from app.qianwen_ai_studio import QianwenAIStudioAutomation, parse_qianwen_ai_studio_credit, parse_qianwen_ai_studio_result, qianwen_ai_studio_model, qianwen_ai_studio_submission_payload
+from app.qianwen_ai_studio import QIANWEN_AI_STUDIO_CREDIT_COUNTRIES, QianwenAIStudioAutomation, acquire_qianwen_ai_studio_credit_proxy, parse_qianwen_ai_studio_credit, parse_qianwen_ai_studio_result, qianwen_ai_studio_model, qianwen_ai_studio_submission_payload
 from app.qianwen_automation import (
     QIANWEN_CHAT_API_URL,
     QIANWEN_CHAT_SNAP_API_URL,
@@ -71,6 +71,26 @@ class QianwenSubmissionTests(unittest.TestCase):
         })
 
         self.assertEqual(parsed, {"total_amount": 66, "sign_in_amount": 66})
+
+    def test_ai_studio_daily_credit_uses_taiwan_and_hong_kong_subscription_nodes(self) -> None:
+        settings = SimpleNamespace(
+            proxy_enabled=True,
+            proxy_subscription_url="https://subscription.example/list",
+            proxy_api_timeout_seconds=20,
+            proxy_subscription_scheme="http",
+            proxy_subscription_refresh_seconds=900,
+            proxy_latency_threshold_ms=800,
+        )
+        lease = {"server": "http://127.0.0.1:19090", "node_id": "credit-node"}
+
+        with patch("app.qianwen_ai_studio.acquire_dola_subscription_proxy", new=AsyncMock(return_value=lease)) as acquire:
+            result = asyncio.run(acquire_qianwen_ai_studio_credit_proxy(settings))
+
+        self.assertEqual(result, lease)
+        self.assertEqual(QIANWEN_AI_STUDIO_CREDIT_COUNTRIES, ("台湾", "香港"))
+        self.assertEqual(acquire.await_args.kwargs["selected_countries"], ("台湾", "香港"))
+        self.assertFalse(acquire.await_args.kwargs["auto_select"])
+        self.assertTrue(acquire.await_args.kwargs["random_select"])
 
     def test_ai_studio_upstream_missing_ticket_is_an_account_login_failure(self) -> None:
         runner = self._studio_runner()

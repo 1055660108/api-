@@ -90,12 +90,38 @@ API_PROXY_ENDPOINT_LIMIT = _bounded_env_int(
     1,
     BROWSER_SUBMISSION_CONCURRENCY,
 )
+TASK_WORKER_CONCURRENCY = max(
+    BROWSER_SUBMISSION_CONCURRENCY,
+    _bounded_env_int("DOLA_TASK_WORKER_CONCURRENCY", 24, 1, 64),
+)
+BROWSER_TASK_CONCURRENCY = min(
+    TASK_WORKER_CONCURRENCY,
+    _bounded_env_int("DOLA_BROWSER_TASK_CONCURRENCY", 20, 1, 64),
+)
+QIANWEN_REFERENCE_CONCURRENCY = min(
+    BROWSER_TASK_CONCURRENCY,
+    _bounded_env_int("DOLA_QIANWEN_REFERENCE_CONCURRENCY", 16, 1, 64),
+)
 API_PROXY_CONTEXTS_PER_ENDPOINT = _bounded_env_int(
     "DOLA_API_PROXY_CONTEXTS_PER_ENDPOINT",
     1,
     1,
     BROWSER_CONTEXTS_PER_PROCESS,
 )
+
+
+def is_qianwen_ai_studio_task(meta: dict) -> bool:
+    return bool(
+        str(meta.get("platform") or "dola") == "qianwen"
+        and str(meta.get("task_type") or "video") == "video"
+        and int(meta.get("image_count") or 0) == 0
+        and qianwen_ai_studio_model(str(meta.get("model") or "")) is not None
+    )
+
+
+def task_browser_resource_class(meta: dict) -> tuple[bool, bool]:
+    qianwen_reference = str(meta.get("platform") or "dola") == "qianwen" and int(meta.get("image_count") or 0) > 0
+    return not is_qianwen_ai_studio_task(meta), qianwen_reference
 
 
 def refund_temp_quota_once(task_id: str, owner_hash: str) -> None:
@@ -238,6 +264,8 @@ class WorkerManager:
             max_concurrent_refreshes=API_PROXY_REFRESH_CONCURRENCY,
         )
         self._remote_generation_reservations: dict[str, str] = {}
+        self._browser_task_reservations: set[str] = set()
+        self._qianwen_reference_reservations: set[str] = set()
 
     async def start(self) -> None:
         if self._supervisor and not self._supervisor.done():
@@ -318,6 +346,8 @@ class WorkerManager:
             await asyncio.gather(self._watchdog, return_exceptions=True)
         self._claimed.clear()
         self._remote_generation_reservations.clear()
+        self._browser_task_reservations.clear()
+        self._qianwen_reference_reservations.clear()
         self._image_submission_reservations.clear()
         self._claimed_image_preparations.clear()
         self._worker_task_ids.clear()
@@ -327,8 +357,8 @@ class WorkerManager:
         await shutdown_task_mihomo_pool()
 
     def health_snapshot(self) -> dict:
-        configured = self._dola_browser_pool.capacity
-        effective, resource = adaptive_worker_limit(configured, self._dola_browser_pool.capacity)
+        configured = TASK_WORKER_CONCURRENCY
+        effective, resource = adaptive_worker_limit(configured, TASK_WORKER_CONCURRENCY)
         resource = {**resource, "effective_workers": effective, "browser_pool_capacity": self._dola_browser_pool.capacity}
         supervisor_alive = bool(self._supervisor and not self._supervisor.done())
         watchdog_alive = bool(self._watchdog and not self._watchdog.done())
@@ -342,6 +372,11 @@ class WorkerManager:
             "worker_alive": worker_alive,
             "worker_configured": configured,
             "worker_effective": effective,
+            "browser_task_limit": BROWSER_TASK_CONCURRENCY,
+            "browser_task_active": len(self._browser_task_reservations),
+            "qianwen_ai_studio_limit": TASK_WORKER_CONCURRENCY,
+            "qianwen_reference_limit": QIANWEN_REFERENCE_CONCURRENCY,
+            "qianwen_reference_active": len(self._qianwen_reference_reservations),
             "memory_claiming_paused": self._memory_claiming_paused(),
             "claimed": len(self._claimed),
             "result_poll_active": self._result_poll_active,
@@ -411,8 +446,8 @@ class WorkerManager:
                     reset_daily_account_quotas_if_needed()
                     self._account_maintenance_date = account_today
                 settings = load_settings()
-                configured = self._dola_browser_pool.capacity
-                effective, self._resource_snapshot = adaptive_worker_limit(configured, self._dola_browser_pool.capacity)
+                configured = TASK_WORKER_CONCURRENCY
+                effective, self._resource_snapshot = adaptive_worker_limit(configured, TASK_WORKER_CONCURRENCY)
                 self._resource_snapshot = {**self._resource_snapshot, "effective_workers": effective, "browser_pool_capacity": self._dola_browser_pool.capacity}
                 self._queue.heartbeat({task_id: worker_id for worker_id, task_id in self._worker_task_ids.items()})
                 demand = len(self._claimed)
@@ -940,6 +975,15 @@ class WorkerManager:
                         break
                     claimed_meta = get_meta(candidate_id)
                     candidate_platform = str(claimed_meta.get("platform") or "dola")
+                    candidate_browser_task, candidate_qianwen_reference = task_browser_resource_class(claimed_meta)
+                    if candidate_browser_task and len(self._browser_task_reservations) >= BROWSER_TASK_CONCURRENCY:
+                        defer_task(candidate_id, "等待浏览器任务资源", "browser_task_limit", 5)
+                        self._queue.release(candidate_id, worker_id)
+                        continue
+                    if candidate_qianwen_reference and len(self._qianwen_reference_reservations) >= QIANWEN_REFERENCE_CONCURRENCY:
+                        defer_task(candidate_id, "千问参考图任务等待浏览器资源", "qianwen_reference_limit", 5)
+                        self._queue.release(candidate_id, worker_id)
+                        continue
                     is_image_submission = candidate_platform in {"dola", "doubao"} and int(claimed_meta.get("image_count") or 0) > 0
                     candidate_owner = str(claimed_meta.get("owner_token_hash") or "")
                     if is_image_submission:
@@ -961,6 +1005,10 @@ class WorkerManager:
                         continue
                     task_id = candidate_id
                     self._claimed.add(task_id)
+                    if candidate_browser_task:
+                        self._browser_task_reservations.add(task_id)
+                    if candidate_qianwen_reference:
+                        self._qianwen_reference_reservations.add(task_id)
                     if is_image_submission:
                         self._claimed_image_preparations[task_id] = candidate_owner
                     self._worker_task_ids[worker_id] = task_id
@@ -978,12 +1026,7 @@ class WorkerManager:
                     continue
                 failed_account_ids = set(str(item) for item in meta.get("failed_account_ids") or [] if item)
                 platform = str(meta.get("platform") or "dola")
-                qianwen_ai_studio = (
-                    platform == "qianwen"
-                    and str(meta.get("task_type") or "video") == "video"
-                    and int(meta.get("image_count") or 0) == 0
-                    and qianwen_ai_studio_model(str(meta.get("model") or "")) is not None
-                )
+                qianwen_ai_studio = is_qianwen_ai_studio_task(meta)
                 if (
                     platform == "qianwen"
                     and str(meta.get("task_type") or "video") == "video"
@@ -1210,6 +1253,8 @@ class WorkerManager:
             finally:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
+                self._browser_task_reservations.discard(task_id)
+                self._qianwen_reference_reservations.discard(task_id)
                 self._release_image_preparation(task_id)
                 reserved_owner = self._remote_generation_reservations.pop(task_id, None)
                 if reserved_owner:

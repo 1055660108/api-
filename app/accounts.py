@@ -996,6 +996,54 @@ def disable_account_for_login(account_id: str, reason: str) -> dict[str, Any]:
     raise KeyError("account not found")
 
 
+def merge_account_cookies(account_id: str, cookies: list[dict[str, Any]]) -> dict[str, Any]:
+    account_id = str(account_id or "").strip().lower()
+
+    def merge(account: dict[str, Any]) -> dict[str, Any]:
+        platform = str(account.get("platform") or DEFAULT_PLATFORM)
+        combined: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for raw in [*(account.get("cookies") or []), *cookies]:
+            if not isinstance(raw, dict):
+                continue
+            item = _normalize_cookie_item(raw, platform)
+            if not item:
+                continue
+            if platform == "qianwen" and str(item.get("domain") or "").lower().lstrip(".") in {"tongyi.com", "qianwen.com"}:
+                item["domain"] = ".qianwen.com"
+            key = (
+                str(item.get("name") or ""),
+                str(item.get("domain") or "").lower(),
+                str(item.get("path") or "/"),
+            )
+            combined[key] = item
+        normalized = list(combined.values())
+        if not normalized:
+            raise ValueError("cookie data is invalid")
+        now = utc_now()
+        account.update(
+            cookies=normalized,
+            cookie_header=_cookie_header_from_items(normalized),
+            last_cookie_refresh_at=now,
+            updated_at=now,
+        )
+        return _public_account(account)
+
+    with _ACCOUNTS_LOCK:
+        if postgres.enabled():
+            try:
+                return postgres.mutate_account(account_id, merge)
+            except KeyError as exc:
+                raise KeyError("account not found") from exc
+        data = _read_data()
+        for account in data["accounts"]:
+            if str(account.get("id") or "") != account_id:
+                continue
+            result = merge(account)
+            _write_data(data)
+            return result
+    raise KeyError("account not found")
+
+
 def mark_account_text_only(account_id: str) -> dict[str, Any]:
     account_id = str(account_id or "").strip().lower()
     marked_at = utc_now()

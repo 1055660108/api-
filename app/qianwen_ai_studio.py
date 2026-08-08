@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 import uuid
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -9,10 +8,11 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import httpx
 from playwright.async_api import async_playwright
 
-from .accounts import local_today, sync_qianwen_ai_studio_credit, update_account_cookies
+from .accounts import local_today, merge_account_cookies, sync_qianwen_ai_studio_credit
 from .browser_runtime import resolve_browser_executable
 from .config import load_settings
 from .profile_lock import account_profile_lock
+from .proxy_manager import acquire_dola_subscription_proxy, release_dola_subscription_proxy
 from .store import begin_task_submission, clear_transient_result, is_task_canceled, save_result, task_exists
 
 
@@ -28,12 +28,30 @@ QIANWEN_AI_STUDIO_UA = (
 )
 QIANWEN_AI_STUDIO_CONNECT_ATTEMPTS = 3
 QIANWEN_AI_STUDIO_CONNECT_BACKOFF_SECONDS = 0.5
+QIANWEN_AI_STUDIO_CREDIT_COUNTRIES = ("台湾", "香港")
+QIANWEN_AI_STUDIO_CREDIT_SYNC_CONCURRENCY = 4
+_CREDIT_SYNC_SEMAPHORE = asyncio.Semaphore(QIANWEN_AI_STUDIO_CREDIT_SYNC_CONCURRENCY)
 
 QIANWEN_AI_STUDIO_MODELS: dict[str, dict[str, str]] = {
     "HappyHorse 1.1": {"root_model": "happyhorse11", "scene": "hh11_t2v"},
     "万相 2.7": {"root_model": "wan27", "scene": "wan27_t2v"},
     "万相 2.6": {"root_model": "wan26", "scene": "wan26_t2v"},
 }
+
+
+async def acquire_qianwen_ai_studio_credit_proxy(settings: Any) -> dict[str, str]:
+    if not settings.proxy_enabled or not settings.proxy_subscription_url:
+        raise RuntimeError("qianwen AI Studio credit proxy unavailable")
+    return await acquire_dola_subscription_proxy(
+        settings.proxy_subscription_url,
+        timeout_seconds=settings.proxy_api_timeout_seconds,
+        scheme=settings.proxy_subscription_scheme,
+        refresh_seconds=settings.proxy_subscription_refresh_seconds,
+        auto_select=False,
+        selected_countries=QIANWEN_AI_STUDIO_CREDIT_COUNTRIES,
+        latency_threshold_ms=max(5000, int(settings.proxy_latency_threshold_ms)),
+        random_select=True,
+    )
 
 
 def qianwen_ai_studio_model(model: str) -> dict[str, str] | None:
@@ -258,7 +276,7 @@ class QianwenAIStudioAutomation:
     async def _sync_daily_credit(
         self,
         cookies: list[dict[str, Any]],
-        proxy_config: dict[str, str] | None,
+        _submission_proxy_config: dict[str, str] | None,
     ) -> dict[str, Any]:
         if str(self.account.get("qianwen_ai_studio_credit_sync_date") or "") == local_today():
             return {"ok": True, "skipped": True}
@@ -267,6 +285,7 @@ class QianwenAIStudioAutomation:
         response_tasks: set[asyncio.Task[Any]] = set()
         browser = None
         context = None
+        credit_proxy: dict[str, str] | None = None
 
         async def inspect_credit_response(response) -> None:
             if "/api/web/credit/info" not in str(response.url):
@@ -280,62 +299,59 @@ class QianwenAIStudioAutomation:
                 credit_event.set()
 
         try:
-            async with async_playwright() as playwright:
-                launch_options: dict[str, Any] = {
-                    "headless": self.settings.headless,
-                    "executable_path": resolve_browser_executable(self.settings.browser_executable_path),
-                    "args": ["--disable-dev-shm-usage", "--no-sandbox", "--disable-blink-features=AutomationControlled"],
-                }
-                if proxy_config and proxy_config.get("server"):
-                    launch_options["proxy"] = proxy_config
-                browser = await playwright.chromium.launch(**launch_options)
-                context = await browser.new_context(
-                    locale="zh-CN",
-                    user_agent=QIANWEN_AI_STUDIO_UA,
-                    viewport={"width": 1365, "height": 900},
-                )
-                normalized_cookies: list[dict[str, Any]] = []
-                for raw in cookies:
-                    if not isinstance(raw, dict) or not raw.get("name"):
-                        continue
-                    item = dict(raw)
-                    item["domain"] = ".qianwen.com"
-                    item.pop("url", None)
-                    normalized_cookies.append(item)
-                await context.add_cookies(normalized_cookies)
-                page = await context.new_page()
-
-                def response_handler(response) -> None:
-                    task = asyncio.create_task(inspect_credit_response(response))
-                    response_tasks.add(task)
-                    task.add_done_callback(response_tasks.discard)
-
-                page.on("response", response_handler)
-                await page.goto(QIANWEN_AI_STUDIO_PAGE_URL, wait_until="domcontentloaded", timeout=120000)
-                try:
-                    await asyncio.wait_for(credit_event.wait(), timeout=20)
-                except asyncio.TimeoutError:
-                    params = f"biz_id=ai_image&pr=kkpcweb&fr=win&ai_ts={int(time.time() * 1000)}&req_id={uuid.uuid4()}"
-                    response = await context.request.get(
-                        f"{QIANWEN_AI_STUDIO_CREDIT_INFO_URL}?{params}",
-                        headers={"origin": QIANWEN_AI_STUDIO_ORIGIN, "referer": QIANWEN_AI_STUDIO_PAGE_URL},
-                        timeout=30000,
+            async with _CREDIT_SYNC_SEMAPHORE:
+                credit_proxy = await acquire_qianwen_ai_studio_credit_proxy(self.settings)
+                async with async_playwright() as playwright:
+                    launch_options: dict[str, Any] = {
+                        "headless": self.settings.headless,
+                        "executable_path": resolve_browser_executable(self.settings.browser_executable_path),
+                        "args": ["--disable-dev-shm-usage", "--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                    }
+                    if credit_proxy.get("server"):
+                        launch_options["proxy"] = credit_proxy
+                    browser = await playwright.chromium.launch(**launch_options)
+                    context = await browser.new_context(
+                        locale="zh-CN",
+                        user_agent=QIANWEN_AI_STUDIO_UA,
+                        viewport={"width": 1365, "height": 900},
                     )
-                    if response.ok:
-                        parsed = parse_qianwen_ai_studio_credit(await response.json())
-                        if parsed is not None:
-                            credit_payload.update(parsed)
-                await page.wait_for_timeout(1500)
-                refreshed_cookies = await context.cookies([QIANWEN_AI_STUDIO_ORIGIN, "https://www.qianwen.com/"])
-                if refreshed_cookies:
-                    update_account_cookies(str(self.account.get("id") or ""), refreshed_cookies)
-                page.remove_listener("response", response_handler)
-                if response_tasks:
-                    await asyncio.gather(*list(response_tasks), return_exceptions=True)
-                await context.close()
-                context = None
-                await browser.close()
-                browser = None
+                    normalized_cookies: list[dict[str, Any]] = []
+                    for raw in cookies:
+                        if not isinstance(raw, dict) or not raw.get("name"):
+                            continue
+                        item = dict(raw)
+                        item["domain"] = ".qianwen.com"
+                        item.pop("url", None)
+                        normalized_cookies.append(item)
+                    await context.add_cookies(normalized_cookies)
+                    page = await context.new_page()
+
+                    def response_handler(response) -> None:
+                        task = asyncio.create_task(inspect_credit_response(response))
+                        response_tasks.add(task)
+                        task.add_done_callback(response_tasks.discard)
+
+                    page.on("response", response_handler)
+                    await page.goto(QIANWEN_AI_STUDIO_PAGE_URL, wait_until="domcontentloaded", timeout=120000)
+                    try:
+                        await asyncio.wait_for(credit_event.wait(), timeout=20)
+                    except asyncio.TimeoutError:
+                        await page.reload(wait_until="domcontentloaded", timeout=120000)
+                        try:
+                            await asyncio.wait_for(credit_event.wait(), timeout=20)
+                        except asyncio.TimeoutError:
+                            pass
+                    await page.wait_for_timeout(1500)
+                    refreshed_cookies = await context.cookies([QIANWEN_AI_STUDIO_ORIGIN, "https://www.qianwen.com/"])
+                    page.remove_listener("response", response_handler)
+                    if response_tasks:
+                        await asyncio.gather(*list(response_tasks), return_exceptions=True)
+                    if refreshed_cookies and "total_amount" in credit_payload:
+                        merge_account_cookies(str(self.account.get("id") or ""), refreshed_cookies)
+                    await context.close()
+                    context = None
+                    await browser.close()
+                    browser = None
             if "total_amount" not in credit_payload:
                 return {"ok": False, "reason": "qianwen AI Studio daily credit unavailable"}
             synced = sync_qianwen_ai_studio_credit(
@@ -357,6 +373,11 @@ class QianwenAIStudioAutomation:
             if browser is not None:
                 try:
                     await browser.close()
+                except Exception:
+                    pass
+            if credit_proxy is not None:
+                try:
+                    await release_dola_subscription_proxy(credit_proxy)
                 except Exception:
                     pass
 

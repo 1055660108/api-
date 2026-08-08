@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+import secrets
 import struct
 from pathlib import Path
 from typing import Any, AsyncContextManager, Awaitable, Callable
@@ -14,12 +15,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .accounts import disable_account_for_login, set_account_cooldown, set_account_pinned_proxy_node, update_account_cookies
 from .automation import DolaFetchAutomation, PREPARE_UPLOAD_SCRIPT, PREPARE_UPLOAD_TIMEOUT_SECONDS, ReferenceUploadCapacityError, is_reference_upload_failure, is_reference_upload_phase
-from .browser_runtime import BrowserContextLease, ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
-from .config import DOUBAO_STATES_DIR, ensure_dirs, load_settings
+from .browser_runtime import ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
+from .config import DOUBAO_PROFILES_DIR, DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
 from .reference_images import prepare_task_reference_images
 from .semantic_captcha import SemanticCaptchaError, coordinate_solver_from_environment
@@ -1811,6 +1812,7 @@ class DoubaoVideoAutomation:
         self.semantic_verification_solver = coordinate_solver_from_environment()
         ensure_dirs()
         self.state_path = DOUBAO_STATES_DIR / f"{str(self.account.get('id') or 'unknown')}.json"
+        self.profile_path = DOUBAO_PROFILES_DIR / str(self.account.get("id") or "unknown")
 
     def _finish_image_preparation(self) -> None:
         callback = getattr(self, "image_preparation_done", None)
@@ -1845,6 +1847,89 @@ class DoubaoVideoAutomation:
         if not merged and not origins:
             return None
         return {"cookies": list(merged.values()), "origins": origins}
+
+    def _account_profile_path(self) -> Path:
+        configured = getattr(self, "profile_path", None)
+        if isinstance(configured, Path):
+            return configured
+        return DOUBAO_PROFILES_DIR / str(self.account.get("id") or "unknown")
+
+    @staticmethod
+    def _remove_stale_profile_locks(profile_path: Path) -> None:
+        profile_path.mkdir(parents=True, exist_ok=True)
+        for name in ("SingletonCookie", "SingletonLock", "SingletonSocket"):
+            candidate = profile_path / name
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _saved_storage_init_script(storage_state: dict[str, Any] | None) -> str:
+        values_by_origin: dict[str, dict[str, str]] = {}
+        for origin in (storage_state or {}).get("origins") or []:
+            if not isinstance(origin, dict):
+                continue
+            values = {
+                str(item.get("name") or ""): str(item.get("value") or "")
+                for item in origin.get("localStorage") or []
+                if isinstance(item, dict) and item.get("name")
+            }
+            if values:
+                values_by_origin[str(origin.get("origin") or "")] = values
+        if not values_by_origin:
+            return ""
+        payload = json.dumps(values_by_origin, ensure_ascii=True, separators=(",", ":"))
+        return f"""
+(() => {{
+  const values = {payload}[location.origin] || {{}};
+  for (const [name, value] of Object.entries(values)) {{
+    try {{
+      if (localStorage.getItem(name) === null) localStorage.setItem(name, value);
+    }} catch (_) {{}}
+  }}
+}})();
+"""
+
+    async def _launch_persistent_context(
+        self,
+        playwright,
+        *,
+        executable_path: str | None,
+        proxy_config: dict[str, str] | None,
+        browser_args: list[str],
+        context_options: dict[str, Any],
+    ) -> BrowserContext:
+        profile_path = self._account_profile_path()
+        await asyncio.to_thread(self._remove_stale_profile_locks, profile_path)
+        launch_options = {
+            **context_options,
+            "headless": self.settings.headless,
+            "executable_path": executable_path,
+            "proxy": proxy_config,
+            "args": browser_args,
+        }
+        context = await playwright.chromium.launch_persistent_context(
+            str(profile_path),
+            **launch_options,
+        )
+        storage_state = self._context_storage_state()
+        cookies = [
+            dict(item)
+            for item in (storage_state or {}).get("cookies") or []
+            if isinstance(item, dict) and item.get("name")
+        ]
+        if cookies:
+            await context.add_cookies(cookies)
+        init_script = self._saved_storage_init_script(storage_state)
+        if init_script:
+            await context.add_init_script(init_script)
+        if task_exists(self.task_id):
+            save_result(self.task_id, extra={
+                "doubao_browser_profile_mode": "persistent",
+                "doubao_browser_profile_account_id": str(self.account.get("id") or ""),
+            })
+        return context
 
     async def _refresh_cookies(self, context) -> list[dict[str, Any]]:
         account_id = str(self.account.get("id") or "")
@@ -2977,6 +3062,12 @@ class DoubaoVideoAutomation:
             ("绿色的", "objects that are green"),
             ("谷物和蔬菜", "objects that are grains or vegetables"),
             ("水果和蔬菜", "objects that are fruits or vegetables"),
+            ("能满足人的口渴的东西", "drinks or other things that satisfy thirst"),
+            ("可以解渴的东西", "drinks or other things that satisfy thirst"),
+            ("露营时可以用到的东西", "equipment and supplies commonly used for camping"),
+            ("露营可以用到的东西", "equipment and supplies commonly used for camping"),
+            ("常见的家养宠物", "common domesticated pets"),
+            ("常见家养宠物", "common domesticated pets"),
             ("属于动物的", "objects that are animals"),
             ("属于植物的", "objects that are plants"),
             ("属于水果的", "objects that are fruits"),
@@ -3103,7 +3194,13 @@ class DoubaoVideoAutomation:
                 for index in range(await drop_candidates.count() - 1, -1, -1):
                     candidate = drop_candidates.nth(index)
                     if await candidate.is_visible():
-                        drop_box = await candidate.bounding_box()
+                        drop_target = candidate
+                        drop_area = candidate.locator(
+                            "xpath=ancestor::*[contains(@class, 'drag-area')][1]"
+                        )
+                        if await drop_area.count() and await drop_area.is_visible():
+                            drop_target = drop_area
+                        drop_box = await drop_target.bounding_box()
                         if drop_box:
                             drop_diagnostics = await candidate.evaluate(
                                 """element => {
@@ -3129,6 +3226,7 @@ class DoubaoVideoAutomation:
                     raise SemanticCaptchaError("semantic captcha drop target is unavailable")
                 destination_x = drop_box["x"] + drop_box["width"] / 2
                 destination_y = drop_box["y"] + drop_box["height"] / 2
+                used_tile_keys: set[tuple[int, int, int, int]] = set()
                 for coordinate_index, coordinate in enumerate(solution.coordinates):
                     if len(coordinate) == 4:
                         x1, y1, x2, y2 = coordinate
@@ -3140,6 +3238,42 @@ class DoubaoVideoAutomation:
                         source_y = coordinate_box["y"] + y * coordinate_scale_y
                     local_x = source_x - body_box["x"]
                     local_y = source_y - body_box["y"]
+                    tile_box = await body.evaluate(
+                        """(element, point) => {
+                            const hit = document.elementsFromPoint(point.x, point.y)
+                                .map(item => item.closest && item.closest('.canvas-container'))
+                                .find(Boolean);
+                            if (!hit) return null;
+                            const rect = hit.getBoundingClientRect();
+                            return {
+                                x: rect.x,
+                                y: rect.y,
+                                width: rect.width,
+                                height: rect.height,
+                                className: String(hit.className || '').slice(0, 160),
+                            };
+                        }""",
+                        {"x": local_x, "y": local_y},
+                    )
+                    if tile_box and float(tile_box.get("width") or 0) > 4 and float(tile_box.get("height") or 0) > 4:
+                        tile_key = (
+                            round(float(tile_box["x"])),
+                            round(float(tile_box["y"])),
+                            round(float(tile_box["width"])),
+                            round(float(tile_box["height"])),
+                        )
+                        if tile_key in used_tile_keys:
+                            replay_diagnostics.append({
+                                "coordinate": [round(float(part), 2) for part in coordinate],
+                                "snapped_tile": list(tile_key),
+                                "skipped": "duplicate_image_tile",
+                            })
+                            continue
+                        used_tile_keys.add(tile_key)
+                        source_x = body_box["x"] + float(tile_box["x"]) + float(tile_box["width"]) / 2
+                        source_y = body_box["y"] + float(tile_box["y"]) + float(tile_box["height"]) / 2
+                        local_x = source_x - body_box["x"]
+                        local_y = source_y - body_box["y"]
                     source_elements_before = await body.evaluate(
                         """(element, point) => document.elementsFromPoint(point.x, point.y)
                             .slice(0, 6)
@@ -3163,22 +3297,47 @@ class DoubaoVideoAutomation:
                             "skipped": "outside_image_tile",
                         })
                         continue
-                    target_x = destination_x + ((coordinate_index % 3) - 1) * min(24, drop_box["width"] / 8)
-                    target_y = destination_y + (coordinate_index // 3) * min(16, drop_box["height"] / 8)
-                    await page.mouse.move(source_x, source_y)
-                    await page.mouse.down()
-                    try:
-                        for step in range(1, 25):
-                            progress = step / 24
-                            await page.mouse.move(
-                                source_x + (target_x - source_x) * progress,
-                                source_y + (target_y - source_y) * progress,
-                            )
-                            await asyncio.sleep(0.012)
-                    finally:
-                        await page.mouse.up()
-                    await page.wait_for_timeout(250)
-                    replayed_coordinates += 1
+                    selected_before = await frame.locator(".canvas-container.selected").count()
+                    dropped_before = await frame.locator(
+                        ".drag-area .canvas-container, .drag-area canvas, .drag-area img"
+                    ).count()
+                    drag_confirmed = False
+                    drag_attempts = 0
+                    selected_after = selected_before
+                    dropped_after = dropped_before
+                    for drag_attempt in range(1, 3):
+                        drag_attempts = drag_attempt
+                        if drag_attempt == 1:
+                            horizontal_offset = ((coordinate_index % 5) - 2) * min(36, drop_box["width"] / 10)
+                            target_x = destination_x + horizontal_offset
+                            target_y = destination_y
+                        else:
+                            target_x = destination_x
+                            target_y = destination_y
+                        await page.mouse.move(source_x, source_y)
+                        await page.mouse.down()
+                        try:
+                            for step in range(1, 29):
+                                progress = step / 28
+                                await page.mouse.move(
+                                    source_x + (target_x - source_x) * progress,
+                                    source_y + (target_y - source_y) * progress,
+                                )
+                                await asyncio.sleep(0.014)
+                        finally:
+                            await page.mouse.up()
+                        confirmation_deadline = asyncio.get_running_loop().time() + 2.5
+                        while asyncio.get_running_loop().time() < confirmation_deadline:
+                            await page.wait_for_timeout(150)
+                            selected_after = await frame.locator(".canvas-container.selected").count()
+                            dropped_after = await frame.locator(
+                                ".drag-area .canvas-container, .drag-area canvas, .drag-area img"
+                            ).count()
+                            if selected_after > selected_before or dropped_after > dropped_before:
+                                drag_confirmed = True
+                                break
+                        if drag_confirmed:
+                            break
                     source_elements_after = await body.evaluate(
                         """(element, point) => document.elementsFromPoint(point.x, point.y)
                             .slice(0, 6)
@@ -3192,9 +3351,25 @@ class DoubaoVideoAutomation:
                     )
                     replay_diagnostics.append({
                         "coordinate": [round(float(part), 2) for part in coordinate],
+                        "snapped_tile": tile_box,
                         "source_before": source_elements_before,
                         "source_after": source_elements_after,
+                        "drag_attempts": drag_attempts,
+                        "drag_confirmed": drag_confirmed,
+                        "selected_count_before": selected_before,
+                        "selected_count_after": selected_after,
+                        "drop_item_count_before": dropped_before,
+                        "drop_item_count_after": dropped_after,
                     })
+                    if not drag_confirmed:
+                        if task_exists(self.task_id):
+                            save_result(self.task_id, extra={
+                                "doubao_verification_drag_replay": replay_diagnostics,
+                                "doubao_verification_drop_diagnostics": drop_diagnostics,
+                                "doubao_verification_drag_confirmation_failed": True,
+                            })
+                        raise SemanticCaptchaError("semantic captcha drag was not confirmed")
+                    replayed_coordinates += 1
                 if replayed_coordinates <= 0:
                     raise SemanticCaptchaError("semantic captcha solver returned no image tile coordinates")
                 if task_exists(self.task_id):
@@ -3497,8 +3672,12 @@ class DoubaoVideoAutomation:
             result["verification_solver_attempts"] = verification_result.attempts
             if verification_result.status == "success":
                 await self._refresh_cookies(page.context)
+                recovery_delay_ms = 3000 + secrets.randbelow(2001)
+                await page.wait_for_timeout(recovery_delay_ms)
                 retried = await self._submit_via_video_creation_page_ui(page, image_count=image_count)
                 retried["verification_recovery_attempted"] = True
+                retried["verification_recovery_delay_ms"] = recovery_delay_ms
+                retried["verification_recovery_reconfigured"] = True
                 retried["verification_solver_status"] = verification_result.status
                 retried["verification_solver_attempts"] = verification_result.attempts
                 return retried
@@ -3507,9 +3686,7 @@ class DoubaoVideoAutomation:
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:
         runtime = self.browser_pool.playwright_context() if self.browser_pool is not None else async_playwright()
         async with runtime as playwright:
-            browser: Browser | None = None
             context: BrowserContext | None = None
-            lease: BrowserContextLease | None = None
             page = None
             capture_video_response = None
             capture_tasks: set[asyncio.Task[Any]] = set()
@@ -3528,29 +3705,14 @@ class DoubaoVideoAutomation:
                 ).strip()
                 if proxy_timezone_id:
                     context_options["timezone_id"] = proxy_timezone_id
-                storage_state = self._context_storage_state()
-                if storage_state is not None:
-                    context_options["storage_state"] = storage_state
-                if self.browser_pool is not None:
-                    self._set_phase("allocating_browser", "正在分配豆包浏览器资源")
-                    lease = await self.browser_pool.acquire_context(
-                        executable_path=executable_path,
-                        headless=self.settings.headless,
-                        proxy=proxy_config,
-                        browser_args=browser_args,
-                        context_options=context_options,
-                    )
-                    browser = lease.browser
-                    context = lease.context
-                else:
-                    self._set_phase("launching_browser", "正在启动豆包浏览器")
-                    browser = await playwright.chromium.launch(
-                        headless=self.settings.headless,
-                        executable_path=executable_path,
-                        proxy=proxy_config,
-                        args=browser_args,
-                    )
-                    context = await browser.new_context(**context_options)
+                self._set_phase("allocating_browser", "正在分配豆包账号浏览器资源")
+                context = await self._launch_persistent_context(
+                    playwright,
+                    executable_path=executable_path,
+                    proxy_config=proxy_config,
+                    browser_args=browser_args,
+                    context_options=context_options,
+                )
                 page = context.pages[0] if context.pages else await context.new_page()
                 self._set_phase("opening_generation_page", "正在打开豆包生成页面")
                 await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)
@@ -3892,8 +4054,4 @@ class DoubaoVideoAutomation:
                     except Exception:
                         pass
                 await cancel_tracked_tasks(capture_tasks)
-                if lease is not None:
-                    await bounded_cleanup(lease.release())
-                else:
-                    await bounded_cleanup(safe_close(context))
-                    await bounded_cleanup(safe_close(browser))
+                await bounded_cleanup(safe_close(context))

@@ -15,7 +15,7 @@ import httpx
 from app import accounts, automation, config, query, store, task_queue, temp_access
 from app.automation import DolaFetchAutomation, dola_service_frequent_abnormal_outcome, is_infrastructure_failure
 from app.resilience import fair_owner_capacity_limits
-from app.worker import BROWSER_TASK_CONCURRENCY, IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, QIANWEN_REFERENCE_CONCURRENCY, TASK_WORKER_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, normalize_qianwen_retry_outcome, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota, task_browser_resource_class
+from app.worker import BROWSER_TASK_CONCURRENCY, DOUBAO_BROWSER_CONCURRENCY, IMAGE_PREPARATION_CONCURRENCY, IMAGE_SUBMISSION_CONCURRENCY, QIANWEN_REFERENCE_CONCURRENCY, TASK_WORKER_CONCURRENCY, WorkerManager, consume_failed_account_quota, defer_non_counting_retry, normalize_qianwen_retry_outcome, refund_account_quota_once, refund_temp_quota_once, release_account_after_retryable_failure, should_consume_retry_account_quota, task_browser_resource_class
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -2531,9 +2531,12 @@ class ReliabilityTests(unittest.TestCase):
         snapshot = manager.health_snapshot()
         self.assertEqual(TASK_WORKER_CONCURRENCY, 24)
         self.assertEqual(BROWSER_TASK_CONCURRENCY, 20)
+        self.assertEqual(DOUBAO_BROWSER_CONCURRENCY, 6)
         self.assertEqual(QIANWEN_REFERENCE_CONCURRENCY, 16)
         self.assertEqual(snapshot["worker_configured"], 24)
         self.assertEqual(snapshot["browser_task_limit"], 20)
+        self.assertEqual(snapshot["doubao_browser_limit"], 6)
+        self.assertEqual(snapshot["doubao_browser_active"], 0)
         self.assertEqual(snapshot["qianwen_ai_studio_limit"], 24)
         self.assertEqual(snapshot["qianwen_reference_limit"], 16)
         self.assertEqual(snapshot["result_poll_concurrency"], 16)

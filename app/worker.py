@@ -102,6 +102,10 @@ QIANWEN_REFERENCE_CONCURRENCY = min(
     BROWSER_TASK_CONCURRENCY,
     _bounded_env_int("DOLA_QIANWEN_REFERENCE_CONCURRENCY", 16, 1, 64),
 )
+DOUBAO_BROWSER_CONCURRENCY = min(
+    BROWSER_TASK_CONCURRENCY,
+    _bounded_env_int("DOLA_DOUBAO_BROWSER_CONCURRENCY", 6, 1, 20),
+)
 API_PROXY_CONTEXTS_PER_ENDPOINT = _bounded_env_int(
     "DOLA_API_PROXY_CONTEXTS_PER_ENDPOINT",
     1,
@@ -265,6 +269,7 @@ class WorkerManager:
         )
         self._remote_generation_reservations: dict[str, str] = {}
         self._browser_task_reservations: set[str] = set()
+        self._doubao_browser_reservations: set[str] = set()
         self._qianwen_reference_reservations: set[str] = set()
 
     async def start(self) -> None:
@@ -347,6 +352,7 @@ class WorkerManager:
         self._claimed.clear()
         self._remote_generation_reservations.clear()
         self._browser_task_reservations.clear()
+        self._doubao_browser_reservations.clear()
         self._qianwen_reference_reservations.clear()
         self._image_submission_reservations.clear()
         self._claimed_image_preparations.clear()
@@ -374,6 +380,8 @@ class WorkerManager:
             "worker_effective": effective,
             "browser_task_limit": BROWSER_TASK_CONCURRENCY,
             "browser_task_active": len(self._browser_task_reservations),
+            "doubao_browser_limit": DOUBAO_BROWSER_CONCURRENCY,
+            "doubao_browser_active": len(self._doubao_browser_reservations),
             "qianwen_ai_studio_limit": TASK_WORKER_CONCURRENCY,
             "qianwen_reference_limit": QIANWEN_REFERENCE_CONCURRENCY,
             "qianwen_reference_active": len(self._qianwen_reference_reservations),
@@ -980,6 +988,10 @@ class WorkerManager:
                         defer_task(candidate_id, "等待浏览器任务资源", "browser_task_limit", 5)
                         self._queue.release(candidate_id, worker_id)
                         continue
+                    if candidate_platform == "doubao" and len(self._doubao_browser_reservations) >= DOUBAO_BROWSER_CONCURRENCY:
+                        defer_task(candidate_id, "豆包任务等待独立浏览器资源", "doubao_browser_limit", 5)
+                        self._queue.release(candidate_id, worker_id)
+                        continue
                     if candidate_qianwen_reference and len(self._qianwen_reference_reservations) >= QIANWEN_REFERENCE_CONCURRENCY:
                         defer_task(candidate_id, "千问参考图任务等待浏览器资源", "qianwen_reference_limit", 5)
                         self._queue.release(candidate_id, worker_id)
@@ -1007,6 +1019,8 @@ class WorkerManager:
                     self._claimed.add(task_id)
                     if candidate_browser_task:
                         self._browser_task_reservations.add(task_id)
+                    if candidate_platform == "doubao":
+                        self._doubao_browser_reservations.add(task_id)
                     if candidate_qianwen_reference:
                         self._qianwen_reference_reservations.add(task_id)
                     if is_image_submission:
@@ -1254,6 +1268,7 @@ class WorkerManager:
                 self._queue.release(task_id, worker_id)
                 self._claimed.discard(task_id)
                 self._browser_task_reservations.discard(task_id)
+                self._doubao_browser_reservations.discard(task_id)
                 self._qianwen_reference_reservations.discard(task_id)
                 self._release_image_preparation(task_id)
                 reserved_owner = self._remote_generation_reservations.pop(task_id, None)

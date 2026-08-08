@@ -96,15 +96,19 @@ class DoubaoAutomationTests(unittest.TestCase):
             return_value=SliderSolveResult(status="success", attempts=1)
         )
         runner._refresh_cookies = AsyncMock()
-        page = SimpleNamespace(context=SimpleNamespace())
+        page = SimpleNamespace(context=SimpleNamespace(), wait_for_timeout=AsyncMock())
 
-        result = asyncio.run(runner._submit_via_video_creation_page(page, image_count=0))
+        with patch("app.doubao_automation.secrets.randbelow", return_value=1000):
+            result = asyncio.run(runner._submit_via_video_creation_page(page, image_count=0))
 
         self.assertTrue(result["accepted"])
         self.assertTrue(result["verification_recovery_attempted"])
         self.assertEqual(result["verification_solver_status"], "success")
+        self.assertEqual(result["verification_recovery_delay_ms"], 4000)
+        self.assertTrue(result["verification_recovery_reconfigured"])
         self.assertEqual(runner._submit_via_video_creation_page_ui.await_count, 2)
         runner._refresh_cookies.assert_awaited_once_with(page.context)
+        page.wait_for_timeout.assert_awaited_once_with(4000)
 
     def test_doubao_solver_supports_current_rmc_captcha_iframe(self) -> None:
         with patch("app.doubao_automation.load_settings", return_value=SimpleNamespace()):
@@ -250,6 +254,25 @@ class DoubaoAutomationTests(unittest.TestCase):
         )
         self.assertIn("objects that can be seen in the sky", sky_comment)
         self.assertIn("可以在天空中观察到的东西", sky_comment)
+
+        thirst_comment = DoubaoVideoAutomation._semantic_captcha_comment(
+            "能满足人的口渴的东西\n请选择所有符合上文描述的图片，并拖拽到下方",
+            drag=True,
+            rectangles=False,
+        )
+        camping_comment = DoubaoVideoAutomation._semantic_captcha_comment(
+            "露营时可以用到的东西\n请选择所有符合上文描述的图片，并拖拽到下方",
+            drag=True,
+            rectangles=False,
+        )
+        pet_comment = DoubaoVideoAutomation._semantic_captcha_comment(
+            "常见的家养宠物\n请选择所有符合上文描述的图片，并拖拽到下方",
+            drag=True,
+            rectangles=False,
+        )
+        self.assertIn("satisfy thirst", thirst_comment)
+        self.assertIn("camping", camping_comment)
+        self.assertIn("domesticated pets", pet_comment)
 
     def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
@@ -1050,17 +1073,13 @@ class DoubaoAutomationTests(unittest.TestCase):
                 "main_url": "https://media.example/browser-watermarked.mp4",
             }),
         )
-        context = SimpleNamespace(pages=[page], add_init_script=AsyncMock())
-        lease = SimpleNamespace(browser=SimpleNamespace(), context=context, release=AsyncMock())
+        context = SimpleNamespace(pages=[page], add_init_script=AsyncMock(), close=AsyncMock())
 
         @asynccontextmanager
         async def runtime():
             yield SimpleNamespace()
 
-        pool = SimpleNamespace(
-            playwright_context=Mock(side_effect=runtime),
-            acquire_context=AsyncMock(return_value=lease),
-        )
+        pool = SimpleNamespace(playwright_context=Mock(side_effect=runtime))
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner.task_id = "doubao-task"
         runner.prompt = "测试视频"
@@ -1078,6 +1097,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner._login_required = AsyncMock(return_value=False)
         runner._refresh_cookies = AsyncMock(return_value=[{"name": "session", "value": "value"}])
         runner._context_storage_state = Mock(return_value=None)
+        runner._launch_persistent_context = AsyncMock(return_value=context)
         runner._save_video_success = AsyncMock()
         runner._submit_via_video_creation_page = AsyncMock(return_value={
             "ok": True,
@@ -1108,7 +1128,8 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertTrue(any(call.kwargs["extra"].get("doubao_result_mode") == "interface_poll" for call in save_result.call_args_list))
         self.assertTrue(any(call.kwargs["extra"].get("doubao_generation_ack_source") == "video_creation_page_dom" for call in save_result.call_args_list))
         runner._save_video_success.assert_not_awaited()
-        lease.release.assert_awaited_once()
+        runner._launch_persistent_context.assert_awaited_once()
+        context.close.assert_awaited_once()
 
     def test_missing_direct_ack_uses_creation_page_then_releases_browser(self) -> None:
         body = SimpleNamespace(inner_text=AsyncMock(return_value="豆包已登录"))
@@ -1127,17 +1148,13 @@ class DoubaoAutomationTests(unittest.TestCase):
                 "response_preview": "请进入豆包视频创作入口提交生成",
             }),
         )
-        context = SimpleNamespace(pages=[page], add_init_script=AsyncMock())
-        lease = SimpleNamespace(browser=SimpleNamespace(), context=context, release=AsyncMock())
+        context = SimpleNamespace(pages=[page], add_init_script=AsyncMock(), close=AsyncMock())
 
         @asynccontextmanager
         async def runtime():
             yield SimpleNamespace()
 
-        pool = SimpleNamespace(
-            playwright_context=Mock(side_effect=runtime),
-            acquire_context=AsyncMock(return_value=lease),
-        )
+        pool = SimpleNamespace(playwright_context=Mock(side_effect=runtime))
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner.task_id = "doubao-task"
         runner.prompt = "测试视频"
@@ -1155,6 +1172,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         runner._login_required = AsyncMock(return_value=False)
         runner._refresh_cookies = AsyncMock(return_value=[{"name": "session", "value": "value"}])
         runner._context_storage_state = Mock(return_value=None)
+        runner._launch_persistent_context = AsyncMock(return_value=context)
         runner._submit_via_video_creation_page = AsyncMock(return_value={
             "ok": True,
             "status": 200,
@@ -1184,7 +1202,8 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertTrue(any(item.get("doubao_video_creation_page_used") for item in saved))
         self.assertTrue(any(item.get("doubao_result_mode") == "interface_poll" for item in saved))
         self.assertTrue(any(item.get("doubao_generation_ack_source") == "video_creation_page_dom" for item in saved))
-        lease.release.assert_awaited_once()
+        runner._launch_persistent_context.assert_awaited_once()
+        context.close.assert_awaited_once()
 
     def test_context_storage_state_merges_saved_state_and_latest_account_cookies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1231,6 +1250,49 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(cookies, [{"name": "session", "value": "fresh"}])
         update.assert_called_once_with("account-1", cookies)
         context.storage_state.assert_awaited_once_with(path=str(runner.state_path), indexed_db=True)
+
+    def test_persistent_context_uses_account_profile_and_merges_saved_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
+            runner.task_id = "task"
+            runner.profile_path = root / "profile"
+            runner.profile_path.mkdir()
+            (runner.profile_path / "SingletonLock").write_text("stale", encoding="utf-8")
+            runner.state_path = root / "state.json"
+            runner.state_path.write_text(
+                json.dumps({
+                    "cookies": [{"name": "saved", "value": "one", "domain": ".doubao.com", "path": "/"}],
+                    "origins": [{"origin": "https://www.doubao.com", "localStorage": [{"name": "device", "value": "known"}]}],
+                }),
+                encoding="utf-8",
+            )
+            runner.account = {
+                "id": "account-1",
+                "cookies": [{"name": "session", "value": "latest", "domain": ".doubao.com", "path": "/"}],
+            }
+            runner.settings = SimpleNamespace(headless=True)
+            context = SimpleNamespace(add_cookies=AsyncMock(), add_init_script=AsyncMock())
+            launch = AsyncMock(return_value=context)
+            playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch))
+
+            with patch("app.doubao_automation.task_exists", return_value=False):
+                returned = asyncio.run(runner._launch_persistent_context(
+                    playwright,
+                    executable_path="/usr/bin/chromium",
+                    proxy_config={"server": "http://proxy.example:8080"},
+                    browser_args=["--no-sandbox"],
+                    context_options={"locale": "zh-CN"},
+                ))
+
+            self.assertIs(returned, context)
+            self.assertEqual(launch.call_args.args[0], str(runner.profile_path))
+            self.assertEqual(launch.call_args.kwargs["proxy"], {"server": "http://proxy.example:8080"})
+            self.assertTrue(launch.call_args.kwargs["headless"])
+            merged = {item["name"]: item["value"] for item in context.add_cookies.call_args.args[0]}
+            self.assertEqual(merged, {"saved": "one", "session": "latest"})
+            self.assertIn("device", context.add_init_script.call_args.args[0])
+            self.assertFalse((runner.profile_path / "SingletonLock").exists())
 
     def test_video_response_recognizes_doubao_media_url(self) -> None:
         response = SimpleNamespace(

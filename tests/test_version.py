@@ -19,7 +19,7 @@ class VersionTests(unittest.TestCase):
         config_source = (root / "app" / "config.py").read_text(encoding="utf-8")
         admin_html = (root / "app" / "admin" / "index.html").read_text(encoding="utf-8")
 
-        self.assertEqual(version, "1.10.92")
+        self.assertEqual(version, "1.10.93")
         self.assertEqual(__version__, version)
         self.assertIn(f"DOLA_IMAGE_TAG:-{version}", compose)
         self.assertEqual(compose.count("build:"), 1)
@@ -27,6 +27,7 @@ class VersionTests(unittest.TestCase):
         self.assertIn(f"app.js?v={version}", admin_html)
         self.assertIn("DOLA_DATABASE_POOL_SIZE: ${DOLA_DATABASE_POOL_SIZE:-24}", compose)
         self.assertIn("DOLA_IMAGE_UPLOAD_CONCURRENCY: ${DOLA_IMAGE_UPLOAD_CONCURRENCY:-10}", compose)
+        self.assertIn("DOLA_DOUBAO_BROWSER_CONCURRENCY: ${DOLA_DOUBAO_BROWSER_CONCURRENCY:-6}", compose)
         self.assertIn("DOLA_IMAGE_PREPARE_CONCURRENCY: ${DOLA_IMAGE_PREPARE_CONCURRENCY:-15}", compose)
         self.assertIn("DOLA_PREPARE_UPLOAD_TIMEOUT_SECONDS: ${DOLA_PREPARE_UPLOAD_TIMEOUT_SECONDS:-60}", compose)
         self.assertIn("DOLA_IMAGE_UPLOAD_SLOT_WAIT_SECONDS: ${DOLA_IMAGE_UPLOAD_SLOT_WAIT_SECONDS:-20}", compose)
@@ -41,6 +42,7 @@ class VersionTests(unittest.TestCase):
         self.assertIn("DOLA_REFERENCE_CACHE_TTL_SECONDS: ${DOLA_REFERENCE_CACHE_TTL_SECONDS:-1800}", compose)
         self.assertIn("DOLA_DATABASE_POOL_SIZE=24", env_example)
         self.assertIn("DOLA_IMAGE_UPLOAD_CONCURRENCY=10", env_example)
+        self.assertIn("DOLA_DOUBAO_BROWSER_CONCURRENCY=6", env_example)
         self.assertIn("DOLA_IMAGE_PREPARE_CONCURRENCY=15", env_example)
         self.assertIn("DOLA_PREPARE_UPLOAD_TIMEOUT_SECONDS=60", env_example)
         self.assertIn("DOLA_API_PROXY_ENDPOINT_LIMIT=20", env_example)
@@ -70,7 +72,7 @@ class VersionTests(unittest.TestCase):
     def test_compose_file_is_valid_yaml(self) -> None:
         root = Path(__file__).resolve().parents[1]
         compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(compose["x-app-base"]["image"], "${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.10.92}")
+        self.assertEqual(compose["x-app-base"]["image"], "${DOLA_IMAGE_NAME:-dola-fetch-service}:${DOLA_IMAGE_TAG:-1.10.93}")
         self.assertEqual(compose["services"]["api"]["deploy"]["resources"]["limits"]["memory"], "${DOLA_API_MEMORY_LIMIT:-3G}")
         self.assertEqual(compose["services"]["worker"]["deploy"]["resources"]["limits"]["memory"], "${DOLA_WORKER_MEMORY_LIMIT:-8G}")
         self.assertEqual(compose["services"]["api"]["image"], compose["x-app-base"]["image"])

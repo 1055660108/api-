@@ -1070,6 +1070,62 @@ def normalize_doubao_submission_acknowledgement(result: dict[str, Any]) -> dict[
     return result
 
 
+def _semantic_drag_tile_keys(state: dict[str, Any] | None, field: str) -> set[tuple[int, int, int, int]]:
+    keys: set[tuple[int, int, int, int]] = set()
+    for value in (state or {}).get(field) or []:
+        if not isinstance(value, (list, tuple)) or len(value) != 4:
+            continue
+        try:
+            keys.add(tuple(round(float(part)) for part in value))
+        except (TypeError, ValueError):
+            continue
+    return keys
+
+
+def semantic_drag_selection_confirmed(
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    tile_key: tuple[int, int, int, int],
+) -> tuple[bool, str]:
+    before = before or {}
+    after = after or {}
+    before_registered = _semantic_drag_tile_keys(before, "registeredTileKeys")
+    after_registered = _semantic_drag_tile_keys(after, "registeredTileKeys")
+    before_selected = _semantic_drag_tile_keys(before, "selectedTileKeys")
+    after_selected = _semantic_drag_tile_keys(after, "selectedTileKeys")
+    exact_internal_registration = (
+        tile_key in after_registered
+        and tile_key in after_selected
+        and tile_key not in before_registered
+        and len(after_registered) > len(before_registered)
+        and len(after_selected) > len(before_selected)
+    )
+    if exact_internal_registration:
+        return True, "internal_registered_selection"
+    if int(after.get("dropPayloadCount") or 0) > int(before.get("dropPayloadCount") or 0):
+        return True, "drop_area_payload"
+    return False, ""
+
+
+def semantic_drag_selection_complete(
+    initial: dict[str, Any] | None,
+    current: dict[str, Any] | None,
+    expected_tile_keys: set[tuple[int, int, int, int]],
+) -> tuple[bool, str]:
+    initial = initial or {}
+    current = current or {}
+    if not expected_tile_keys:
+        return False, ""
+    registered = _semantic_drag_tile_keys(current, "registeredTileKeys")
+    selected = _semantic_drag_tile_keys(current, "selectedTileKeys")
+    if registered == expected_tile_keys and selected == expected_tile_keys:
+        return True, "internal_registered_selection"
+    payload_growth = int(current.get("dropPayloadCount") or 0) - int(initial.get("dropPayloadCount") or 0)
+    if payload_growth >= len(expected_tile_keys):
+        return True, "drop_area_payload"
+    return False, ""
+
+
 DOUBAO_SINGLE_CHAIN_SCRIPT = r"""
 async ({conversationId}) => {
   function cookieValue(name) {
@@ -3187,6 +3243,7 @@ class DoubaoVideoAutomation:
 
             if drag_mode:
                 drop_box = None
+                drop_target = None
                 drop_diagnostics: list[dict[str, Any]] = []
                 drop_candidates = frame.get_by_text(
                     re.compile(r"拖拽到这里|拖动到这里|Drop here", re.IGNORECASE)
@@ -3222,8 +3279,68 @@ class DoubaoVideoAutomation:
                                 }"""
                             )
                             break
-                if not drop_box:
+                if not drop_box or drop_target is None:
                     raise SemanticCaptchaError("semantic captcha drop target is unavailable")
+
+                async def capture_drag_state() -> dict[str, Any]:
+                    state = await drop_target.evaluate(
+                        """element => {
+                            const document = element.ownerDocument;
+                            const visible = item => {
+                                if (!(item instanceof Element)) return false;
+                                const rect = item.getBoundingClientRect();
+                                const style = getComputedStyle(item);
+                                return rect.width > 2 && rect.height > 2
+                                    && style.display !== 'none'
+                                    && style.visibility !== 'hidden'
+                                    && Number(style.opacity || 1) > 0;
+                            };
+                            const tileKey = item => {
+                                const rect = item.getBoundingClientRect();
+                                return [
+                                    Math.round(rect.x),
+                                    Math.round(rect.y),
+                                    Math.round(rect.width),
+                                    Math.round(rect.height),
+                                ];
+                            };
+                            const selectedItems = Array.from(
+                                document.querySelectorAll('.img-container .canvas-container.selected')
+                            ).filter(visible);
+                            const registeredItems = selectedItems.filter(item => {
+                                const close = item.querySelector('.close-container');
+                                return close && visible(close);
+                            });
+                            const payloadItems = Array.from(element.querySelectorAll(
+                                'img, canvas, video, [class*="thumb"], [class*="preview"], '
+                                + '[class*="choice"], [class*="selected"], [style*="background-image"]'
+                            )).filter(item => visible(item) && !item.classList.contains('tit'));
+                            return {
+                                selectedCount: selectedItems.length,
+                                registeredCount: registeredItems.length,
+                                selectedTileKeys: selectedItems.map(tileKey),
+                                registeredTileKeys: registeredItems.map(tileKey),
+                                dropPayloadCount: payloadItems.length,
+                                dropChildCount: element.children.length,
+                                dropDescendantCount: element.querySelectorAll('*').length,
+                                dropClassName: String(element.className || '').slice(0, 200),
+                                dropText: String(element.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+                            };
+                        }"""
+                    )
+                    return state if isinstance(state, dict) else {}
+
+                selected_closers = frame.locator(
+                    ".img-container .canvas-container.selected .close-container"
+                )
+                for selected_index in range(await selected_closers.count() - 1, -1, -1):
+                    closer = selected_closers.nth(selected_index)
+                    if await closer.is_visible():
+                        await closer.click(force=True)
+                        await page.wait_for_timeout(150)
+                initial_drag_state = await capture_drag_state()
+                if _semantic_drag_tile_keys(initial_drag_state, "registeredTileKeys"):
+                    raise SemanticCaptchaError("semantic captcha previous selections could not be cleared")
                 destination_x = drop_box["x"] + drop_box["width"] / 2
                 destination_y = drop_box["y"] + drop_box["height"] / 2
                 used_tile_keys: set[tuple[int, int, int, int]] = set()
@@ -3274,6 +3391,13 @@ class DoubaoVideoAutomation:
                         source_y = body_box["y"] + float(tile_box["y"]) + float(tile_box["height"]) / 2
                         local_x = source_x - body_box["x"]
                         local_y = source_y - body_box["y"]
+                    else:
+                        replay_diagnostics.append({
+                            "coordinate": [round(float(part), 2) for part in coordinate],
+                            "snapped_tile": tile_box,
+                            "skipped": "outside_image_grid",
+                        })
+                        continue
                     source_elements_before = await body.evaluate(
                         """(element, point) => document.elementsFromPoint(point.x, point.y)
                             .slice(0, 6)
@@ -3297,14 +3421,11 @@ class DoubaoVideoAutomation:
                             "skipped": "outside_image_tile",
                         })
                         continue
-                    selected_before = await frame.locator(".canvas-container.selected").count()
-                    dropped_before = await frame.locator(
-                        ".drag-area .canvas-container, .drag-area canvas, .drag-area img"
-                    ).count()
+                    drag_state_before = await capture_drag_state()
                     drag_confirmed = False
+                    drag_confirmation_source = ""
                     drag_attempts = 0
-                    selected_after = selected_before
-                    dropped_after = dropped_before
+                    drag_state_after = drag_state_before
                     for drag_attempt in range(1, 3):
                         drag_attempts = drag_attempt
                         if drag_attempt == 1:
@@ -3329,11 +3450,24 @@ class DoubaoVideoAutomation:
                         confirmation_deadline = asyncio.get_running_loop().time() + 2.5
                         while asyncio.get_running_loop().time() < confirmation_deadline:
                             await page.wait_for_timeout(150)
-                            selected_after = await frame.locator(".canvas-container.selected").count()
-                            dropped_after = await frame.locator(
-                                ".drag-area .canvas-container, .drag-area canvas, .drag-area img"
-                            ).count()
-                            if selected_after > selected_before or dropped_after > dropped_before:
+                            candidate_state = await capture_drag_state()
+                            candidate_confirmed, candidate_source = semantic_drag_selection_confirmed(
+                                drag_state_before,
+                                candidate_state,
+                                tile_key,
+                            )
+                            if not candidate_confirmed:
+                                continue
+                            await page.wait_for_timeout(180)
+                            stable_state = await capture_drag_state()
+                            stable_confirmed, stable_source = semantic_drag_selection_confirmed(
+                                drag_state_before,
+                                stable_state,
+                                tile_key,
+                            )
+                            if candidate_source == stable_source and stable_confirmed:
+                                drag_state_after = stable_state
+                                drag_confirmation_source = stable_source
                                 drag_confirmed = True
                                 break
                         if drag_confirmed:
@@ -3356,10 +3490,14 @@ class DoubaoVideoAutomation:
                         "source_after": source_elements_after,
                         "drag_attempts": drag_attempts,
                         "drag_confirmed": drag_confirmed,
-                        "selected_count_before": selected_before,
-                        "selected_count_after": selected_after,
-                        "drop_item_count_before": dropped_before,
-                        "drop_item_count_after": dropped_after,
+                        "drag_confirmation_source": drag_confirmation_source,
+                        "selected_count_before": int(drag_state_before.get("selectedCount") or 0),
+                        "selected_count_after": int(drag_state_after.get("selectedCount") or 0),
+                        "registered_count_before": int(drag_state_before.get("registeredCount") or 0),
+                        "registered_count_after": int(drag_state_after.get("registeredCount") or 0),
+                        "registered_tile_keys_after": drag_state_after.get("registeredTileKeys") or [],
+                        "drop_payload_count_before": int(drag_state_before.get("dropPayloadCount") or 0),
+                        "drop_payload_count_after": int(drag_state_after.get("dropPayloadCount") or 0),
                     })
                     if not drag_confirmed:
                         if task_exists(self.task_id):
@@ -3372,12 +3510,41 @@ class DoubaoVideoAutomation:
                     replayed_coordinates += 1
                 if replayed_coordinates <= 0:
                     raise SemanticCaptchaError("semantic captcha solver returned no image tile coordinates")
+                final_drag_state = await capture_drag_state()
+                await page.wait_for_timeout(200)
+                stable_drag_state = await capture_drag_state()
+                final_confirmed, final_confirmation_source = semantic_drag_selection_complete(
+                    initial_drag_state,
+                    stable_drag_state,
+                    used_tile_keys,
+                )
+                final_state_stable = (
+                    _semantic_drag_tile_keys(final_drag_state, "selectedTileKeys")
+                    == _semantic_drag_tile_keys(stable_drag_state, "selectedTileKeys")
+                    and _semantic_drag_tile_keys(final_drag_state, "registeredTileKeys")
+                    == _semantic_drag_tile_keys(stable_drag_state, "registeredTileKeys")
+                    and int(final_drag_state.get("dropPayloadCount") or 0)
+                    == int(stable_drag_state.get("dropPayloadCount") or 0)
+                )
+                if not final_confirmed or not final_state_stable:
+                    if task_exists(self.task_id):
+                        save_result(self.task_id, extra={
+                            "doubao_verification_drag_replay": replay_diagnostics,
+                            "doubao_verification_drop_diagnostics": drop_diagnostics,
+                            "doubao_verification_drag_final_state": stable_drag_state,
+                            "doubao_verification_drag_expected_tile_keys": [list(key) for key in sorted(used_tile_keys)],
+                            "doubao_verification_drag_confirmation_failed": True,
+                        })
+                    raise SemanticCaptchaError("semantic captcha selected answers were not stable")
                 if task_exists(self.task_id):
                     save_result(self.task_id, extra={
                         "doubao_verification_drag_replay": replay_diagnostics,
                         "doubao_verification_drop_diagnostics": drop_diagnostics,
                         "doubao_verification_replayed_coordinate_count": replayed_coordinates,
                         "doubao_verification_coordinate_target": coordinate_target_name,
+                        "doubao_verification_drag_final_state": stable_drag_state,
+                        "doubao_verification_drag_expected_tile_keys": [list(key) for key in sorted(used_tile_keys)],
+                        "doubao_verification_drag_confirmation_source": final_confirmation_source,
                     })
             else:
                 for x, y in solution.coordinates:

@@ -17,7 +17,7 @@ import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_confirmation_prompt_detected, doubao_payload_has_submission_marker, doubao_reference_upload_progress_visible, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, should_use_doubao_video_creation_page, unwatermarked_fallback_url
+from app.doubao_automation import DOUBAO_MODEL_CODES, DOUBAO_ORIGINAL_VIDEO_SCORE, DOUBAO_PREHANDLE_ATTACHMENTS_SCRIPT, DOUBAO_PREPARE_UPLOAD_BODY, DOUBAO_RESULT_WAIT_SECONDS, DOUBAO_SINGLE_CHAIN_SCRIPT, DOUBAO_SUBMISSION_MARKER, DOUBAO_SUBMIT_SCRIPT, QAAB_SALT, DoubaoReferenceImageUploader, DoubaoVideoAutomation, best_doubao_video_candidate, cache_doubao_video, classify_doubao_submission, collect_doubao_response_candidates, collect_doubao_video_candidates, decode_qaab_url, detect_doubao_generation_acknowledgement, detect_doubao_video_creation_page_refusal, doubao_confirmation_prompt_detected, doubao_payload_has_submission_marker, doubao_reference_upload_progress_visible, doubao_ui_generation_acknowledged, doubao_video_candidate_is_acceptable, doubao_video_url_score, extract_doubao_assistant_response_text, extract_doubao_conversation_id, extract_doubao_fallback_apis, fallback_payload_video_url, fetch_doubao_generation_result, is_doubao_account_quota_insufficient, is_doubao_text_only_video_response, normalize_doubao_submission_acknowledgement, parse_doubao_generation_result, semantic_drag_selection_complete, semantic_drag_selection_confirmed, should_use_doubao_video_creation_page, unwatermarked_fallback_url
 from app.qianwen_automation import QianwenVideoAutomation
 from app.slider_solver import SliderSolveResult
 
@@ -273,6 +273,79 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("satisfy thirst", thirst_comment)
         self.assertIn("camping", camping_comment)
         self.assertIn("domesticated pets", pet_comment)
+
+    def test_semantic_drag_does_not_accept_selected_class_without_registration(self) -> None:
+        tile_key = (135, 195, 110, 110)
+        before = {
+            "selectedTileKeys": [],
+            "registeredTileKeys": [],
+            "dropPayloadCount": 0,
+        }
+        selected_only = {
+            "selectedTileKeys": [list(tile_key)],
+            "registeredTileKeys": [],
+            "dropPayloadCount": 0,
+        }
+
+        confirmed, source = semantic_drag_selection_confirmed(before, selected_only, tile_key)
+
+        self.assertFalse(confirmed)
+        self.assertEqual(source, "")
+
+    def test_semantic_drag_accepts_exact_registered_tile_or_drop_payload(self) -> None:
+        tile_key = (135, 195, 110, 110)
+        before = {
+            "selectedTileKeys": [],
+            "registeredTileKeys": [],
+            "dropPayloadCount": 0,
+        }
+        registered = {
+            "selectedTileKeys": [list(tile_key)],
+            "registeredTileKeys": [list(tile_key)],
+            "dropPayloadCount": 0,
+        }
+        dropped = {
+            "selectedTileKeys": [],
+            "registeredTileKeys": [],
+            "dropPayloadCount": 1,
+        }
+
+        self.assertEqual(
+            semantic_drag_selection_confirmed(before, registered, tile_key),
+            (True, "internal_registered_selection"),
+        )
+        self.assertEqual(
+            semantic_drag_selection_confirmed(before, dropped, tile_key),
+            (True, "drop_area_payload"),
+        )
+
+    def test_semantic_drag_final_audit_rejects_missing_or_extra_tiles(self) -> None:
+        first = (15, 75, 110, 110)
+        second = (135, 195, 110, 110)
+        initial = {
+            "selectedTileKeys": [],
+            "registeredTileKeys": [],
+            "dropPayloadCount": 0,
+        }
+        exact = {
+            "selectedTileKeys": [list(first), list(second)],
+            "registeredTileKeys": [list(first), list(second)],
+            "dropPayloadCount": 0,
+        }
+        extra = {
+            "selectedTileKeys": [list(first), list(second), [255, 315, 110, 110]],
+            "registeredTileKeys": [list(first), list(second), [255, 315, 110, 110]],
+            "dropPayloadCount": 0,
+        }
+
+        self.assertEqual(
+            semantic_drag_selection_complete(initial, exact, {first, second}),
+            (True, "internal_registered_selection"),
+        )
+        self.assertEqual(
+            semantic_drag_selection_complete(initial, extra, {first, second}),
+            (False, ""),
+        )
 
     def test_video_creation_keeps_verification_result_when_challenge_is_not_rendered(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)

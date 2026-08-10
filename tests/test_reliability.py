@@ -1391,7 +1391,7 @@ class ReliabilityTests(unittest.TestCase):
         self.assertFalse(acquire.await_args.kwargs["auto_select"])
         self.assertFalse(acquire.await_args.kwargs["random_select"])
         self.assertEqual(acquire.await_args.kwargs["selected_node"], "verified-node")
-        self.assertEqual(acquire.await_args.kwargs["selected_countries"], ())
+        self.assertEqual(acquire.await_args.kwargs["selected_countries"], ("日本",))
         self.assertEqual(acquire.await_args.kwargs["excluded_node_ids"], set())
 
     def test_reset_today_restores_only_marked_accounts_for_platform(self) -> None:

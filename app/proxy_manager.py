@@ -1022,6 +1022,10 @@ async def _acquire_task_mihomo_proxy(
                     if duplicate is not None:
                         allowed_node_ids.add(duplicate.node_id)
                         failed_launch_ids.add(chosen.id)
+                        remaining_node_ids = allowed_node_ids - active_node_ids - base_excluded - failed_launch_ids
+                        if remaining_node_ids:
+                            _TASK_MIHOMO_CONDITION.notify_all()
+                            continue
                         if duplicate.active >= TASK_MIHOMO_CONTEXTS_PER_EXIT:
                             await _TASK_MIHOMO_CONDITION.wait()
                             continue
@@ -1097,6 +1101,10 @@ async def _acquire_task_mihomo_proxy(
                     allowed_node_ids.add(duplicate.node_id)
                     failed_launch_ids.add(chosen.id)
                     await asyncio.to_thread(_terminate_mihomo_process, slot.process)
+                    remaining_node_ids = allowed_node_ids - active_node_ids - base_excluded - failed_launch_ids
+                    if remaining_node_ids:
+                        _TASK_MIHOMO_CONDITION.notify_all()
+                        continue
                     if duplicate.active >= TASK_MIHOMO_CONTEXTS_PER_EXIT:
                         _TASK_MIHOMO_CONDITION.notify_all()
                         await _TASK_MIHOMO_CONDITION.wait()

@@ -2023,7 +2023,10 @@ class DolaFetchAutomation:
                         refresh_seconds=self.settings.proxy_subscription_refresh_seconds,
                         auto_select=False if pinned_proxy_node_id else self.settings.proxy_auto_select,
                         selected_node=pinned_proxy_node_id or self.settings.proxy_selected_node,
-                        selected_countries=() if pinned_proxy_node_id else self.settings.proxy_auto_countries,
+                        # Keep the configured country preference available when an old pinned node is
+                        # rejected (for example, a previously pinned US node). The proxy manager
+                        # switches back to automatic selection in that case and needs these countries.
+                        selected_countries=self.settings.proxy_auto_countries,
                         latency_threshold_ms=self.settings.proxy_latency_threshold_ms,
                         excluded_node_ids=excluded_node_ids,
                         random_select=random_select,

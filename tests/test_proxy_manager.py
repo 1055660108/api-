@@ -402,6 +402,28 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(chosen.id, "jp")
 
+    async def test_task_pool_replaces_pinned_excluded_node_with_configured_country(self) -> None:
+        nodes = (
+            proxy_manager.ProxyNode("us", "United States", "缇庡浗", "http", "us.example", 8001, "http://us.example:8001"),
+            proxy_manager.ProxyNode("jp", "Japan", "鏃ユ湰", "http", "jp.example", 8002, "http://jp.example:8002"),
+        )
+        proxy_manager._SUBSCRIPTION_CACHE["provider"] = b"test-provider"
+        now = proxy_manager.time.monotonic()
+        proxy_manager._NODE_DELAYS.update({"us": (10, now), "jp": (30, now)})
+        with patch.object(proxy_manager, "_node_dola_available", AsyncMock(return_value=True)), patch.object(
+            proxy_manager, "proxy_exit_identity", AsyncMock(side_effect=lambda server, fallback: f"ip:{fallback}"),
+        ), patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)):
+            selected = await proxy_manager.acquire_dola_subscription_proxy(
+                "https://subscription.example/token",
+                auto_select=True,
+                selected_node="",
+                selected_countries=["鏃ユ湰"],
+                latency_threshold_ms=800,
+                excluded_countries=["缇庡浗"],
+            )
+        self.assertEqual(selected["node_id"], "jp")
+        await proxy_manager.release_dola_subscription_proxy(selected)
+
     async def test_retry_exclusion_immediately_uses_a_different_exit_slot(self) -> None:
         nodes = proxy_manager.subscription_node_list("vless://a@example.com:443#A\nvless://b@example.net:443#B")
         proxy_manager._SUBSCRIPTION_CACHE["provider"] = b"test-provider"

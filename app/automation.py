@@ -2028,6 +2028,7 @@ class DolaFetchAutomation:
                         excluded_node_ids=excluded_node_ids,
                         random_select=random_select,
                         prefer_country_order=self.proxy_platform == "doubao",
+                        excluded_countries=("美国",) if self.proxy_platform == "doubao" else (),
                     )
                     self.subscription_proxy = proxy
                     self.proxy_node_id = str(proxy.get("node_id") or "")

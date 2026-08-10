@@ -87,6 +87,7 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(subscription.await_args.kwargs["random_select"])
         self.assertTrue(subscription.await_args.kwargs["prefer_country_order"])
+        self.assertEqual(subscription.await_args.kwargs["excluded_countries"], ("美国",))
 
     async def test_doubao_subscription_node_is_pinned_on_first_acquisition(self) -> None:
         instance = automation_instance()

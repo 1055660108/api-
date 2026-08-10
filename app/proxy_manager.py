@@ -896,6 +896,7 @@ async def _acquire_task_mihomo_proxy(
     excluded_node_ids: Iterable[str],
     random_select: bool = False,
     prefer_country_order: bool = False,
+    excluded_countries: Iterable[str] = (),
 ) -> dict[str, str]:
     global _TASK_MIHOMO_CONDITION
     if _TASK_MIHOMO_CONDITION is None:
@@ -906,13 +907,24 @@ async def _acquire_task_mihomo_proxy(
     digest = hashlib.sha256(provider).hexdigest()
     base_excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
     selected_country_set = {str(item).strip() for item in selected_countries if str(item or "").strip()}
+    excluded_country_set = {str(item).strip() for item in excluded_countries if str(item or "").strip()}
+    selected_node_country = next(
+        (node.country for node in nodes if node.id == selected_node),
+        "",
+    )
+    if selected_node and selected_node_country in excluded_country_set:
+        selected_node = ""
+        auto_select = True
     if auto_select and not selected_country_set:
         raise RuntimeError("automatic proxy selection requires at least one selected country")
     allowed_node_ids = {
         node.id for node in nodes
-        if (auto_select and node.country in selected_country_set)
-        or (random_select and (not selected_country_set or node.country in selected_country_set))
-        or (not auto_select and not random_select and (not selected_node or node.id == selected_node))
+        if node.country not in excluded_country_set
+        and (
+            (auto_select and node.country in selected_country_set)
+            or (random_select and (not selected_country_set or node.country in selected_country_set))
+            or (not auto_select and not random_select and (not selected_node or node.id == selected_node))
+        )
     }
     if auto_select and not allowed_node_ids:
         raise RuntimeError("selected proxy countries contain no usable nodes")
@@ -966,6 +978,7 @@ async def _acquire_task_mihomo_proxy(
                         excluded_node_ids=base_excluded | failed_launch_ids | active_node_ids,
                         random_select=random_select,
                         prefer_country_order=prefer_country_order,
+                        excluded_countries=excluded_country_set,
                     )
                 except Exception as exc:
                     choose_error = exc
@@ -1326,11 +1339,13 @@ async def _choose_subscription_node(
     excluded_node_ids: Iterable[str],
     random_select: bool = False,
     prefer_country_order: bool = False,
+    excluded_countries: Iterable[str] = (),
 ) -> ProxyNode:
     country_order = tuple(dict.fromkeys(
         str(item).strip() for item in selected_countries if str(item or "").strip()
     ))
     countries = set(country_order)
+    blocked_countries = {str(item).strip() for item in excluded_countries if str(item or "").strip()}
     excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
     if auto_select:
         eligible_nodes = tuple(node for node in nodes if countries and node.country in countries)
@@ -1338,6 +1353,7 @@ async def _choose_subscription_node(
         eligible_nodes = tuple(node for node in nodes if not countries or node.country in countries)
     else:
         eligible_nodes = nodes
+    eligible_nodes = tuple(node for node in eligible_nodes if node.country not in blocked_countries)
     if not eligible_nodes:
         raise RuntimeError("automatic proxy selection requires at least one selected country" if auto_select and not countries else "selected proxy countries contain no usable nodes")
     selectable_nodes = tuple(node for node in eligible_nodes if node.id not in excluded and not _node_is_cooling_down(node.id))
@@ -1462,6 +1478,7 @@ async def acquire_dola_subscription_proxy(
     excluded_node_ids: Iterable[str] = (),
     random_select: bool = False,
     prefer_country_order: bool = False,
+    excluded_countries: Iterable[str] = (),
 ) -> dict[str, str]:
     nodes = await fetch_subscription_node_list(
         subscription_url,
@@ -1481,6 +1498,7 @@ async def acquire_dola_subscription_proxy(
         excluded_node_ids=excluded_node_ids,
         random_select=random_select,
         prefer_country_order=prefer_country_order,
+        excluded_countries=excluded_countries,
     )
 
 

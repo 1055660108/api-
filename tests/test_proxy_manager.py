@@ -379,6 +379,29 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(chosen.id, "jp")
 
+    async def test_excluded_country_replaces_a_pinned_us_node(self) -> None:
+        nodes = (
+            proxy_manager.ProxyNode("us", "United States", "美国", "http", "us.example", 8001, "http://us.example:8001"),
+            proxy_manager.ProxyNode("jp", "Japan", "日本", "http", "jp.example", 8002, "http://jp.example:8002"),
+        )
+        now = proxy_manager.time.monotonic()
+        proxy_manager._NODE_DELAYS.update({"us": (10, now), "jp": (30, now)})
+
+        chosen = await proxy_manager._choose_subscription_node(
+            nodes,
+            "https://subscription.example/token",
+            timeout_seconds=10,
+            auto_select=False,
+            selected_node="us",
+            selected_countries=("日本",),
+            latency_threshold_ms=800,
+            excluded_node_ids=(),
+            prefer_country_order=True,
+            excluded_countries=("美国",),
+        )
+
+        self.assertEqual(chosen.id, "jp")
+
     async def test_retry_exclusion_immediately_uses_a_different_exit_slot(self) -> None:
         nodes = proxy_manager.subscription_node_list("vless://a@example.com:443#A\nvless://b@example.net:443#B")
         proxy_manager._SUBSCRIPTION_CACHE["provider"] = b"test-provider"

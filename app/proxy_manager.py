@@ -895,6 +895,7 @@ async def _acquire_task_mihomo_proxy(
     latency_threshold_ms: int,
     excluded_node_ids: Iterable[str],
     random_select: bool = False,
+    prefer_country_order: bool = False,
 ) -> dict[str, str]:
     global _TASK_MIHOMO_CONDITION
     if _TASK_MIHOMO_CONDITION is None:
@@ -964,6 +965,7 @@ async def _acquire_task_mihomo_proxy(
                         latency_threshold_ms=latency_threshold_ms,
                         excluded_node_ids=base_excluded | failed_launch_ids | active_node_ids,
                         random_select=random_select,
+                        prefer_country_order=prefer_country_order,
                     )
                 except Exception as exc:
                     choose_error = exc
@@ -995,6 +997,34 @@ async def _acquire_task_mihomo_proxy(
                     if not await _node_dola_available(chosen.id, server, min(12.0, float(timeout_seconds))):
                         continue
                     exit_id = await proxy_exit_identity(server, chosen.id)
+                    duplicate = next(
+                        (
+                            item for item in _TASK_MIHOMO_SLOTS
+                            if not item.retiring
+                            and not item.launching
+                            and item.exit_id == exit_id
+                        ),
+                        None,
+                    )
+                    if duplicate is not None:
+                        allowed_node_ids.add(duplicate.node_id)
+                        failed_launch_ids.add(chosen.id)
+                        if duplicate.active >= TASK_MIHOMO_CONTEXTS_PER_EXIT:
+                            await _TASK_MIHOMO_CONDITION.wait()
+                            continue
+                        duplicate.active += 1
+                        _TASK_MIHOMO_CONDITION.notify_all()
+                        return {
+                            "server": duplicate.server,
+                            "host_port": duplicate.server.rsplit("//", 1)[-1],
+                            "node_count": str(len(nodes)),
+                            "node_id": duplicate.node_id,
+                            "node_name": duplicate.node_name,
+                            "proxy_mode": duplicate.proxy_mode,
+                            "mihomo_lease": "1",
+                            "mihomo_slot_id": duplicate.slot_id,
+                            "exit_id": duplicate.exit_id,
+                        }
                     slot = _TaskMihomoSlot(
                         slot_id=secrets.token_hex(6),
                         node_id=chosen.id,
@@ -1038,6 +1068,38 @@ async def _acquire_task_mihomo_proxy(
                     if len(failed_launch_ids | base_excluded) >= len(nodes):
                         raise
                     continue
+                duplicate = next(
+                    (
+                        item for item in _TASK_MIHOMO_SLOTS
+                        if item is not slot
+                        and not item.retiring
+                        and not item.launching
+                        and item.exit_id
+                        and item.exit_id == slot.exit_id
+                    ),
+                    None,
+                )
+                if duplicate is not None:
+                    _TASK_MIHOMO_SLOTS.remove(slot)
+                    allowed_node_ids.add(duplicate.node_id)
+                    failed_launch_ids.add(chosen.id)
+                    await asyncio.to_thread(_terminate_mihomo_process, slot.process)
+                    if duplicate.active >= TASK_MIHOMO_CONTEXTS_PER_EXIT:
+                        _TASK_MIHOMO_CONDITION.notify_all()
+                        await _TASK_MIHOMO_CONDITION.wait()
+                        continue
+                    duplicate.active += 1
+                    _TASK_MIHOMO_CONDITION.notify_all()
+                    return {
+                        "server": duplicate.server,
+                        "node_count": str(len(nodes)),
+                        "node_id": duplicate.node_id,
+                        "node_name": duplicate.node_name,
+                        "proxy_mode": duplicate.proxy_mode,
+                        "mihomo_lease": "1",
+                        "mihomo_slot_id": duplicate.slot_id,
+                        "exit_id": duplicate.exit_id,
+                    }
                 _TASK_MIHOMO_CONDITION.notify_all()
         return proxy
 
@@ -1263,8 +1325,12 @@ async def _choose_subscription_node(
     latency_threshold_ms: int,
     excluded_node_ids: Iterable[str],
     random_select: bool = False,
+    prefer_country_order: bool = False,
 ) -> ProxyNode:
-    countries = {str(item).strip() for item in selected_countries if str(item or "").strip()}
+    country_order = tuple(dict.fromkeys(
+        str(item).strip() for item in selected_countries if str(item or "").strip()
+    ))
+    countries = set(country_order)
     excluded = {str(item).strip() for item in excluded_node_ids if str(item or "").strip()}
     if auto_select:
         eligible_nodes = tuple(node for node in nodes if countries and node.country in countries)
@@ -1298,7 +1364,16 @@ async def _choose_subscription_node(
             if all_available:
                 raise RuntimeError("all eligible proxy nodes exceed the latency threshold")
             raise RuntimeError("all eligible proxy nodes are unavailable")
-        chosen = secrets.choice(available)[1] if random_select else min(available, key=lambda item: item[0])[1]
+        if random_select:
+            chosen = secrets.choice(available)[1]
+        elif prefer_country_order and country_order:
+            priority = {country: index for index, country in enumerate(country_order)}
+            chosen = min(
+                available,
+                key=lambda item: (priority.get(item[1].country, len(priority)), item[0]),
+            )[1]
+        else:
+            chosen = min(available, key=lambda item: item[0])[1]
     elif chosen is None and not selected_node:
         chosen = selectable_nodes[0]
     elif chosen is None:
@@ -1386,6 +1461,7 @@ async def acquire_dola_subscription_proxy(
     latency_threshold_ms: int = 5000,
     excluded_node_ids: Iterable[str] = (),
     random_select: bool = False,
+    prefer_country_order: bool = False,
 ) -> dict[str, str]:
     nodes = await fetch_subscription_node_list(
         subscription_url,
@@ -1404,6 +1480,7 @@ async def acquire_dola_subscription_proxy(
         latency_threshold_ms=latency_threshold_ms,
         excluded_node_ids=excluded_node_ids,
         random_select=random_select,
+        prefer_country_order=prefer_country_order,
     )
 
 

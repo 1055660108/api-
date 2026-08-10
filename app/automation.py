@@ -1336,6 +1336,13 @@ class DolaFetchAutomation:
         cooldown_seconds: int | None = None,
         reason: str = "runtime_failure",
     ) -> None:
+        if reason == "doubao_service_frequent" and self.proxy_node_id:
+            mark_node_unavailable(
+                self.proxy_node_id,
+                reason=reason,
+                cooldown_seconds=max(1800, int(cooldown_seconds or 0)),
+            )
+            return
         self._clear_doubao_pinned_proxy_node()
         if self.active_proxy_source == "api":
             self._remember_failed_proxy_node()
@@ -1380,8 +1387,6 @@ class DolaFetchAutomation:
             self.account["pinned_proxy_node_id"] = ""
 
     def mark_doubao_verification_proxy(self) -> int:
-        self._clear_doubao_pinned_proxy_node()
-        self._remember_failed_proxy_node()
         if self.active_proxy_source == "api":
             if getattr(self, "api_proxy_lease", None) is not None:
                 self.api_proxy_lease.cooldown(60)
@@ -2022,6 +2027,7 @@ class DolaFetchAutomation:
                         latency_threshold_ms=self.settings.proxy_latency_threshold_ms,
                         excluded_node_ids=excluded_node_ids,
                         random_select=random_select,
+                        prefer_country_order=self.proxy_platform == "doubao",
                     )
                     self.subscription_proxy = proxy
                     self.proxy_node_id = str(proxy.get("node_id") or "")

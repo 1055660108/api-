@@ -240,6 +240,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('account_source: els.accountIsApi?.checked ? "api" : "admin"', self.javascript)
         self.assertIn('data-action="copy-account-cookie"', self.javascript)
         self.assertIn('apiFetch(`/accounts/${encodeURIComponent(id)}/cookie`)', self.javascript)
+        self.assertIn('data-action="open-manual-verification"', self.javascript)
+        self.assertIn('window.open("https://www.doubao.com/chat/create-image"', self.javascript)
 
     def test_client_security_pagination_and_package_management_are_present(self) -> None:
         for element_id in ("clientPasswordModal", "clientEmailModal", "openClientEmailModal", "prevUserPage", "nextUserPage", "packageModal", "packageList"):

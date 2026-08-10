@@ -7,6 +7,7 @@ import html
 import json
 import re
 import secrets
+import shutil
 import struct
 from pathlib import Path
 from typing import Any, AsyncContextManager, Awaitable, Callable
@@ -70,6 +71,17 @@ DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS = 75
 DOUBAO_VERIFICATION_RENDER_WAIT_SECONDS = 15
 DOUBAO_VIDEO_CACHE_MAX_BYTES = 512 * 1024 * 1024
 DOUBAO_REFERENCE_UPLOAD_STABLE_CHECKS = 2
+DOUBAO_PROFILE_TRANSIENT_PATHS = (
+    "Default/Cache",
+    "Default/Code Cache",
+    "Default/GPUCache",
+    "Default/Media Cache",
+    "ShaderCache",
+    "GrShaderCache",
+    "GraphiteDawnCache",
+    "component_crx_cache",
+    "Crashpad",
+)
 DOUBAO_CONVERSATION_ID_RE = re.compile(
     r'(?:"|\\")?(?:conversation_id|conversationId|conversationID|conv_id|convId)(?:"|\\")?\s*[:=]\s*(?:"|\\")?(\d{15,24})',
     re.IGNORECASE,
@@ -1921,6 +1933,18 @@ class DoubaoVideoAutomation:
                 pass
 
     @staticmethod
+    def _prune_profile_transient_data(profile_path: Path) -> None:
+        for relative in DOUBAO_PROFILE_TRANSIENT_PATHS:
+            candidate = profile_path.joinpath(*relative.split("/"))
+            try:
+                if candidate.is_dir():
+                    shutil.rmtree(candidate, ignore_errors=True)
+                else:
+                    candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
     def _saved_storage_init_script(storage_state: dict[str, Any] | None) -> str:
         values_by_origin: dict[str, dict[str, str]] = {}
         for origin in (storage_state or {}).get("origins") or []:
@@ -2412,15 +2436,6 @@ class DoubaoVideoAutomation:
         return result
 
     async def _submit_via_video_creation_page_ui(self, page: Page, *, image_count: int = 0) -> dict[str, Any]:
-        self._set_phase("opening_video_creation_page", "正在进入豆包新对话")
-        await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)
-        await page.wait_for_timeout(3000)
-        body = await page.locator("body").inner_text()
-        if self._is_region_restricted(str(page.url), body):
-            return {"ok": False, "status": 0, "accepted": False, "region_restricted": True}
-        if await self._login_required(page, body):
-            return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
-
         async def click_visible(candidates: tuple[Any, ...], *, timeout: int = 0) -> bool:
             deadline = asyncio.get_running_loop().time() + max(0, timeout) / 1000
             while True:
@@ -2467,20 +2482,6 @@ class DoubaoVideoAutomation:
                 label,
             ))
 
-        self._set_phase("opening_video_creation_page", "正在进入豆包 AI 创作")
-        ai_creation_opened = await click_visible(
-            (
-                page.get_by_role("button", name="AI 创作", exact=True),
-                page.get_by_role("link", name="AI 创作", exact=True),
-                page.get_by_text("AI 创作", exact=True),
-            ),
-            timeout=8000,
-        )
-        if not ai_creation_opened:
-            ai_creation_opened = await click_exact_visible_text("AI 创作")
-        if ai_creation_opened:
-            await page.wait_for_timeout(1500)
-
         async def visible_model_button(timeout: int):
             selector = page.locator("button:visible").filter(
                 has_text=re.compile(r"Seedance\s+\d", re.IGNORECASE)
@@ -2492,7 +2493,22 @@ class DoubaoVideoAutomation:
                 return None
 
         model_button = None
-        if ai_creation_opened:
+        entry_attempts: list[dict[str, Any]] = []
+        for entry_attempt in range(1, 3):
+            self._set_phase(
+                "opening_video_creation_page" if entry_attempt == 1 else "refreshing_video_creation_page",
+                "正在直接进入豆包 AI 创作视频页" if entry_attempt == 1 else "豆包视频页未完整加载，正在本页恢复",
+            )
+            if entry_attempt == 1 or "create-image" not in str(page.url or ""):
+                await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
+            else:
+                await page.reload(wait_until="domcontentloaded", timeout=90000)
+            await page.wait_for_timeout(3000 + entry_attempt * 1000)
+            body = await page.locator("body").inner_text()
+            if self._is_region_restricted(str(page.url), body):
+                return {"ok": False, "status": 0, "accepted": False, "region_restricted": True}
+            if await self._login_required(page, body):
+                return {"ok": False, "status": 0, "accepted": False, "login_invalid": True}
             video_tab_opened = await click_visible(
                 (
                     page.get_by_role("tab", name="视频", exact=True),
@@ -2505,13 +2521,30 @@ class DoubaoVideoAutomation:
                 video_tab_opened = await click_exact_visible_text("视频")
             if video_tab_opened:
                 await page.wait_for_timeout(1500)
-                model_button = await visible_model_button(30000)
+            model_button = await visible_model_button(20000)
+            try:
+                page_title = str(await page.title())[:300]
+            except Exception:
+                page_title = ""
+            entry_attempts.append({
+                "attempt": entry_attempt,
+                "url": str(page.url or "")[:1000],
+                "title": page_title,
+                "video_tab_opened": bool(video_tab_opened),
+                "model_control_visible": model_button is not None,
+                "body_excerpt": re.sub(r"\s+", " ", body).strip()[:1000],
+            })
+            if model_button is not None:
+                break
         if model_button is None:
             return {
                 "ok": False,
                 "status": 0,
                 "accepted": False,
                 "video_creation_ui_error": "doubao video creation entry unavailable",
+                "video_creation_entry_attempts": entry_attempts,
+                "video_creation_final_url": str(page.url or "")[:1000],
+                "video_creation_missing_control": "model",
             }
         current_model_text = re.sub(r"\s+", " ", (await model_button.inner_text()).strip())
         selected_model = self.model if self.model in current_model_text else ""
@@ -2728,6 +2761,7 @@ class DoubaoVideoAutomation:
             }
 
         submitted_with_images = False
+        reference_preview_min_count = 0
         if image_count > 0:
             paths = await asyncio.to_thread(prepare_task_reference_images, self.task_id)
             file_input = page.locator('input[type="file"]')
@@ -2752,6 +2786,8 @@ class DoubaoVideoAutomation:
             self._set_phase("uploading_video_creation_references", "正在向豆包视频创作页添加参考图")
             async def upload_references() -> str:
                 visible_images_before = await page.locator("img:visible").count()
+                nonlocal reference_preview_min_count
+                reference_preview_min_count = visible_images_before + min(len(paths), image_count)
                 await file_input.last.set_input_files([str(path) for path in paths])
                 upload_deadline = asyncio.get_running_loop().time() + 90
                 stable_checks = 0
@@ -2763,7 +2799,7 @@ class DoubaoVideoAutomation:
                         return "failed"
                     visible_images = await page.locator("img:visible").count()
                     progress_visible = doubao_reference_upload_progress_visible(upload_tail)
-                    preview_ready = visible_images >= visible_images_before + min(len(paths), image_count)
+                    preview_ready = visible_images >= reference_preview_min_count
                     if not progress_visible and preview_ready:
                         stable_checks += 1
                         if stable_checks >= DOUBAO_REFERENCE_UPLOAD_STABLE_CHECKS:
@@ -2942,6 +2978,83 @@ class DoubaoVideoAutomation:
                     "accepted": False,
                     "video_creation_ui_error": "doubao video send button unavailable",
                 }
+            try:
+                await send_button.scroll_into_view_if_needed()
+                await page.wait_for_timeout(200)
+                button_ready = bool(await send_button.evaluate(
+                    r"""element => {
+                        if (!element || element.disabled || element.getAttribute("aria-disabled") === "true") return false;
+                        const style = getComputedStyle(element);
+                        const box = element.getBoundingClientRect();
+                        if (style.visibility === "hidden" || style.display === "none" || box.width <= 0 || box.height <= 0) return false;
+                        const x = Math.max(0, Math.min(innerWidth - 1, box.left + box.width / 2));
+                        const y = Math.max(0, Math.min(innerHeight - 1, box.top + box.height / 2));
+                        const top = document.elementFromPoint(x, y);
+                        return Boolean(top && (top === element || element.contains(top)));
+                    }"""
+                ))
+            except Exception:
+                button_ready = False
+            if not button_ready:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(300)
+                send_button = await find_send_button()
+                if send_button is not None:
+                    try:
+                        button_ready = bool(await send_button.evaluate(
+                            r"""element => {
+                                const box = element.getBoundingClientRect();
+                                const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                                return Boolean(!element.disabled && top && (top === element || element.contains(top)));
+                            }"""
+                        ))
+                    except Exception:
+                        button_ready = False
+            if not button_ready:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video send button obstructed",
+                }
+            if image_count > 0:
+                final_upload_body = await page.locator("body").inner_text()
+                final_upload_tail = re.sub(r"\s+", "", final_upload_body[-3000:])
+                final_visible_images = await page.locator("img:visible").count()
+                if (
+                    doubao_reference_upload_progress_visible(final_upload_tail)
+                    or final_visible_images < reference_preview_min_count
+                ):
+                    return {
+                        "ok": False,
+                        "status": 0,
+                        "accepted": False,
+                        "video_creation_ui_error": "doubao video reference upload became unstable before submission",
+                    }
+            try:
+                prompt_value = await editor.input_value()
+            except Exception:
+                prompt_value = str(await editor.inner_text() or "")
+            if str(prompt_value).strip() != self.prompt.strip():
+                await editor.fill(self.prompt)
+                await page.wait_for_timeout(300)
+                try:
+                    prompt_value = await editor.input_value()
+                except Exception:
+                    prompt_value = str(await editor.inner_text() or "")
+            confirmed_model_button = await visible_model_button(3000)
+            confirmed_model_text = (
+                re.sub(r"\s+", " ", str(await confirmed_model_button.inner_text() or "")).strip()
+                if confirmed_model_button is not None
+                else ""
+            )
+            if str(prompt_value).strip() != self.prompt.strip() or self.model not in confirmed_model_text:
+                return {
+                    "ok": False,
+                    "status": 0,
+                    "accepted": False,
+                    "video_creation_ui_error": "doubao video form state changed before submission",
+                }
             baseline_body = await page.locator("body").inner_text()
             baseline_ack_count = baseline_body.count(DOUBAO_SUBMISSION_MARKER)
             if self.submission_pacer is not None:
@@ -3075,6 +3188,8 @@ class DoubaoVideoAutomation:
                 "video_creation_selected_ratio": ratio_label,
                 "video_creation_selected_duration": self.duration,
                 "submitted_with_images": submitted_with_images,
+                "video_creation_entry_attempts": entry_attempts,
+                "video_creation_final_url": str(page.url or "")[:1000],
                 "native_submission_request_seen": submission_request_seen.is_set(),
                 "confirmation_prompt_detected": confirmation_prompt_detected,
                 "auto_confirmation_sent": auto_confirmation_sent,
@@ -3747,10 +3862,7 @@ class DoubaoVideoAutomation:
                 await page.wait_for_timeout(200)
             if semantic_detected:
                 if self.semantic_verification_solver.enabled and frame_element is not None:
-                    semantic_attempt_limit = min(
-                        3,
-                        max(1, int(self.verification_solver.settings.max_attempts or 1)),
-                    )
+                    semantic_attempt_limit = 1
                     last_result = SliderSolveResult(
                         status="semantic_challenge",
                         attempts=0,
@@ -3882,7 +3994,7 @@ class DoubaoVideoAutomation:
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
                 self._set_phase("opening_generation_page", "正在打开豆包生成页面")
-                await page.goto(DOUBAO_URL, wait_until="domcontentloaded", timeout=90000)
+                await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
                 await page.wait_for_timeout(5000)
                 body = await page.locator("body").inner_text()
                 if self._is_region_restricted(str(page.url), body):
@@ -3967,6 +4079,9 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_page_refusal_repeated": bool(completion_result.get("video_creation_page_refusal_repeated")),
                         "doubao_video_creation_page_used": bool(completion_result.get("video_creation_page_used")),
                         "doubao_video_creation_ui_error": str(completion_result.get("video_creation_ui_error") or "")[:500],
+                        "doubao_video_creation_entry_attempts": completion_result.get("video_creation_entry_attempts") or [],
+                        "doubao_video_creation_final_url": str(completion_result.get("video_creation_final_url") or page.url or "")[:1000],
+                        "doubao_video_creation_missing_control": str(completion_result.get("video_creation_missing_control") or "")[:100],
                         "doubao_native_video_creation_ui_error": str(completion_result.get("native_video_creation_ui_error") or "")[:500],
                         "doubao_native_submission_request_seen": bool(completion_result.get("native_submission_request_seen")),
                         "doubao_native_submission_fallback_used": bool(completion_result.get("native_submission_fallback_used")),
@@ -4104,6 +4219,8 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_selected_model": str(completion_result.get("video_creation_selected_model") or "")[:100],
                         "doubao_video_creation_selected_ratio": str(completion_result.get("video_creation_selected_ratio") or "")[:20],
                         "doubao_video_creation_selected_duration": int(completion_result.get("video_creation_selected_duration") or 0),
+                        "doubao_video_creation_entry_attempts": completion_result.get("video_creation_entry_attempts") or [],
+                        "doubao_video_creation_final_url": str(completion_result.get("video_creation_final_url") or page.url or "")[:1000],
                         "doubao_native_video_creation_ui_error": str(completion_result.get("native_video_creation_ui_error") or "")[:500],
                         "doubao_native_submission_request_seen": bool(completion_result.get("native_submission_request_seen")),
                         "doubao_native_submission_fallback_used": bool(completion_result.get("native_submission_fallback_used")),
@@ -4222,3 +4339,7 @@ class DoubaoVideoAutomation:
                         pass
                 await cancel_tracked_tasks(capture_tasks)
                 await bounded_cleanup(safe_close(context))
+                await asyncio.to_thread(
+                    self._prune_profile_transient_data,
+                    self._account_profile_path(),
+                )

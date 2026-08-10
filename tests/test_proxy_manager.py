@@ -313,6 +313,72 @@ class ProxyManagerTests(unittest.IsolatedAsyncioTestCase):
         await proxy_manager.release_dola_subscription_proxy(second)
         await proxy_manager.release_dola_subscription_proxy(third)
 
+    async def test_mihomo_pool_deduplicates_nodes_with_the_same_public_exit(self) -> None:
+        nodes = proxy_manager.subscription_node_list("vless://a@example.com:443#A\nvless://b@example.net:443#B")
+        proxy_manager._SUBSCRIPTION_CACHE["provider"] = b"test-provider"
+        for index, node in enumerate(nodes):
+            proxy_manager._NODE_DELAYS[node.id] = (20 + index, proxy_manager.time.monotonic())
+
+        async def same_exit(slot, node, provider):
+            process = Mock()
+            process.poll.return_value = None
+            slot.process = process
+            slot.port = 4600 + len(proxy_manager._TASK_MIHOMO_SLOTS)
+            slot.server = f"http://127.0.0.1:{slot.port}"
+            slot.exit_id = "ip:203.0.113.50"
+            slot.launching = False
+            return {
+                "server": slot.server,
+                "node_count": "managed",
+                "node_id": node.id,
+                "node_name": node.name,
+                "proxy_mode": "mihomo",
+                "mihomo_lease": "1",
+                "mihomo_slot_id": slot.slot_id,
+                "exit_id": slot.exit_id,
+            }
+
+        with patch.object(proxy_manager, "fetch_subscription_node_list", AsyncMock(return_value=nodes)), patch.object(
+            proxy_manager, "_launch_task_mihomo_slot", AsyncMock(side_effect=same_exit)
+        ) as launch:
+            options = {"auto_select": True, "selected_countries": ["未知"], "latency_threshold_ms": 800}
+            first = await proxy_manager.acquire_dola_subscription_proxy("https://subscription.example/token", **options)
+            second_pending = asyncio.create_task(
+                proxy_manager.acquire_dola_subscription_proxy("https://subscription.example/token", **options)
+            )
+            await asyncio.sleep(0.05)
+            self.assertFalse(second_pending.done())
+            self.assertEqual(proxy_manager.task_mihomo_pool_snapshot()["distinct_exits"], 1)
+            await proxy_manager.release_dola_subscription_proxy(first)
+            second = await asyncio.wait_for(second_pending, timeout=1)
+
+        self.assertEqual(second["exit_id"], first["exit_id"])
+        self.assertEqual(len(proxy_manager._TASK_MIHOMO_SLOTS), 1)
+        self.assertEqual(launch.await_count, 2)
+        await proxy_manager.release_dola_subscription_proxy(second)
+
+    async def test_country_order_can_take_priority_over_lower_latency(self) -> None:
+        nodes = (
+            proxy_manager.ProxyNode("jp", "Japan", "日本", "http", "jp.example", 8001, "http://jp.example:8001"),
+            proxy_manager.ProxyNode("hk", "Hong Kong", "香港", "http", "hk.example", 8002, "http://hk.example:8002"),
+        )
+        now = proxy_manager.time.monotonic()
+        proxy_manager._NODE_DELAYS.update({"jp": (80, now), "hk": (20, now)})
+
+        chosen = await proxy_manager._choose_subscription_node(
+            nodes,
+            "https://subscription.example/token",
+            timeout_seconds=10,
+            auto_select=True,
+            selected_node="",
+            selected_countries=("日本", "香港"),
+            latency_threshold_ms=800,
+            excluded_node_ids=(),
+            prefer_country_order=True,
+        )
+
+        self.assertEqual(chosen.id, "jp")
+
     async def test_retry_exclusion_immediately_uses_a_different_exit_slot(self) -> None:
         nodes = proxy_manager.subscription_node_list("vless://a@example.com:443#A\nvless://b@example.net:443#B")
         proxy_manager._SUBSCRIPTION_CACHE["provider"] = b"test-provider"

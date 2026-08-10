@@ -159,7 +159,7 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertEqual(result.attempts, 0)
         runner.verification_solver.solve.assert_not_awaited()
 
-    def test_semantic_verification_refreshes_after_incorrect_coordinate_answer(self) -> None:
+    def test_semantic_verification_uses_only_one_provider_attempt(self) -> None:
         runner = DoubaoVideoAutomation.__new__(DoubaoVideoAutomation)
         runner.task_id = "task"
         runner._set_phase = Mock()
@@ -219,10 +219,10 @@ class DoubaoAutomationTests(unittest.TestCase):
         with patch("app.doubao_automation.find_slider_page", new=AsyncMock(return_value=page)):
             result = asyncio.run(runner._resolve_submission_verification(page))
 
-        self.assertEqual(result.status, "success")
-        self.assertEqual(result.attempts, 2)
-        self.assertEqual(runner._solve_semantic_submission_verification.await_count, 2)
-        refresh_parent.click.assert_awaited_once_with(force=True)
+        self.assertEqual(result.status, "semantic_challenge")
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(runner._solve_semantic_submission_verification.await_count, 1)
+        refresh_parent.click.assert_not_awaited()
 
     def test_semantic_drag_comment_translates_known_category(self) -> None:
         comment = DoubaoVideoAutomation._semantic_captcha_comment(
@@ -747,14 +747,17 @@ class DoubaoAutomationTests(unittest.TestCase):
         self.assertIn("_resolve_submission_verification", request_source)
         self.assertIn("verification_recovery_attempted", request_source)
         ui_source = inspect.getsource(DoubaoVideoAutomation._submit_via_video_creation_page_ui)
-        self.assertIn("await page.goto(DOUBAO_URL", ui_source)
-        self.assertIn('name="AI 创作"', ui_source)
+        self.assertIn("await page.goto(DOUBAO_VIDEO_CREATION_URL", ui_source)
+        self.assertIn("await page.reload", ui_source)
+        self.assertNotIn('name="AI 创作"', ui_source)
         self.assertNotIn('name="新对话"', ui_source)
         self.assertNotIn('name="视频生成"', ui_source)
         self.assertIn("editor.fill", ui_source)
         self.assertIn("send_button.click", ui_source)
         self.assertIn("select_video_setting", ui_source)
         self.assertIn("submission_request_seen", ui_source)
+        self.assertIn("document.elementFromPoint", ui_source)
+        self.assertIn("doubao video form state changed before submission", ui_source)
         self.assertIn('editor.press("Enter")', ui_source)
         self.assertIn('await editor.fill("生成")', ui_source)
         self.assertNotIn("_submit_via_video_creation_internal_request", request_source)
@@ -1366,6 +1369,21 @@ class DoubaoAutomationTests(unittest.TestCase):
             self.assertEqual(merged, {"saved": "one", "session": "latest"})
             self.assertIn("device", context.add_init_script.call_args.args[0])
             self.assertFalse((runner.profile_path / "SingletonLock").exists())
+
+    def test_profile_cleanup_removes_only_transient_browser_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            cache = profile / "Default" / "Cache"
+            indexed_db = profile / "Default" / "IndexedDB"
+            cache.mkdir(parents=True)
+            indexed_db.mkdir(parents=True)
+            (cache / "entry").write_bytes(b"cache")
+            (indexed_db / "state").write_bytes(b"device-state")
+
+            DoubaoVideoAutomation._prune_profile_transient_data(profile)
+
+            self.assertFalse(cache.exists())
+            self.assertTrue((indexed_db / "state").is_file())
 
     def test_video_response_recognizes_doubao_media_url(self) -> None:
         response = SimpleNamespace(

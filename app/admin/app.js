@@ -5080,6 +5080,7 @@ function renderAccountTable() {
           <div class="row-actions quota-row-actions">
             <button class="icon-button" type="button" data-action="toggle-account" data-id="${escapeHtml(id)}">${enabled ? "停用" : "启用"}</button>
             <button class="icon-button" type="button" data-action="copy-account-cookie" data-id="${escapeHtml(id)}">复制 Cookie</button>
+            ${String(item.platform || "") === "doubao" && sliderVerification ? `<button class="icon-button" type="button" data-action="open-manual-verification" data-id="${escapeHtml(id)}">人工验证</button>` : ""}
             <button class="icon-button" type="button" data-action="edit-quota" data-id="${escapeHtml(id)}">额度</button>
             <button class="icon-button" type="button" data-action="reset-quota" data-id="${escapeHtml(id)}">清零</button>
             <button class="danger-button" type="button" data-action="delete-account" data-id="${escapeHtml(id)}">删除</button>
@@ -8127,6 +8128,13 @@ function bindEvents() {
         const data = await apiFetch(`/accounts/${encodeURIComponent(id)}/cookie`);
         await copyText(data.cookie_data, `${data.name || "账号"} Cookie`);
       }
+      if (action === "open-manual-verification") {
+        setBusy(button, true, "打开中");
+        const data = await apiFetch(`/accounts/${encodeURIComponent(id)}/cookie`);
+        await copyText(data.cookie_data, `${data.name || "豆包账号"} Cookie`);
+        window.open("https://www.doubao.com/chat/create-image", "_blank", "noopener,noreferrer");
+        toast("账号 Cookie 已复制并打开豆包视频页；完成验证后重新导入更新后的 Cookie", "success");
+      }
       if (action === "edit-quota") {
         await editAccountQuota(id);
       }
@@ -8139,7 +8147,7 @@ function bindEvents() {
     } catch (error) {
       toast(`操作失败：${error.message}`, "error");
     } finally {
-      if (["toggle-account", "copy-account-cookie"].includes(action)) setBusy(button, false);
+      if (["toggle-account", "copy-account-cookie", "open-manual-verification"].includes(action)) setBusy(button, false);
     }
   });
   els.editWorkers.addEventListener("click", openWorkersModal);

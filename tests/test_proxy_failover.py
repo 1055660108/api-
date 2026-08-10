@@ -4,7 +4,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from app import account_proxies, automation, config, proxy_manager
 
@@ -86,6 +86,7 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
             await instance._browser_proxy_config()
 
         self.assertTrue(subscription.await_args.kwargs["random_select"])
+        self.assertTrue(subscription.await_args.kwargs["prefer_country_order"])
 
     async def test_doubao_subscription_node_is_pinned_on_first_acquisition(self) -> None:
         instance = automation_instance()
@@ -102,6 +103,22 @@ class ProxyFailoverTests(unittest.IsolatedAsyncioTestCase):
         pin.assert_called_once_with("account-1", "node-jp")
         self.assertEqual(instance.account["pinned_proxy_node_id"], "node-jp")
         self.assertEqual(instance.proxy_timezone_id, "Asia/Tokyo")
+
+    def test_doubao_verification_keeps_the_account_proxy_binding(self) -> None:
+        instance = automation_instance()
+        instance.proxy_platform = "doubao"
+        instance.account = {"id": "account-1", "pinned_proxy_node_id": "node-jp"}
+        instance.active_proxy_source = "subscription"
+        instance.proxy_node_id = "node-jp"
+        instance._remember_failed_proxy_node = Mock()
+        instance._clear_doubao_pinned_proxy_node = Mock()
+
+        with patch.object(automation, "record_node_doubao_verification", return_value=1800):
+            cooldown = instance.mark_doubao_verification_proxy()
+
+        self.assertEqual(cooldown, 1800)
+        instance._clear_doubao_pinned_proxy_node.assert_not_called()
+        instance._remember_failed_proxy_node.assert_not_called()
 
     async def test_task_avoidance_clears_conflicting_doubao_pinned_node(self) -> None:
         instance = automation_instance()

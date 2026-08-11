@@ -21,6 +21,7 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 from .accounts import disable_account_for_login, set_account_cooldown, set_account_pinned_proxy_node, update_account_cookies
 from .automation import DolaFetchAutomation, PREPARE_UPLOAD_SCRIPT, PREPARE_UPLOAD_TIMEOUT_SECONDS, ReferenceUploadCapacityError, is_reference_upload_failure, is_reference_upload_phase
 from .browser_runtime import ReusableBrowserPool, bounded_cleanup, cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
+from .browser_live_view import TaskBrowserLiveView
 from .config import DOUBAO_PROFILES_DIR, DOUBAO_STATES_DIR, ensure_dirs, load_settings
 from .query import decode_main_url, extract_main_url, extract_tts_content
 from .reference_images import prepare_task_reference_images
@@ -3969,6 +3970,7 @@ class DoubaoVideoAutomation:
             page = None
             capture_video_response = None
             capture_tasks: set[asyncio.Task[Any]] = set()
+            live_view = TaskBrowserLiveView(self.task_id, "doubao")
             try:
                 self._set_phase("starting_browser", "正在启动豆包生成环境")
                 executable_path = resolve_browser_executable(self.settings.browser_executable_path)
@@ -3993,6 +3995,7 @@ class DoubaoVideoAutomation:
                     context_options=context_options,
                 )
                 page = context.pages[0] if context.pages else await context.new_page()
+                await live_view.start(page)
                 self._set_phase("opening_generation_page", "正在打开豆包生成页面")
                 await page.goto(DOUBAO_VIDEO_CREATION_URL, wait_until="domcontentloaded", timeout=90000)
                 await page.wait_for_timeout(5000)
@@ -4332,6 +4335,7 @@ class DoubaoVideoAutomation:
                 return {"success": False, "retryable": False, "reason": "doubao original video result timeout"}
             finally:
                 self._finish_image_preparation()
+                await live_view.stop()
                 if page is not None and capture_video_response is not None:
                     try:
                         page.remove_listener("response", capture_video_response)

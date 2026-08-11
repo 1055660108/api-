@@ -10,7 +10,7 @@
       body[data-portal="admin"] .client-credential-field,body[data-portal="admin"] .client-auth-tabs,body[data-portal="admin"] #pointsNavItem,body[data-portal="admin"] #membershipNavItem,body[data-portal="admin"] #transactionsNavItem,body[data-portal="admin"] #pointsView,body[data-portal="admin"] #membershipView,body[data-portal="admin"] #transactionsView,body[data-portal="admin"] .client-message-center,body[data-portal="admin"] .client-password-panel,body[data-portal="admin"] .client-email-panel{display:none!important}
     </style>
     <link rel="icon" type="image/png" href="/admin/assets/hs-logo.png?v=1.4.49" />
-    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.98" />
+    <link rel="stylesheet" href="/admin/assets/styles.css?v=1.10.99" />
   </head>
   <body>
     <script>
@@ -1476,6 +1476,29 @@
         </div>
       </section>
     </div>
+    <div class="modal-backdrop hidden admin-only" id="browserViewModal" aria-hidden="true">
+      <section class="modal-panel browser-view-modal-panel" role="dialog" aria-modal="true" aria-labelledby="browserViewTitle">
+        <div class="modal-header">
+          <div class="browser-view-heading">
+            <h2 id="browserViewTitle">任务浏览器</h2>
+            <span class="browser-view-status" id="browserViewStatus">正在连接任务浏览器</span>
+          </div>
+          <button class="modal-close" id="closeBrowserViewModal" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="browser-view-meta">
+          <strong id="browserViewPhase">正在读取当前操作阶段</strong>
+          <span id="browserViewUpdated">尚无画面</span>
+          <code id="browserViewPageUrl">-</code>
+        </div>
+        <div class="browser-view-canvas">
+          <img class="browser-view-frame hidden" id="browserViewFrame" alt="任务浏览器实时画面" />
+          <div class="browser-view-empty" id="browserViewEmpty">等待浏览器画面</div>
+        </div>
+        <div class="modal-actions">
+          <button class="primary-button" id="confirmBrowserViewModal" type="button">关闭</button>
+        </div>
+      </section>
+    </div>
     <div class="modal-backdrop hidden" id="videoModal" aria-hidden="true">
       <section class="modal-panel video-modal-panel" role="dialog" aria-modal="true" aria-labelledby="videoModalTitle">
         <div class="modal-header">
@@ -1500,6 +1523,6 @@
     <script src="/admin/assets/lucide.min.js?v=0.468.0"></script>
     <script src="/admin/assets/runtime-config.js?v=20260712-platform-retention-22"></script>
     <script src="/admin/assets/ink-bg.js?v=1.4.49"></script>
-    <script src="/admin/assets/app.js?v=1.10.98"></script>
+    <script src="/admin/assets/app.js?v=1.10.99"></script>
   </body>
 </html>

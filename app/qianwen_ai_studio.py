@@ -10,6 +10,7 @@ from playwright.async_api import async_playwright
 
 from .accounts import local_today, merge_account_cookies, sync_qianwen_ai_studio_credit
 from .browser_runtime import resolve_browser_executable
+from .browser_live_view import TaskBrowserLiveView
 from .config import load_settings
 from .profile_lock import account_profile_lock
 from .proxy_manager import acquire_dola_subscription_proxy, release_dola_subscription_proxy
@@ -286,6 +287,7 @@ class QianwenAIStudioAutomation:
         browser = None
         context = None
         credit_proxy: dict[str, str] | None = None
+        live_view = TaskBrowserLiveView(self.task_id, "qianwen")
 
         async def inspect_credit_response(response) -> None:
             if "/api/web/credit/info" not in str(response.url):
@@ -325,6 +327,8 @@ class QianwenAIStudioAutomation:
                         normalized_cookies.append(item)
                     await context.add_cookies(normalized_cookies)
                     page = await context.new_page()
+                    if task_exists(self.task_id):
+                        await live_view.start(page)
 
                     def response_handler(response) -> None:
                         task = asyncio.create_task(inspect_credit_response(response))
@@ -365,6 +369,7 @@ class QianwenAIStudioAutomation:
         except Exception as exc:
             return {"ok": False, "reason": f"qianwen AI Studio daily credit sync failed: {str(exc)[:300]}"}
         finally:
+            await live_view.stop()
             if context is not None:
                 try:
                     await context.close()

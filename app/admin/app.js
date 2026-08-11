@@ -650,6 +650,16 @@ const els = {
   closeTextModal: document.getElementById("closeTextModal"),
   confirmTextModal: document.getElementById("confirmTextModal"),
   copyTextModal: document.getElementById("copyTextModal"),
+  browserViewModal: document.getElementById("browserViewModal"),
+  browserViewTitle: document.getElementById("browserViewTitle"),
+  browserViewStatus: document.getElementById("browserViewStatus"),
+  browserViewPhase: document.getElementById("browserViewPhase"),
+  browserViewUpdated: document.getElementById("browserViewUpdated"),
+  browserViewPageUrl: document.getElementById("browserViewPageUrl"),
+  browserViewFrame: document.getElementById("browserViewFrame"),
+  browserViewEmpty: document.getElementById("browserViewEmpty"),
+  closeBrowserViewModal: document.getElementById("closeBrowserViewModal"),
+  confirmBrowserViewModal: document.getElementById("confirmBrowserViewModal"),
   referenceModal: document.getElementById("referenceModal"),
   referenceModalTitle: document.getElementById("referenceModalTitle"),
   referenceGallery: document.getElementById("referenceGallery"),
@@ -692,6 +702,11 @@ const state = {
   images: [],
   modalText: "",
   modalVideoUrl: "",
+  browserViewTaskId: "",
+  browserViewSequence: -1,
+  browserViewTimer: 0,
+  browserViewRefreshing: false,
+  browserViewObjectUrl: "",
   submitting: false,
   submitIdempotencyKey: "",
   submitFingerprint: "",
@@ -4221,6 +4236,99 @@ function closeTextModal() {
   els.textModal.setAttribute("aria-hidden", "true");
 }
 
+function releaseBrowserViewObjectUrl() {
+  if (!state.browserViewObjectUrl) return;
+  URL.revokeObjectURL(state.browserViewObjectUrl);
+  state.browserViewObjectUrl = "";
+}
+
+async function refreshBrowserLiveView() {
+  const taskId = state.browserViewTaskId;
+  if (!taskId || state.browserViewRefreshing || portal !== "admin") return;
+  state.browserViewRefreshing = true;
+  try {
+    const data = await apiFetch(`/admin/tasks/${encodeURIComponent(taskId)}/browser-view`);
+    if (taskId !== state.browserViewTaskId) return;
+    els.browserViewStatus.textContent = data.message || (data.active ? "浏览器正在操作" : "等待浏览器画面");
+    els.browserViewStatus.classList.toggle("is-active", Boolean(data.active));
+    els.browserViewPhase.textContent = data.status_reason || data.execution_phase || "等待任务进入浏览器操作阶段";
+    els.browserViewUpdated.textContent = data.updated_at
+      ? `画面更新：${formatTime(new Date(Number(data.updated_at) * 1000).toISOString())}`
+      : "尚无画面";
+    els.browserViewPageUrl.textContent = data.page_url || "-";
+    els.browserViewPageUrl.title = data.page_url || "";
+    const sequence = Number(data.sequence || 0);
+    if (data.available && sequence !== state.browserViewSequence) {
+      const response = await fetch(
+        `/admin/tasks/${encodeURIComponent(taskId)}/browser-frame?v=${encodeURIComponent(sequence)}`,
+        { credentials: "same-origin", headers: { "X-Dola-Portal": "admin" }, cache: "no-store" },
+      );
+      if (!response.ok) throw new Error(`实时画面读取失败：HTTP ${response.status}`);
+      const blob = await response.blob();
+      if (taskId !== state.browserViewTaskId) return;
+      const nextUrl = URL.createObjectURL(blob);
+      releaseBrowserViewObjectUrl();
+      state.browserViewObjectUrl = nextUrl;
+      state.browserViewSequence = sequence;
+      els.browserViewFrame.src = nextUrl;
+      els.browserViewFrame.alt = `${shortId(taskId)} 浏览器实时画面`;
+      els.browserViewFrame.classList.remove("hidden");
+      els.browserViewEmpty.classList.add("hidden");
+    } else if (!data.available && !state.browserViewObjectUrl) {
+      els.browserViewFrame.classList.add("hidden");
+      els.browserViewEmpty.textContent = data.message || "等待浏览器画面";
+      els.browserViewEmpty.classList.remove("hidden");
+    }
+    if (!data.active && ["success", "failed", "canceled"].includes(String(data.task_status || "").toLowerCase())) {
+      window.clearInterval(state.browserViewTimer);
+      state.browserViewTimer = 0;
+    }
+  } catch (error) {
+    if (taskId === state.browserViewTaskId) {
+      els.browserViewStatus.textContent = `实时画面读取失败：${error.message}`;
+      els.browserViewStatus.classList.remove("is-active");
+    }
+  } finally {
+    state.browserViewRefreshing = false;
+  }
+}
+
+function openBrowserLiveView(taskId) {
+  if (portal !== "admin" || !taskId) return;
+  closeBrowserLiveView();
+  state.browserViewTaskId = taskId;
+  state.browserViewSequence = -1;
+  els.browserViewTitle.textContent = `任务浏览器 · ${shortId(taskId)}`;
+  els.browserViewStatus.textContent = "正在连接任务浏览器";
+  els.browserViewStatus.classList.remove("is-active");
+  els.browserViewPhase.textContent = "正在读取当前操作阶段";
+  els.browserViewUpdated.textContent = "尚无画面";
+  els.browserViewPageUrl.textContent = "-";
+  els.browserViewFrame.removeAttribute("src");
+  els.browserViewFrame.classList.add("hidden");
+  els.browserViewEmpty.textContent = "等待浏览器画面";
+  els.browserViewEmpty.classList.remove("hidden");
+  els.browserViewModal.classList.remove("hidden");
+  els.browserViewModal.setAttribute("aria-hidden", "false");
+  refreshBrowserLiveView();
+  state.browserViewTimer = window.setInterval(refreshBrowserLiveView, 1000);
+}
+
+function closeBrowserLiveView() {
+  window.clearInterval(state.browserViewTimer);
+  state.browserViewTimer = 0;
+  state.browserViewTaskId = "";
+  state.browserViewSequence = -1;
+  state.browserViewRefreshing = false;
+  releaseBrowserViewObjectUrl();
+  if (els.browserViewFrame) {
+    els.browserViewFrame.removeAttribute("src");
+    els.browserViewFrame.classList.add("hidden");
+  }
+  els.browserViewModal?.classList.add("hidden");
+  els.browserViewModal?.setAttribute("aria-hidden", "true");
+}
+
 function openReferenceModal(task) {
   const taskId = String(task?.id || "").trim();
   const imageCount = Math.max(0, Math.min(MAX_IMAGE_COUNT, Number(task?.image_count || 0)));
@@ -4839,6 +4947,7 @@ function renderTaskTable(options = {}) {
     const isDeleting = state.deletingTaskIds.has(task.id);
     const canRetry = ["success", "failed"].includes(String(task.status || "").toLowerCase());
     const canBulkRetry = String(task.status || "").toLowerCase() === "failed";
+    const canViewBrowser = portal === "admin" && ["pending", "running", "submitted"].includes(String(task.status || "").toLowerCase());
     return `
       <tr>
         <td class="admin-task-bulk task-select-cell">${canBulkRetry ? `<input type="checkbox" data-task-select="${escapeHtml(task.id)}" aria-label="选择失败任务 ${escapeHtml(shortId(task.id))}" ${state.selectedTaskIds.has(task.id) ? "checked" : ""} ${state.bulkRetryRunning ? "disabled" : ""} />` : "-"}</td>
@@ -4871,6 +4980,7 @@ function renderTaskTable(options = {}) {
         <td><div class="url-cell">${video}</div></td>
         <td>
           <div class="row-actions">
+            ${canViewBrowser ? `<button class="icon-button" type="button" data-action="browser-view" data-id="${escapeHtml(task.id)}">查看</button>` : ""}
             <button class="icon-button" type="button" data-action="query" data-id="${escapeHtml(task.id)}" ${isQuerying ? "disabled" : ""}>${isQuerying ? "查询中" : "查询"}</button>
             ${Number(task.image_count || 0) > 0 ? `<button class="icon-button" type="button" data-action="open-references" data-id="${escapeHtml(task.id)}">参考图</button>` : ""}
             ${canRetry ? `<button class="icon-button" type="button" data-action="retry" data-id="${escapeHtml(task.id)}" ${isRetrying ? "disabled" : ""}>${isRetrying ? "提交中" : "重试"}</button>` : ""}
@@ -8164,6 +8274,11 @@ function bindEvents() {
   els.textModal.addEventListener("click", (event) => {
     if (event.target === els.textModal) closeTextModal();
   });
+  els.closeBrowserViewModal?.addEventListener("click", closeBrowserLiveView);
+  els.confirmBrowserViewModal?.addEventListener("click", closeBrowserLiveView);
+  els.browserViewModal?.addEventListener("click", (event) => {
+    if (event.target === els.browserViewModal) closeBrowserLiveView();
+  });
   els.batchAutoDownload?.addEventListener("change", async () => {
     const requested = els.batchAutoDownload.checked;
     if (requested && !state.downloadDirectoryHandle) {
@@ -8397,6 +8512,10 @@ function bindEvents() {
       const status = task ? getTaskStatus(task) : null;
       const text = task ? taskResultDetail(task, status) : "";
       openTextModal(text);
+      return;
+    }
+    if (action === "browser-view") {
+      openBrowserLiveView(id);
       return;
     }
     if (action === "query") {

@@ -96,6 +96,43 @@ class AdminAuthTests(unittest.TestCase):
         self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
         self.assertEqual(self.client.get("/auth/admin").json()["admin_username"], "chosen-admin")
 
+    def test_browser_live_view_is_admin_only(self) -> None:
+        task_id = "b" * 32
+        live_state = {
+            "active": True,
+            "frame_available": True,
+            "platform": "doubao",
+            "title": "Video creation",
+            "url": "https://example.test/video",
+            "sequence": 3,
+            "started_at": 100.0,
+            "updated_at": 200.0,
+        }
+        with patch.object(main, "get_meta", return_value={"status": "running", "execution_phase": "submitting_request"}), patch.object(
+            main, "read_live_view", return_value=live_state
+        ), patch.object(main.time, "time", return_value=204.0):
+            self.assertEqual(self.client.get(f"/admin/tasks/{task_id}/browser-view").status_code, 403)
+            self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+            response = self.client.get(f"/admin/tasks/{task_id}/browser-view")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["active"])
+        self.assertEqual(response.json()["execution_phase"], "submitting_request")
+
+    def test_browser_live_frame_requires_admin_and_disables_cache(self) -> None:
+        task_id = "c" * 32
+        frame = Path(self.temporary_directory.name) / "frame.jpg"
+        frame.write_bytes(b"jpeg-data")
+        with patch.object(main, "get_meta", return_value={"status": "running"}), patch.object(
+            main, "browser_live_frame_path", return_value=frame
+        ):
+            self.assertEqual(self.client.get(f"/admin/tasks/{task_id}/browser-frame").status_code, 403)
+            self.client.post("/auth/admin/login", json={"username": "chosen-admin", "password": "StrongPassword123"})
+            response = self.client.get(f"/admin/tasks/{task_id}/browser-frame")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/jpeg")
+        self.assertIn("no-store", response.headers["cache-control"])
+        self.assertEqual(response.content, b"jpeg-data")
+
 
 if __name__ == "__main__":
     unittest.main()

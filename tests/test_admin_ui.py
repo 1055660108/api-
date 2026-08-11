@@ -1010,5 +1010,24 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('addEventListener("click", refreshMessageCenter)', self.javascript)
 
 
+    def test_admin_running_tasks_expose_read_only_browser_live_view(self) -> None:
+        for element_id in (
+            "browserViewModal",
+            "browserViewTitle",
+            "browserViewStatus",
+            "browserViewPhase",
+            "browserViewFrame",
+            "browserViewEmpty",
+            "closeBrowserViewModal",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('const canViewBrowser = portal === "admin"', self.javascript)
+        self.assertIn('data-action="browser-view"', self.javascript)
+        self.assertIn('/browser-view`', self.javascript)
+        self.assertIn('/browser-frame?v=', self.javascript)
+        self.assertIn('window.setInterval(refreshBrowserLiveView, 1000)', self.javascript)
+        self.assertNotIn('data-action="browser-control"', self.javascript)
+
+
 if __name__ == "__main__":
     unittest.main()

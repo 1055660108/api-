@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 
 from .accounts import disable_account_for_login, update_account_cookies
 from .browser_runtime import cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
+from .browser_live_view import TaskBrowserLiveView
 from .config import QIANWEN_PROFILES_DIR, TASKS_DIR, ensure_dirs, load_settings
 from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, save_result, task_exists, task_image_paths
 from .profile_lock import account_profile_lock
@@ -765,11 +766,13 @@ class QianwenVideoAutomation:
             response_handler = None
             route_handler = None
             response_tasks: set[asyncio.Task[Any]] = set()
+            live_view = TaskBrowserLiveView(self.task_id, "qianwen")
             try:
                 imported_cookies = self._account_cookies()
                 if imported_cookies:
                     await context.add_cookies(imported_cookies)
                 page = context.pages[0] if context.pages else await context.new_page()
+                await live_view.start(page)
                 route_handler = self._route_chat_submission
                 for pattern in QIANWEN_CHAT_ROUTE_PATTERNS:
                     await page.route(pattern, route_handler)
@@ -931,6 +934,7 @@ class QianwenVideoAutomation:
                     "keep_account_claimed": True,
                 }
             finally:
+                await live_view.stop()
                 if page is not None and request_handler is not None:
                     page.remove_listener("request", request_handler)
                 if page is not None and response_handler is not None:

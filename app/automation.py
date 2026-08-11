@@ -24,6 +24,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 from .account_proxies import account_browser_config, account_proxy_candidates, account_proxy_configured, account_proxy_url
 from .api_proxy_pool import ApiProxyLease, ReusableApiProxyPool
 from .browser_runtime import BROWSER_EXTRA_HTTP_HEADERS, BROWSER_INIT_SCRIPT, BROWSER_USER_AGENT, BrowserContextLease, ReusableBrowserPool, resolve_browser_executable, safe_close, safe_unroute_all
+from .browser_live_view import TaskBrowserLiveView
 from .config import TARGET_URL, browser_proxy_config_for, load_settings
 from .proxy_manager import (
     acquire_dola_subscription_proxy,
@@ -1559,6 +1560,7 @@ class DolaFetchAutomation:
             context: BrowserContext | None = None
             page: Page | None = None
             lease: BrowserContextLease | None = None
+            live_view = TaskBrowserLiveView(self.task_id, "dola")
             try:
                 executable_path = self._browser_executable_path()
                 self._set_phase("connecting_node", "正在连接生成节点")
@@ -1598,6 +1600,7 @@ class DolaFetchAutomation:
                 await self._inject_account(context)
                 await context.add_init_script(BROWSER_INIT_SCRIPT)
                 page = await context.new_page()
+                await live_view.start(page)
                 await self._prepare_page(page)
                 self._set_phase("opening_generation_page", "正在打开生成页面")
                 response = await page.goto(TARGET_URL, wait_until="commit", timeout=90000)
@@ -1823,6 +1826,7 @@ class DolaFetchAutomation:
                 }
             finally:
                 self._finish_image_preparation()
+                await live_view.stop()
                 await _bounded_cleanup(safe_unroute_all(page))
                 if lease is not None:
                     await _bounded_cleanup(lease.release())

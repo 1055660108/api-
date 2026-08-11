@@ -53,6 +53,7 @@ from .batch_jobs import (
     recover_stale_creating_rows,
 )
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, resolve_browser_executable
+from .browser_live_view import browser_live_frame_path, cleanup_stale_live_views, read_live_view, request_live_view
 from .config import (
     DATA_DIR,
     DEFAULT_RATIO,
@@ -800,6 +801,7 @@ async def task_cache_cleanup_loop() -> None:
                         pass
             await asyncio.to_thread(_cleanup_batch_references)
             await asyncio.to_thread(_cleanup_batch_asset_uploads)
+            await asyncio.to_thread(cleanup_stale_live_views)
             await asyncio.to_thread(prune_admin_actions, 90, 10_000)
             await asyncio.to_thread(archive_old_transactions, 365, 5000)
         except asyncio.CancelledError:
@@ -6035,6 +6037,62 @@ async def task_result(access: Annotated[AccessContext, Depends(require_token)], 
                 terminal=str(result.get("code") or "") == "0",
             )
         return result
+
+
+@app.get("/admin/tasks/{task_id}/browser-view", dependencies=[Depends(require_admin)])
+async def admin_task_browser_view(task_id: str):
+    try:
+        validate_task_id(task_id)
+        meta = await asyncio.to_thread(get_meta, task_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="task not found")
+    await asyncio.to_thread(request_live_view, task_id)
+    view = await asyncio.to_thread(read_live_view, task_id)
+    updated_at = float(view.get("updated_at") or 0)
+    live = bool(view.get("active")) and updated_at > time.time() - 8
+    status = str(meta.get("status") or "")
+    phase = str(meta.get("execution_phase") or "")
+    if live:
+        message = "浏览器正在操作"
+    elif view.get("frame_available"):
+        message = "浏览器已关闭，显示最后画面"
+    elif status in {"pending", "running", "submitted"}:
+        message = "当前阶段尚未打开浏览器或浏览器已经释放"
+    else:
+        message = "任务已经结束，浏览器已关闭"
+    return {
+        "task_id": task_id,
+        "task_status": status,
+        "execution_phase": phase,
+        "status_reason": str(meta.get("status_reason") or meta.get("queue_reason") or ""),
+        "available": bool(view.get("frame_available")),
+        "active": live,
+        "message": message,
+        "platform": str(view.get("platform") or meta.get("platform") or ""),
+        "page_title": str(view.get("title") or ""),
+        "page_url": str(view.get("url") or ""),
+        "sequence": int(view.get("sequence") or 0),
+        "started_at": float(view.get("started_at") or 0),
+        "updated_at": updated_at,
+        "closed_at": float(view.get("closed_at") or 0),
+    }
+
+
+@app.get("/admin/tasks/{task_id}/browser-frame", dependencies=[Depends(require_admin)])
+async def admin_task_browser_frame(task_id: str):
+    try:
+        validate_task_id(task_id)
+        await asyncio.to_thread(get_meta, task_id)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(status_code=404, detail="task not found")
+    frame_path = await asyncio.to_thread(browser_live_frame_path, task_id)
+    if frame_path is None:
+        raise HTTPException(status_code=404, detail="browser frame not available")
+    return FileResponse(
+        frame_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/tasks/{task_id}/video", dependencies=[Depends(require_token)])

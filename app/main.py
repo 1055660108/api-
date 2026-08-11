@@ -3333,6 +3333,7 @@ async def runtime_config():
     return {
         "dola_submit_interval_seconds": settings.dola_submit_interval_seconds,
         "dola_global_submit_interval_seconds": settings.dola_global_submit_interval_seconds,
+        "qianwen_submit_interval_seconds": settings.qianwen_submit_interval_seconds,
         "task_retry_limit": settings.task_retry_limit,
         "doubao_submit_retry_limit": settings.doubao_submit_retry_limit,
         "batch_history_retention_days": settings.batch_history_retention_days,
@@ -3407,6 +3408,7 @@ async def update_runtime_config(request: Request):
             "dola_global_submit_interval_seconds",
             payload.get("dola_exit_submit_interval_seconds", settings.dola_global_submit_interval_seconds),
         ))
+        qianwen_submit_interval = float(payload.get("qianwen_submit_interval_seconds", settings.qianwen_submit_interval_seconds))
         task_retry_limit = int(payload.get("task_retry_limit", settings.task_retry_limit))
         doubao_submit_retry_limit = int(payload.get("doubao_submit_retry_limit", settings.doubao_submit_retry_limit))
         batch_history_retention_days = int(payload.get("batch_history_retention_days", settings.batch_history_retention_days))
@@ -3416,6 +3418,8 @@ async def update_runtime_config(request: Request):
         raise HTTPException(status_code=400, detail="dola_submit_interval_seconds must be between 1 and 5")
     if global_submit_interval < 3 or global_submit_interval > 30:
         raise HTTPException(status_code=400, detail="dola_global_submit_interval_seconds must be between 3 and 30")
+    if qianwen_submit_interval < 1 or qianwen_submit_interval > 30:
+        raise HTTPException(status_code=400, detail="qianwen_submit_interval_seconds must be between 1 and 30")
     if task_retry_limit < 0 or task_retry_limit > 10:
         raise HTTPException(status_code=400, detail="task_retry_limit must be between 0 and 10")
     if doubao_submit_retry_limit < 0 or doubao_submit_retry_limit > 10:
@@ -3426,6 +3430,7 @@ async def update_runtime_config(request: Request):
     update_config({
         "dola_submit_interval_seconds": submit_interval,
         "dola_global_submit_interval_seconds": round(global_submit_interval, 1),
+        "qianwen_submit_interval_seconds": round(qianwen_submit_interval, 1),
         "task_retry_limit": task_retry_limit,
         "doubao_submit_retry_limit": doubao_submit_retry_limit,
         "batch_history_retention_days": batch_history_retention_days,
@@ -3435,6 +3440,7 @@ async def update_runtime_config(request: Request):
         "ok": True,
         "dola_submit_interval_seconds": refreshed.dola_submit_interval_seconds,
         "dola_global_submit_interval_seconds": refreshed.dola_global_submit_interval_seconds,
+        "qianwen_submit_interval_seconds": refreshed.qianwen_submit_interval_seconds,
         "task_retry_limit": refreshed.task_retry_limit,
         "doubao_submit_retry_limit": refreshed.doubao_submit_retry_limit,
         "batch_history_retention_days": refreshed.batch_history_retention_days,

@@ -252,6 +252,7 @@ class QianwenAIStudioAutomation:
         *,
         account: dict[str, Any],
         proxy_session: Any | None = None,
+        submission_pacer: Any | None = None,
     ) -> None:
         self.task_id = task_id
         self.prompt = prompt
@@ -260,6 +261,7 @@ class QianwenAIStudioAutomation:
         self.duration = max(1, int(duration or 10))
         self.account = account
         self.proxy_session = proxy_session
+        self.submission_pacer = submission_pacer
         self.settings = load_settings()
 
     def _failure(self, reason: str, *, retryable: bool = True, **extra: Any) -> dict[str, Any]:
@@ -430,6 +432,8 @@ class QianwenAIStudioAutomation:
             proxy_url = _httpx_proxy_url(proxy_config)
             if proxy_url:
                 options["proxy"] = proxy_url
+            if self.submission_pacer is not None:
+                await self.submission_pacer()
             if not begin_task_submission(self.task_id):
                 canceled = is_task_canceled(self.task_id)
                 return self._failure("用户取消生成" if canceled else "任务提交状态已变化，正在重试", retryable=not canceled)

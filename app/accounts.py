@@ -572,6 +572,8 @@ def _public_account(account: dict[str, Any]) -> dict[str, Any]:
         "pinned_proxy_node_id": str(account.get("pinned_proxy_node_id") or ""),
         "slider_verification_date": str(account.get("slider_verification_date") or ""),
         "slider_verification_streak": max(0, int(account.get("slider_verification_streak") or 0)),
+        "cooldown_until": str(account.get("cooldown_until") or ""),
+        "cooldown_reason": str(account.get("cooldown_reason") or ""),
         "ten_second_only": bool(account.get("ten_second_only")),
         "ten_second_marked_at": str(account.get("ten_second_marked_at") or ""),
         "quota_limit": quota_limit,

@@ -7,7 +7,7 @@ import socket
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 
-from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_region_restricted, mark_account_slider_verification, mark_account_text_only, refund_account_quota, reset_daily_account_quotas_if_needed, restore_account_current_task, settle_account_quota
+from .accounts import account_supports_duration, claim_account_for_worker, clear_account_current_task, disable_account_for_login, exhaust_account_quota, local_today, mark_account_region_restricted, mark_account_slider_verification, mark_account_text_only, refund_account_quota, reset_daily_account_quotas_if_needed, restore_account_current_task, set_account_cooldown, settle_account_quota
 from .api_proxy_pool import ReusableApiProxyPool
 from .automation import DolaFetchAutomation, ReferenceUploadCapacityError, exception_reason, is_final_generation_failure, is_infrastructure_failure
 from .browser_runtime import BROWSER_CONTEXTS_PER_PROCESS, BROWSER_POOL_PROCESSES, BROWSER_SUBMISSION_CONCURRENCY, ReusableBrowserPool
@@ -186,6 +186,9 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
     if outcome.get("switch_account"):
         record_failed_account(task_id, account_id)
         update_meta(task_id, preferred_account_id="")
+    cooldown_seconds = max(0, int(outcome.get("account_cooldown_seconds") or 0))
+    if cooldown_seconds:
+        set_account_cooldown(account_id, cooldown_seconds, str(outcome.get("reason") or "qianwen account cooldown"))
     if outcome.get("account_login_invalid"):
         platform_label = {"dola": "Dola", "doubao": "豆包", "qianwen": "千问"}.get(platform, platform)
         disable_account_for_login(account_id, f"{platform_label} 登录状态失效")
@@ -227,6 +230,8 @@ class WorkerManager:
         self._last_dola_submit_at = 0.0
         self._doubao_submit_lock = asyncio.Lock()
         self._last_doubao_submit_at = 0.0
+        self._qianwen_submit_lock = asyncio.Lock()
+        self._last_qianwen_submit_at = 0.0
         self._image_submission_semaphore = asyncio.Semaphore(IMAGE_SUBMISSION_CONCURRENCY)
         self._prepare_upload_semaphore = asyncio.Semaphore(PREPARE_UPLOAD_CONCURRENCY)
         self._prepare_upload_active = 0
@@ -964,6 +969,14 @@ class WorkerManager:
                 await asyncio.sleep(delay)
             self._last_doubao_submit_at = asyncio.get_running_loop().time()
 
+    async def _wait_for_qianwen_submit_slot(self) -> None:
+        async with self._qianwen_submit_lock:
+            submit_interval = float(load_settings().qianwen_submit_interval_seconds)
+            delay = submit_interval - (asyncio.get_running_loop().time() - self._last_qianwen_submit_at)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last_qianwen_submit_at = asyncio.get_running_loop().time()
+
     async def _worker_loop(self, worker_id: str) -> None:
         while not self._stopping:
             if self._memory_claiming_paused():
@@ -1152,6 +1165,7 @@ class WorkerManager:
                             int(meta.get("duration") or 10),
                             account=account,
                             proxy_session=proxy_session,
+                            submission_pacer=self._wait_for_qianwen_submit_slot,
                         )
                     else:
                         runner = QianwenVideoAutomation(
@@ -1163,6 +1177,7 @@ class WorkerManager:
                             int(meta.get("duration") or 10),
                             account=account,
                             proxy_session=proxy_session,
+                            submission_pacer=self._wait_for_qianwen_submit_slot,
                         )
                 else:
                     runner = DolaFetchAutomation(

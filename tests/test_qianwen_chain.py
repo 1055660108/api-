@@ -18,6 +18,7 @@ from app.qianwen_automation import (
     enable_qianwen_wan27_audio,
     is_qianwen_chat_api_url,
     is_qianwen_ai_studio_redirect,
+    is_qianwen_user_validation_error,
     is_qianwen_account_quota_insufficient,
     parse_qianwen_generation_result,
     parse_qianwen_submission,
@@ -59,6 +60,11 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertTrue(is_qianwen_ai_studio_redirect("https://create.qianwen.com/r/ai-studio-pc/main/gen?tab=video"))
         self.assertTrue(is_qianwen_ai_studio_redirect("https://ai-studio-create.qianwen.com/api/web"))
         self.assertFalse(is_qianwen_ai_studio_redirect("https://www.qianwen.com/"))
+
+    def test_user_validation_error_is_detected(self) -> None:
+        self.assertTrue(is_qianwen_user_validation_error('{"ret":["FAIL_SYS_USER_VALIDATE","RGV587_ERROR::SM"]}'))
+        self.assertTrue(is_qianwen_user_validation_error("", "https://chat2.qianwen.com/punish?action=captcha"))
+        self.assertFalse(is_qianwen_user_validation_error('{"ok":true}', "https://chat2.qianwen.com/api/v2/chat"))
 
     def test_ai_studio_missing_ticket_is_an_account_login_failure(self) -> None:
         runner = self._studio_runner([{"name": "XSRF-TOKEN", "value": "xsrf-value"}])

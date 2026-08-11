@@ -454,6 +454,7 @@ const els = {
   runtimeConfigForm: document.getElementById("runtimeConfigForm"),
   runtimeConfigState: document.getElementById("runtimeConfigState"),
   dolaSubmitInterval: document.getElementById("dolaSubmitInterval"),
+  qianwenSubmitInterval: document.getElementById("qianwenSubmitInterval"),
   taskRetryLimit: document.getElementById("taskRetryLimit"),
   doubaoSubmitRetryLimit: document.getElementById("doubaoSubmitRetryLimit"),
   batchHistoryRetentionDays: document.getElementById("batchHistoryRetentionDays"),
@@ -3849,35 +3850,40 @@ async function loadRuntimeConfig() {
   if (portal !== "admin" || !els.dolaSubmitInterval) return null;
   const data = await apiFetch("/config/runtime");
   const interval = Math.max(3, Math.min(30, Number(data.dola_global_submit_interval_seconds || 8)));
+  const qianwenInterval = Math.max(1, Math.min(30, Number(data.qianwen_submit_interval_seconds || 5)));
   const retryLimit = Math.max(0, Math.min(10, Number.parseInt(data.task_retry_limit ?? 2, 10)));
   const doubaoRetryLimit = Math.max(0, Math.min(10, Number.parseInt(data.doubao_submit_retry_limit ?? 2, 10)));
   const retentionDays = Math.max(7, Math.min(30, Number(data.batch_history_retention_days || 30)));
   els.dolaSubmitInterval.value = String(interval);
+  if (els.qianwenSubmitInterval) els.qianwenSubmitInterval.value = String(qianwenInterval);
   if (els.taskRetryLimit) els.taskRetryLimit.value = String(retryLimit);
   if (els.doubaoSubmitRetryLimit) els.doubaoSubmitRetryLimit.value = String(doubaoRetryLimit);
   if (els.batchHistoryRetentionDays) els.batchHistoryRetentionDays.value = String(retentionDays);
-  if (els.runtimeConfigState) els.runtimeConfigState.textContent = `全局 ${interval} 秒/条 · 换号 ${retryLimit} 次 · 豆包单号重发 ${doubaoRetryLimit} 次 · ${retentionDays} 天`;
+  if (els.runtimeConfigState) els.runtimeConfigState.textContent = `Dola ${interval} 秒/条 · 千问 ${qianwenInterval} 秒/条 · 换号 ${retryLimit} 次 · 豆包单号重发 ${doubaoRetryLimit} 次 · ${retentionDays} 天`;
   return data;
 }
 
 async function saveRuntimeConfig(event) {
   event?.preventDefault();
   const interval = Math.round(Number(els.dolaSubmitInterval?.value || 0) * 10) / 10;
+  const qianwenInterval = Math.round(Number(els.qianwenSubmitInterval?.value || 0) * 10) / 10;
   const retryLimit = Number.parseInt(els.taskRetryLimit?.value || "", 10);
   const doubaoRetryLimit = Number.parseInt(els.doubaoSubmitRetryLimit?.value || "", 10);
   const retentionDays = Number.parseInt(els.batchHistoryRetentionDays?.value || "", 10);
   if (!Number.isFinite(interval) || interval < 3 || interval > 30) return toast("全局提交间隔需为 3 - 30 秒", "error");
+  if (!Number.isFinite(qianwenInterval) || qianwenInterval < 1 || qianwenInterval > 30) return toast("千问提交间隔需为 1 - 30 秒", "error");
   if (!Number.isInteger(retryLimit) || retryLimit < 0 || retryLimit > 10) return toast("任务重试次数需为 0 - 10 次", "error");
   if (!Number.isInteger(doubaoRetryLimit) || doubaoRetryLimit < 0 || doubaoRetryLimit > 10) return toast("豆包单号重发次数需为 0 - 10 次", "error");
   if (!Number.isInteger(retentionDays) || retentionDays < 7 || retentionDays > 30) return toast("批量历史保留时间需为 7 - 30 天", "error");
   setBusy(els.saveRuntimeConfig, true, "保存中");
   try {
-    const data = await apiFetch("/config/runtime", { method: "POST", body: { dola_global_submit_interval_seconds: interval, task_retry_limit: retryLimit, doubao_submit_retry_limit: doubaoRetryLimit, batch_history_retention_days: retentionDays } });
+    const data = await apiFetch("/config/runtime", { method: "POST", body: { dola_global_submit_interval_seconds: interval, qianwen_submit_interval_seconds: qianwenInterval, task_retry_limit: retryLimit, doubao_submit_retry_limit: doubaoRetryLimit, batch_history_retention_days: retentionDays } });
     els.dolaSubmitInterval.value = String(data.dola_global_submit_interval_seconds);
+    if (els.qianwenSubmitInterval) els.qianwenSubmitInterval.value = String(data.qianwen_submit_interval_seconds);
     if (els.taskRetryLimit) els.taskRetryLimit.value = String(data.task_retry_limit);
     if (els.doubaoSubmitRetryLimit) els.doubaoSubmitRetryLimit.value = String(data.doubao_submit_retry_limit);
     if (els.batchHistoryRetentionDays) els.batchHistoryRetentionDays.value = String(data.batch_history_retention_days);
-    if (els.runtimeConfigState) els.runtimeConfigState.textContent = `全局 ${data.dola_global_submit_interval_seconds} 秒/条 · 换号 ${data.task_retry_limit} 次 · 豆包单号重发 ${data.doubao_submit_retry_limit} 次 · ${data.batch_history_retention_days} 天`;
+    if (els.runtimeConfigState) els.runtimeConfigState.textContent = `Dola ${data.dola_global_submit_interval_seconds} 秒/条 · 千问 ${data.qianwen_submit_interval_seconds} 秒/条 · 换号 ${data.task_retry_limit} 次 · 豆包单号重发 ${data.doubao_submit_retry_limit} 次 · ${data.batch_history_retention_days} 天`;
     toast("运行与保留设置已生效");
   } catch (error) {
     toast(`保存失败：${error.message}`, "error");

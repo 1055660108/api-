@@ -36,6 +36,11 @@ def is_qianwen_ai_studio_redirect(url: str) -> bool:
     return host in QIANWEN_AI_STUDIO_HOSTS
 
 
+def is_qianwen_user_validation_error(body: str, url: str = "") -> bool:
+    text = f"{body}\n{url}".lower()
+    return any(marker in text for marker in ("fail_sys_user_validate", "rgv587_error", "action=captcha"))
+
+
 def qianwen_model_requires_reference(model: str) -> bool:
     return str(model or "").strip() in QIANWEN_REFERENCE_REQUIRED_MODELS
 
@@ -327,6 +332,7 @@ class QianwenVideoAutomation:
         duration: int = 10,
         account: dict[str, Any] | None = None,
         proxy_session: Any | None = None,
+        submission_pacer: Any | None = None,
     ):
         self.task_id = task_id
         self.prompt = prompt
@@ -336,6 +342,7 @@ class QianwenVideoAutomation:
         self.duration = max(1, int(duration or 10))
         self.account = account or {}
         self.proxy_session = proxy_session
+        self.submission_pacer = submission_pacer
         self.settings = load_settings()
         ensure_dirs()
         self.profile_path = QIANWEN_PROFILES_DIR / str(self.account.get("id") or "unknown")
@@ -651,6 +658,9 @@ class QianwenVideoAutomation:
         except Exception:
             self._collect_network_values(body)
         lowered = body.lower()
+        user_validation_error = is_qianwen_user_validation_error(body, url)
+        if user_validation_error:
+            self.remote_error = "user_validate"
         if response.status in {401, 403} or any(marker in lowered for marker in ("not login", "unauthorized", "登录失效")):
             self.remote_error = "login"
         elif response.status == 429 or (response.status >= 400 and any(marker in lowered for marker in ("rate limit", "too many requests", "访问频繁", "限流"))):
@@ -664,7 +674,7 @@ class QianwenVideoAutomation:
             self.remote_session_id = str(submission.get("session_id") or "")
             self.remote_req_id = str(submission.get("req_id") or "")
             has_stream_error = "stream_error" in lowered and bool(re.search(r'"error_code"\s*:\s*[1-9]\d*', lowered))
-            if response.status == 200 and self.remote_session_id and self.remote_req_id and not has_stream_error:
+            if response.status == 200 and self.remote_session_id and self.remote_req_id and not has_stream_error and not user_validation_error:
                 self.submission_event.set()
 
     def _capture_request(self, request) -> None:
@@ -701,6 +711,8 @@ class QianwenVideoAutomation:
         quota_title = page.get_by_text(re.compile(r"^额度不足$"))
         deadline = time.monotonic() + max(1, int(timeout_seconds))
         while time.monotonic() < deadline:
+            if self.remote_error:
+                return False
             if self.submission_event.is_set():
                 return False
             for index in range(await quota_title.count() - 1, -1, -1):
@@ -877,6 +889,8 @@ class QianwenVideoAutomation:
                 if await send_button.is_disabled():
                     await self._save_diagnostics(page, "send button disabled")
                     return self._failure("qianwen send button disabled", account_fault=False)
+                if self.submission_pacer is not None:
+                    await self.submission_pacer()
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
@@ -900,9 +914,17 @@ class QianwenVideoAutomation:
                         switch_account=True,
                     )
                 if self.remote_error:
-                    reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "model_unavailable": "qianwen model unavailable"}
+                    reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "user_validate": "qianwen user validation required", "model_unavailable": "qianwen model unavailable"}
                     reason = reasons[self.remote_error]
                     await self._save_diagnostics(page, reason)
+                    if self.remote_error == "user_validate":
+                        return self._failure(
+                            reason,
+                            account_fault=False,
+                            retryable=True,
+                            switch_account=True,
+                            account_cooldown_seconds=1800,
+                        )
                     return self._failure(reason, account_fault=self.remote_error == "login", retryable=self.remote_error != "model_unavailable")
                 if not self.submission_event.is_set() or not self.remote_session_id or not self.remote_req_id:
                     await self._save_diagnostics(page, "submit not confirmed")

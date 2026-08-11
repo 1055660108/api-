@@ -116,6 +116,29 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(len(waits), 2)
         self.assertTrue(all(wait > 4.9 for wait in waits))
 
+    def test_qianwen_submission_pacing_is_global(self) -> None:
+        manager = WorkerManager()
+
+        async def exercise() -> list[float]:
+            manager._last_qianwen_submit_at = asyncio.get_running_loop().time()
+            waits: list[float] = []
+
+            async def record_sleep(delay: float) -> None:
+                waits.append(delay)
+
+            with patch("app.worker.load_settings", return_value=SimpleNamespace(qianwen_submit_interval_seconds=5.0)), patch(
+                "app.worker.asyncio.sleep", new=AsyncMock(side_effect=record_sleep)
+            ):
+                await asyncio.gather(
+                    manager._wait_for_qianwen_submit_slot(),
+                    manager._wait_for_qianwen_submit_slot(),
+                )
+            return waits
+
+        waits = asyncio.run(exercise())
+        self.assertEqual(len(waits), 2)
+        self.assertTrue(all(wait > 4.9 for wait in waits))
+
     def test_doubao_interface_poll_rejects_watermarked_result_and_keeps_credentials(self) -> None:
         task = store.create_task("豆包接口查询", "9:16", platform="doubao", model="Seedance 2.0 Mini")
         store.mark_running(task["id"], "worker-doubao")
@@ -353,6 +376,28 @@ class ReliabilityTests(unittest.TestCase):
 
         stored_account = accounts.list_accounts(platform="doubao")[0]
         self.assertEqual((stored_account["quota_used"], stored_account["quota_remaining"]), (2, 0))
+        self.assertIn(account["id"], store.get_meta(task["id"])["failed_account_ids"])
+
+    def test_qianwen_user_validation_switches_and_cools_account(self) -> None:
+        task = store.create_task("qianwen validation", "9:16", platform="qianwen", model="HappyHorse 1.0")
+        account = accounts.add_account("qianwen account", "tongyi_sso_ticket=ticket", quota_limit=5, platform="qianwen")
+        claimed = accounts.claim_account_for_worker("worker-qianwen", task["id"], platform="qianwen")
+
+        release_account_after_retryable_failure(
+            task["id"],
+            claimed,
+            "qianwen",
+            {
+                "retryable": True,
+                "switch_account": True,
+                "account_cooldown_seconds": 1800,
+                "reason": "qianwen user validation required",
+            },
+        )
+
+        stored_account = accounts.list_accounts(platform="qianwen")[0]
+        self.assertTrue(stored_account["cooldown_until"])
+        self.assertEqual(stored_account["cooldown_reason"], "qianwen user validation required")
         self.assertIn(account["id"], store.get_meta(task["id"])["failed_account_ids"])
 
     def test_doubao_client_refresh_cannot_bypass_next_poll_time(self) -> None:

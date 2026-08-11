@@ -662,6 +662,8 @@ class AdminUITests(unittest.TestCase):
         self.assertIn("delay = submit_interval -", worker)
         self.assertIn("self._dola_submit_lock", worker)
         self.assertIn('id="dolaSubmitInterval" type="number" min="3" max="30" step="0.5"', self.html)
+        self.assertIn('id="qianwenSubmitInterval" type="number" min="1" max="30" step="0.5"', self.html)
+        self.assertIn("qianwen_submit_interval_seconds", self.javascript)
         self.assertIn("全局提交间隔", self.html)
         self.assertIn('apiFetch("/config/runtime"', self.javascript)
         self.assertIn("RESULT_WATCH_DEADLINE_MINUTES = 20", worker)

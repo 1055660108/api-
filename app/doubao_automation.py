@@ -2951,7 +2951,9 @@ class DoubaoVideoAutomation:
                 if not editor_box:
                     return None
                 positioned: list[tuple[float, Any]] = []
-                buttons = page.locator("button:visible")
+                buttons = page.locator('button:visible, [role="button"]:visible, [tabindex="0"]:visible')
+                target_x = editor_box["x"] + editor_box["width"]
+                target_y = editor_box["y"] + editor_box["height"]
                 for index in range(await buttons.count() - 1, -1, -1):
                     item = buttons.nth(index)
                     try:
@@ -2967,8 +2969,11 @@ class DoubaoVideoAutomation:
                     if (
                         center_x >= editor_box["x"] + editor_box["width"] * 0.75
                         and editor_box["y"] - 20 <= center_y <= editor_box["y"] + editor_box["height"] + 80
+                        and box["width"] <= 96
+                        and box["height"] <= 96
                     ):
-                        positioned.append((-center_x, item))
+                        distance = abs(target_x - center_x) + abs(target_y - center_y)
+                        positioned.append((distance, item))
                 return min(positioned, key=lambda item: item[0])[1] if positioned else None
 
             send_button = await find_send_button()
@@ -3011,13 +3016,7 @@ class DoubaoVideoAutomation:
                         ))
                     except Exception:
                         button_ready = False
-            if not button_ready:
-                return {
-                    "ok": False,
-                    "status": 0,
-                    "accepted": False,
-                    "video_creation_ui_error": "doubao video send button obstructed",
-                }
+            send_button_fallback_used = not button_ready
             if image_count > 0:
                 final_upload_body = await page.locator("body").inner_text()
                 final_upload_tail = re.sub(r"\s+", "", final_upload_body[-3000:])
@@ -3061,23 +3060,25 @@ class DoubaoVideoAutomation:
             if self.submission_pacer is not None:
                 await self.submission_pacer()
             capture_enabled = True
-            await send_button.click(force=True)
+            try:
+                await send_button.click(force=True)
+            except Exception:
+                try:
+                    await send_button.evaluate("element => element.click()")
+                    send_button_fallback_used = True
+                except Exception:
+                    return {
+                        "ok": False,
+                        "status": 0,
+                        "accepted": False,
+                        "video_creation_ui_error": "doubao video send button click failed",
+                    }
             try:
                 await asyncio.wait_for(submission_request_seen.wait(), timeout=3)
             except asyncio.TimeoutError:
-                await editor.press("Enter")
-                try:
-                    await asyncio.wait_for(submission_request_seen.wait(), timeout=3)
-                except asyncio.TimeoutError:
-                    return {
-                        "ok": True,
-                        "status": 200,
-                        "accepted": False,
-                        "response_preview": str(evidence.get("response_preview") or ""),
-                        "video_creation_page_used": True,
-                        "submitted_with_images": submitted_with_images,
-                        "native_submission_request_seen": False,
-                    }
+                # The creation composer can submit through a non-chat endpoint.
+                # Continue waiting for the visible acknowledgement after the click.
+                pass
 
             deadline = asyncio.get_running_loop().time() + DOUBAO_VIDEO_CREATION_SUBMIT_WAIT_SECONDS
             marker_visible = False
@@ -3164,6 +3165,7 @@ class DoubaoVideoAutomation:
                     "native_submission_request_seen": submission_request_seen.is_set(),
                     "confirmation_prompt_detected": confirmation_prompt_detected,
                     "auto_confirmation_sent": auto_confirmation_sent,
+                    "video_creation_send_button_fallback_used": send_button_fallback_used,
                 }
             if not conversation_id:
                 return {
@@ -3194,6 +3196,7 @@ class DoubaoVideoAutomation:
                 "native_submission_request_seen": submission_request_seen.is_set(),
                 "confirmation_prompt_detected": confirmation_prompt_detected,
                 "auto_confirmation_sent": auto_confirmation_sent,
+                "video_creation_send_button_fallback_used": send_button_fallback_used,
             }
         finally:
             try:
@@ -4087,6 +4090,7 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_missing_control": str(completion_result.get("video_creation_missing_control") or "")[:100],
                         "doubao_native_video_creation_ui_error": str(completion_result.get("native_video_creation_ui_error") or "")[:500],
                         "doubao_native_submission_request_seen": bool(completion_result.get("native_submission_request_seen")),
+                        "doubao_video_creation_send_button_fallback_used": bool(completion_result.get("video_creation_send_button_fallback_used")),
                         "doubao_native_submission_fallback_used": bool(completion_result.get("native_submission_fallback_used")),
                         "doubao_direct_submission_response_preview": str(completion_result.get("direct_submission_response_preview") or "")[:6000],
                     })
@@ -4226,6 +4230,7 @@ class DoubaoVideoAutomation:
                         "doubao_video_creation_final_url": str(completion_result.get("video_creation_final_url") or page.url or "")[:1000],
                         "doubao_native_video_creation_ui_error": str(completion_result.get("native_video_creation_ui_error") or "")[:500],
                         "doubao_native_submission_request_seen": bool(completion_result.get("native_submission_request_seen")),
+                        "doubao_video_creation_send_button_fallback_used": bool(completion_result.get("video_creation_send_button_fallback_used")),
                         "doubao_native_submission_fallback_used": bool(completion_result.get("native_submission_fallback_used")),
                         "doubao_direct_submission_response_preview": str(completion_result.get("direct_submission_response_preview") or "")[:6000],
                         "doubao_result_mode": "interface_poll" if conversation_id else "browser_fallback",

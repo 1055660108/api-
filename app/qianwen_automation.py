@@ -5,6 +5,7 @@ import json
 import re
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from playwright.async_api import async_playwright
@@ -18,6 +19,7 @@ from .profile_lock import account_profile_lock
 
 
 QIANWEN_URL = "https://www.qianwen.com/"
+QIANWEN_AI_STUDIO_HOSTS = {"create.qianwen.com", "ai-studio-create.qianwen.com"}
 QIANWEN_CHAT_API_URL = "https://chat2.qianwen.com/api/v2/chat"
 QIANWEN_CHAT_SNAP_API_URL = "https://chat2.qianwen.com/api/v1/chat/snap"
 QIANWEN_DETAIL_API_URL = "https://chat2-api.qianwen.com/api/v1/session/req/detail"
@@ -27,6 +29,11 @@ TASK_KEY_RE = re.compile(r"(?:task|job|request|aigc|generation|message)[_-]?id",
 QIANWEN_QUERY_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 QIANWEN_REFERENCE_REQUIRED_MODELS = {"万相 2.7", "万相 2.6", "HappyHorse 1.0"}
 QIANWEN_CHAT_ROUTE_PATTERNS = ("**/api/v2/chat*", "**/api/v1/chat/snap*")
+
+
+def is_qianwen_ai_studio_redirect(url: str) -> bool:
+    host = str(urlsplit(str(url or "").strip()).hostname or "").lower().rstrip(".")
+    return host in QIANWEN_AI_STUDIO_HOSTS
 
 
 def qianwen_model_requires_reference(model: str) -> bool:
@@ -787,6 +794,13 @@ class QianwenVideoAutomation:
                 except Exception as exc:
                     await self._save_diagnostics(page, f"navigation timeout: {exc}")
                     return self._failure("qianwen network timeout", account_fault=False)
+                if is_qianwen_ai_studio_redirect(page.url):
+                    await self._save_diagnostics(page, "qianwen redirected to AI Studio")
+                    return self._failure(
+                        "qianwen redirected to AI Studio; switching account",
+                        account_fault=False,
+                        switch_account=True,
+                    )
                 logged_in, login_visible = await self._login_state(page, context)
                 if not logged_in and login_visible:
                     if imported_cookies:
@@ -806,6 +820,13 @@ class QianwenVideoAutomation:
                 if not await self._activate_video_mode(page):
                     await page.reload(wait_until="domcontentloaded", timeout=90000)
                     await page.wait_for_timeout(8000)
+                    if is_qianwen_ai_studio_redirect(page.url):
+                        await self._save_diagnostics(page, "qianwen redirected to AI Studio after reload")
+                        return self._failure(
+                            "qianwen redirected to AI Studio; switching account",
+                            account_fault=False,
+                            switch_account=True,
+                        )
                     if not await self._activate_video_mode(page):
                         await self._save_diagnostics(page, "video mode did not activate after same-account reload")
                         return self._failure("qianwen video mode not active", account_fault=False)

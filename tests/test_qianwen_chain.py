@@ -17,6 +17,7 @@ from app.qianwen_automation import (
     QianwenVideoAutomation,
     enable_qianwen_wan27_audio,
     is_qianwen_chat_api_url,
+    is_qianwen_ai_studio_redirect,
     is_qianwen_account_quota_insufficient,
     parse_qianwen_generation_result,
     parse_qianwen_submission,
@@ -53,6 +54,11 @@ class QianwenSubmissionTests(unittest.TestCase):
         context.__aenter__ = AsyncMock(return_value=client)
         context.__aexit__ = AsyncMock(return_value=None)
         return context, post
+
+    def test_ai_studio_redirect_is_detected(self) -> None:
+        self.assertTrue(is_qianwen_ai_studio_redirect("https://create.qianwen.com/r/ai-studio-pc/main/gen?tab=video"))
+        self.assertTrue(is_qianwen_ai_studio_redirect("https://ai-studio-create.qianwen.com/api/web"))
+        self.assertFalse(is_qianwen_ai_studio_redirect("https://www.qianwen.com/"))
 
     def test_ai_studio_missing_ticket_is_an_account_login_failure(self) -> None:
         runner = self._studio_runner([{"name": "XSRF-TOKEN", "value": "xsrf-value"}])

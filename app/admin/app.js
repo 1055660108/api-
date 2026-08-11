@@ -1357,6 +1357,9 @@ function clientSafeText(value, task = {}) {
   if (portal !== "client") return text;
   if (/service[ _-]*frequent|risk check:\s*service_frequent|710022002|当前服务访问频繁|服务访问频繁/i.test(text)) return "服务繁忙正在重试！";
   const terminal = ["failed", "canceled"].includes(String(task.status || "").toLowerCase());
+  if (terminal && /text_only_response|仅返回文本|未提交视频生成|回显提示词|改写成\s*AI\s*视频提示词|无法直接生成视频/i.test(text)) {
+    return `${String(task.model || "当前模型")}生成失败`;
+  }
   if (/generating videos longer than\s*10 seconds.*not supported|视频.{0,20}超过\s*10\s*秒.{0,20}不支持/i.test(text)) return "生成接口繁忙请稍后重试！";
   if (/游客模式|请登录后再试|登录后再试/.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";
   if (/710022004|rate limited|slider verification|跳验证|滑块风控/i.test(text)) return terminal ? "生成失败，请重试！" : "正在重试中，请稍等！";

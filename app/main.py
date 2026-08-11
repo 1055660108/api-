@@ -1626,6 +1626,13 @@ def _client_safe_text(value: str, model: str, *, terminal: bool = False) -> str:
     text = _frontend_safe_retry_text(raw_text)
     if text != raw_text:
         return text
+    # Do not expose Doubao's prompt-only response details to end users.
+    if terminal and re.search(
+        r"text_only_response|仅返回文本|未提交视频生成|回显提示词|改写成\s*AI\s*视频提示词|无法直接生成视频",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return f"{replacement}生成失败"
     if re.search(r"generating videos longer than\s*10 seconds.*not supported|视频.{0,20}超过\s*10\s*秒.{0,20}不支持", text, flags=re.IGNORECASE):
         return "生成接口繁忙请稍后重试！"
     if re.search(r"游客模式|请登录后再试|登录后再试", text):

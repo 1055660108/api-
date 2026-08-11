@@ -879,7 +879,17 @@ def best_doubao_video_candidate(candidates: dict[str, dict[str, Any]]) -> dict[s
 
 
 def is_doubao_text_only_video_response(value: str) -> bool:
-    text = re.sub(r"\s+", "", str(value or "")).lower()
+    raw = str(value or "")
+    if not raw or DOUBAO_SUBMISSION_MARKER in raw:
+        return False
+    response_completed = bool(re.search(r"(?m)^event:\s*SSE_REPLY_END\s*$", raw))
+    if re.search(r"(?m)^event:", raw):
+        assistant_text = extract_doubao_assistant_response_text(raw)
+        if assistant_text:
+            raw = assistant_text
+        elif response_completed:
+            return True
+    text = re.sub(r"\s+", "", raw).lower()
     if not text or DOUBAO_SUBMISSION_MARKER in text:
         return False
     direct_refusals = (
@@ -921,7 +931,19 @@ def is_doubao_text_only_video_response(value: str) -> bool:
         "镜头",
         "可直接使用",
     ))
-    return explicit_prompt_rewrite or (prompt_export and (tool_recommendation or versioned_prompts))
+    structured_prompt_export = any(marker in text for marker in (
+        "\u5b8c\u6574\u7248ai\u89c6\u9891\u4e00\u952e\u63d0\u793a\u8bcd",
+        "\u6b63\u5411\u63d0\u793a\u8bcd",
+        "\u8d1f\u9762\u63d0\u793a\u8bcd",
+        "\u6781\u7b80\u4e00\u952e\u590d\u5236\u7248",
+        "\u9002\u914d\u7edd\u5927\u591a\u6570ai\u89c6\u9891\u751f\u6210\u5e73\u53f0",
+    ))
+    return bool(
+        response_completed
+        or structured_prompt_export
+        or explicit_prompt_rewrite
+        or (prompt_export and (tool_recommendation or versioned_prompts))
+    )
 
 
 def doubao_reference_upload_progress_visible(value: str) -> bool:
@@ -1075,6 +1097,8 @@ def normalize_doubao_submission_acknowledgement(result: dict[str, Any]) -> dict[
         response_text
     )
     if not acknowledgement:
+        if is_doubao_text_only_video_response(response_text):
+            result["text_only_response"] = True
         return result
     result["accepted"] = True
     result["generation_wait_message_detected"] = True
@@ -3152,12 +3176,16 @@ class DoubaoVideoAutomation:
             conversation_id = str(evidence.get("conversation_id") or "")
             if not acknowledgement_visible:
                 response_preview = last_body[-6000:]
+                network_preview = str(evidence.get("response_preview") or "")
                 return {
                     "ok": True,
                     "status": 200,
                     "accepted": False,
-                    "response_preview": response_preview,
-                    "text_only_response": is_doubao_text_only_video_response(response_preview),
+                    "response_preview": network_preview or response_preview,
+                    "text_only_response": bool(
+                        is_doubao_text_only_video_response(network_preview)
+                        or is_doubao_text_only_video_response(response_preview)
+                    ),
                     "video_creation_page_used": True,
                     "submitted_with_images": submitted_with_images,
                     "generation_wait_message_detected": marker_visible,

@@ -709,6 +709,38 @@ class DoubaoAutomationTests(unittest.TestCase):
             ("豆包仅返回文本，未提交视频生成", "text_only_response"),
         )
 
+    def test_observed_prompt_rewrites_and_completed_text_replies_are_text_only(self) -> None:
+        observed_replies = (
+            "# \u5b8c\u6574\u7248AI\u89c6\u9891\u4e00\u952e\u63d0\u793a\u8bcd\uff08\u53ef\u76f4\u63a5\u7c98\u8d34\u751f\u6210\uff09",
+            "# \u6b63\u5411\u63d0\u793a\u8bcd\uff0816:9\uff0c\u65f6\u957f10\u79d2\uff09\n# \u8d1f\u9762\u63d0\u793a\u8bcd",
+            "\u751f\u6210\u89c6\u9891\uff1a\u6e05\u6668\u7684\u6d77\u8fb9\u57ce\u5e02\uff0c16:9\uff0c10s",
+        )
+        for reply in observed_replies:
+            response = (
+                "event: CHUNK_DELTA\n"
+                f"data: {json.dumps({'text': reply}, ensure_ascii=False)}\n\n"
+                "event: SSE_REPLY_END\n"
+                f"data: {json.dumps({'msg_finish_attr': {'brief': reply}}, ensure_ascii=False)}\n\n"
+            )
+            with self.subTest(reply=reply):
+                self.assertTrue(is_doubao_text_only_video_response(response))
+                result = normalize_doubao_submission_acknowledgement({
+                    "ok": True,
+                    "accepted": False,
+                    "response_preview": response,
+                })
+                self.assertTrue(result["text_only_response"])
+                self.assertEqual(
+                    classify_doubao_submission(result),
+                    ("\u8c46\u5305\u4ec5\u8fd4\u56de\u6587\u672c\uff0c\u672a\u63d0\u4ea4\u89c6\u9891\u751f\u6210", "text_only_response"),
+                )
+
+        completed_without_brief = "event: SSE_REPLY_END\ndata: {}\n\n"
+        self.assertTrue(is_doubao_text_only_video_response(completed_without_brief))
+        self.assertFalse(is_doubao_text_only_video_response(
+            f"event: CHUNK_DELTA\ndata: {json.dumps({'text': DOUBAO_SUBMISSION_MARKER}, ensure_ascii=False)}\n\n"
+        ))
+
     def test_reference_upload_progress_must_disappear_before_submission(self) -> None:
         for text in ("参考图上传 29%", "76%", "100%", "正在上传", "图片处理中"):
             with self.subTest(text=text):

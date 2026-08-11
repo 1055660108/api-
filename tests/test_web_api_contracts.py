@@ -132,6 +132,20 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertEqual(main._client_safe_text("doubao generation acknowledgement missing", "Seedance 2.0", terminal=True), "生成接口繁忙请稍后重试！")
         self.assertEqual(main._client_safe_text("请选择勾选真人按钮并重试", "Seedance 2.0", terminal=True), "请选择勾选真人按钮并重试")
 
+    def test_client_hides_doubao_text_only_failure_details(self) -> None:
+        self.assertEqual(
+            main._client_safe_text(
+                "Seedance 2.0 Fast返回文本，未提交视频生成",
+                "Seedance 2.0 Fast",
+                terminal=True,
+            ),
+            "Seedance 2.0 Fast生成失败",
+        )
+        self.assertEqual(
+            main._client_safe_text("text_only_response", "Seedance 2.0 Fast", terminal=True),
+            "Seedance 2.0 Fast生成失败",
+        )
+
     def test_failed_region_task_never_displays_retrying_text(self) -> None:
         registered = self.register("failed_region_client")
         owner_hash = temp_access.hash_token(registered["token"])

@@ -19,6 +19,7 @@ from .config import account_quota_cost_units, load_settings, qianwen_ai_studio_q
 from .memory import reclaim_memory_after_task
 from .store import (
     claim_next_pending,
+    clear_transient_result,
     count_pending_tasks,
     can_run_task,
     defer_task,
@@ -40,6 +41,7 @@ from .store import (
     record_result_watch_miss,
     record_retry,
     record_infrastructure_retry,
+    retry_submitted_task,
     reset_running_tasks,
     set_execution_phase,
     set_active_tasks,
@@ -59,7 +61,7 @@ GENERATING_TEXT = "正在为您生成视频，请稍候...本次使用 Seedance 
 RUNNING_WATCH_GRACE_SECONDS = 90
 RESULT_WATCH_DEADLINE_MINUTES = 20
 DOUBAO_RESULT_WATCH_DEADLINE_MINUTES = 30
-QIANWEN_RESULT_WATCH_DEADLINE_MINUTES = 30
+QIANWEN_RESULT_WATCH_DEADLINE_MINUTES = 20
 RESULT_LONG_WAIT_SECONDS = 8 * 60
 RESULT_LOW_RATE_SECONDS = 15 * 60
 RESULT_MAX_TOTAL_WATCH_SECONDS = 30 * 60
@@ -673,7 +675,15 @@ class WorkerManager:
                         else:
                             settle_account_quota(account_id, str(result.get("account_quota_charge_id") or ""))
                         clear_account_current_task(account_id, task_id)
-                    timeout_reason = "生成超过30分钟，仍未返回结果" if platform in {"doubao", "qianwen"} else "生成超过20分钟，仍未返回结果"
+                        if platform == "qianwen":
+                            record_failed_account(task_id, account_id)
+                    timeout_reason = "千问生成超过20分钟，已更换账号重试" if platform == "qianwen" else "生成超过30分钟，仍未返回结果" if platform == "doubao" else "生成超过20分钟，仍未返回结果"
+                    if platform == "qianwen":
+                        update_meta(task_id, preferred_account_id="", qianwen_timeout_retry=True)
+                        retry_count = retry_submitted_task(task_id, timeout_reason, max_retries=task_retry_limit(), delay_seconds=5)
+                        if retry_count <= task_retry_limit():
+                            clear_transient_result(task_id)
+                            return
                     mark_failed(task_id, timeout_reason)
                     refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
                     late_until = submitted_at + timedelta(seconds=RESULT_MAX_TOTAL_WATCH_SECONDS)

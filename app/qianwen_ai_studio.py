@@ -191,10 +191,13 @@ def parse_qianwen_ai_studio_result(payload: Any) -> dict[str, Any]:
     candidates.sort(reverse=True)
     status = content.get("status", data.get("status", ""))
     error_text = str(content.get("error_msg") or data.get("errorMsg") or root.get("msg") or "").strip()
+    quota_insufficient = any(marker in error_text.lower() for marker in ("额度不足", "额度已用完", "credit not enough", "insufficient credit"))
     failed = status in {3, 4, "failed", "auditFailed"}
     failed = failed or any(marker in error_text.lower() for marker in ("失败", "违规", "审核", "failed", "audit"))
     if candidates:
         state = "succeeded"
+    elif quota_insufficient:
+        state = "quota_insufficient"
     elif failed:
         state = "failed"
     else:
@@ -209,6 +212,7 @@ def parse_qianwen_ai_studio_result(payload: Any) -> dict[str, Any]:
         "model": str(extra.get("model_name") or extra.get("model") or ""),
         "duration": int((extra.get("params") or {}).get("duration") or 0) if isinstance(extra.get("params"), dict) else 0,
         "ratio": str((extra.get("params") or {}).get("size") or "") if isinstance(extra.get("params"), dict) else "",
+        "quota_insufficient": quota_insufficient,
     }
 
 

@@ -2685,6 +2685,28 @@ class ReliabilityTests(unittest.TestCase):
         refund_owner.assert_not_called()
         self.assertEqual(store.load_result(task["id"])["account_id"], "account1")
 
+    def test_qianwen_twenty_minute_timeout_refunds_and_switches_account(self) -> None:
+        task = store.create_task("千问超时", "16:9", platform="qianwen", model="万相 2.7", owner_token_hash="owner")
+        store.mark_running(task["id"], "worker-qianwen")
+        store.save_result(task["id"], extra={"account_id": "qianwen-account", "account_quota_charge_id": "charge-1"})
+        store.mark_submitted(task["id"])
+        store.update_meta(task["id"], submitted_at=(datetime.now(timezone.utc) - timedelta(minutes=21)).isoformat())
+        manager = WorkerManager()
+
+        with patch("app.worker.refund_account_quota_once") as refund_account, patch(
+            "app.worker.clear_account_current_task"
+        ) as clear_account, patch("app.worker.record_failed_account") as failed_account, patch(
+            "app.worker.retry_submitted_task", return_value=1
+        ), patch("app.worker.clear_transient_result") as clear_result, patch("app.worker.refund_temp_quota_once") as refund_owner:
+            asyncio.run(manager._watch_unfinished_success_tasks([task["id"]]))
+
+        refund_account.assert_called_once_with(task["id"], "qianwen-account", "charge-1")
+        clear_account.assert_called_once_with("qianwen-account", task["id"])
+        failed_account.assert_called_once_with(task["id"], "qianwen-account")
+        clear_result.assert_called_once_with(task["id"])
+        refund_owner.assert_not_called()
+        self.assertEqual(store.get_meta(task["id"])["preferred_account_id"], "")
+
     def test_mark_submitted_defers_first_result_poll(self) -> None:
         task = self.create_task("owner")
         store.mark_running(task["id"], "worker-1")

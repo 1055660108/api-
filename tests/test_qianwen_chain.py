@@ -20,13 +20,14 @@ from app.qianwen_automation import (
     is_qianwen_ai_studio_redirect,
     is_qianwen_user_validation_error,
     is_qianwen_account_quota_insufficient,
+    is_qianwen_content_rejection,
     parse_qianwen_generation_result,
     parse_qianwen_submission,
     qianwen_cookie_value,
     qianwen_model_requires_reference,
     qianwen_request_post_data,
 )
-from app.query import retry_qianwen_text_only_result
+from app.query import fail_qianwen_content_rejection, retry_qianwen_quota_insufficient_result, retry_qianwen_text_only_result
 
 
 class QianwenSubmissionTests(unittest.TestCase):
@@ -278,6 +279,10 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertTrue(is_qianwen_account_quota_insufficient("额度不足 当前剩余 1 额度，不足以完成本次视频生成"))
         self.assertFalse(is_qianwen_account_quota_insufficient("视频生成已提交"))
 
+    def test_content_rejection_is_detected_separately_from_text_only_audit(self) -> None:
+        self.assertTrue(is_qianwen_content_rejection("当前内容无法生成，请修改后重试"))
+        self.assertFalse(is_qianwen_content_rejection("-ZS11403- input query audit rejected"))
+
     def test_ai_studio_text_video_payloads_use_native_model_keys(self) -> None:
         cases = {
             "HappyHorse 1.1": ("happyhorse11", "hh11_t2v"),
@@ -366,6 +371,33 @@ class QianwenSubmissionTests(unittest.TestCase):
 
 
 class QianwenResultTests(unittest.TestCase):
+    def test_content_rejection_keeps_backend_reason_and_maps_reference_client_reason(self) -> None:
+        meta = {"image_count": 1, "owner_token_hash": "owner"}
+        result = {"account_id": "account-1", "account_quota_charge_id": "charge-1"}
+        with patch("app.query.clear_account_current_task"), patch("app.query.refund_account_quota_once"), patch(
+            "app.query.mark_failed"
+        ) as mark_failed_mock, patch("app.query.update_meta") as update_meta_mock, patch("app.query.refund_temp_quota_once"):
+            response = fail_qianwen_content_rejection(
+                "task-1", meta, result, "当前内容无法生成，请修改后重试"
+            )
+        mark_failed_mock.assert_called_once_with("task-1", "当前内容无法生成，请修改后重试")
+        update_meta_mock.assert_called_once_with(
+            "task-1", client_error="参考图内容违规", qianwen_failure_category="content_rejected"
+        )
+        self.assertEqual(response["text"], "参考图内容违规")
+
+    def test_quota_insufficient_result_exhausts_account_and_requeues(self) -> None:
+        meta = {"owner_token_hash": "owner"}
+        result = {"account_id": "account-1", "account_quota_charge_id": "charge-1"}
+        with patch("app.query.exhaust_account_quota") as exhaust, patch(
+            "app.query.clear_account_current_task"
+        ), patch("app.query.update_meta"), patch("app.query.retry_submitted_task", return_value=1), patch(
+            "app.query.task_retry_limit", return_value=4
+        ), patch("app.query.clear_transient_result"):
+            response = retry_qianwen_quota_insufficient_result("task-1", meta, result, "额度不足")
+        exhaust.assert_called_once_with("account-1", "charge-1")
+        self.assertEqual(response["code"], "1")
+
     def test_first_text_only_result_retries_with_same_account_and_refunds_quota(self) -> None:
         meta = {"qianwen_text_only_retry_used": False, "owner_token_hash": "owner"}
         result = {"account_id": "account-1", "account_quota_charge_id": "charge-1"}
@@ -502,6 +534,11 @@ class QianwenResultTests(unittest.TestCase):
         parsed = parse_qianwen_generation_result({"data": {"result": nested, "error_code": 11003}})
         self.assertEqual(parsed["state"], "failed")
         self.assertIn(11003, parsed["error_codes"])
+
+    def test_quota_insufficient_result_is_not_treated_as_generating(self) -> None:
+        parsed = parse_qianwen_generation_result({"data": {"message": "额度不足，请购买获得更多额度"}})
+        self.assertEqual(parsed["state"], "quota_insufficient")
+        self.assertTrue(parsed["quota_insufficient"])
 
     def test_worker_watches_qianwen_submitted_tasks(self) -> None:
         root = Path(__file__).parents[1] / "app"

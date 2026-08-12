@@ -134,6 +134,47 @@ def retry_qianwen_text_only_result(
     return {"code": "0", "text": "千问模型生成失败", "url": ""}
 
 
+def retry_qianwen_quota_insufficient_result(
+    task_id: str,
+    meta: dict[str, Any],
+    result: dict[str, Any],
+    diagnostic: str,
+) -> dict[str, Any]:
+    account_id = str(result.get("account_id") or "")
+    charge_id = str(result.get("account_quota_charge_id") or "")
+    if account_id:
+        exhaust_account_quota(account_id, charge_id)
+        clear_account_current_task(account_id, task_id)
+    update_meta(task_id, preferred_account_id="")
+    reason = diagnostic or "千问账号额度不足"
+    retry_limit = task_retry_limit()
+    retry_count = retry_submitted_task(task_id, reason, max_retries=retry_limit, delay_seconds=5)
+    if retry_count <= retry_limit:
+        clear_transient_result(task_id)
+        return {"code": "1", "text": "正在更换账号重试，请稍等！", "url": "", "retry_after": 5}
+    refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+    return {"code": "0", "text": "千问模型生成失败", "url": ""}
+
+
+def fail_qianwen_content_rejection(
+    task_id: str,
+    meta: dict[str, Any],
+    result: dict[str, Any],
+    diagnostic: str,
+) -> dict[str, Any]:
+    account_id = str(result.get("account_id") or "")
+    charge_id = str(result.get("account_quota_charge_id") or "")
+    if account_id:
+        clear_account_current_task(account_id, task_id)
+        refund_account_quota_once(task_id, account_id, charge_id)
+    client_reason = "参考图内容违规" if int(meta.get("image_count") or 0) > 0 else "提示词输入违规"
+    backend_reason = diagnostic or "千问返回：当前内容无法生成，请修改后重试"
+    mark_failed(task_id, backend_reason[:500])
+    update_meta(task_id, client_error=client_reason, qianwen_failure_category="content_rejected")
+    refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+    return {"code": "0", "text": client_reason, "url": ""}
+
+
 RECENT_CONV_URL = (
     "https://www.dola.com/im/chain/recent_conv?"
     "version_code=20800&language=zh&device_platform=web&aid=495671&real_aid=495671"
@@ -1014,7 +1055,7 @@ async def _query_task_once(
             if meta.get("status") == "running":
                 return {"code": "1", "text": str(meta.get("status_reason") or "正在提交千问生成请求"), "url": ""}
             if meta.get("status") == STATUS_FAILED:
-                return {"code": "0", "text": str(meta.get("error") or "千问视频生成失败"), "url": ""}
+                return {"code": "0", "text": str(meta.get("client_error") or meta.get("error") or "千问视频生成失败"), "url": ""}
             return {"code": "1", "text": str(meta.get("status_reason") or "千问任务正在排队"), "url": ""}
         if not background_poll:
             return {"code": "1", "text": "千问正在生成视频，请稍候...", "url": ""}
@@ -1074,8 +1115,12 @@ async def _query_task_once(
             )
             account_id = str(result.get("account_id") or "")
             charge_id = str(result.get("account_quota_charge_id") or "")
-            from .qianwen_automation import is_qianwen_text_only_response
+            from .qianwen_automation import is_qianwen_account_quota_insufficient, is_qianwen_content_rejection, is_qianwen_text_only_response
 
+            if state == "quota_insufficient" or is_qianwen_account_quota_insufficient(text):
+                return retry_qianwen_quota_insufficient_result(task_id, meta, result, text)
+            if is_qianwen_content_rejection(text):
+                return fail_qianwen_content_rejection(task_id, meta, result, text)
             if is_qianwen_text_only_response(text):
                 return retry_qianwen_text_only_result(task_id, meta, result, text)
             if state == "succeeded":
@@ -1140,8 +1185,12 @@ async def _query_task_once(
         )
         account_id = str(result.get("account_id") or "")
         charge_id = str(result.get("account_quota_charge_id") or "")
-        from .qianwen_automation import is_qianwen_text_only_response
+        from .qianwen_automation import is_qianwen_account_quota_insufficient, is_qianwen_content_rejection, is_qianwen_text_only_response
 
+        if state == "quota_insufficient" or is_qianwen_account_quota_insufficient(text):
+            return retry_qianwen_quota_insufficient_result(task_id, meta, result, text)
+        if is_qianwen_content_rejection(text):
+            return fail_qianwen_content_rejection(task_id, meta, result, text)
         if is_qianwen_text_only_response(text):
             return retry_qianwen_text_only_result(task_id, meta, result, text)
         if state == "succeeded":

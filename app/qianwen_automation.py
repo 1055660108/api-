@@ -72,6 +72,13 @@ def is_qianwen_account_quota_insufficient(text: str) -> bool:
     )
 
 
+def is_qianwen_content_rejection(text: str) -> bool:
+    value = str(text or "").lower()
+    return any(marker in value for marker in (
+        "当前内容无法生成", "内容无法生成", "内容违规", "审核未通过",
+    ))
+
+
 def is_qianwen_chat_api_url(url: str) -> bool:
     value = str(url or "").strip().lower()
     return value.startswith((QIANWEN_CHAT_API_URL.lower(), QIANWEN_CHAT_SNAP_API_URL.lower()))
@@ -223,6 +230,7 @@ def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
     video_url = unwatermarked_candidates[0][2] if unwatermarked_candidates else ""
     text = "\n".join(dict.fromkeys(messages))[:2000]
     lowered_text = text.lower()
+    quota_insufficient = is_qianwen_account_quota_insufficient(text)
     failed = any(code not in {0} for code in error_codes)
     failed = failed or any(
         marker in lowered_text
@@ -236,6 +244,8 @@ def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
     failed = failed or 3 in numeric_statuses
     if video_url:
         state = "succeeded"
+    elif quota_insufficient:
+        state = "quota_insufficient"
     elif failed:
         state = "failed"
     else:
@@ -250,6 +260,7 @@ def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
         "task_ids": task_ids,
         "statuses": status_values[-20:],
         "error_codes": error_codes[-10:],
+        "quota_insufficient": quota_insufficient,
     }
 
 
@@ -672,6 +683,7 @@ class QianwenVideoAutomation:
         lowered = body.lower()
         user_validation_error = is_qianwen_user_validation_error(body, url)
         text_only_response = is_qianwen_text_only_response(body)
+        content_rejection = is_qianwen_content_rejection(body)
         if user_validation_error:
             self.remote_error = "user_validate"
         if response.status in {401, 403} or any(marker in lowered for marker in ("not login", "unauthorized", "登录失效")):
@@ -684,6 +696,8 @@ class QianwenVideoAutomation:
             self.remote_error = "model_unavailable"
         if text_only_response and not user_validation_error:
             self.remote_error = "text_only"
+        if content_rejection and not user_validation_error:
+            self.remote_error = "content_rejected"
         if submission:
             self.remote_submission = submission
             self.remote_session_id = str(submission.get("session_id") or "")
@@ -931,7 +945,7 @@ class QianwenVideoAutomation:
                         switch_account=True,
                     )
                 if self.remote_error:
-                    reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "user_validate": "qianwen user validation required", "model_unavailable": "qianwen model unavailable", "text_only": "qianwen returned text only; video was not submitted"}
+                    reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "user_validate": "qianwen user validation required", "model_unavailable": "qianwen model unavailable", "text_only": "qianwen returned text only; video was not submitted", "content_rejected": "千问返回：当前内容无法生成，请修改后重试"}
                     reason = reasons[self.remote_error]
                     await self._save_diagnostics(page, reason)
                     if self.remote_error == "user_validate":
@@ -950,6 +964,10 @@ class QianwenVideoAutomation:
                             return self._failure(reason, account_fault=False, retryable=True, qianwen_text_only=True)
                         update_meta(self.task_id, preferred_account_id="", qianwen_text_only_retry_used=False)
                         return self._failure(reason, account_fault=False, retryable=True, switch_account=True, qianwen_text_only=True)
+                    if self.remote_error == "content_rejected":
+                        client_reason = "参考图内容违规" if reference_paths else "提示词输入违规"
+                        update_meta(self.task_id, client_error=client_reason, qianwen_failure_category="content_rejected")
+                        return self._failure(reason, account_fault=False, retryable=False, content_rejected=True)
                     return self._failure(reason, account_fault=self.remote_error == "login", retryable=self.remote_error != "model_unavailable")
                 if not self.submission_event.is_set() or not self.remote_session_id or not self.remote_req_id:
                     await self._save_diagnostics(page, "submit not confirmed")

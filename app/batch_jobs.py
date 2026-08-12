@@ -378,14 +378,9 @@ def claim_next_row(owner_token_hash: str) -> dict[str, Any] | None:
         def mutate(current: dict[str, Any]):
             if str(current.get("status") or "") not in {"queued", "running"} or current.get("canceled_at"):
                 return None
-            if any(
-                str(item.get("status") or "") == "awaiting_assets"
-                for item in current.get("rows", [])
-                if isinstance(item, dict)
-            ):
-                return None
             now = datetime.now(timezone.utc)
             row = None
+            awaiting_row = None
             for item in current.get("rows", []):
                 if str(item.get("status") or "") != "queued":
                     continue
@@ -396,17 +391,18 @@ def claim_next_row(owner_token_hash: str) -> dict[str, Any] | None:
                 except Exception:
                     due = None
                 if not due or due <= now:
+                    if max(0, int(item.get("image_count") or 0)) > 0 and not bool(item.get("assets_ready") or item.get("image_files")):
+                        if awaiting_row is None:
+                            awaiting_row = item
+                        continue
                     row = item
                     break
+            if not row and awaiting_row:
+                awaiting_row.update(status="awaiting_assets", asset_requested_at=_now(), claimed_at="", error="")
+                current["status"] = "running"
+                return {"job": deepcopy(current), "row": deepcopy(awaiting_row), "awaiting_assets": True}
             if not row:
                 return None
-            if (
-                max(0, int(row.get("image_count") or 0)) > 0
-                and not bool(row.get("assets_ready") or row.get("image_files"))
-            ):
-                row.update(status="awaiting_assets", asset_requested_at=_now(), claimed_at="", error="")
-                current["status"] = "running"
-                return {"job": deepcopy(current), "row": deepcopy(row), "awaiting_assets": True}
             row.update(status="creating", claimed_at=_now(), next_attempt_at="", error="")
             current["status"] = "running"
             return {"job": deepcopy(current), "row": deepcopy(row)}

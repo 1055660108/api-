@@ -1010,6 +1010,29 @@ class WebAPIContractTests(unittest.TestCase):
         self.assertTrue(store.task_image_paths(task_id)[0].read_bytes().startswith(b"\xff\xd8\xff"))
         self.assertEqual(store.get_meta(task_id)["reference_image_names"], ["source.png"])
 
+    def test_persistent_batch_skips_missing_reference_row_and_creates_ready_row(self) -> None:
+        registered = self.register("skipmissing")
+        owner_hash = temp_access.hash_token(registered["token"])
+        temp_access.add_temp_credit_units(owner_hash, 20)
+        headers = {"X-API-Token": registered["token"]}
+        manifest = {
+            "ratio": "9:16",
+            "concurrency": 1,
+            "lazy_assets": True,
+            "rows": [
+                {"client_index": 0, "sheet_row": 2, "prompt": "缺图行", "image_count": 1},
+                {"client_index": 1, "sheet_row": 3, "prompt": "已就绪行", "image_count": 0},
+            ],
+        }
+        with patch.object(main, "batch_scheduler_tick", new=AsyncMock(return_value=False)):
+            created = self.client.post("/batch-prompts/jobs", headers=headers, data={"manifest": json.dumps(manifest, ensure_ascii=False)})
+            self.assertEqual(created.status_code, 201, created.text)
+            job_id = created.json()["job"]["id"]
+            claim = batch_jobs.claim_next_row(owner_hash)
+            self.assertFalse(claim.get("awaiting_assets", False))
+            self.assertEqual(claim["row"]["index"], 2)
+            self.assertEqual(batch_jobs.get_job(job_id, owner_hash)["rows"][0]["status"], "queued")
+
     def test_manual_reference_real_person_flag_defaults_off_and_persists_when_checked(self) -> None:
         registered = self.register("real_person_flag")
         owner_hash = temp_access.hash_token(registered["token"])

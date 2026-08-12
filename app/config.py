@@ -132,6 +132,10 @@ def default_config() -> dict[str, Any]:
         "dola_submit_interval_seconds": 5.0,
         "dola_global_submit_interval_seconds": 12.0,
         "qianwen_submit_interval_seconds": 5.0,
+        "qianwen_probe_enabled": False,
+        "qianwen_probe_collect_credit": True,
+        "qianwen_probe_interval_minutes": 60,
+        "qianwen_probe_daily_start": "00:00",
         # Kept to migrate settings written by releases before global pacing.
         "dola_exit_submit_interval_seconds": 8.0,
         "video_duration": 15,
@@ -384,6 +388,10 @@ class Settings:
     dola_submit_interval_seconds: float
     dola_global_submit_interval_seconds: float
     qianwen_submit_interval_seconds: float
+    qianwen_probe_enabled: bool
+    qianwen_probe_collect_credit: bool
+    qianwen_probe_interval_minutes: int
+    qianwen_probe_daily_start: str
     dola_exit_submit_interval_seconds: float
     video_duration: int
     max_image_count: int
@@ -447,6 +455,17 @@ def _as_bool(value: Any, default: bool) -> bool:
     if text in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _normalize_daily_start(value: Any) -> str:
+    text = str(value or "00:00").strip()
+    try:
+        hour, minute = (int(part) for part in text.split(":", 1))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    except (TypeError, ValueError):
+        pass
+    return "00:00"
 
 
 def load_settings() -> Settings:
@@ -600,6 +619,10 @@ def load_settings() -> Settings:
         dola_submit_interval_seconds=max(1.0, min(5.0, float(data.get("dola_submit_interval_seconds") or 5.0))),
         dola_global_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_global_submit_interval_seconds") or 12.0))),
         qianwen_submit_interval_seconds=max(1.0, min(30.0, float(data.get("qianwen_submit_interval_seconds") or 5.0))),
+        qianwen_probe_enabled=_as_bool(data.get("qianwen_probe_enabled"), False),
+        qianwen_probe_collect_credit=_as_bool(data.get("qianwen_probe_collect_credit"), True),
+        qianwen_probe_interval_minutes=max(5, min(1440, int(data.get("qianwen_probe_interval_minutes") or 60))),
+        qianwen_probe_daily_start=_normalize_daily_start(data.get("qianwen_probe_daily_start")),
         dola_exit_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_exit_submit_interval_seconds") or 8.0))),
         video_duration=max(1, int(data.get("video_duration") or 15)),
         max_image_count=max(0, min(9, int(data.get("max_image_count") or 9))),

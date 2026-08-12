@@ -542,6 +542,22 @@ const els = {
   cancelAccountQuotaSettings: document.getElementById("cancelAccountQuotaSettings"),
   saveAccountQuotaSettings: document.getElementById("saveAccountQuotaSettings"),
   accountQuotaConfigList: document.getElementById("accountQuotaConfigList"),
+  openQianwenProbe: document.getElementById("openQianwenProbe"),
+  qianwenProbeModal: document.getElementById("qianwenProbeModal"),
+  closeQianwenProbe: document.getElementById("closeQianwenProbe"),
+  cancelQianwenProbe: document.getElementById("cancelQianwenProbe"),
+  saveQianwenProbe: document.getElementById("saveQianwenProbe"),
+  runQianwenProbe: document.getElementById("runQianwenProbe"),
+  stopQianwenProbe: document.getElementById("stopQianwenProbe"),
+  qianwenProbeEnabled: document.getElementById("qianwenProbeEnabled"),
+  qianwenProbeDailyStart: document.getElementById("qianwenProbeDailyStart"),
+  qianwenProbeInterval: document.getElementById("qianwenProbeInterval"),
+  qianwenProbeCollectCredit: document.getElementById("qianwenProbeCollectCredit"),
+  qianwenProbeState: document.getElementById("qianwenProbeState"),
+  qianwenProbeCount: document.getElementById("qianwenProbeCount"),
+  qianwenProbeProgressBar: document.getElementById("qianwenProbeProgressBar"),
+  qianwenProbeCurrent: document.getElementById("qianwenProbeCurrent"),
+  qianwenProbeReason: document.getElementById("qianwenProbeReason"),
   openAccountDeletionHistory: document.getElementById("openAccountDeletionHistory"),
   accountDeletionHistoryModal: document.getElementById("accountDeletionHistoryModal"),
   closeAccountDeletionHistory: document.getElementById("closeAccountDeletionHistory"),
@@ -752,6 +768,8 @@ const state = {
   accountStatusFilter: "all",
   accountPage: 1,
   accountPageSize: 20,
+  qianwenProbeTimer: 0,
+  qianwenProbeLastCompleted: -1,
   accountAccessConfigured: false,
   accountAccessEnabled: false,
   invitationPage: 1,
@@ -3933,6 +3951,75 @@ async function refreshAccounts(options = {}) {
       state.accountRefreshPending = false;
       refreshAccounts({ quiet: true }).catch(() => {});
     }
+  }
+}
+
+function closeQianwenProbeModal() {
+  els.qianwenProbeModal?.classList.add("hidden");
+  els.qianwenProbeModal?.setAttribute("aria-hidden", "true");
+  if (state.qianwenProbeTimer) {
+    clearInterval(state.qianwenProbeTimer);
+    state.qianwenProbeTimer = 0;
+  }
+}
+
+function renderQianwenProbeStatus(data = {}) {
+  const total = Number(data.total || 0);
+  const completed = Number(data.completed || 0);
+  const running = Boolean(data.running || data.active);
+  const percent = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+  if (els.qianwenProbeEnabled) els.qianwenProbeEnabled.value = String(Boolean(data.enabled));
+  if (els.qianwenProbeCollectCredit) els.qianwenProbeCollectCredit.value = String(data.collect_credit !== false);
+  if (els.qianwenProbeDailyStart) els.qianwenProbeDailyStart.value = String(data.daily_start || "00:00");
+  if (els.qianwenProbeInterval) els.qianwenProbeInterval.value = String(Number(data.interval_minutes || 60));
+  if (els.qianwenProbeState) els.qianwenProbeState.textContent = running ? `测活中 · 登录正常 ${Number(data.success || 0)} · 登录失效/异常 ${Number(data.failed || 0)} · 积分失败 ${Number(data.credit_failed || 0)}` : String(data.current_state || (data.last_completed_at ? "已完成" : "未开始"));
+  if (els.qianwenProbeCount) els.qianwenProbeCount.textContent = `${completed} / ${total}`;
+  if (els.qianwenProbeProgressBar) els.qianwenProbeProgressBar.style.width = `${percent}%`;
+  if (els.qianwenProbeCurrent) els.qianwenProbeCurrent.textContent = data.current_account_id ? `当前账号：${data.current_account_name || data.current_account_id}（${data.current_state || "检查中"}）` : (running ? "正在准备下一个账号" : "当前没有正在测活的账号");
+  if (els.qianwenProbeReason) els.qianwenProbeReason.textContent = data.last_reason ? `最近结果：${data.last_reason}` : "";
+  if (els.stopQianwenProbe) els.stopQianwenProbe.disabled = !running;
+  if (els.runQianwenProbe) els.runQianwenProbe.disabled = running;
+}
+
+async function refreshQianwenProbeStatus() {
+  if (portal !== "admin" || !els.qianwenProbeModal) return;
+  try {
+    const data = await apiFetch("/admin/qianwen-probe");
+    renderQianwenProbeStatus(data);
+    const completed = Number(data.completed || 0);
+    if (completed !== state.qianwenProbeLastCompleted) {
+      state.qianwenProbeLastCompleted = completed;
+      refreshAccounts({ quiet: true }).catch(() => {});
+    }
+  } catch (error) {
+    if (els.qianwenProbeReason) els.qianwenProbeReason.textContent = `读取测活状态失败：${error.message}`;
+  }
+}
+
+async function openQianwenProbeModal() {
+  if (portal !== "admin" || !els.qianwenProbeModal) return;
+  state.qianwenProbeLastCompleted = -1;
+  els.qianwenProbeModal.classList.remove("hidden");
+  els.qianwenProbeModal.setAttribute("aria-hidden", "false");
+  await refreshQianwenProbeStatus();
+  if (!state.qianwenProbeTimer) state.qianwenProbeTimer = setInterval(() => refreshQianwenProbeStatus(), 2000);
+}
+
+async function saveQianwenProbeSettings(action = "save") {
+  const enabled = els.qianwenProbeEnabled?.value === "true";
+  const collectCredit = els.qianwenProbeCollectCredit?.value !== "false";
+  const intervalMinutes = Number.parseInt(els.qianwenProbeInterval?.value || "", 10);
+  const dailyStart = String(els.qianwenProbeDailyStart?.value || "00:00");
+  if (!Number.isInteger(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 1440) return toast("轮询间隔需为 5 - 1440 分钟", "error");
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(dailyStart)) return toast("开始时间格式必须为 HH:MM", "error");
+  try {
+    const data = await apiFetch("/admin/qianwen-probe", { method: "POST", body: { enabled, collect_credit: collectCredit, interval_minutes: intervalMinutes, daily_start: dailyStart, action } });
+    renderQianwenProbeStatus(data);
+    if (action === "run_now") toast("千问测活已开始");
+    else if (action === "stop") toast("千问测活已停止");
+    else toast("千问测活设置已保存");
+  } catch (error) {
+    toast(`保存测活设置失败：${error.message}`, "error");
   }
 }
 
@@ -8178,6 +8265,13 @@ function bindEvents() {
   els.refreshAccounts?.addEventListener("click", () => refreshAccounts());
   els.openAccountDeletionHistory?.addEventListener("click", openAccountDeletionHistory);
   els.openAccountQuotaSettings?.addEventListener("click", openAccountQuotaSettings);
+  els.openQianwenProbe?.addEventListener("click", openQianwenProbeModal);
+  els.closeQianwenProbe?.addEventListener("click", closeQianwenProbeModal);
+  els.cancelQianwenProbe?.addEventListener("click", closeQianwenProbeModal);
+  els.qianwenProbeModal?.addEventListener("click", (event) => { if (event.target === els.qianwenProbeModal) closeQianwenProbeModal(); });
+  els.saveQianwenProbe?.addEventListener("click", () => saveQianwenProbeSettings("save"));
+  els.runQianwenProbe?.addEventListener("click", () => saveQianwenProbeSettings("run_now"));
+  els.stopQianwenProbe?.addEventListener("click", () => saveQianwenProbeSettings("stop"));
   els.saveAccountQuotaSettings?.addEventListener("click", saveAccountQuotaSettings);
   els.closeAccountDeletionHistory?.addEventListener("click", closeAccountDeletionHistory);
   els.confirmAccountDeletionHistory?.addEventListener("click", closeAccountDeletionHistory);

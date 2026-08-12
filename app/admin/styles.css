@@ -992,6 +992,14 @@ body[data-portal="client"] .login-heading h1 {
   100% { filter: hue-rotate(22deg); opacity: 0.72; }
 }
 
+.qianwen-probe-modal { width: min(720px, calc(100vw - 32px)); }
+.qianwen-probe-fields { margin: 20px 0; }
+.qianwen-probe-progress { padding: 16px; background: #f7f9fa; border: 1px solid var(--line); border-radius: 8px; }
+.qianwen-probe-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.qianwen-probe-progress p { margin: 10px 0 0; }
+.progress-track { height: 8px; margin-top: 12px; overflow: hidden; background: #e2e8ee; border-radius: 4px; }
+.progress-track span { display: block; width: 0; height: 100%; background: var(--brand); transition: width 180ms ease; }
+
 @media (prefers-reduced-motion: reduce) {
   body[data-portal="client"] .login-light-field span,
   body[data-portal="client"] .login-panel::before {

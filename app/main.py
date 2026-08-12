@@ -75,6 +75,7 @@ from .query import query_task
 from .reference_images import compress_reference_image
 from .qianwen_models import fetch_qianwen_video_models
 from .qianwen_ai_studio import qianwen_ai_studio_model
+from .qianwen_probe import QianwenProbeManager
 from .platform_model_sync import fetch_platform_video_models
 from .proxy_manager import activate_mihomo_node, fetch_proxy_from_api, fetch_subscription_node_list, measure_node_delays, node_payload, probe_dola_proxy, rebuild_mihomo_from_snapshot
 from .resilience import PlatformGuard, adaptive_worker_limit, fair_owner_capacity_limits, queue_admission
@@ -645,6 +646,7 @@ account_cleanup_task = None
 task_cache_cleanup_task = None
 proxy_health_task = None
 resource_alert_task = None
+qianwen_probe_manager: QianwenProbeManager | None = None
 LOCAL_TZ = timezone(timedelta(hours=8))
 
 
@@ -1171,7 +1173,7 @@ async def batch_scheduler_loop() -> None:
 async def lifespan(app: FastAPI):
     import asyncio
 
-    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, account_cleanup_task, task_cache_cleanup_task, proxy_health_task, resource_alert_task, batch_scheduler_task, _ACCOUNT_LIST_MAINTENANCE_AT
+    global create_sem, query_sem, list_sem, delete_sem, quota_reset_task, account_cleanup_task, task_cache_cleanup_task, proxy_health_task, resource_alert_task, batch_scheduler_task, qianwen_probe_manager, _ACCOUNT_LIST_MAINTENANCE_AT
     with _RATE_LOCK:
         _RATE_BUCKETS.clear()
     clear_registration_security_state()
@@ -1217,6 +1219,8 @@ async def lifespan(app: FastAPI):
     proxy_health_task = asyncio.create_task(proxy_health_loop())
     resource_alert_task = asyncio.create_task(resource_alert_loop())
     batch_scheduler_task = asyncio.create_task(batch_scheduler_loop())
+    qianwen_probe_manager = QianwenProbeManager()
+    qianwen_probe_manager.start_scheduler()
     try:
         yield
     finally:
@@ -1245,6 +1249,9 @@ async def lifespan(app: FastAPI):
             batch_scheduler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await batch_scheduler_task
+        if qianwen_probe_manager:
+            await qianwen_probe_manager.stop_scheduler()
+            qianwen_probe_manager = None
         _OWNER_CREATE_SEMAPHORES.clear()
 
 
@@ -4528,6 +4535,63 @@ async def account_access_update_account(
         reference_id=str(account.get("id") or ""),
     )
     return {"ok": True, "account": _account_access_public_account(account)}
+
+
+@app.get("/admin/qianwen-probe", dependencies=[Depends(require_admin)])
+async def qianwen_probe_status():
+    if qianwen_probe_manager is None:
+        return {"ok": True, "running": False, "active": False, **_qianwen_probe_settings_payload()}
+    return {"ok": True, **qianwen_probe_manager.snapshot()}
+
+
+def _qianwen_probe_settings_payload() -> dict[str, object]:
+    settings = load_settings()
+    return {
+        "enabled": settings.qianwen_probe_enabled,
+        "collect_credit": settings.qianwen_probe_collect_credit,
+        "interval_minutes": settings.qianwen_probe_interval_minutes,
+        "daily_start": settings.qianwen_probe_daily_start,
+    }
+
+
+@app.post("/admin/qianwen-probe", dependencies=[Depends(require_admin)])
+async def update_qianwen_probe(request: Request):
+    payload = await _request_payload(request)
+    settings = load_settings()
+    enabled = payload.get("enabled", settings.qianwen_probe_enabled)
+    collect_credit = payload.get("collect_credit", settings.qianwen_probe_collect_credit)
+    try:
+        interval_minutes = int(payload.get("interval_minutes", settings.qianwen_probe_interval_minutes))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="interval_minutes must be an integer")
+    daily_start = str(payload.get("daily_start", settings.qianwen_probe_daily_start) or "00:00").strip()
+    if not isinstance(enabled, bool) or not isinstance(collect_credit, bool):
+        raise HTTPException(status_code=400, detail="enabled and collect_credit must be boolean")
+    if interval_minutes < 5 or interval_minutes > 1440:
+        raise HTTPException(status_code=400, detail="interval_minutes must be between 5 and 1440")
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", daily_start):
+        raise HTTPException(status_code=400, detail="daily_start must use HH:MM")
+    update_config({
+        "qianwen_probe_enabled": enabled,
+        "qianwen_probe_collect_credit": collect_credit,
+        "qianwen_probe_interval_minutes": interval_minutes,
+        "qianwen_probe_daily_start": daily_start,
+    })
+    action = str(payload.get("action") or "").strip().lower()
+    if qianwen_probe_manager is not None:
+        if action in {"stop", "cancel"}:
+            await qianwen_probe_manager.stop_now()
+        elif action in {"start", "run_now"}:
+            await qianwen_probe_manager.start_now(collect_credit=collect_credit)
+    status = qianwen_probe_manager.snapshot() if qianwen_probe_manager is not None else _qianwen_probe_settings_payload()
+    await _record_admin_action_safe(
+        "qianwen_probe_update",
+        "千问测活设置",
+        detail=f"启用={enabled}；领取积分={collect_credit}；间隔={interval_minutes}分钟；开始={daily_start}；操作={action or 'save'}",
+        actor=load_settings().admin_username,
+        ip_address=_request_client_key(request),
+    )
+    return {"ok": True, **status}
 
 
 @app.get("/accounts", dependencies=[Depends(require_admin)])

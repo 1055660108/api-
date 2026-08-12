@@ -1436,12 +1436,18 @@ def claim_account_for_worker(
         return None
 
 
-def claim_account_for_maintenance(worker_id: str, platform: str) -> dict[str, Any] | None:
+def claim_account_for_maintenance(
+    worker_id: str,
+    platform: str,
+    *,
+    preferred_id: str = "",
+    exclude_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
     with _ACCOUNTS_LOCK:
         if postgres.enabled():
             def mutate(data: dict[str, Any]) -> dict[str, Any] | None:
                 accounts = data.get("accounts") or []
-                selected = _select_account(accounts, platform=platform)
+                selected = _select_account(accounts, platform=platform, preferred_id=preferred_id, exclude_ids=exclude_ids)
                 if not selected:
                     return None
                 now = utc_now()
@@ -1453,7 +1459,7 @@ def claim_account_for_maintenance(worker_id: str, platform: str) -> dict[str, An
 
             return postgres.mutate_document("accounts", {"accounts": []}, mutate)
         data = _read_data()
-        selected = _select_account(data["accounts"], platform=platform)
+        selected = _select_account(data["accounts"], platform=platform, preferred_id=preferred_id, exclude_ids=exclude_ids)
         if not selected:
             return None
         now = utc_now()

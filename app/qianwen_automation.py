@@ -894,6 +894,10 @@ class QianwenVideoAutomation:
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
+                if self.submission_pacer is not None:
+                    await self.submission_pacer()
+                if task_exists(self.task_id) and is_task_canceled(self.task_id):
+                    return {"success": False, "retryable": False, "reason": "用户取消生成"}
                 await send_button.click(force=True)
                 try:
                     await asyncio.wait_for(self.submission_request_event.wait(), timeout=3)

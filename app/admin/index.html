@@ -304,8 +304,8 @@
                 <div class="settings-card-value"><div><span>已启用模型</span><strong id="modelConfigDisplay">等待读取</strong></div><button class="primary-button" id="openModelModal" type="button">编辑模型</button></div>
               </section>
               <section class="panel config-panel" id="runtimeConfigPanel">
-                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="timer" aria-hidden="true"></i></span><h2>全局提交间隔</h2><p>Dola 与千问分别使用独立节流器，可按平台调整任务提交间隔。</p></div><span class="settings-state" id="runtimeConfigState">等待读取</span></div>
-                <form class="runtime-config-form" id="runtimeConfigForm"><label class="field"><span>Dola 全局间隔秒数</span><input id="dolaSubmitInterval" type="number" min="3" max="30" step="0.5" value="8" /></label><label class="field"><span>千问提交间隔秒数</span><input id="qianwenSubmitInterval" type="number" min="1" max="30" step="0.5" value="5" /></label><label class="field"><span>最大换号次数</span><input id="taskRetryLimit" type="number" min="0" max="10" step="1" value="2" /></label><label class="field"><span>豆包单号重发次数</span><input id="doubaoSubmitRetryLimit" type="number" min="0" max="10" step="1" value="2" /></label><label class="field"><span>批量历史保留天数</span><input id="batchHistoryRetentionDays" type="number" min="7" max="30" step="1" value="30" /></label><button class="primary-button" id="saveRuntimeConfig" type="submit">保存设置</button></form>
+                <div class="settings-card-header"><div><span class="settings-icon"><i data-lucide="timer" aria-hidden="true"></i></span><h2>全局提交间隔</h2><p>Dola、千问和豆包分别按各自间隔节流，代理 IP 不同也不会绕过提交间隔。</p></div><span class="settings-state" id="runtimeConfigState">等待读取</span></div>
+                <form class="runtime-config-form" id="runtimeConfigForm"><label class="field"><span>Dola 全局间隔秒数</span><input id="dolaSubmitInterval" type="number" min="3" max="30" step="0.5" value="12" /></label><label class="field"><span>千问任务提交间隔秒数</span><input id="qianwenSubmitInterval" type="number" min="1" max="30" step="0.5" value="5" /></label><label class="field"><span>最大换号次数</span><input id="taskRetryLimit" type="number" min="0" max="10" step="1" value="2" /></label><label class="field"><span>豆包单号重发次数</span><input id="doubaoSubmitRetryLimit" type="number" min="0" max="10" step="1" value="2" /></label><label class="field"><span>批量历史保留天数</span><input id="batchHistoryRetentionDays" type="number" min="7" max="30" step="1" value="30" /></label><button class="primary-button" id="saveRuntimeConfig" type="submit">保存设置</button></form>
               </section>
               <section class="panel config-panel" id="packageConfigPanel">
                 <div class="settings-card-header"><div><span class="settings-icon">◫</span><h2>积分套餐</h2><p>新增、调整、上架或停用客户端展示的积分套餐。</p></div><span class="settings-state" id="packageConfigState">等待读取</span></div>
@@ -709,6 +709,7 @@
                 <span class="quota-reset-countdown" id="accountResetCountdown">清零倒计时 --:--:--</span>
                 <button class="secondary-button icon-text-button" id="openAccountDeletionHistory" type="button"><i data-lucide="history" aria-hidden="true"></i>删除详情</button>
                 <button class="secondary-button icon-text-button" id="openAccountQuotaSettings" type="button"><i data-lucide="gauge" aria-hidden="true"></i>额度设定</button>
+                <button class="secondary-button icon-text-button" id="openQianwenProbe" type="button"><i data-lucide="activity" aria-hidden="true"></i>千问测活</button>
                 <button class="secondary-button" id="refreshAccounts" type="button">刷新</button>
               </div>
             </div>
@@ -1264,6 +1265,19 @@
         <div class="modal-header model-modal-header"><div><h2 id="accountQuotaSettingsTitle">账号额度设定</h2><p>设置平台账号每日额度，并分别配置千问账号与千问 AI Studio 的消耗规则。</p></div><button class="modal-close" id="closeAccountQuotaSettings" type="button" aria-label="关闭">×</button></div>
         <div class="model-config-list account-quota-config-list" id="accountQuotaConfigList"></div>
         <div class="modal-actions model-modal-actions"><span>保存后同步更新号池账号的两套每日额度</span><button class="secondary-button" id="cancelAccountQuotaSettings" type="button">取消</button><button class="primary-button" id="saveAccountQuotaSettings" type="button">保存额度设定</button></div>
+      </section>
+    </div>
+    <div class="modal-backdrop hidden" id="qianwenProbeModal" aria-hidden="true">
+      <section class="modal-panel qianwen-probe-modal" role="dialog" aria-modal="true" aria-labelledby="qianwenProbeTitle">
+        <div class="modal-header"><div><h2 id="qianwenProbeTitle">千问测活</h2><p>测活会跳过正在执行任务的账号，不占用视频任务队列；明确登录失效才会标记账号异常。</p></div><button class="modal-close" id="closeQianwenProbe" type="button" aria-label="关闭">×</button></div>
+        <div class="compact-form-grid qianwen-probe-fields">
+          <label class="field"><span>每日自动测活</span><select id="qianwenProbeEnabled"><option value="true">启用</option><option value="false">停用</option></select></label>
+          <label class="field"><span>测活开始时间</span><input id="qianwenProbeDailyStart" type="time" value="00:00" /></label>
+          <label class="field"><span>轮询间隔（分钟）</span><input id="qianwenProbeInterval" type="number" min="5" max="1440" step="5" value="60" /></label>
+          <label class="field"><span>AI Studio 积分</span><select id="qianwenProbeCollectCredit"><option value="true">测活并领取</option><option value="false">仅测活</option></select></label>
+        </div>
+        <div class="qianwen-probe-progress" id="qianwenProbeProgress"><div class="qianwen-probe-progress-head"><strong id="qianwenProbeState">未开始</strong><span id="qianwenProbeCount">0 / 0</span></div><div class="progress-track"><span id="qianwenProbeProgressBar"></span></div><p id="qianwenProbeCurrent">当前没有正在测活的账号</p><p class="muted" id="qianwenProbeReason"></p></div>
+        <div class="modal-actions"><button class="secondary-button" id="cancelQianwenProbe" type="button">关闭</button><button class="secondary-button" id="stopQianwenProbe" type="button">停止测活</button><button class="primary-button" id="saveQianwenProbe" type="button">保存设置</button><button class="primary-button" id="runQianwenProbe" type="button">立即开始</button></div>
       </section>
     </div>
     <div class="modal-backdrop hidden elevated-modal" id="announcementExemptModal" aria-hidden="true">

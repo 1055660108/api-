@@ -514,6 +514,31 @@ class WebAPIContractTests(unittest.TestCase):
         for invalid in (6, 31, "invalid"):
             self.assertEqual(self.client.post("/config/runtime", json={"batch_history_retention_days": invalid}).status_code, 400)
 
+    def test_qianwen_probe_settings_are_admin_only_persistent_and_validated(self) -> None:
+        self.assertEqual(self.client.get("/admin/qianwen-probe").status_code, 403)
+        self.login_admin()
+        current = self.client.get("/admin/qianwen-probe")
+        self.assertEqual(current.status_code, 200)
+        self.assertFalse(current.json()["enabled"])
+        self.assertTrue(current.json()["collect_credit"])
+        self.assertEqual(current.json()["interval_minutes"], 60)
+        self.assertEqual(current.json()["daily_start"], "00:00")
+
+        updated = self.client.post("/admin/qianwen-probe", json={
+            "enabled": True,
+            "collect_credit": False,
+            "interval_minutes": 30,
+            "daily_start": "03:15",
+            "action": "save",
+        })
+        self.assertEqual(updated.status_code, 200)
+        self.assertTrue(config.load_settings().qianwen_probe_enabled)
+        self.assertFalse(config.load_settings().qianwen_probe_collect_credit)
+        self.assertEqual(config.load_settings().qianwen_probe_interval_minutes, 30)
+        self.assertEqual(config.load_settings().qianwen_probe_daily_start, "03:15")
+        for payload in ({"interval_minutes": 4}, {"interval_minutes": 1441}, {"daily_start": "24:00"}):
+            self.assertEqual(self.client.post("/admin/qianwen-probe", json=payload).status_code, 400)
+
     def test_batch_history_cleanup_removes_only_expired_terminal_jobs(self) -> None:
         old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
         with patch.object(batch_jobs, "_now", return_value=old):

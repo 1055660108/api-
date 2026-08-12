@@ -491,6 +491,22 @@ class AdminUITests(unittest.TestCase):
         self.assertIn('qianwen_ai_studio_credit_synced_at', self.javascript)
         self.assertIn('今日首次使用时自动领取并同步', self.javascript)
 
+    def test_qianwen_probe_modal_and_progress_are_bound(self) -> None:
+        for element_id in (
+            "openQianwenProbe",
+            "qianwenProbeModal",
+            "qianwenProbeDailyStart",
+            "qianwenProbeInterval",
+            "qianwenProbeCollectCredit",
+            "qianwenProbeProgressBar",
+            "runQianwenProbe",
+            "stopQianwenProbe",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn('apiFetch("/admin/qianwen-probe")', self.javascript)
+        self.assertIn('apiFetch("/admin/qianwen-probe", { method: "POST"', self.javascript)
+        self.assertIn("setInterval(() => refreshQianwenProbeStatus(), 2000)", self.javascript)
+
     def test_account_selection_mode_control_is_bound(self) -> None:
         self.assertIn('id="accountSelectionMode"', self.html)
         for mode in ("api_first", "admin_first", "random"):

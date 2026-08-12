@@ -280,8 +280,10 @@ class QianwenAIStudioAutomation:
         self,
         cookies: list[dict[str, Any]],
         _submission_proxy_config: dict[str, str] | None,
+        *,
+        force: bool = False,
     ) -> dict[str, Any]:
-        if str(self.account.get("qianwen_ai_studio_credit_sync_date") or "") == local_today():
+        if not force and str(self.account.get("qianwen_ai_studio_credit_sync_date") or "") == local_today():
             return {"ok": True, "skipped": True}
         credit_event = asyncio.Event()
         credit_payload: dict[str, int] = {}
@@ -437,6 +439,10 @@ class QianwenAIStudioAutomation:
             if not begin_task_submission(self.task_id):
                 canceled = is_task_canceled(self.task_id)
                 return self._failure("用户取消生成" if canceled else "任务提交状态已变化，正在重试", retryable=not canceled)
+            if self.submission_pacer is not None:
+                await self.submission_pacer()
+            if task_exists(self.task_id) and is_task_canceled(self.task_id):
+                return self._failure("用户取消生成", retryable=False)
             async with httpx.AsyncClient(**options) as client:
                 for attempt in range(1, QIANWEN_AI_STUDIO_CONNECT_ATTEMPTS + 1):
                     try:

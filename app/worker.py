@@ -184,7 +184,8 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
         return
     clear_account_current_task(account_id, task_id)
     if outcome.get("switch_account"):
-        record_failed_account(task_id, account_id)
+        if not outcome.get("qianwen_text_only"):
+            record_failed_account(task_id, account_id)
         update_meta(task_id, preferred_account_id="")
     cooldown_seconds = max(0, int(outcome.get("account_cooldown_seconds") or 0))
     if cooldown_seconds:
@@ -211,7 +212,7 @@ def release_account_after_retryable_failure(task_id: str, account: dict, platfor
         return
     if outcome.get("infrastructure_fault"):
         refund_account_quota_once(task_id, account_id, str(account.get("quota_charge_id") or ""))
-    elif outcome.get("account_fault"):
+    elif outcome.get("account_fault") and not outcome.get("qianwen_text_only"):
         record_failed_account(task_id, account_id)
     if should_consume_retry_account_quota(outcome):
         consume_failed_account_quota(task_id, account, platform)

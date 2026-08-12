@@ -26,6 +26,7 @@ from app.qianwen_automation import (
     qianwen_model_requires_reference,
     qianwen_request_post_data,
 )
+from app.query import retry_qianwen_text_only_result
 
 
 class QianwenSubmissionTests(unittest.TestCase):
@@ -65,6 +66,13 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertTrue(is_qianwen_user_validation_error('{"ret":["FAIL_SYS_USER_VALIDATE","RGV587_ERROR::SM"]}'))
         self.assertTrue(is_qianwen_user_validation_error("", "https://chat2.qianwen.com/punish?action=captcha"))
         self.assertFalse(is_qianwen_user_validation_error('{"ok":true}', "https://chat2.qianwen.com/api/v2/chat"))
+
+    def test_text_only_response_is_detected(self) -> None:
+        from app.qianwen_automation import is_qianwen_text_only_response
+
+        self.assertTrue(is_qianwen_text_only_response("抱歉，我无法回答这个问题。我们聊聊别的吧。"))
+        self.assertTrue(is_qianwen_text_only_response("-ZS11403- input query audit rejected"))
+        self.assertFalse(is_qianwen_text_only_response("视频生成已提交"))
 
     def test_ai_studio_missing_ticket_is_an_account_login_failure(self) -> None:
         runner = self._studio_runner([{"name": "XSRF-TOKEN", "value": "xsrf-value"}])
@@ -358,6 +366,43 @@ class QianwenSubmissionTests(unittest.TestCase):
 
 
 class QianwenResultTests(unittest.TestCase):
+    def test_first_text_only_result_retries_with_same_account_and_refunds_quota(self) -> None:
+        meta = {"qianwen_text_only_retry_used": False, "owner_token_hash": "owner"}
+        result = {"account_id": "account-1", "account_quota_charge_id": "charge-1"}
+
+        with patch("app.query.clear_account_current_task") as clear_account, patch(
+            "app.query.refund_account_quota_once"
+        ) as refund_account, patch("app.query.update_meta") as update_meta_mock, patch(
+            "app.query.retry_submitted_task", return_value=1
+        ), patch("app.query.task_retry_limit", return_value=4), patch("app.query.clear_transient_result"):
+            response = retry_qianwen_text_only_result("task-1", meta, result, "input query audit rejected")
+
+        clear_account.assert_called_once_with("account-1", "task-1")
+        refund_account.assert_called_once_with("task-1", "account-1", "charge-1")
+        update_meta_mock.assert_called_once_with(
+            "task-1", preferred_account_id="account-1", qianwen_text_only_retry_used=True
+        )
+        self.assertEqual(response["code"], "1")
+
+    def test_second_text_only_result_switches_account_without_marking_it_failed(self) -> None:
+        meta = {"qianwen_text_only_retry_used": True, "owner_token_hash": "owner"}
+        result = {"account_id": "account-1", "account_quota_charge_id": "charge-2"}
+
+        with patch("app.query.clear_account_current_task"), patch(
+            "app.query.refund_account_quota_once"
+        ), patch("app.query.update_meta") as update_meta_mock, patch(
+            "app.query.retry_submitted_task", return_value=2
+        ), patch("app.query.task_retry_limit", return_value=4), patch(
+            "app.query.clear_transient_result"
+        ), patch("app.query.record_failed_account") as record_failed:
+            response = retry_qianwen_text_only_result("task-1", meta, result, "安审拒绝")
+
+        update_meta_mock.assert_called_once_with(
+            "task-1", preferred_account_id="", qianwen_text_only_retry_used=False
+        )
+        record_failed.assert_not_called()
+        self.assertEqual(response["code"], "1")
+
     def test_ai_studio_result_prefers_original_oss_url(self) -> None:
         payload = {
             "code": 0,

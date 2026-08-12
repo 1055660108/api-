@@ -19,9 +19,27 @@ from .accounts import (
 from .browser_runtime import resolve_browser_executable
 from .config import QIANWEN_PROFILES_DIR, load_settings
 from .profile_lock import account_profile_lock
-from .qianwen_ai_studio import QianwenAIStudioAutomation, acquire_qianwen_ai_studio_credit_proxy
+from .qianwen_ai_studio import QianwenAIStudioAutomation
 from .qianwen_automation import QIANWEN_URL, QianwenVideoAutomation
-from .proxy_manager import release_dola_subscription_proxy
+from .proxy_manager import acquire_dola_subscription_proxy, release_dola_subscription_proxy
+
+
+QIANWEN_PROBE_MAINLAND_COUNTRIES = ("\u4e2d\u56fd\u5927\u9646", "\u9999\u6e2f", "\u53f0\u6e7e")
+
+
+async def acquire_qianwen_probe_proxy(settings: Any) -> dict[str, str]:
+    if not settings.proxy_enabled or not settings.proxy_subscription_url:
+        raise RuntimeError("qianwen probe mainland proxy unavailable")
+    return await acquire_dola_subscription_proxy(
+        settings.proxy_subscription_url,
+        timeout_seconds=settings.proxy_api_timeout_seconds,
+        scheme=settings.proxy_subscription_scheme,
+        refresh_seconds=settings.proxy_subscription_refresh_seconds,
+        auto_select=True,
+        selected_countries=QIANWEN_PROBE_MAINLAND_COUNTRIES,
+        latency_threshold_ms=max(5000, int(settings.proxy_latency_threshold_ms)),
+        random_select=False,
+    )
 
 
 LOCAL_TZ = timezone(timedelta(hours=8))
@@ -247,7 +265,7 @@ class QianwenProbeManager:
         proxy: dict[str, str] | None = None
         try:
             try:
-                proxy = await acquire_qianwen_ai_studio_credit_proxy(settings)
+                proxy = await acquire_qianwen_probe_proxy(settings)
                 if proxy.get("server"):
                     launch_options["proxy"] = proxy
             except Exception:

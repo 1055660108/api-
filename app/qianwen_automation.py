@@ -14,7 +14,7 @@ from .accounts import disable_account_for_login, update_account_cookies
 from .browser_runtime import cancel_tracked_tasks, create_tracked_task, resolve_browser_executable, safe_close
 from .browser_live_view import TaskBrowserLiveView
 from .config import QIANWEN_PROFILES_DIR, TASKS_DIR, ensure_dirs, load_settings
-from .store import begin_task_submission, clear_transient_result, is_task_canceled, mark_pending, save_result, task_exists, task_image_paths
+from .store import begin_task_submission, clear_transient_result, get_meta, is_task_canceled, mark_pending, save_result, task_exists, task_image_paths, update_meta
 from .profile_lock import account_profile_lock
 
 
@@ -39,6 +39,18 @@ def is_qianwen_ai_studio_redirect(url: str) -> bool:
 def is_qianwen_user_validation_error(body: str, url: str = "") -> bool:
     text = f"{body}\n{url}".lower()
     return any(marker in text for marker in ("fail_sys_user_validate", "rgv587_error", "action=captcha"))
+
+
+def is_qianwen_text_only_response(body: str) -> bool:
+    text = str(body or "").lower()
+    return any(marker in text for marker in (
+        "抱歉，我无法回答这个问题",
+        "我无法回答这个问题",
+        "我们聊聊别的吧",
+        "-zs11403-",
+        "input query audit rejected",
+        "安审拒绝",
+    ))
 
 
 def qianwen_model_requires_reference(model: str) -> bool:
@@ -659,6 +671,7 @@ class QianwenVideoAutomation:
             self._collect_network_values(body)
         lowered = body.lower()
         user_validation_error = is_qianwen_user_validation_error(body, url)
+        text_only_response = is_qianwen_text_only_response(body)
         if user_validation_error:
             self.remote_error = "user_validate"
         if response.status in {401, 403} or any(marker in lowered for marker in ("not login", "unauthorized", "登录失效")):
@@ -669,6 +682,8 @@ class QianwenVideoAutomation:
             self.remote_error = "risk_control"
         elif any(marker in lowered for marker in ("model not", "unsupported model", "模型不可用")):
             self.remote_error = "model_unavailable"
+        if text_only_response and not user_validation_error:
+            self.remote_error = "text_only"
         if submission:
             self.remote_submission = submission
             self.remote_session_id = str(submission.get("session_id") or "")
@@ -889,8 +904,6 @@ class QianwenVideoAutomation:
                 if await send_button.is_disabled():
                     await self._save_diagnostics(page, "send button disabled")
                     return self._failure("qianwen send button disabled", account_fault=False)
-                if self.submission_pacer is not None:
-                    await self.submission_pacer()
                 if not begin_task_submission(self.task_id):
                     canceled = is_task_canceled(self.task_id)
                     return {"success": False, "retryable": not canceled, "reason": "用户取消生成" if canceled else "任务提交状态已变化，正在重试"}
@@ -918,7 +931,7 @@ class QianwenVideoAutomation:
                         switch_account=True,
                     )
                 if self.remote_error:
-                    reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "user_validate": "qianwen user validation required", "model_unavailable": "qianwen model unavailable"}
+                    reasons = {"login": "qianwen account not logged in", "rate_limit": "qianwen rate limited", "risk_control": "qianwen risk control", "user_validate": "qianwen user validation required", "model_unavailable": "qianwen model unavailable", "text_only": "qianwen returned text only; video was not submitted"}
                     reason = reasons[self.remote_error]
                     await self._save_diagnostics(page, reason)
                     if self.remote_error == "user_validate":
@@ -929,6 +942,14 @@ class QianwenVideoAutomation:
                             switch_account=True,
                             account_cooldown_seconds=1800,
                         )
+                    if self.remote_error == "text_only":
+                        account_id = str(self.account.get("id") or "")
+                        used = bool(get_meta(self.task_id).get("qianwen_text_only_retry_used"))
+                        if not used:
+                            update_meta(self.task_id, preferred_account_id=account_id, qianwen_text_only_retry_used=True)
+                            return self._failure(reason, account_fault=False, retryable=True, qianwen_text_only=True)
+                        update_meta(self.task_id, preferred_account_id="", qianwen_text_only_retry_used=False)
+                        return self._failure(reason, account_fault=False, retryable=True, switch_account=True, qianwen_text_only=True)
                     return self._failure(reason, account_fault=self.remote_error == "login", retryable=self.remote_error != "model_unavailable")
                 if not self.submission_event.is_set() or not self.remote_session_id or not self.remote_req_id:
                     await self._save_diagnostics(page, "submit not confirmed")

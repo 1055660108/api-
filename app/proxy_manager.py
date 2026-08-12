@@ -90,6 +90,7 @@ TASK_MIHOMO_CONTEXTS_PER_EXIT = _bounded_env_int("DOLA_MIHOMO_CONTEXTS_PER_EXIT"
 PROXY_EXIT_CACHE_SECONDS = 30 * 60
 PROXY_EXIT_CHECK_URL = "https://api.ipify.org"
 COUNTRY_MARKERS = {
+    "中国大陆": ("中国大陆", "中国内地", "大陆", " mainland", " cn", "china mainland"),
     "香港": ("香港", "hong kong", "hongkong", " hk", "🇭🇰"),
     "台湾": ("台湾", "taiwan", " taipei", " tw", "🇹🇼"),
     "日本": ("日本", "japan", " tokyo", " osaka", " jp", "🇯🇵"),

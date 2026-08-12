@@ -107,6 +107,33 @@ def consume_failed_account_quota(task_id: str, meta: dict[str, Any], account_id:
         refund_account_quota_once(task_id, account_id, charge_id)
 
 
+def retry_qianwen_text_only_result(
+    task_id: str,
+    meta: dict[str, Any],
+    result: dict[str, Any],
+    diagnostic: str,
+) -> dict[str, Any]:
+    account_id = str(result.get("account_id") or "")
+    charge_id = str(result.get("account_quota_charge_id") or "")
+    retry_used = bool(meta.get("qianwen_text_only_retry_used"))
+    if account_id:
+        clear_account_current_task(account_id, task_id)
+        refund_account_quota_once(task_id, account_id, charge_id)
+    update_meta(
+        task_id,
+        preferred_account_id="" if retry_used else account_id,
+        qianwen_text_only_retry_used=not retry_used,
+    )
+    reason = "千问仅返回文本，未提交视频生成"
+    retry_limit = task_retry_limit()
+    retry_count = retry_submitted_task(task_id, diagnostic or reason, max_retries=retry_limit, delay_seconds=10)
+    if retry_count <= retry_limit:
+        clear_transient_result(task_id)
+        return {"code": "1", "text": "正在重试中，请稍等！", "url": "", "retry_after": 10}
+    refund_temp_quota_once(task_id, str(meta.get("owner_token_hash") or ""))
+    return {"code": "0", "text": "千问模型生成失败", "url": ""}
+
+
 RECENT_CONV_URL = (
     "https://www.dola.com/im/chain/recent_conv?"
     "version_code=20800&language=zh&device_platform=web&aid=495671&real_aid=495671"
@@ -1047,6 +1074,10 @@ async def _query_task_once(
             )
             account_id = str(result.get("account_id") or "")
             charge_id = str(result.get("account_quota_charge_id") or "")
+            from .qianwen_automation import is_qianwen_text_only_response
+
+            if is_qianwen_text_only_response(text):
+                return retry_qianwen_text_only_result(task_id, meta, result, text)
             if state == "succeeded":
                 video_url = str(query_result.get("video_url") or "").strip()
                 if not video_url:
@@ -1109,6 +1140,10 @@ async def _query_task_once(
         )
         account_id = str(result.get("account_id") or "")
         charge_id = str(result.get("account_quota_charge_id") or "")
+        from .qianwen_automation import is_qianwen_text_only_response
+
+        if is_qianwen_text_only_response(text):
+            return retry_qianwen_text_only_result(task_id, meta, result, text)
         if state == "succeeded":
             video_url = str(query_result.get("video_url") or "").strip()
             if not video_url:

@@ -31,6 +31,31 @@ QIANWEN_REFERENCE_REQUIRED_MODELS = {"万相 2.7", "万相 2.6", "HappyHorse 1.0
 QIANWEN_CHAT_ROUTE_PATTERNS = ("**/api/v2/chat*", "**/api/v1/chat/snap*")
 
 
+def qianwen_interface_response_confirmed(status: int, body: str) -> bool:
+    text = str(body or "")
+    lowered = text.lower()
+    if int(status or 0) != 200 or "stream_error" in lowered:
+        return False
+    if is_qianwen_user_validation_error(text):
+        return False
+    return bool(re.search(r'"(?:sessionid|session_id)"\s*:\s*"[^" ]+"', text) and re.search(r'"(?:reqid|req_id)"\s*:\s*"[^" ]+"', text))
+
+
+def qianwen_httpx_proxy_config(proxy_config: dict[str, str] | None) -> str:
+    if not proxy_config or not proxy_config.get("server"):
+        return ""
+    server = str(proxy_config.get("server") or "")
+    username = str(proxy_config.get("username") or "")
+    password = str(proxy_config.get("password") or "")
+    if username:
+        from urllib.parse import quote
+
+        scheme, separator, remainder = server.partition("://")
+        if separator:
+            server = f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{remainder}"
+    return server
+
+
 def is_qianwen_ai_studio_redirect(url: str) -> bool:
     host = str(urlsplit(str(url or "").strip()).hostname or "").lower().rstrip(".")
     return host in QIANWEN_AI_STUDIO_HOSTS
@@ -379,6 +404,9 @@ class QianwenVideoAutomation:
         self.remote_req_id = ""
         self.remote_submission: dict[str, Any] = {}
         self.audio_request_patch_count = 0
+        self.qianwen_interface_submit_attempts = 0
+        self.qianwen_interface_submit_successes = 0
+        self.qianwen_interface_submit_fallbacks = 0
         self.submission_request_event = asyncio.Event()
         self.submission_event = asyncio.Event()
 
@@ -533,9 +561,40 @@ class QianwenVideoAutomation:
         patched_data, changed = enable_qianwen_wan27_audio(qianwen_request_post_data(request))
         if changed:
             self.audio_request_patch_count += 1
-            await route.continue_(post_data=patched_data)
-            return
-        await route.continue_()
+        submission = parse_qianwen_submission(patched_data)
+        if (
+            self.settings.qianwen_reference_interface_submit_enabled
+            and submission.get("attachment_ids")
+            and is_qianwen_chat_api_url(str(request.url))
+        ):
+            self.qianwen_interface_submit_attempts += 1
+            try:
+                headers = await request.all_headers()
+                headers.pop("content-length", None)
+                options = {
+                    "headers": headers,
+                    "content": patched_data.encode("utf-8"),
+                    "follow_redirects": True,
+                    "timeout": httpx.Timeout(90.0, connect=20.0),
+                    "trust_env": False,
+                }
+                if self._interface_proxy_server:
+                    options["proxy"] = self._interface_proxy_server
+                async with httpx.AsyncClient(**options) as client:
+                    response = await client.post(str(request.url))
+                body = response.text
+                if qianwen_interface_response_confirmed(response.status_code, body):
+                    self.qianwen_interface_submit_successes += 1
+                    await route.fulfill(
+                        status=response.status_code,
+                        headers={"content-type": response.headers.get("content-type", "text/event-stream;charset=UTF-8")},
+                        body=body,
+                    )
+                    return
+            except Exception as exc:
+                self.network_events.append({"url": str(request.url), "method": "POST", "status": 0, "interface_submit_error": f"{type(exc).__name__}: {str(exc)[:300]}"})
+            self.qianwen_interface_submit_fallbacks += 1
+        await route.continue_(post_data=patched_data if changed else None)
 
     async def _open_image_file_chooser(self, page):
         reference_buttons = page.get_by_role("button", name="参考", exact=True)
@@ -798,6 +857,7 @@ class QianwenVideoAutomation:
                 await self.proxy_session.release_browser_proxy()
 
     async def _run_browser(self, proxy_config: dict[str, str] | None) -> dict[str, Any]:
+        self._interface_proxy_server = qianwen_httpx_proxy_config(proxy_config)
         async with async_playwright() as playwright:
             launch_options: dict[str, Any] = {
                 "headless": self.settings.headless,
@@ -1009,6 +1069,9 @@ class QianwenVideoAutomation:
                         "qianwen_setting_mismatch": setting_mismatch,
                         "qianwen_remote_task_ids": self.remote_task_ids,
                         "qianwen_network_events": self.network_events[-10:],
+                        "qianwen_interface_submit_attempts": self.qianwen_interface_submit_attempts,
+                        "qianwen_interface_submit_successes": self.qianwen_interface_submit_successes,
+                        "qianwen_interface_submit_fallbacks": self.qianwen_interface_submit_fallbacks,
                     },
                 )
                 return {

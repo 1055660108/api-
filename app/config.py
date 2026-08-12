@@ -132,6 +132,7 @@ def default_config() -> dict[str, Any]:
         "dola_submit_interval_seconds": 5.0,
         "dola_global_submit_interval_seconds": 12.0,
         "qianwen_submit_interval_seconds": 5.0,
+        "qianwen_reference_interface_submit_enabled": True,
         "qianwen_probe_enabled": False,
         "qianwen_probe_collect_credit": True,
         "qianwen_probe_interval_minutes": 60,
@@ -388,6 +389,7 @@ class Settings:
     dola_submit_interval_seconds: float
     dola_global_submit_interval_seconds: float
     qianwen_submit_interval_seconds: float
+    qianwen_reference_interface_submit_enabled: bool
     qianwen_probe_enabled: bool
     qianwen_probe_collect_credit: bool
     qianwen_probe_interval_minutes: int
@@ -619,6 +621,7 @@ def load_settings() -> Settings:
         dola_submit_interval_seconds=max(1.0, min(5.0, float(data.get("dola_submit_interval_seconds") or 5.0))),
         dola_global_submit_interval_seconds=max(3.0, min(30.0, float(data.get("dola_global_submit_interval_seconds") or 12.0))),
         qianwen_submit_interval_seconds=max(1.0, min(30.0, float(data.get("qianwen_submit_interval_seconds") or 5.0))),
+        qianwen_reference_interface_submit_enabled=_as_bool(data.get("qianwen_reference_interface_submit_enabled"), True),
         qianwen_probe_enabled=_as_bool(data.get("qianwen_probe_enabled"), False),
         qianwen_probe_collect_credit=_as_bool(data.get("qianwen_probe_collect_credit"), True),
         qianwen_probe_interval_minutes=max(5, min(1440, int(data.get("qianwen_probe_interval_minutes") or 60))),

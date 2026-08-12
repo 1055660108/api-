@@ -26,11 +26,17 @@ from app.qianwen_automation import (
     qianwen_cookie_value,
     qianwen_model_requires_reference,
     qianwen_request_post_data,
+    qianwen_interface_response_confirmed,
 )
 from app.query import fail_qianwen_content_rejection, retry_qianwen_quota_insufficient_result, retry_qianwen_text_only_result
 
 
 class QianwenSubmissionTests(unittest.TestCase):
+    def test_interface_submit_response_requires_session_and_request_ids(self) -> None:
+        self.assertTrue(qianwen_interface_response_confirmed(200, '{"communication":{"sessionid":"session-1","reqid":"request-1"}}'))
+        self.assertFalse(qianwen_interface_response_confirmed(200, '{"ret":["FAIL_SYS_USER_VALIDATE"],"data":{"url":"action=captcha"}}'))
+        self.assertFalse(qianwen_interface_response_confirmed(200, '{"communication":{"sessionid":"session-1"}}'))
+        self.assertFalse(qianwen_interface_response_confirmed(500, '{"communication":{"sessionid":"session-1","reqid":"request-1"}}'))
     @staticmethod
     def _studio_runner(cookies: list[dict] | None = None) -> QianwenAIStudioAutomation:
         cookie_items = cookies if cookies is not None else [

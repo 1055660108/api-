@@ -572,8 +572,6 @@ class QianwenVideoAutomation:
                 headers = await request.all_headers()
                 headers.pop("content-length", None)
                 options = {
-                    "headers": headers,
-                    "content": patched_data.encode("utf-8"),
                     "follow_redirects": True,
                     "timeout": httpx.Timeout(90.0, connect=20.0),
                     "trust_env": False,
@@ -581,7 +579,11 @@ class QianwenVideoAutomation:
                 if self._interface_proxy_server:
                     options["proxy"] = self._interface_proxy_server
                 async with httpx.AsyncClient(**options) as client:
-                    response = await client.post(str(request.url))
+                    response = await client.post(
+                        str(request.url),
+                        headers=headers,
+                        content=patched_data.encode("utf-8"),
+                    )
                 body = response.text
                 if qianwen_interface_response_confirmed(response.status_code, body):
                     self.qianwen_interface_submit_successes += 1

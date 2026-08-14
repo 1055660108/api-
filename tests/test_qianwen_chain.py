@@ -32,6 +32,63 @@ from app.query import fail_qianwen_content_rejection, retry_qianwen_quota_insuff
 
 
 class QianwenSubmissionTests(unittest.TestCase):
+    def test_reference_interface_posts_body_without_passing_content_to_client_constructor(self) -> None:
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+        runner.settings = SimpleNamespace(qianwen_reference_interface_submit_enabled=True)
+        runner.audio_request_patch_count = 0
+        runner.qianwen_interface_submit_attempts = 0
+        runner.qianwen_interface_submit_successes = 0
+        runner.qianwen_interface_submit_fallbacks = 0
+        runner.network_events = []
+        runner._interface_proxy_server = ""
+        post_data = json.dumps({
+            "session_id": "session-1",
+            "req_id": "request-1",
+            "ai_tool_scene": "zaodian_generate_video",
+            "biz_data": json.dumps({
+                "bizScene": "genVideo",
+                "req": {
+                    "rootModel": "wan27",
+                    "params": {
+                        "duration": 10,
+                        "size": "16:9",
+                        "attachments": [{"materialId": "material-1"}],
+                    },
+                },
+            }),
+        })
+        request = SimpleNamespace(
+            url=QIANWEN_CHAT_API_URL,
+            post_data=post_data,
+            all_headers=AsyncMock(return_value={"content-type": "application/json", "content-length": "123"}),
+        )
+        response = SimpleNamespace(
+            status_code=200,
+            text='{"communication":{"sessionid":"session-1","reqid":"request-1"}}',
+            headers={"content-type": "text/event-stream"},
+        )
+        client = SimpleNamespace(post=AsyncMock(return_value=response))
+        client_context = AsyncMock()
+        client_context.__aenter__.return_value = client
+        client_context.__aexit__.return_value = None
+        route = SimpleNamespace(fulfill=AsyncMock(), continue_=AsyncMock())
+
+        with patch("app.qianwen_automation.httpx.AsyncClient", return_value=client_context) as factory:
+            asyncio.run(runner._route_chat_submission(route, request))
+
+        self.assertEqual(runner.qianwen_interface_submit_attempts, 1)
+        self.assertEqual(runner.qianwen_interface_submit_successes, 1)
+        self.assertEqual(runner.qianwen_interface_submit_fallbacks, 0)
+        self.assertNotIn("content", factory.call_args.kwargs)
+        patched_data, _changed = enable_qianwen_wan27_audio(post_data)
+        client.post.assert_awaited_once_with(
+            QIANWEN_CHAT_API_URL,
+            headers={"content-type": "application/json"},
+            content=patched_data.encode("utf-8"),
+        )
+        route.fulfill.assert_awaited_once()
+        route.continue_.assert_not_awaited()
+
     def test_interface_submit_response_requires_session_and_request_ids(self) -> None:
         self.assertTrue(qianwen_interface_response_confirmed(200, '{"communication":{"sessionid":"session-1","reqid":"request-1"}}'))
         self.assertFalse(qianwen_interface_response_confirmed(200, '{"ret":["FAIL_SYS_USER_VALIDATE"],"data":{"url":"action=captcha"}}'))

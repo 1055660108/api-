@@ -432,6 +432,83 @@ class QianwenSubmissionTests(unittest.TestCase):
         self.assertTrue(uploaded)
         self.assertEqual(runner._reference_preview_count.await_count, 2)
 
+    def test_reference_button_menu_can_provide_file_chooser(self) -> None:
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+
+        class AwaitableValue:
+            def __init__(self, value=None, error: Exception | None = None) -> None:
+                self.value = value
+                self.error = error
+
+            def __await__(self):
+                async def resolve():
+                    if self.error:
+                        raise self.error
+                    return self.value
+
+                return resolve().__await__()
+
+        class ExpectFileChooser:
+            def __init__(self, value) -> None:
+                self.value = value
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                return False
+
+        chooser = SimpleNamespace(set_files=AsyncMock())
+        first_attempt = ExpectFileChooser(AwaitableValue(error=asyncio.TimeoutError()))
+        menu_attempt = ExpectFileChooser(AwaitableValue(value=chooser))
+        reference_button = SimpleNamespace(
+            is_visible=AsyncMock(return_value=True),
+            is_enabled=AsyncMock(return_value=True),
+            click=AsyncMock(),
+        )
+        reference_buttons = SimpleNamespace(count=AsyncMock(return_value=1), nth=Mock(return_value=reference_button))
+        upload_option = SimpleNamespace(
+            is_visible=AsyncMock(return_value=True),
+            is_enabled=AsyncMock(return_value=True),
+            inner_text=AsyncMock(return_value="上传图片"),
+            click=AsyncMock(),
+        )
+        upload_options = SimpleNamespace(count=AsyncMock(return_value=1), nth=Mock(return_value=upload_option))
+        empty_locator = SimpleNamespace(count=AsyncMock(return_value=0))
+
+        def locator(selector: str):
+            return upload_options if '[role="listbox"]' in selector else empty_locator
+
+        page = SimpleNamespace(
+            get_by_role=Mock(return_value=reference_buttons),
+            locator=Mock(side_effect=locator),
+            expect_file_chooser=Mock(side_effect=[first_attempt, menu_attempt]),
+            wait_for_timeout=AsyncMock(),
+        )
+
+        selected = asyncio.run(runner._open_image_file_chooser(page))
+
+        self.assertIs(selected, chooser)
+        reference_button.click.assert_awaited_once_with(force=True)
+        upload_option.click.assert_awaited_once_with(force=True)
+
+    def test_reference_images_upload_sequentially_and_records_stable_preview_failure(self) -> None:
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+        runner.reference_upload_failure_detail = ""
+        chooser_one = SimpleNamespace(set_files=AsyncMock())
+        chooser_two = SimpleNamespace(set_files=AsyncMock())
+        runner._reference_preview_count = AsyncMock(side_effect=[0, 1])
+        runner._open_image_file_chooser = AsyncMock(side_effect=[chooser_one, chooser_two])
+        runner._wait_for_reference_upload = AsyncMock(return_value=True)
+        page = SimpleNamespace(wait_for_timeout=AsyncMock())
+
+        uploaded = asyncio.run(runner._upload_reference_images(page, ["one.png", "two.png"]))
+
+        self.assertTrue(uploaded)
+        chooser_one.set_files.assert_awaited_once_with("one.png")
+        chooser_two.set_files.assert_awaited_once_with("two.png")
+        self.assertEqual(runner._wait_for_reference_upload.await_count, 2)
+
 
 class QianwenResultTests(unittest.TestCase):
     def test_content_rejection_keeps_backend_reason_and_maps_reference_client_reason(self) -> None:

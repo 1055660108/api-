@@ -407,6 +407,7 @@ class QianwenVideoAutomation:
         self.qianwen_interface_submit_attempts = 0
         self.qianwen_interface_submit_successes = 0
         self.qianwen_interface_submit_fallbacks = 0
+        self.reference_upload_failure_detail = ""
         self.submission_request_event = asyncio.Event()
         self.submission_event = asyncio.Event()
 
@@ -598,18 +599,89 @@ class QianwenVideoAutomation:
             self.qianwen_interface_submit_fallbacks += 1
         await route.continue_(post_data=patched_data if changed else None)
 
+    @staticmethod
+    async def _available_image_file_input(page):
+        selectors = (
+            '[data-chat-input-top-content="true"] input[type="file"]',
+            '[data-chat-input-bottom-bar="true"] input[type="file"]',
+            '[role="dialog"]:visible input[type="file"]',
+            '[role="menu"]:visible input[type="file"]',
+            'input[type="file"][accept*="image"]',
+            'input[type="file"][accept*=".png"]',
+            'input[type="file"]',
+        )
+        for selector in selectors:
+            inputs = page.locator(selector)
+            count = await inputs.count()
+            for index in range(count - 1, -1, -1):
+                candidate = inputs.nth(index)
+                try:
+                    accept = str(await candidate.get_attribute("accept") or "").lower()
+                except Exception:
+                    accept = ""
+                if accept and not any(marker in accept for marker in ("image", ".png", ".jpg", ".jpeg", ".webp")):
+                    continue
+                return candidate
+        return None
+
+    async def _wait_for_image_file_input(self, page, timeout_seconds: float = 1.5):
+        deadline = asyncio.get_running_loop().time() + max(0.1, float(timeout_seconds))
+        while asyncio.get_running_loop().time() < deadline:
+            candidate = await self._available_image_file_input(page)
+            if candidate is not None:
+                return candidate
+            await page.wait_for_timeout(150)
+        return None
+
+    async def _open_visible_upload_option(self, page):
+        upload_options = page.locator(
+            '[role="listbox"]:visible [role="option"], [role="menu"]:visible [role="menuitem"], '
+            '[role="menu"]:visible button:visible, [role="dialog"]:visible button:visible, '
+            '[data-radix-popper-content-wrapper] button:visible, [data-radix-popper-content-wrapper] [role="menuitem"]'
+        )
+        for option_index in range(await upload_options.count()):
+            option = upload_options.nth(option_index)
+            try:
+                if not await option.is_visible() or not await option.is_enabled():
+                    continue
+                label = re.sub(r"\s+", "", str(await option.inner_text() or ""))
+            except Exception:
+                continue
+            media_label = any(marker in label for marker in ("图片", "图像", "照片", "文件", "素材"))
+            if not media_label or not any(marker in label for marker in ("上传", "本地", "选择", "添加")):
+                continue
+            try:
+                async with page.expect_file_chooser(timeout=3000) as chooser_info:
+                    await option.click(force=True)
+                return await chooser_info.value
+            except Exception:
+                candidate = await self._wait_for_image_file_input(page)
+                if candidate is not None:
+                    return candidate
+        return None
+
     async def _open_image_file_chooser(self, page):
+        existing_option = await self._open_visible_upload_option(page)
+        if existing_option is not None:
+            return existing_option
         reference_buttons = page.get_by_role("button", name="参考", exact=True)
+        if not await reference_buttons.count():
+            reference_buttons = page.locator('button:visible:has-text("参考")')
         for index in range(await reference_buttons.count()):
             button = reference_buttons.nth(index)
             if not await button.is_visible() or not await button.is_enabled():
                 continue
             try:
                 async with page.expect_file_chooser(timeout=3000) as chooser_info:
-                    await button.click()
+                    await button.click(force=True)
                 return await chooser_info.value
             except Exception:
-                continue
+                candidate = await self._wait_for_image_file_input(page)
+                if candidate is not None:
+                    return candidate
+                option = await self._open_visible_upload_option(page)
+                if option is not None:
+                    return option
         triggers = page.locator(
             'button[aria-label*="添加"]:visible, button[aria-label*="附件"]:visible, '
             'button[aria-label*="上传"]:visible, button[title*="添加"]:visible, '
@@ -619,29 +691,16 @@ class QianwenVideoAutomation:
             trigger = triggers.nth(index)
             try:
                 async with page.expect_file_chooser(timeout=1500) as chooser_info:
-                    await trigger.click()
+                    await trigger.click(force=True)
                 return await chooser_info.value
             except Exception:
-                pass
-            upload_options = page.locator(
-                '[role="listbox"]:visible [role="option"], [role="menu"]:visible [role="menuitem"], '
-                '[role="dialog"]:visible button:visible'
-            )
-            for option_index in range(await upload_options.count()):
-                option = upload_options.nth(option_index)
-                label = str(await option.inner_text() or "").strip()
-                if "上传图片" not in label and "本地图片" not in label:
-                    continue
-                try:
-                    async with page.expect_file_chooser(timeout=3000) as chooser_info:
-                        await option.click()
-                    return await chooser_info.value
-                except Exception:
-                    continue
-        image_inputs = page.locator('input[type="file"][accept*="image"]')
-        if await image_inputs.count():
-            return image_inputs.last
-        return None
+                candidate = await self._wait_for_image_file_input(page)
+                if candidate is not None:
+                    return candidate
+            option = await self._open_visible_upload_option(page)
+            if option is not None:
+                return option
+        return await self._wait_for_image_file_input(page)
 
     @staticmethod
     async def _reference_preview_count(page) -> int:
@@ -679,17 +738,24 @@ class QianwenVideoAutomation:
         return False
 
     async def _upload_reference_images(self, page, paths: list[Any]) -> bool:
-        for path in paths:
+        self.reference_upload_failure_detail = ""
+        for image_index, path in enumerate(paths, start=1):
             baseline_preview_count = await self._reference_preview_count(page)
             chooser = await self._open_image_file_chooser(page)
             if chooser is None:
+                self.reference_upload_failure_detail = f"reference image {image_index} upload control unavailable"
                 return False
-            if hasattr(chooser, "set_files"):
-                await chooser.set_files(str(path))
-            else:
-                await chooser.set_input_files(str(path))
+            try:
+                if hasattr(chooser, "set_files"):
+                    await chooser.set_files(str(path))
+                else:
+                    await chooser.set_input_files(str(path))
+            except Exception as exc:
+                self.reference_upload_failure_detail = f"reference image {image_index} file selection failed: {type(exc).__name__}"
+                return False
             await page.wait_for_timeout(2500)
             if not await self._wait_for_reference_upload(page, baseline_preview_count=baseline_preview_count):
+                self.reference_upload_failure_detail = f"reference image {image_index} preview did not become stable"
                 return False
         return True
 
@@ -954,7 +1020,9 @@ class QianwenVideoAutomation:
                 uploaded_reference_count = 0
                 if reference_paths:
                     if not await self._upload_reference_images(page, reference_paths):
-                        await self._save_diagnostics(page, "reference image upload unavailable")
+                        upload_detail = self.reference_upload_failure_detail or "reference image upload unavailable"
+                        update_meta(self.task_id, qianwen_reference_upload_detail=upload_detail)
+                        await self._save_diagnostics(page, upload_detail)
                         return self._failure("qianwen reference image upload failed", account_fault=False)
                     uploaded_reference_count = await self._reference_preview_count(page)
                     if uploaded_reference_count < len(reference_paths):

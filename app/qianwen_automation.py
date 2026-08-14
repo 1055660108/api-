@@ -219,6 +219,65 @@ def qianwen_request_post_data(request: Any) -> str:
         return ""
 
 
+def _qianwen_upload_resource_ids(payload: Any) -> list[str]:
+    ids: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized = str(key or "").replace("-", "_").lower()
+                if normalized in {"resourcekey", "resource_key", "resourceid", "resource_id", "ws_gid", "wsgid"}:
+                    candidate = str(child or "").strip()
+                    if candidate and candidate not in ids and len(candidate) <= 200:
+                        ids.append(candidate)
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(payload)
+    return ids
+
+
+def _inject_qianwen_reference_attachments(post_data: str, attachment_ids: list[str]) -> tuple[str, bool]:
+    if not attachment_ids:
+        return str(post_data or ""), False
+    try:
+        payload = json.loads(str(post_data or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return str(post_data or ""), False
+    if not isinstance(payload, dict):
+        return str(post_data or ""), False
+    biz_data = _try_parse_json(payload.get("biz_data"))
+    if not isinstance(biz_data, dict):
+        return str(post_data or ""), False
+    request_data = biz_data.get("req") if isinstance(biz_data.get("req"), dict) else {}
+    params = request_data.get("params") if isinstance(request_data.get("params"), dict) else {}
+    existing = params.get("attachments") if isinstance(params.get("attachments"), list) else []
+    existing_ids = {
+        str(item.get("materialId") or "").strip()
+        for item in existing
+        if isinstance(item, dict) and item.get("materialId")
+    }
+    additions = [
+        {"type": "image", "materialId": resource_id}
+        for resource_id in attachment_ids
+        if resource_id not in existing_ids
+    ]
+    if not additions:
+        return str(post_data or ""), False
+    params["attachments"] = [*existing, *additions]
+    request_data["params"] = params
+    biz_data["req"] = request_data
+    raw_biz_data = payload.get("biz_data")
+    payload["biz_data"] = (
+        json.dumps(biz_data, ensure_ascii=False, separators=(",", ":"))
+        if isinstance(raw_biz_data, str)
+        else biz_data
+    )
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")), True
+
+
 def parse_qianwen_generation_result(payload: Any) -> dict[str, Any]:
     unwatermarked_candidates: list[tuple[int, str, str]] = []
     watermarked_download_candidates: list[tuple[str, str]] = []
@@ -408,6 +467,8 @@ class QianwenVideoAutomation:
         self.qianwen_interface_submit_successes = 0
         self.qianwen_interface_submit_fallbacks = 0
         self.reference_upload_failure_detail = ""
+        self.qianwen_upload_resource_ids: list[str] = []
+        self.expected_reference_count = 0
         self.submission_request_event = asyncio.Event()
         self.submission_event = asyncio.Event()
 
@@ -562,6 +623,17 @@ class QianwenVideoAutomation:
         patched_data, changed = enable_qianwen_wan27_audio(qianwen_request_post_data(request))
         if changed:
             self.audio_request_patch_count += 1
+        # Some Qwen builds finish the upload through the protocol chain but do
+        # not update the composer preview DOM. Reuse only resource IDs returned
+        # by file/record/add, and only once every requested image has one.
+        expected_reference_count = int(getattr(self, "expected_reference_count", 0) or 0)
+        upload_resource_ids = list(getattr(self, "qianwen_upload_resource_ids", []))
+        if expected_reference_count and len(upload_resource_ids) >= expected_reference_count:
+            patched_data, attachment_changed = _inject_qianwen_reference_attachments(
+                patched_data,
+                upload_resource_ids[:expected_reference_count],
+            )
+            changed = changed or attachment_changed
         submission = parse_qianwen_submission(patched_data)
         if (
             self.settings.qianwen_reference_interface_submit_enabled
@@ -720,7 +792,14 @@ class QianwenVideoAutomation:
             }"""
         ))
 
-    async def _wait_for_reference_upload(self, page, *, baseline_preview_count: int, timeout_seconds: int = 90) -> bool:
+    async def _wait_for_reference_upload(
+        self,
+        page,
+        *,
+        baseline_preview_count: int,
+        baseline_resource_count: int = 0,
+        timeout_seconds: int = 90,
+    ) -> bool:
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         stable_checks = 0
         while asyncio.get_running_loop().time() < deadline:
@@ -728,7 +807,8 @@ class QianwenVideoAutomation:
             busy_text = any(marker in body_tail for marker in ("上传中", "正在上传", "处理中"))
             progress_visible = await page.locator('[role="progressbar"]:visible').count() > 0
             preview_count = await self._reference_preview_count(page)
-            if not busy_text and not progress_visible and preview_count > baseline_preview_count:
+            protocol_uploaded = len(getattr(self, "qianwen_upload_resource_ids", [])) > baseline_resource_count
+            if not busy_text and not progress_visible and (preview_count > baseline_preview_count or protocol_uploaded):
                 stable_checks += 1
                 if stable_checks >= 2:
                     return True
@@ -739,8 +819,13 @@ class QianwenVideoAutomation:
 
     async def _upload_reference_images(self, page, paths: list[Any]) -> bool:
         self.reference_upload_failure_detail = ""
+        if not hasattr(self, "qianwen_upload_resource_ids"):
+            self.qianwen_upload_resource_ids = []
+        self.qianwen_upload_resource_ids.clear()
+        self.expected_reference_count = len(paths)
         for image_index, path in enumerate(paths, start=1):
             baseline_preview_count = await self._reference_preview_count(page)
+            baseline_resource_count = len(self.qianwen_upload_resource_ids)
             chooser = await self._open_image_file_chooser(page)
             if chooser is None:
                 self.reference_upload_failure_detail = f"reference image {image_index} upload control unavailable"
@@ -754,7 +839,11 @@ class QianwenVideoAutomation:
                 self.reference_upload_failure_detail = f"reference image {image_index} file selection failed: {type(exc).__name__}"
                 return False
             await page.wait_for_timeout(2500)
-            if not await self._wait_for_reference_upload(page, baseline_preview_count=baseline_preview_count):
+            if not await self._wait_for_reference_upload(
+                page,
+                baseline_preview_count=baseline_preview_count,
+                baseline_resource_count=baseline_resource_count,
+            ):
                 self.reference_upload_failure_detail = f"reference image {image_index} preview did not become stable"
                 return False
         return True
@@ -794,7 +883,10 @@ class QianwenVideoAutomation:
         lowered_url = url.lower()
         post_data, _changed = enable_qianwen_wan27_audio(qianwen_request_post_data(request))
         submission = parse_qianwen_submission(post_data) if request.method == "POST" and is_qianwen_chat_api_url(lowered_url) else {}
-        relevant = bool(submission) or self.prompt in post_data or any(item in lowered_url for item in ("/chat", "video", "wanx", "aigc", "generate", "task", "completion"))
+        relevant = bool(submission) or self.prompt in post_data or any(
+            item in lowered_url
+            for item in ("/chat", "/file/", "oss_token", "oss/callback", "video", "wanx", "aigc", "generate", "task", "completion")
+        )
         if not relevant:
             return
         try:
@@ -803,6 +895,15 @@ class QianwenVideoAutomation:
             body = ""
         event = {"url": url, "method": request.method, "status": response.status, "post_data": post_data[:3000], "body": body[:12000]}
         self.network_events.append(event)
+        if response.status == 200 and "/api/v2/file/record/add" in lowered_url:
+            try:
+                payload = json.loads(body)
+            except Exception:
+                payload = body
+            for resource_id in _qianwen_upload_resource_ids(payload):
+                if resource_id not in self.qianwen_upload_resource_ids:
+                    self.qianwen_upload_resource_ids.append(resource_id)
+            event["qianwen_upload_resource_ids"] = list(self.qianwen_upload_resource_ids)
         try:
             self._collect_network_values(json.loads(body))
         except Exception:
@@ -1017,17 +1118,8 @@ class QianwenVideoAutomation:
                     return self._failure("qianwen duration unavailable", account_fault=False, retryable=False)
                 await page.keyboard.press("Escape")
                 await page.wait_for_timeout(300)
-                uploaded_reference_count = 0
-                if reference_paths:
-                    if not await self._upload_reference_images(page, reference_paths):
-                        upload_detail = self.reference_upload_failure_detail or "reference image upload unavailable"
-                        update_meta(self.task_id, qianwen_reference_upload_detail=upload_detail)
-                        await self._save_diagnostics(page, upload_detail)
-                        return self._failure("qianwen reference image upload failed", account_fault=False)
-                    uploaded_reference_count = await self._reference_preview_count(page)
-                    if uploaded_reference_count < len(reference_paths):
-                        await self._save_diagnostics(page, "reference image preview missing after upload")
-                        return self._failure("qianwen reference image upload failed", account_fault=False)
+                # Clear stale submission/result state before the upload so the
+                # upload protocol responses remain available for diagnostics.
                 self.network_events.clear()
                 self.remote_task_ids.clear()
                 self.remote_video_urls.clear()
@@ -1037,8 +1129,21 @@ class QianwenVideoAutomation:
                 self.remote_session_id = ""
                 self.remote_req_id = ""
                 self.remote_submission = {}
+                self.qianwen_upload_resource_ids.clear()
+                self.expected_reference_count = len(reference_paths)
                 self.submission_request_event.clear()
                 self.submission_event.clear()
+                uploaded_reference_count = 0
+                if reference_paths:
+                    if not await self._upload_reference_images(page, reference_paths):
+                        upload_detail = self.reference_upload_failure_detail or "reference image upload unavailable"
+                        update_meta(self.task_id, qianwen_reference_upload_detail=upload_detail)
+                        await self._save_diagnostics(page, upload_detail)
+                        return self._failure("qianwen reference image upload failed", account_fault=False)
+                    uploaded_reference_count = await self._reference_preview_count(page)
+                    if uploaded_reference_count < len(reference_paths) and len(self.qianwen_upload_resource_ids) < len(reference_paths):
+                        await self._save_diagnostics(page, "reference image preview missing after upload")
+                        return self._failure("qianwen reference image upload failed", account_fault=False)
                 await editor.fill(self.prompt)
                 if reference_paths and await self._reference_preview_count(page) < uploaded_reference_count:
                     await self._save_diagnostics(page, "reference image preview lost before submit")

@@ -27,6 +27,8 @@ from app.qianwen_automation import (
     qianwen_model_requires_reference,
     qianwen_request_post_data,
     qianwen_interface_response_confirmed,
+    _inject_qianwen_reference_attachments,
+    _qianwen_upload_resource_ids,
 )
 from app.query import fail_qianwen_content_rejection, retry_qianwen_quota_insufficient_result, retry_qianwen_text_only_result
 
@@ -302,6 +304,44 @@ class QianwenSubmissionTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertTrue(parsed["audio"])
+
+    def test_protocol_upload_resource_ids_are_extracted(self) -> None:
+        payload = {
+            "data": {
+                "resourceKey": "resource-a",
+                "nested": [{"ws_gid": "resource-b"}, {"resource_id": "resource-a"}],
+            }
+        }
+        self.assertEqual(_qianwen_upload_resource_ids(payload), ["resource-a", "resource-b"])
+
+    def test_protocol_upload_ids_are_injected_as_video_attachments(self) -> None:
+        post_data = json.dumps({
+            "session_id": "session-1",
+            "req_id": "request-1",
+            "ai_tool_scene": "zaodian_generate_video",
+            "biz_data": json.dumps({
+                "bizScene": "genVideo",
+                "req": {"rootModel": "wan27", "params": {"duration": 10, "size": "16:9", "attachments": []}},
+            }),
+        })
+        patched, changed = _inject_qianwen_reference_attachments(post_data, ["resource-a", "resource-b"])
+        parsed = parse_qianwen_submission(patched)
+        self.assertTrue(changed)
+        self.assertEqual(parsed["attachment_ids"], ["resource-a", "resource-b"])
+
+    def test_protocol_upload_id_can_confirm_upload_without_preview(self) -> None:
+        runner = QianwenVideoAutomation.__new__(QianwenVideoAutomation)
+        runner.qianwen_upload_resource_ids = ["resource-a"]
+        runner._reference_preview_count = AsyncMock(return_value=0)
+        body = SimpleNamespace(inner_text=AsyncMock(return_value=""))
+        progress = SimpleNamespace(count=AsyncMock(return_value=0))
+        page = SimpleNamespace(
+            locator=Mock(side_effect=lambda selector: body if selector == "body" else progress),
+            wait_for_timeout=AsyncMock(),
+        )
+        self.assertTrue(asyncio.run(runner._wait_for_reference_upload(
+            page, baseline_preview_count=0, baseline_resource_count=0, timeout_seconds=5
+        )))
 
     def test_non_wan27_submission_audio_is_unchanged(self) -> None:
         payload = {
